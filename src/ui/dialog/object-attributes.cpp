@@ -1342,10 +1342,10 @@ public:
         if (!_rect) return;
 
         auto scoped(_update.block());
-        _rx.set_value(_rect->rx.value);
-        _ry.set_value(_rect->ry.value);
+        _rx.set_value(_rect->getVisibleRx());
+        _ry.set_value(_rect->getVisibleRy());
         auto lpe = find_lpeffect(_rect, LivePathEffect::FILLET_CHAMFER);
-        _sharp.set_sensitive(_rect->rx.value > 0 || _rect->ry.value > 0 || lpe);
+        _sharp.set_sensitive(_rect->getVisibleRx() > 0 || _rect->getVisibleRy() > 0 || lpe);
         _corners.set_selected(lpe ? WITH_LPE : WITHOUT_LPE);
     }
 
@@ -1482,10 +1482,10 @@ public:
         if (!_ellipse) return;
 
         auto scoped(_update.block());
-        _cx.set_value(_ellipse->cx.value);
-        _cy.set_value(_ellipse->cy.value);
-        _rx.set_value(_ellipse->rx.value);
-        _ry.set_value(_ellipse->ry.value);
+        _cx.set_value(_ellipse->getVisibleCx());
+        _cy.set_value(_ellipse->getVisibleCy());
+        _rx.set_value(_ellipse->getVisibleRx());
+        _ry.set_value(_ellipse->getVisibleRy());
         _start.set_value(radians_to_degree_mod360(_ellipse->start));
         _end.set_value(radians_to_degree_mod360(_ellipse->end));
 
