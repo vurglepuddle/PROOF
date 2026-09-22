@@ -786,7 +786,7 @@ CloneTiler::CloneTiler()
             hb->set_margin(4);
             UI::pack_start(*vb, *hb, false, false);
 
-            _b = Gtk::make_managed<UI::Widget::CheckButtonInternal>(_("Trace the drawing under the clones/sprayed items"));
+            _b = Gtk::make_managed<UI::Widget::CheckButtonInternal>(_("Map clones to the appearance of objects positioned underneath"));
             _b->uncheckable = true;
             bool old = prefs->getBool(prefs_path + "dotrace");
             _b->set_active(old);
