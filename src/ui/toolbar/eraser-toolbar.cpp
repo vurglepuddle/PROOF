@@ -30,6 +30,7 @@
 
 #include <glibmm/i18n.h>
 #include <gtkmm/adjustment.h>
+#include <gtkmm/separator.h>
 #include <gtkmm/togglebutton.h>
 
 #include "desktop.h"
@@ -50,12 +51,19 @@ EraserToolbar::EraserToolbar()
 
 EraserToolbar::EraserToolbar(Glib::RefPtr<Gtk::Builder> const &builder)
     : Toolbar{get_widget<Gtk::Box>(builder, "eraser-toolbar")}
+    , _params_sep(get_widget<Gtk::Separator>(builder, "_params_sep"))
+    , _width_box(get_widget<Gtk::Box>(builder, "_width_box"))
     , _width_item(get_derived_widget<UI::Widget::SpinButton>(builder, "_width_item"))
+    , _thinning_box(get_widget<Gtk::Box>(builder, "_thinning_box"))
     , _thinning_item(get_derived_widget<UI::Widget::SpinButton>(builder, "_thinning_item"))
+    , _cap_rounding_box(get_widget<Gtk::Box>(builder, "_cap_rounding_box"))
     , _cap_rounding_item(get_derived_widget<UI::Widget::SpinButton>(builder, "_cap_rounding_item"))
+    , _tremor_box(get_widget<Gtk::Box>(builder, "_tremor_box"))
     , _tremor_item(get_derived_widget<UI::Widget::SpinButton>(builder, "_tremor_item"))
+    , _mass_box(get_widget<Gtk::Box>(builder, "_mass_box"))
     , _mass_item(get_derived_widget<UI::Widget::SpinButton>(builder, "_mass_item"))
     , _usepressure_btn(&get_widget<Gtk::ToggleButton>(builder, "_usepressure_btn"))
+    , _split_sep(get_widget<Gtk::Separator>(builder, "_split_sep"))
     , _split_btn(get_widget<Gtk::ToggleButton>(builder, "_split_btn"))
 {
     auto prefs = Preferences::get();
@@ -203,20 +211,20 @@ void EraserToolbar::set_eraser_mode_visibility(unsigned const eraser_mode)
 {
     using namespace Inkscape::UI::Tools;
 
-    bool const visibility = eraser_mode != _modeAsInt(EraserToolMode::DELETE);
-    constexpr int visible_children_count = 2;
+    // Most items are only visible in CLIP and CUT modes (invisible in DELETE mode)
+    bool const params_visibility = eraser_mode != _modeAsInt(EraserToolMode::DELETE);
+    _params_sep.set_visible(params_visibility);
+    _width_box.set_visible(params_visibility);
+    _thinning_box.set_visible(params_visibility);
+    _cap_rounding_box.set_visible(params_visibility);
+    _tremor_box.set_visible(params_visibility);
+    _mass_box.set_visible(params_visibility);
+    _usepressure_btn->set_visible(params_visibility);
 
-    // Set all the children except the modes as invisible.
-    int child_index = 0;
-    for (auto &child : UI::children(_toolbar)) {
-        if (child_index++ < visible_children_count) {
-            continue;
-        }
-
-        child.set_visible(visibility);
-    }
-
-    _split_btn.set_visible(eraser_mode == _modeAsInt(EraserToolMode::CUT));
+    // Split is only visible in CUT mode
+    bool const split_visibility = eraser_mode == _modeAsInt(EraserToolMode::CUT);
+    _split_sep.set_visible(split_visibility);
+    _split_btn.set_visible(split_visibility);
 }
 
 void EraserToolbar::width_value_changed()

@@ -34,6 +34,7 @@
 namespace Gtk {
 class Builder;
 class ToggleButton;
+class Separator;
 } // namespace Gtk
 
 class SPDesktop;
@@ -63,12 +64,19 @@ private:
 
     using ValueChangedMemFun = void (EraserToolbar::*)();
 
+    Gtk::Separator &_params_sep;
+    Gtk::Box &_width_box;
     UI::Widget::SpinButton &_width_item;
+    Gtk::Box &_thinning_box;
     UI::Widget::SpinButton &_thinning_item;
+    Gtk::Box &_cap_rounding_box;
     UI::Widget::SpinButton &_cap_rounding_item;
+    Gtk::Box &_tremor_box;
     UI::Widget::SpinButton &_tremor_item;
+    Gtk::Box &_mass_box;
     UI::Widget::SpinButton &_mass_item;
     Gtk::ToggleButton *_usepressure_btn = nullptr;
+    Gtk::Separator &_split_sep;
     Gtk::ToggleButton &_split_btn;
 
     std::unique_ptr<SimplePrefPusher> _pressure_pusher;

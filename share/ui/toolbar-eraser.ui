@@ -74,11 +74,11 @@
       </object>
     </child>
     <child>
-      <object class="GtkSeparator" id="sep1">
+      <object class="GtkSeparator" id="_params_sep">
       </object>
     </child>
     <child>
-      <object class="GtkBox" id="width_box">
+      <object class="GtkBox" id="_width_box">
         <property name="tooltip-text" translatable="yes">The width of the eraser pen (relative to the visible canvas area)</property>
         <style>
             <class name="priority1"/>
@@ -114,7 +114,7 @@
       </object>
     </child>
     <child>
-      <object class="GtkBox" id="thinning_box">
+      <object class="GtkBox" id="_thinning_box">
         <property name="tooltip-text" translatable="yes">How much velocity thins the stroke (&gt; 0 makes fast strokes thinner, &lt; 0 makes them broader, 0 makes width independent of velocity)</property>
         <style>
             <class name="priority1"/>
@@ -135,7 +135,7 @@
       </object>
     </child>
     <child>
-      <object class="GtkBox" id="cap_rounding_box">
+      <object class="GtkBox" id="_cap_rounding_box">
         <property name="tooltip-text" translatable="yes">Increase to make caps at the ends of strokes protrude more (0 = no caps, 1 = round caps)</property>
         <style>
             <class name="priority1"/>
@@ -157,7 +157,7 @@
       </object>
     </child>
     <child>
-      <object class="GtkBox" id="tremor_box">
+      <object class="GtkBox" id="_tremor_box">
         <property name="tooltip-text" translatable="yes">Increase to make strokes rugged and trembling</property>
         <style>
             <class name="priority1"/>
@@ -178,7 +178,7 @@
       </object>
     </child>
     <child>
-      <object class="GtkBox" id="mass_box">
+      <object class="GtkBox" id="_mass_box">
         <property name="tooltip-text" translatable="yes">Increase to make the eraser slowed by inertia</property>
         <style>
             <class name="priority1"/>
@@ -199,7 +199,7 @@
       </object>
     </child>
     <child>
-      <object class="GtkSeparator" id="sep2">
+      <object class="GtkSeparator" id="_split_sep">
         <style>
             <class name="priority1"/>
         </style>
