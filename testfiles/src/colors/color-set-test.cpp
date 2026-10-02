@@ -83,6 +83,33 @@ TEST(ColorSetTest, setSingleColor)
     ASSERT_EQ(color.getAverage().toString(), "#0000ffff");
 }
 
+TEST(ColorSetTest, replacementPreservesIncomingCmyk)
+{
+    ColorSet colors;
+    Color const corporate(Space::Type::CMYK, {0.05, 1.0, 0.45, 0.22});
+    colors.set(Color(0x000000ff));
+    colors.set(corporate);
+    ASSERT_EQ(colors.get()->getSpace()->getType(), Space::Type::CMYK);
+    EXPECT_TRUE(colors.get()->isClose(corporate, 1e-8));
+
+    // Selection changes may alternate RGB objects and CMYK swatches.
+    colors.set(Color(0x00ff0080));
+    colors.set(corporate);
+    EXPECT_TRUE(colors.get()->isClose(corporate, 1e-8));
+    EXPECT_FALSE(colors.get()->hasOpacity());
+}
+
+TEST(ColorSetTest, replacementHonorsExplicitConstraints)
+{
+    auto space = Manager::get().find(Space::Type::CMYK);
+    ColorSet colors(space, false);
+    colors.set("item", Color(0xff000080));
+    colors.set("item", Color(0x00ff0040));
+    EXPECT_EQ(colors.get("item")->getSpace(), space);
+    EXPECT_FALSE(colors.get("item")->hasOpacity());
+    EXPECT_TRUE(colors.get("item")->isClose(Color(space, {1, 0, 1, 0}), 1e-8));
+}
+
 TEST(ColorSetTest, setColorsConstrained)
 {
     auto space = Manager::get().find(Space::Type::RGB);

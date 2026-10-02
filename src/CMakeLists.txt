@@ -68,6 +68,7 @@ target_sources(inkscape_base PRIVATE
   snapped-line.cpp
   snapped-point.cpp
   snapper.cpp
+  spot-ink.cpp
   style-internal.cpp
   style-text.cpp
   style.cpp
@@ -159,6 +160,7 @@ target_sources(inkscape_base PRIVATE
   snapped-line.h
   snapped-point.h
   snapper.h
+  spot-ink.h
   streq.h
   strneq.h
   style-enums.h

@@ -5,11 +5,13 @@
 
 #include "swatch-editor.h"
 
+#include <cmath>
 #include <giomm/file.h>
 #include <glib/gi18n.h>
 #include <glibmm/main.h>
 #include <gtkmm/checkbutton.h>
 #include <gtkmm/filterlistmodel.h>
+#include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/object.h>
 #include <gtkmm/signallistitemfactory.h>
@@ -20,6 +22,8 @@
 #include "document-undo.h"
 #include "document.h"
 #include "gradient-chemistry.h"
+#include "spot-ink.h"
+#include "colors/spaces/base.h"
 #include "preferences.h"
 #include "object/sp-defs.h"
 #include "object/sp-stop.h"
@@ -41,6 +45,7 @@ std::vector<Color> extract_palette_colors(const Dialog::PaletteFileData& palette
     for (auto& c : palette.colors) {
         std::visit(VariantVisitor {
             [&](const Color& c) { colors.push_back(c); },
+            [&](const Dialog::PaletteFileData::SpotColor& s) { colors.push_back(s.color); },
             [](const Dialog::PaletteFileData::SpacerItem&) {},
             [](const Dialog::PaletteFileData::GroupStart&) {}
         }, c);
@@ -129,9 +134,24 @@ SwatchEditor::SwatchEditor(Colors::Space::Type space, Glib::ustring prefs_path):
     _clean_btn(get_widget<Gtk::Button>(_builder, "clean-btn")),
     _scroll(get_widget<Gtk::ScrolledWindow>(_builder, "scroll")),
     _gridview(get_widget<Gtk::GridView>(_builder, "gridview")),
-    _separator(get_derived_widget<ResizingSeparator>(_builder, "separator"))
+    _separator(get_derived_widget<ResizingSeparator>(_builder, "separator")),
+    _spot_box(Gtk::Orientation::HORIZONTAL, 6),
+    _spot_toggle(_("Spot ink"))
 {
     set_name("SwatchEditor");
+
+    // PROOF: Illustrator's "Color Type: Spot / Process", below the swatch name.
+    _spot_toggle.set_tooltip_text(_("A spot ink is a named ink that prints on its own plate (Pantone, RAL, "
+                                    "CutContour, white, varnish). Off: an ordinary process colour."));
+    _spot_info.set_halign(Gtk::Align::START);
+    _spot_info.set_ellipsize(Pango::EllipsizeMode::END);
+    _spot_info.add_css_class("dim-label");
+    _spot_box.append(_spot_toggle);
+    _spot_box.append(_spot_info);
+    if (auto grid = dynamic_cast<Gtk::Grid *>(_label.get_parent())) {
+        grid->attach(_spot_box, 1, 2);
+    }
+    _spot_toggle.signal_toggled().connect([this] { toggle_spot(); });
 
     _separator.set_orientation(ResizingSeparator::Orientation::Vertical);
 
@@ -343,11 +363,50 @@ void SwatchEditor::select_vector(SPGradient* vector) {
     // enable/disable buttons
     _del_btn.set_sensitive(sp_can_delete_swatch(vector));
     _label.set_sensitive(vector != nullptr);
+    update_spot_ui(vector);
     // todo
 
     if (vector && vector->getId()) {
         update_selection(vector->getId());
     }
+}
+
+void SwatchEditor::update_spot_ui(SPGradient* swatch) {
+    auto scoped(_update.block());
+    auto const solid = swatch && swatch->isSolid();
+    _spot_box.set_sensitive(solid);
+    auto ink = solid ? Inkscape::SpotInk::read(swatch->getRepr()) : std::nullopt;
+    _spot_toggle.set_active(ink.has_value());
+    if (!ink) {
+        _spot_info.set_text({});
+        return;
+    }
+    auto const space = ink->alternate.getSpace()->getName();
+    auto text = ink->tint < 1.0
+        ? Glib::ustring::compose(_("%1 tint of %2 · defined in %3"),
+                                 std::to_string(static_cast<int>(std::lround(ink->tint * 100))) + "%", ink->name, space)
+        : Glib::ustring::compose(_("defined in %1"), space);
+    _spot_info.set_text(text);
+    _spot_info.set_tooltip_text(Glib::ustring::compose(_("Ink: %1\nDefinition: %2"), ink->name,
+                                                       ink->alternate.toString(false)));
+}
+
+void SwatchEditor::toggle_spot() {
+    if (_update.pending() || !_document) return;
+    auto swatch = get_selected_vector();
+    if (!swatch || !swatch->isSolid()) return;
+
+    if (_spot_toggle.get_active()) {
+        auto name = _label.get_text().raw();
+        if (name.empty()) name = swatch->getId() ? swatch->getId() : "Spot";
+        if (Inkscape::SpotInk::make_spot(_document, swatch->getRepr(), name)) {
+            DocumentUndo::done(_document, RC_("Undo", "Make swatch a spot ink"), "");
+        }
+    } else {
+        Inkscape::SpotInk::make_process(swatch->getRepr());
+        DocumentUndo::done(_document, RC_("Undo", "Make swatch a process colour"), "");
+    }
+    update_spot_ui(swatch);
 }
 
 void SwatchEditor::update_selection(const std::string& id) {

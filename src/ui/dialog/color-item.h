@@ -39,8 +39,9 @@ public:
     /// No fill option
     explicit ColorItem(DialogBase *);
 
-    /// Create a static color
-    ColorItem(Colors::Color, DialogBase *);
+    /// Create a static color. A spot color (PROOF) is applied as a linked spot-ink swatch,
+    /// at spot_tint (below 1 for library tint swatches).
+    ColorItem(Colors::Color, DialogBase *, bool spot = false, double spot_tint = 1.0);
 
     /**
      * Create a dynamically-updating color from a gradient, to which it remains linked.
@@ -59,6 +60,8 @@ public:
     bool is_filler() const;
     // Is paint "None"?
     bool is_paint_none() const;
+    // PROOF: is this a spot ink (palette spot entry or spot-ink document swatch)?
+    bool is_spot() const;
 
     /// Update the fill indicator, showing this widget is the fill of the current selection.
     void set_fill(bool);
@@ -127,6 +130,10 @@ private:
 
     // The dialog this widget belongs to. Used for determining what desktop to take action on.
     DialogBase *dialog = nullptr;
+
+    // PROOF: palette entry is a named spot ink, applied at this tint.
+    bool spot = false;
+    double spot_tint = 1.0;
 
     // Whether this color is in use as the fill or stroke of the current selection.
     bool is_fill = false;

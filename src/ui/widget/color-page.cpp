@@ -62,6 +62,9 @@ ColorPage::ColorPage(std::shared_ptr<Space::AnySpace> space, std::shared_ptr<Col
 
     // Control signals when widget isn't mapped (not visible to the user)
     signal_map().connect([this]() {
+        // Showing a page only refreshes its controls. In particular, the first
+        // map must not write a converted RGB/HSL preview over CMYK ink values.
+        _specific_changed_connection.block();
         _specific_colors->setAll(*_selected_colors);
         _specific_changed_connection.unblock();
         _selected_changed_connection.unblock();

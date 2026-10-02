@@ -248,13 +248,13 @@ file_save(Gtk::Window &parentWindow,
 /**
  * Returns an output extension suitable for saving (i.e. not a raster extension).
  */
-Inkscape::Extension::Output *get_output_extension_for_save(std::string filename)
+Inkscape::Extension::Output *get_output_extension_for_save(std::string filename, bool allow_save_copy = false)
 {
     Inkscape::Extension::DB::OutputList extension_list;
     Inkscape::Extension::db.get_output_list(extension_list);
 
     for (auto omod : extension_list) {
-        if (omod->can_save_filename(filename.c_str())) {
+        if ((allow_save_copy || !omod->savecopy_only()) && omod->can_save_filename(filename.c_str())) {
             return omod;
         }
     }
@@ -327,7 +327,7 @@ sp_file_save_dialog(Gtk::Window &parentWindow, SPDocument *doc, Inkscape::Extens
     std::string basename = Glib::path_get_basename(save_loc);
     std::string dirname = Glib::path_get_dirname(save_loc);
     auto file = Inkscape::choose_file_save( dialog_title, &parentWindow,
-                                            Inkscape::UI::Dialog::create_export_filters(true),
+                                            Inkscape::UI::Dialog::create_export_filters(true, is_copy),
                                             basename,
                                             dirname);
 
@@ -345,7 +345,7 @@ sp_file_save_dialog(Gtk::Window &parentWindow, SPDocument *doc, Inkscape::Extens
     }
 
     // Find output module from file extension.
-    extension = get_output_extension_for_save(file->get_path());
+    extension = get_output_extension_for_save(file->get_path(), is_copy);
 
     if (!extension) {
         auto display_name = file->get_parse_name();

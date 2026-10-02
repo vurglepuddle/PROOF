@@ -29,6 +29,7 @@
 
 #include <csignal>
 #include <cerrno>
+#include <cmath>
 #include <2geom/pathvector.h>
 
 #include <glib.h>
@@ -955,8 +956,18 @@ void CairoRenderContext::transform(Geom::Affine const &transform)
 {
     g_assert(_is_valid);
 
-    // Cairo internally does not like object transforms that can not be inverted
-    if (std::abs(transform.det()) < 1e-6) {
+    // A small determinant is not necessarily singular. Imported PDF images
+    // commonly use a unit square: a 3456x2160 image needs a perfectly valid
+    // 1/3456 * 1/2160 scale here. Dropping it magnifies the image millions of
+    // times and can leave the exported page apparently blank.
+    for (unsigned i = 0; i < 6; ++i) {
+        if (!std::isfinite(transform[i])) {
+            return;
+        }
+    }
+    cairo_matrix_t inverse;
+    ink_matrix_to_cairo(inverse, transform);
+    if (cairo_matrix_invert(&inverse) != CAIRO_STATUS_SUCCESS) {
         return;
     }
 

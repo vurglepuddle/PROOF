@@ -32,6 +32,10 @@
 #include "document-undo.h"
 #include "gradient-chemistry.h"
 
+#include <cmath>
+
+#include "spot-ink.h"
+
 #include <numeric>
 
 #include "fill-or-stroke.h"
@@ -2053,9 +2057,34 @@ SPGradient* sp_find_replacement_swatch(SPDocument* document, SPGradient* swatch)
 void sp_change_swatch_color(SPGradient* swatch, const Colors::Color& color) {
     if (!swatch) return;
 
+    // PROOF: a spot swatch's colour is its ink's definition. Redefine the ink, so its other tint
+    // swatches follow, keeping the definition's colour space (a Lab Pantone stays Lab when edited
+    // in an RGB picker). Editing a tint swatch works back to the full-strength definition.
+    if (auto ink = Inkscape::SpotInk::read(swatch->getRepr())) {
+        auto edited = color.converted(ink->alternate.getSpace()).value_or(color);
+        Inkscape::SpotInk::redefine(swatch->document, *ink, Inkscape::SpotInk::alternate_for(edited, ink->tint));
+        return;
+    }
+
     if (swatch->hasStops()) {
         swatch->getFirstStop()->setColor(color);
     }
+}
+
+void sp_rename_swatch(SPGradient* swatch, Glib::ustring const& label) {
+    if (!swatch || label.empty()) return;
+
+    // PROOF: renaming a spot swatch renames its ink; a tint swatch's "NN%" suffix is not part of it.
+    if (auto ink = Inkscape::SpotInk::read(swatch->getRepr())) {
+        std::string name = label.raw();
+        auto const suffix = " " + std::to_string(static_cast<int>(std::lround(ink->tint * 100))) + "%";
+        if (ink->tint < 1.0 && name.size() > suffix.size() && name.ends_with(suffix)) {
+            name.resize(name.size() - suffix.size());
+        }
+        Inkscape::SpotInk::rename(swatch->document, *ink, name);
+        return;
+    }
+    swatch->setLabel(label.c_str());
 }
 
 void sp_create_document_swatches(SPDocument* document, const std::vector<Colors::Color>& colors) {

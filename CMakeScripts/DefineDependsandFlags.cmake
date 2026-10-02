@@ -397,6 +397,10 @@ list(APPEND INKSCAPE_LIBS LibXml2::LibXml2)
 find_package(ZLIB REQUIRED)
 list(APPEND INKSCAPE_LIBS ZLIB::ZLIB)
 
+# PROOF: Illustrator 2020+ stores its native records as Zstandard (AI swatch libraries, AI import).
+pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+list(APPEND INKSCAPE_LIBS PkgConfig::ZSTD)
+
 if(WITH_GNU_READLINE)
   pkg_check_modules(Readline IMPORTED_TARGET readline)
   if(Readline_FOUND)

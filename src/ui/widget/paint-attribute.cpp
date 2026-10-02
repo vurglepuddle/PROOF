@@ -227,7 +227,7 @@ void swatch_operation(SPItem* item, SPGradient* vector, SPDesktop* desktop, bool
         DocumentUndo::done(item->document, RC_("Undo", "Delete swatch"), "dialog-fill-and-stroke", tag);
         break;
     case EditOperation::Rename:
-        vector->setLabel(label.c_str());
+        sp_rename_swatch(vector, label);
         DocumentUndo::maybeDone(item->document, "swatch-rename", RC_("Undo", "Rename swatch"), "dialog-fill-and-stroke", tag);
         break;
     default:

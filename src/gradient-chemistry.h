@@ -145,6 +145,9 @@ SPGradient* sp_find_replacement_swatch(SPDocument* document, SPGradient* swatch)
 // Change swatch's color. Possibly impacting many objects fill/stroke.
 void sp_change_swatch_color(SPGradient* swatch, const Color& color);
 
+// PROOF: rename a swatch; for a spot swatch this renames its ink (and every tint swatch of it).
+void sp_rename_swatch(SPGradient* swatch, Glib::ustring const& label);
+
 // Create swatches in the document for each given color
 void sp_create_document_swatches(SPDocument* document, const std::vector<Color>& colors);
 

@@ -52,7 +52,15 @@ struct PaletteFileData
         Glib::ustring name;
     };
 
-    using ColorItem = std::variant<Colors::Color, SpacerItem, GroupStart>;
+    // PROOF: a named spot ink (ASE "spot" entry, ACB spot book, AI spot swatch).
+    // The colour holds the ink name and its full-strength alternate appearance;
+    // tint is below 1 for tint swatches (e.g. an AI library's "PANTONE 185 C 50%").
+    struct SpotColor {
+        Colors::Color color;
+        double tint = 1.0;
+    };
+
+    using ColorItem = std::variant<Colors::Color, SpacerItem, GroupStart, SpotColor>;
 
     /// The list of colors in the palette.
     std::vector<ColorItem> colors;

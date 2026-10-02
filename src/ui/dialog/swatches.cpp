@@ -485,6 +485,10 @@ void SwatchesPanel::update_fillstroke_indicators()
                 auto rgb = *c.converted(Colors::Space::Type::RGB);
                 palette.colors.push_back({rgb[0], rgb[1], rgb[2]});
             },
+            [&](const PaletteFileData::SpotColor& s) {
+                auto rgb = *s.color.converted(Colors::Space::Type::RGB);
+                palette.colors.push_back({rgb[0], rgb[1], rgb[2]});
+            },
             [](const PaletteFileData::SpacerItem&) {},
             [](const PaletteFileData::GroupStart&) {}
         }, c);
@@ -568,6 +572,12 @@ void SwatchesPanel::rebuild()
                     auto w = std::make_unique<ColorItem>(c, dialog);
                     w->set_pinned_pref(_prefs_path);
                     widgetmap.emplace(c, w.get());
+                    return w;
+                },
+                [=, this](const PaletteFileData::SpotColor& s) {
+                    auto w = std::make_unique<ColorItem>(s.color, dialog, true, s.tint);
+                    w->set_pinned_pref(_prefs_path);
+                    widgetmap.emplace(s.color, w.get());
                     return w;
                 },
             }, c);

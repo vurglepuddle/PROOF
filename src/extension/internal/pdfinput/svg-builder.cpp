@@ -20,6 +20,9 @@
 # include "config.h"  // only include where actually required!
 #endif
 
+#include <algorithm>
+#include <cmath>
+#include <optional>
 #include <string>
 
 #include <Function.h>
@@ -45,6 +48,8 @@
 #include "colors/document-cms.h"
 #include "colors/manager.h"
 #include "colors/spaces/cms.h"
+#include "colors/spaces/lab.h"
+#include "spot-ink.h"
 #include "display/cairo-utils.h"
 #include "display/nr-filter-utils.h"
 #include "object/color-profile.h"
@@ -417,14 +422,16 @@ void SvgBuilder::setGroupBy(const std::string &group_by) {
 }
 
 // for poppler < 26.06.0
-std::string SvgBuilder::convertGfxColor(const GfxColor *color, GfxColorSpace *space, Colors::RenderingIntent intent) {
+std::string SvgBuilder::convertGfxColor(const GfxColor *color, GfxColorSpace *space, Colors::RenderingIntent intent,
+                                        bool as_paint) {
     if (!color) {
         return "";
     }
-    return convertGfxColor(*color, space, intent);
+    return convertGfxColor(*color, space, intent, as_paint);
 }
 
-std::string SvgBuilder::convertGfxColor(const GfxColor &color, GfxColorSpace *space, Colors::RenderingIntent intent)
+std::string SvgBuilder::convertGfxColor(const GfxColor &color, GfxColorSpace *space, Colors::RenderingIntent intent,
+                                        bool as_paint)
 {
     using Colors::Space::Type;
     auto icc_space = _icc_profile ? _icc_profile->getColorSpace() : cmsSigXYZData;
@@ -461,8 +468,8 @@ std::string SvgBuilder::convertGfxColor(const GfxColor &color, GfxColorSpace *sp
                 g_warning("Lab color unsupported, falling back to sRGB");
                 break;
             case csSeparation:
-                g_warning("Separation color unsupported, falling back to sRGB");
-                break;
+                // PROOF: keep the named ink instead of flattening it to sRGB.
+                return _convertSeparation(color, static_cast<GfxSeparationColorSpace *>(space), as_paint);
             case csPattern:
                 g_warning("Pattern color unsupported, falling back to sRGB");
                 break;
@@ -494,6 +501,97 @@ std::string SvgBuilder::convertGfxColor(const GfxColor &color, GfxColorSpace *sp
     space->_POPPLER_GET_RGB(color, &rgb);
     return Colors::Color(cm.find(Colors::Space::Type::RGB),
          {colToDbl(rgb.r), colToDbl(rgb.g), colToDbl(rgb.b)}).toString();
+}
+
+/**
+ * PROOF: convert a Separation (spot ink) colour.
+ *
+ * The ink keeps its name, its full-strength alternate in the space the PDF used
+ * (Lab for Illustrator's Pantone inks, CMYK for most others) and its tint. Fill and
+ * stroke values become a link to a spot swatch; other uses get the tinted alternate.
+ * Unusual alternate spaces fall back to CMYK rather than sRGB.
+ */
+std::string SvgBuilder::_convertSeparation(const GfxColor &color, GfxSeparationColorSpace *space, bool as_paint)
+{
+    using Colors::Space::Type;
+    if (space->isNonMarking()) {
+        return as_paint ? "none" : "#ffffff"; // the /None ink paints nothing
+    }
+
+    // GfxColor is 16-bit fixed point: 30% arrives as 0.29998779. Keep four decimals.
+    auto const tint = std::round(std::clamp(colToDbl(color.c[0]), 0.0, 1.0) * 1e4) / 1e4;
+    auto *alt = space->getAlt();
+    double full[gfxColorMaxComps] = {};
+    double const one = 1.0;
+    space->getFunc()->transform(&one, full);
+
+    auto mode = alt->getMode();
+#if POPPLER_CHECK_VERSION(0, 90, 0)
+    // Illustrator wraps every alternate in an ICCBased space: Lab profiles for Pantone books,
+    // the document RGB profile for inks defined in RGB (e.g. RAL libraries). The tint function
+    // still yields the library's own values, so keep them in the profile's data space rather
+    // than converting to CMYK. RGB values are kept as sRGB numbers.
+    if (mode == csICCBased) {
+        if (auto icc = dynamic_cast<GfxICCBasedColorSpace *>(alt); icc && icc->getProfile()) {
+            switch (cmsGetColorSpace(icc->getProfile().get())) {
+                case cmsSigLabData:
+                    mode = csLab;
+                    break;
+                case cmsSigCmykData:
+                    mode = csDeviceCMYK;
+                    break;
+                case cmsSigRgbData:
+                    mode = csDeviceRGB;
+                    break;
+                case cmsSigGrayData:
+                    mode = csDeviceGray;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+#endif
+
+    std::optional<Colors::Color> alternate;
+    switch (mode) {
+        case csDeviceCMYK:
+            alternate = Colors::Color(Type::CMYK, {full[0], full[1], full[2], full[3]});
+            break;
+        case csLab: {
+            // PDF gives actual L*a*b* values; Inkscape stores L/100 and a, b scaled from [-128, 127].
+            using Lab = Colors::Space::Lab;
+            auto const span = Lab::MAX_SCALE - Lab::MIN_SCALE;
+            alternate = Colors::Color(Type::LAB, {full[0] / Lab::LUMA_SCALE, (full[1] - Lab::MIN_SCALE) / span,
+                                                  (full[2] - Lab::MIN_SCALE) / span});
+            break;
+        }
+        case csDeviceRGB:
+        case csCalRGB:
+            alternate = Colors::Color(Type::RGB, {full[0], full[1], full[2]});
+            break;
+        case csDeviceGray:
+        case csCalGray:
+            alternate = Colors::Color(Type::Gray, {full[0]});
+            break;
+        default:
+            break;
+    }
+    if (!alternate) {
+        // CMYK floor for ICC-based and other alternates.
+        GfxColor full_color;
+        full_color.c[0] = dblToCol(1.0);
+        GfxCMYK cmyk;
+        space->_POPPLER_GET_CMYK(full_color, &cmyk);
+        alternate = Colors::Color(Type::CMYK, {colToDbl(cmyk.c), colToDbl(cmyk.m), colToDbl(cmyk.y), colToDbl(cmyk.k)});
+    }
+
+    auto const name = space->getName() ? space->getName()->toStr() : std::string("Unnamed ink");
+    SpotInk::Ink ink{name, *alternate, tint};
+    if (!as_paint) {
+        return SpotInk::display_color(ink.alternate, tint).toString();
+    }
+    return "url(#" + SpotInk::ensure(_xml_doc, _doc->getDefs()->getRepr(), _doc, ink) + ")";
 }
 
 static void svgSetTransform(Inkscape::XML::Node *node, Geom::Affine matrix) {
@@ -549,7 +647,7 @@ void SvgBuilder::_setStrokeStyle(SPCSSAttr *css, GfxState *state) {
         }
     } else {
         sp_repr_css_set_property(css, "stroke", convertGfxColor(state->getStrokeColor(), space,
-                                                                _getIntent(state)).c_str());
+                                                                _getIntent(state), true).c_str());
     }
 
     // Opacity
@@ -641,7 +739,7 @@ void SvgBuilder::_setFillStyle(SPCSSAttr *css, GfxState *state, bool even_odd) {
             g_free(urltext);
         }
     } else {
-        sp_repr_css_set_property(css, "fill", convertGfxColor(state->getFillColor(), space, _getIntent(state)).c_str());
+        sp_repr_css_set_property(css, "fill", convertGfxColor(state->getFillColor(), space, _getIntent(state), true).c_str());
     }
 
     // Opacity
