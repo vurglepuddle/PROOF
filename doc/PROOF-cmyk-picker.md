@@ -1,5 +1,9 @@
 # CMYK picker investigation - 2026-10-03
 
+Historical checkpoint: the assignment and profiled-picker limitations described
+below are addressed by the subsequent [document color management](PROOF-document-colors.md)
+work. The arithmetic preview remains available for explicitly unmanaged CMYK.
+
 The reported 5/100/45/22 -> 0/100/42/26 drift is reproduced and fixed. It does
 not require FOGRA or any linked profile.
 

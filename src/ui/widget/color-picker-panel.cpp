@@ -24,6 +24,7 @@
 #include "colors/color.h"
 #include "colors/manager.h"
 #include "colors/spaces/base.h"
+#include "colors/spaces/cms.h"
 #include "ui/tools/dropper-tool.h"
 #include "ui/util.h"
 
@@ -63,7 +64,8 @@ public:
     }
 
     void create_color_page(Space::Type type, PlateType plate_type) {
-        auto space = Manager::get().find(type);
+        auto space = _profile_space && _profile_space->getComponentType() == type
+            ? _profile_space : Manager::get().find(type);
         _page = std::make_unique<ColorPage>(space, _color_set);
         _page->show_expander(false);
         _page->set_spinner_size_pattern(spinner_pattern);
@@ -101,6 +103,7 @@ public:
 
     void set_desktop(SPDesktop* dekstop) override;
     void set_color(const Color& color) override;
+    std::shared_ptr<Space::AnySpace> _profile_space;
     void set_picker_type(Space::Type type) override;
     void set_plate_type(PlateType plate) override;
     PlateType get_plate_type() const override;
@@ -234,6 +237,17 @@ void ColorPickerPanelImpl::set_desktop(SPDesktop* dekstop) {
 }
 
 void ColorPickerPanelImpl::set_color(const Color& color) {
+    auto incoming = color.getSpace();
+    auto profile = incoming->getType() == Space::Type::CMS && incoming->hasValidCmsProfile() &&
+                   (incoming->getComponentType() == Space::Type::CMYK || incoming->getComponentType() == Space::Type::RGB)
+        ? incoming : nullptr;
+    if (profile != _profile_space) {
+        _profile_space = profile;
+        auto type = profile ? profile->getComponentType() : _space_type;
+        switch_page(type, _plate_type);
+        _spaces.set_active_by_id(int(type));
+        _spaces.set_tooltip_text(profile ? profile->getProfile()->getName() : _("Select color picker type"));
+    }
     _color_set->set(color);
 }
 

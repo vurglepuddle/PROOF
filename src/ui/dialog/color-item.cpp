@@ -20,6 +20,7 @@
 #include <gtkmm/snapshot.h>
 
 #include "colors/spaces/base.h"
+#include "colors/document-colors.h"
 #include "desktop-style.h"
 #include "document.h"
 #include "document-undo.h"
@@ -202,7 +203,10 @@ void ColorItem::draw_color(Glib::RefPtr<Gtk::Snapshot> const &snapshot, int w, i
     },
     [&] (Colors::Color const &data) {
         // PROOF: a tint swatch of a spot ink shows its tinted colour.
-        auto const col = to_gtk(spot && spot_tint < 1.0 ? SpotInk::display_color(data, spot_tint) : data);
+        auto preview = spot && spot_tint < 1.0 ? SpotInk::display_color(data, spot_tint) : data;
+        if (!spot && dialog && dialog->getDesktop())
+            preview = Colors::DocumentColors::interpret(dialog->getDesktop()->getDocument(), preview);
+        auto const col = to_gtk(preview);
         // there's no way to query background color to check if a color item stands out,
         // so we apply faint outline to let users make out color shapes blending with a background
         auto const fg = ::get_color(*this);

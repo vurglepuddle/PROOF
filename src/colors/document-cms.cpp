@@ -8,6 +8,7 @@
  */
 
 #include "document-cms.h"
+#include "document-colors.h"
 
 #include "cms/profile.h"
 #include "cms/system.h"
@@ -108,9 +109,13 @@ bool ColorProfileLink::updateSpace()
 DocumentCMS::DocumentCMS(SPDocument *document)
     : _document(document)
 {
-    if (document)
+    if (document) {
         _resource_connection =
             _document->connectResourcesChanged("iccprofile", sigc::mem_fun(*this, &DocumentCMS::refreshResources));
+        // During redo a resource can be constructed before its id is replayed.
+        _reconstruction_connection =
+            _document->connectReconstructionFinish(sigc::mem_fun(*this, &DocumentCMS::refreshResources));
+    }
 }
 
 DocumentCMS::~DocumentCMS()
@@ -138,8 +143,10 @@ std::optional<Color> DocumentCMS::parse(std::string const &value) const
     std::vector<double> values;
     std::vector<double> fallback;
     if (Parsers::get().parse(value, space_type, cms_name, values, fallback)) {
-        if (cms_name.empty())
-            return Color::ifValid(space_type, std::move(values));
+        if (cms_name.empty()) {
+            auto color = Color::ifValid(space_type, std::move(values));
+            return color ? std::optional(DocumentColors::interpret(_document, *color)) : std::nullopt;
+        }
 
         // Find a space or construct an anonymous one so we don't lose data.
         if (!_spaces.contains(cms_name)) {
@@ -195,6 +202,12 @@ void DocumentCMS::refreshResources()
 
     // 3. Tell the rest of inkscape if something is added or removed
     if (changed) {
+        // Undo/redo can restore a paint before its profile. Once the resource
+        // exists, re-read document paints so no unresolved fallback survives.
+        if (auto root = _document->getRoot(); root && root->getRepr()->attribute("proof:color-profile") &&
+            _document->getObjectByRepr(root->getRepr()) == root) {
+            DocumentColors::refresh(_document);
+        }
         _changed_signal.emit();
     }
 }
@@ -217,7 +230,9 @@ std::shared_ptr<Space::CMS> DocumentCMS::addProfile(std::shared_ptr<CMS::Profile
     auto space = std::make_shared<Space::CMS>(profile, name);
 
     name = space->getName();
-    if (_spaces.contains(name))
+    // A color can precede its embedded profile in the SVG tree. Replace its
+    // unresolved placeholder when the profile resource becomes available.
+    if (_spaces.contains(name) && _spaces.at(name)->hasValidCmsProfile())
         throw ColorError("Color profile with that name already exists.");
 
     space->setIntent(intent != RenderingIntent::UNKNOWN ? intent : RenderingIntent::PERCEPTUAL);

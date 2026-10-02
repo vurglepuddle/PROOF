@@ -36,6 +36,8 @@
  */
 
 #include "inkscape-application.h"
+#include "colors/document-colors.h"
+#include "document-undo.h"
 
 #include <iostream>
 #include <fstream>
@@ -148,6 +150,15 @@ SPDocument *InkscapeApplication::document_new(std::string const &template_filena
     }
 
     auto doc = document_add(std::move(doc_uniq));
+
+    // Working defaults apply to new documents, never silently to opened files.
+    if (!doc->getReprRoot()->attribute("proof:color-mode")) {
+        Inkscape::DocumentUndo::ScopedInsensitive insensitive(doc);
+        auto type = Inkscape::Colors::Space::Type::RGB;
+        if (auto profile = Inkscape::Colors::DocumentColors::workingProfile(type)) {
+            Inkscape::Colors::DocumentColors::assign(doc, type, profile, Inkscape::Colors::DocumentColors::workingIntent());
+        }
+    }
 
     // Set viewBox if it doesn't exist.
     if (!doc->getRoot()->viewBox_set) {

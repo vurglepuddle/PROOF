@@ -59,6 +59,7 @@ namespace Widget {
 class EntityEntry;
 class NotebookPage;
 class PageProperties;
+class DocumentColorSettings;
 } // namespace Widget
 
 namespace Dialog {
@@ -144,6 +145,7 @@ private:
     Gtk::Button                       _delete_guides_btn;
     //---------------------------------------------------------------
     UI::Widget::PageProperties* _page;
+    UI::Widget::DocumentColorSettings* _document_colors = nullptr;
     //---------------------------------------------------------------
     Gtk::Button         _unlink_btn;
     class AvailableProfilesColumns : public Gtk::TreeModel::ColumnRecord
