@@ -40,6 +40,7 @@ static const std::vector<std::vector<Glib::ustring>> raw_data_dialogs = {
     {"win.dialog-open('ExtensionsGallery')",  N_("Open Extension Gallery"),    SECTION,  N_("Show and run available extensions") },
     {"win.dialog-open('Export')",             N_("Open Export"),               SECTION,  N_("Export this document or a selection as a PNG image")                                     },
     {"win.dialog-open('FillStroke')",         N_("Open Fill and Stroke"),      SECTION,  N_("Edit objects' colors, gradients, arrowheads, and other fill and stroke properties...")   },
+    {"win.dialog-open('Stroke')",             N_("Open Stroke"),               SECTION,  N_("Edit stroke width, caps, joins, dashes and markers") },
     {"win.dialog-open('FilterEffects')",      N_("Open Filter Effects"),       SECTION,  N_("Manage, edit, and apply SVG filters")                                                    },
     {"win.dialog-open('FilterGallery')",      N_("Open Filter Gallery"),       SECTION,  N_("Show and apply available filters") },
     {"win.dialog-open('Find')",               N_("Open Find"),                 SECTION,  N_("Find objects in document")                                                               },
@@ -69,6 +70,7 @@ static const std::vector<std::vector<Glib::ustring>> raw_data_dialogs = {
 #endif
 
     {"win.dialog-toggle",                     N_("Toggle all dialogs"),        SECTION,  N_("Show or hide all dialogs")                                                               },
+    {"win.workspace-reset",                   N_("Reset Workspace"),           SECTION,  N_("Restore Properties and Stroke above Layers for this document window") },
     // clang-format on
 };
 
@@ -146,6 +148,9 @@ void add_actions_dialogs(InkscapeWindow *win)
     // clang-format off
     win->add_action_with_parameter( "dialog-open",  String, sigc::bind(sigc::ptr_fun(&dialog_open),   win));
     win->add_action(                "dialog-toggle",        sigc::bind(sigc::ptr_fun(&dialog_toggle), win));
+    win->add_action("workspace-reset", [win] {
+        if (auto desktop = win->get_desktop()) desktop->getContainer()->reset_workspace();
+    });
     // clang-format on
 
     // macOS automatically uses app.preferences in the application menu

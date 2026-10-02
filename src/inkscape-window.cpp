@@ -18,6 +18,8 @@
 #include <iostream>
 #include <gdkmm/surface.h>
 #include <gtkmm/box.h>
+#include <gtkmm/headerbar.h>
+#include <gtkmm/label.h>
 #include <gtkmm/popovermenubar.h>
 #include <gtkmm/shortcutcontroller.h>
 #include <sigc++/functors/mem_fun.h>
@@ -118,6 +120,31 @@ InkscapeWindow::InkscapeWindow(SPDesktop *desktop)
     }
 
     // =============== Build interface ===============
+
+#ifdef _WIN32
+    // One title/menu row on Windows. HeaderBar retains GTK's window controls,
+    // drag region and double-click maximize behaviour; menus keep the same
+    // action model and keyboard navigation as the application menubar.
+    set_show_menubar(false);
+    auto header = Gtk::make_managed<Gtk::HeaderBar>();
+    header->add_css_class("workspace-header");
+    header->set_decoration_layout(":minimize,maximize,close");
+    auto menu = Gtk::make_managed<Gtk::PopoverMenuBar>(_app->gtk_app()->get_menubar());
+    header->pack_start(*menu);
+    auto title = Gtk::make_managed<Gtk::Label>();
+    title->set_ellipsize(Pango::EllipsizeMode::END);
+    title->set_max_width_chars(38);
+    title->add_css_class("workspace-window-title");
+    header->set_title_widget(*title);
+    property_title().signal_changed().connect([this, title] {
+        auto full = get_title();
+        auto end = full.find(" - Inkscape");
+        title->set_text(end == Glib::ustring::npos ? full : full.substr(0, end));
+        title->set_tooltip_text(full);
+    });
+    set_titlebar(*header);
+    show_icons_and_tooltips(*menu);
+#endif
 
     // Desktop widget (=> MultiPaned) (After actions added as this initializes shortcuts via CommandDialog.)
     _desktop_widget = Gtk::make_managed<SPDesktopWidget>(this);

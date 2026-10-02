@@ -138,7 +138,10 @@ if(WITH_CAPYPDF)
     )
 endif()
 
-add_library(cpp_test_static_library SHARED inkscape-test.cpp doc-per-case-test.cpp compare-paths-test.h lpespaths-test.h store-integrity-test.h test-with-svg-object-pairs.cpp)
+# Match inkscape_base's linkage. A shared support DLL over a static base can
+# duplicate base globals across DLL/executable boundaries on MinGW, leading
+# to double destruction of colour registries after the tests finish.
+add_library(cpp_test_static_library inkscape-test.cpp doc-per-case-test.cpp compare-paths-test.h lpespaths-test.h store-integrity-test.h test-with-svg-object-pairs.cpp)
 target_link_libraries(cpp_test_static_library PUBLIC ${GTEST_LIBRARIES} inkscape_base)
 
 add_custom_target(tests)

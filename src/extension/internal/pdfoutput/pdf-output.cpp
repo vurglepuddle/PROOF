@@ -104,7 +104,7 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
         auto pdf_page = PdfBuilder::PageContext(pdf, svg_page);
 
         if (!svg_page->isBarePage()) {
-            pdf_page.set_pagebox(CAPY_BOX_BLEED, svg_page->getDocumentRect());
+            pdf_page.set_pagebox(CAPY_BOX_BLEED, svg_page->getDocumentBleed());
             pdf_page.set_pagebox(CAPY_BOX_TRIM, svg_page->getDocumentRect());
             pdf_page.set_pagebox(CAPY_BOX_ART, svg_page->getDocumentMargin());
         }

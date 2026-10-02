@@ -43,6 +43,9 @@
 
 #include "css-chemistry.h"
 #include "desktop.h"
+#include "document.h"
+#include "page-manager.h"
+#include "util/expression-evaluator.h"
 #include "document-undo.h"
 #include "dialog-container.h"
 #include "filter-chemistry.h"
@@ -190,6 +193,7 @@ ObjectAttributes::ObjectAttributes()
     _main_panel(get_widget<Gtk::Box>(_builder, "main-panel"))
 {
     auto& main = get_widget<Gtk::Box>(_builder, "main-widget");
+    add_css_class("workspace-properties");
     append(main);
 
     // install observer to catch sodipodi:insensitive attribute change, not reported by selection modified
@@ -238,6 +242,7 @@ void ObjectAttributes::widget_setup() {
 }
 
 void ObjectAttributes::desktopReplaced() {
+    _cursor_move.disconnect();
     if (_current_panel) {
         _current_panel->set_desktop(getDesktop());
     }
@@ -258,10 +263,17 @@ void ObjectAttributes::cursor_moved(Tools::TextTool* tool) {
 
 void ObjectAttributes::documentReplaced() {
     auto doc = getDocument();
+    _document_modified.disconnect();
+    if (doc) {
+        _document_modified = doc->connectModified([this](guint) {
+            if (getDesktop() && getDesktop()->getSelection()->isEmpty()) widget_setup();
+        });
+    }
     for (auto& kv : _panels) {
         if (kv.second) kv.second->set_document(doc);
     }
     if (_multi_obj_panel) _multi_obj_panel->set_document(doc);
+    if (_empty_panel) _empty_panel->set_document(doc);
     //todo: watch doc modified to update locked state of current obj
 }
 
@@ -378,13 +390,14 @@ details::AttributesPanel::AttributesPanel()
 }
 
 void details::AttributesPanel::add_fill_and_stroke(Parts parts) {
+    add_header(_("Appearance"));
     _paint.reset(new Widget::PaintAttribute(parts, TAG));
     _paint->insert_widgets(_grid);
     _show_fill_stroke = true;
 }
 
 void details::AttributesPanel::transform() {
-    if (!_document || _update.pending()) return;
+    if (!_document || !_desktop || _update.pending()) return;
 
     auto scoped(_update.block());
     // todo: expose the units?
@@ -416,7 +429,18 @@ void details::AttributesPanel::update_label(SPObject* object, Inkscape::Selectio
 }
 
 void details::AttributesPanel::add_size_properties() {
+    add_header(_("Transform"));
     _show_size_location = true;
+    for (auto field : {&_x, &_y, &_width, &_height}) {
+        field->set_evaluator_function([this](Glib::ustring const &text) {
+            auto unit = _document ? _document->getDisplayUnit() : nullptr;
+            auto result = Util::ExpressionEvaluator(text.c_str(), unit).evaluate();
+            if (!std::isfinite(result.value) || (unit && result.dimension != (unit->isAbsolute() ? 1 : 0))) {
+                throw std::invalid_argument("Input dimensions do not match document units");
+            }
+            return result.value;
+        });
+    }
 
     _round_loc.signal_clicked().connect([this]{
         auto [changed, x, y] = round_values(_x, _y);
@@ -886,11 +910,12 @@ bool details::AttributesPanel::can_update() const {
 }
 
 void details::AttributesPanel::update_size_location() {
-    if (!_show_size_location || !_document) return;
+    if (!_show_size_location || !_document || !_desktop) return;
 
     auto scoped(_update.block());
 
     auto use_visual_box = Preferences::get()->getInt("/tools/bounding_box") == 0;
+    for (auto field : {&_x, &_y, &_width, &_height}) field->set_suffix(_document->getDisplayUnit()->abbr);
     auto rect = sp_selection_get_xywh(_desktop, _document->getDisplayUnit(), use_visual_box);
     _x.set_value(rect.min().x());
     _y.set_value(rect.min().y());
@@ -1133,7 +1158,7 @@ public:
         add_filters();
         // no LPEs work on image currently, so no path effect section here
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
     ~ImagePanel() override = default;
 
@@ -1300,7 +1325,7 @@ public:
             _ry.set_value(0);
         });
         _corners.property_selected().signal_changed().connect([this]{
-            if (!_rect || !_desktop) return;
+            if (_update.pending() || !_rect || !_desktop) return;
 
             auto selected_index = _corners.get_selected();
             if (selected_index == WITHOUT_LPE) {
@@ -1322,13 +1347,13 @@ public:
         add_object_label();
         add_size_properties();
         _grid.add_gap();
-        add_fill_and_stroke();
-        add_header(_("Rectangle"));
+        add_header(_("Geometry"));
         reparent_properties(get_widget<Gtk::Grid>(builder, "rect-main"), _grid, true, false);
+        add_fill_and_stroke();
         add_filters();
         add_lpes();
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
 
     ~RectPanel() override = default;
@@ -1342,8 +1367,11 @@ public:
         if (!_rect) return;
 
         auto scoped(_update.block());
-        _rx.set_value(_rect->getVisibleRx());
-        _ry.set_value(_rect->getVisibleRy());
+        auto unit = _tracker->getActiveUnit();
+        _rx.set_value(Util::Quantity::convert(_rect->getVisibleRx(), "px", unit));
+        _ry.set_value(Util::Quantity::convert(_rect->getVisibleRy(), "px", unit));
+        _rx.set_suffix(unit->abbr);
+        _ry.set_suffix(unit->abbr);
         auto lpe = find_lpeffect(_rect, LivePathEffect::FILLET_CHAMFER);
         _sharp.set_sensitive(_rect->getVisibleRx() > 0 || _rect->getVisibleRy() > 0 || lpe);
         _corners.set_selected(lpe ? WITH_LPE : WITHOUT_LPE);
@@ -1466,13 +1494,13 @@ public:
         add_object_label();
         add_size_properties();
         _grid.add_gap();
-        add_fill_and_stroke();
-        add_header(_("Ellipse"));
+        add_header(_("Geometry"));
         reparent_properties(get_widget<Gtk::Grid>(builder, "ellipse-main"), _grid, true, false);
+        add_fill_and_stroke();
         add_filters();
         add_lpes();
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
 
     ~EllipsePanel() override = default;
@@ -1597,9 +1625,9 @@ public:
         add_object_label();
         add_size_properties();
         _grid.add_gap();
-        add_fill_and_stroke();
-        add_header(_("Star"));
+        add_header(_("Geometry"));
         reparent_properties(get_widget<Gtk::Grid>(builder, "star-main"), _grid, true, false);
+        add_fill_and_stroke();
 
         _reset_ratio.signal_clicked().connect([this]{ _ratio.set_value(0.5); });
         _reset_rounded.signal_clicked().connect([this]{ _rounded.set_value(0); });
@@ -1614,7 +1642,7 @@ public:
         add_filters();
         add_lpes();
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
 
     ~StarPanel() override = default;
@@ -1769,7 +1797,7 @@ public:
         _grid.add_section_divider();
         add_filters(false);
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
 
 private:
@@ -1811,7 +1839,7 @@ public:
         add_filters(false);
         add_lpes();
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
 
         auto pref_path = details::dlg_pref_path + "path-panel/";
 
@@ -2081,7 +2109,7 @@ if constexpr (INCLUDE_EXPERIMENTAL_PANELS) {
         add_filters();
         add_lpes();
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
 
 private:
@@ -2170,7 +2198,7 @@ if constexpr (INCLUDE_EXPERIMENTAL_PANELS) {
         //TODO: commented out for now; clones need special treatment (clone original lpe?)
         // add_lpes(true);
         add_name_properties();
-        add_interactivity_properties();
+        // SVG scripting remains available through the XML editor.
     }
 
 private:
@@ -2265,226 +2293,126 @@ void visit_objects(SPObject* object, F f) {
 
 class MultiObjPanel : public details::AttributesPanel {
 public:
-    MultiObjPanel(Glib::RefPtr<Gtk::Builder> builder) {
+    MultiObjPanel(Glib::RefPtr<Gtk::Builder>)
+        : _blend(get_blendmode_combo_converter(), SPAttr::INVALID, false, "BlendMode")
+    {
         add_object_label();
         add_size_properties();
-
-if constexpr (INCLUDE_EXPERIMENTAL_PANELS) {
-        //todo: should those options be exposed? =======================
-        // auto box = Gtk::make_managed<Gtk::Box>();
-        // box->set_spacing(4);
-        // auto enter = Gtk::make_managed<Gtk::CheckButton>(_("Enter groups"));
-        // enter->set_tooltip_text(_("Scan objects inside groups"));
-        // auto original = Gtk::make_managed<Gtk::CheckButton>(_("Scan originals"));
-        // original->set_tooltip_text(_("Scan originals pointed to be clones"));
-        // box->append(*enter);
-        // box->append(*original);
-        // _grid.add_row(box);
-        // _grid.add_property(_("Fill"), nullptr, )
-        //todo: end ====================================================
-
-        _types.set_hexpand();
-        _grid.add_row(_("Types"), &_types);
-        _grid.add_row(Gtk::make_managed<Gtk::Separator>(), nullptr, true);
-
-        _fill_paint.set_hexpand();
-        _grid.add_row(_("Fills"), &_fill_paint);
-        _grid.add_row(Gtk::make_managed<Gtk::Separator>(), nullptr, true);
-
-        _stroke_paint.set_hexpand();
-        _grid.add_row(_("Strokes"), &_stroke_paint);
-        _grid.add_row(Gtk::make_managed<Gtk::Separator>(), nullptr, true);
-
-        _stroke_width.set_hexpand();
-        _grid.add_row(_("Stroke widths"), &_stroke_width);
-        _stroke_width.get_signal_value_changed().connect([this](auto id, auto orig, auto value) {
-            printf("val chg: %s %.8f -> %.8f\n", id.c_str(), orig, value);
-            auto selection = _desktop->getSelection();
-            bool changed = false;
-            for (auto obj : selection->objects()) {
-                visit_objects(obj, [&](SPObject* o) {
-                    if (auto item = cast<SPItem>(o)) {
-                        if (item->style->stroke_width.computed == orig) {
-                            printf("stroke match %s\n", o->getId());
-                            changed = true;
-    //todo: this is a test
-    auto css = boost::intrusive_ptr(sp_repr_css_attr_new(), false);
-    sp_repr_css_set_property_double(css.get(), "stroke-width", value);
-    item->changeCSS(css.get(), "style");
-    // end of test
-                        }
-                        else {
-                            printf("stroke no match %.8f, %s\n", item->style->stroke_width.computed, o->getId());
-                        }
-                    }
-                });
-            }
-            if (changed) {
-                DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "stroke width"), "");
+        add_header(_("Appearance"));
+        _opacity.set_placeholder_text(_("Mixed"));
+        _opacity.set_width_chars(7);
+        _opacity.set_tooltip_text(_("Opacity of each selected object, from 0 to 100. Enter applies; expressions are supported."));
+        _grid.add_row(_("Opacity (%)"), &_opacity);
+        _grid.add_row(_("Blend"), &_blend);
+        _opacity.signal_activate().connect([this] {
+            if (!_desktop || _update.pending()) return;
+            try {
+                if (_opacity.get_text().empty()) return; // Mixed is not zero.
+                auto result = Util::ExpressionEvaluator(_opacity.get_text().c_str()).evaluate();
+                if (!std::isfinite(result.value) || result.dimension != 0 || result.value < 0 || result.value > 100) {
+                    throw std::invalid_argument("Opacity must be between 0 and 100");
+                }
+                auto css = boost::intrusive_ptr(sp_repr_css_attr_new(), false);
+                sp_repr_css_set_property_double(css.get(), "opacity", result.value / 100.0);
+                apply(css.get(), RC_("Undo", "Set selection opacity"));
+                _opacity.remove_css_class("error");
+            } catch (std::exception const &) {
+                _opacity.add_css_class("error");
+                _opacity.set_tooltip_text(_("Enter a number or expression between 0 and 100."));
             }
         });
-}
+        _blend.signal_changed().connect([this] {
+            if (!_desktop || _update.pending() || !_blend.get_selected_id()) return;
+            auto css = boost::intrusive_ptr(sp_repr_css_attr_new(), false);
+            sp_repr_css_set_property(css.get(), "mix-blend-mode", _blend.get_as_attribute().c_str());
+            apply(css.get(), RC_("Undo", "Set selection blend mode"));
+        });
+        auto paint = Gtk::make_managed<Gtk::Button>(_("Edit fills and strokes"));
+        paint->signal_clicked().connect([this] {
+            if (_desktop) _desktop->getContainer()->new_dialog("FillStroke");
+        });
+        _grid.add_full_row(paint);
     }
 
 private:
-    Glib::ustring get_title(Selection* selection) const override {
-        if (!selection) return _title;
+    void apply(SPCSSAttr *css, Util::Internal::ContextString description) {
+        if (!_desktop || !_document || _desktop->getSelection()->isEmpty()) return;
+        // Apply only the edited property, only to selected objects. Child styles
+        // and the rest of a mixed appearance are deliberately preserved.
+        for (auto item : _desktop->getSelection()->items()) item->changeCSS(css, "style");
+        DocumentUndo::done(_document, description, "dialog-object-properties");
+        update(nullptr);
+    }
 
-        auto n = selection->size();
+    Glib::ustring get_title(Selection* selection) const override {
+        auto n = selection ? selection->size() : 0;
         return Glib::ustring::compose(ngettext("%1 Object", "%1 Objects", n), n);
     }
 
-    void update(SPObject* object) override {
+    void update(SPObject*) override {
         if (!_desktop) return;
-
-        auto selection = _desktop->getSelection();
-
-        return; // not used for now
-
-        std::set<std::string> types;
-        std::set<PaintKey> fills; // fill paints
-        std::set<PaintKey> strokes;
-        std::set<double> stroke_widths;
-
-        //todo: test code ------------------
-        // auto get_paint = [](SPIPaint* paint) {
-        //     auto mode = paint ? Widget::get_mode_from_paint(*paint) : Widget::PaintMode::NotSet;
-        //     PaintKey key;
-        //     key.mode = mode;
-        //     if (mode == Widget::PaintMode::Solid) {
-        //         key.id = paint->getColor().toString(false);
-        //         key.color = paint->getColor();
-        //     }
-        //     else if (auto server = paint->href ? paint->href->getObject() : nullptr) {
-        //         if (auto gradient = cast<SPGradient>(server)) {
-        //             // gradients, meshes
-        //             key.vector = gradient->getVector(false);
-        //         }
-        //         else if (auto pattern = cast<SPPattern>(server)) {
-        //             key.vector = pattern->rootPattern();
-        //         }
-        //         auto s = key.vector ? key.vector : server;
-        //         key.id = s->getId() ? s->getId() : "";
-        //         key.label = s->defaultLabel();
-        //         key.server = server;
-        //     }
-        //     return key;
-        // };
-
-        auto collect_attr = [&](SPObject* obj) {
-            if (auto repr = obj->getRepr()) {
-                types.insert(repr->name());
-            }
-            if (auto item = cast<SPItem>(obj)) {
-                auto fill = item->style->getFillOrStroke(true);
-                fills.insert(get_paint(fill));
-
-                auto stroke = item->style->getFillOrStroke(false);
-                strokes.insert(get_paint(stroke));
-
-                stroke_widths.insert(item->style->stroke_width.computed);
-            }
-            //todo: groups and text
-        };
-
-        for (auto obj : selection->objects()) {
-            visit_objects(obj, collect_attr);
+        auto scoped(_update.block());
+        std::optional<double> opacity;
+        std::optional<SPBlendMode> blend;
+        bool mixed_opacity = false, mixed_blend = false;
+        for (auto item : _desktop->getSelection()->items()) {
+            if (!item->style) continue;
+            auto o = item->style->opacity.as_double();
+            auto b = static_cast<SPBlendMode>(item->style->mix_blend_mode.computed);
+            if (opacity && std::abs(*opacity - o) > 1e-6) mixed_opacity = true;
+            if (blend && *blend != b) mixed_blend = true;
+            opacity = o;
+            blend = b;
         }
-
-        {
-            auto it = types.begin();
-            _types.update_store(types.size(), [&](auto i) {
-                auto&& name = *it;
-                ++it;
-                return GridViewList::create_item(name, 0, name, {}, {}, {}, {}, false);
-            });
-        }
-        {
-            auto it = stroke_widths.begin();
-            _stroke_width.update_store(stroke_widths.size(), [&](auto i) {
-                auto width = *it++;
-                auto id = std::to_string(i);
-                return GridViewList::create_item(id, width, {}, {}, {}, {}, {}, false);
-            });
-        }
-
-        {
-            //todo: experiments -------------------
-            // paint servers, colors, or no paint
-            // auto paint_to_item = [](const PaintKey& paint) {
-            //     auto mode_name = get_paint_mode_name(paint.mode);
-            //     auto tooltip = paint.vector || !paint.color ? mode_name : Glib::ustring(paint.color->toString(false));
-            //     if (paint.vector) tooltip = tooltip + " " + paint.vector->defaultLabel();
-            //     auto label = paint.label.empty() ? paint.id : paint.label;
-            //     if (label.empty()) label = mode_name;
-            //     if (paint.mode == Widget::PaintMode::Swatch) {
-            //         Colors::Color color{0};
-            //         auto swatch = cast<SPGradient>(paint.vector);
-            //         if (swatch && swatch->hasStops()) {
-            //             color = swatch->getFirstStop()->getColor();
-            //         }
-            //         return GridViewList::create_item(paint.id, 0, label, {}, tooltip, color, {}, true);
-            //     }
-            //     else if (paint.mode == Widget::PaintMode::Solid) {
-            //         return GridViewList::create_item(paint.id, 0, label, {}, tooltip, paint.color, {}, false);
-            //     }
-            //     else if (paint.mode == Widget::PaintMode::Gradient) {
-            //         // todo: pattern size needs to match tile size
-            //         auto pat_t = cast<SPGradient>(paint.vector)->create_preview_pattern(16);
-            //         auto pat = Cairo::RefPtr<Cairo::Pattern>(new Cairo::Pattern(pat_t, true));
-            //         return GridViewList::create_item(paint.id, 0, label, {}, tooltip, {}, pat, false, is<SPRadialGradient>(paint.server));
-            //     }
-            //     else {
-            //         auto icon = get_paint_mode_icon(paint.mode);
-            //         return GridViewList::create_item(paint.id, 0, label, icon, tooltip, {}, {}, false);
-            //     }
-            // };
-            {
-                auto it = fills.begin();
-                _fill_paint.update_store(fills.size(), [&](auto index) {
-                    return paint_to_item(*it++);
-                });
-            }
-            {
-                auto it = strokes.begin();
-                _stroke_paint.update_store(strokes.size(), [&](auto index) {
-                    return paint_to_item(*it++);
-                });
-            }
-        }
+        _opacity.remove_css_class("error");
+        _opacity.set_text(opacity && !mixed_opacity ? Widget::InkSpinButton::format_number(*opacity * 100, 2, true, false) : "");
+        if (blend && !mixed_blend) _blend.set_active_by_id(*blend);
+        else _blend.set_selected(GTK_INVALID_LIST_POSITION);
+        _blend.set_tooltip_text(mixed_blend ? _("Mixed blend modes. Choosing a mode applies it to every selected object.") : _("Blend mode"));
     }
 
-    GridViewList _types{GridViewList::Label};
-    GridViewList _fill_paint{GridViewList::ColorLong};
-    GridViewList _stroke_paint{GridViewList::ColorLong};
-    GridViewList _stroke_width{Gtk::Adjustment::create(0, 0, 1e5, 0.1, 1), 8};
+    Gtk::Entry _opacity;
+    Widget::ComboBoxEnum<SPBlendMode> _blend;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 
 class EmptyPanel : public details::AttributesPanel {
 public:
-    EmptyPanel(Glib::RefPtr<Gtk::Builder> builder) {
-        Widget::reparent_properties(get_widget<Gtk::Grid>(builder, "empty-panel"), _grid);
-
-if constexpr (INCLUDE_EXPERIMENTAL_PANELS) {
-        // TODO: panel with default paint and other style attributes
-        _grid.add_property(_("Defaults"), nullptr, nullptr, nullptr);
-        add_fill_and_stroke(Parts::FillPaint);
-}
+    EmptyPanel(Glib::RefPtr<Gtk::Builder>) {
+        add_header(_("Document"));
+        _summary.set_xalign(0);
+        _summary.set_wrap(true);
+        _summary.add_css_class("workspace-summary");
+        _grid.add_full_row(&_summary);
+        auto setup = Gtk::make_managed<Gtk::Button>(_("Document setup"));
+        setup->signal_clicked().connect([this] {
+            if (_desktop) _desktop->getContainer()->new_dialog("DocumentProperties");
+        });
+        _grid.add_full_row(setup);
+        auto pages = Gtk::make_managed<Gtk::Button>(_("Edit artboards"));
+        pages->signal_clicked().connect([this] {
+            if (_desktop) set_active_tool(_desktop, "Pages");
+        });
+        _grid.add_full_row(pages);
+        add_header(_("Selection"));
+        auto help = Gtk::make_managed<Gtk::Label>(_("Select artwork to edit its geometry and appearance.\n\nDrag a panel tab to rearrange your workspace."));
+        help->set_wrap(true);
+        help->set_xalign(0);
+        help->add_css_class("workspace-summary");
+        _grid.add_full_row(help);
     }
 
-    void update(SPObject* object) override {
-if constexpr (INCLUDE_EXPERIMENTAL_PANELS) {
-        if (!_desktop || !_desktop->getDocument()) return;
-
-        if (auto view = _desktop->getDocument()->getNamedView()) {
-            if (view->style) {
-                update_paint(view);
-            }
-        }
-}
+    void update(SPObject*) override {
+        auto doc = _desktop ? _desktop->getDocument() : nullptr;
+        if (!doc) { _summary.set_text(""); return; }
+        auto unit = doc->getDisplayUnit();
+        auto width = Widget::InkSpinButton::format_number(doc->getWidth().value(unit), 2, true, false);
+        auto height = Widget::InkSpinButton::format_number(doc->getHeight().value(unit), 2, true, false);
+        _summary.set_text(Glib::ustring::compose(_("%1 × %2 %3\nDocument units: %3"), width, height, unit->abbr));
     }
+private:
+    Gtk::Label _summary;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -2515,6 +2443,7 @@ details::AttributesPanel* ObjectAttributes::get_panel(Selection* selection) {
     if (selection->isEmpty()) {
         if (!_empty_panel) {
             _empty_panel = std::make_unique<EmptyPanel>(_builder);
+            _empty_panel->set_document(getDocument());
         }
         return _empty_panel.get();
     }

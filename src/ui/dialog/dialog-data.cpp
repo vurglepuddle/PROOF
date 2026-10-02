@@ -30,7 +30,8 @@ std::span<const DialogData> get_dialog_data_list() {
     {"Objects",            _("Layers and Object_s"),   INKSCAPE_ICON("dialog-objects"),              DialogData::Basic,          ScrollProvider::PROVIDE   },
     {"AlignDistribute",    _("_Align and Distribute"), INKSCAPE_ICON("dialog-align-and-distribute"), DialogData::Basic,          ScrollProvider::NOPROVIDE },
     {"Transform",          _("Transfor_m"),            INKSCAPE_ICON("dialog-transform"),            DialogData::Basic,          ScrollProvider::NOPROVIDE },
-    {"ObjectProperties",   _("_Object Properties"),    INKSCAPE_ICON("dialog-object-properties"),    DialogData::Basic,          ScrollProvider::NOPROVIDE },
+    {"ObjectProperties",   _("_Properties"),           INKSCAPE_ICON("dialog-object-properties"),    DialogData::Basic,          ScrollProvider::NOPROVIDE },
+    {"Stroke",             _("_Stroke"),               INKSCAPE_ICON("object-stroke-style"),         DialogData::Basic,          ScrollProvider::PROVIDE   },
     {"Export",             _("_Export"),               INKSCAPE_ICON("document-export"),             DialogData::Basic,          ScrollProvider::PROVIDE   },
     {"Swatches",           _("S_watches"),             INKSCAPE_ICON("swatches"),                    DialogData::Basic,          ScrollProvider::PROVIDE   },
 

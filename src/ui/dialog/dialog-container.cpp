@@ -32,6 +32,8 @@
 #include "ui/dialog/inkscape-preferences.h"
 #include "ui/dialog/livepatheffect-editor.h"
 #include "ui/dialog/object-attributes.h"
+#include "ui/dialog/stroke-panel.h"
+#include "io/resource.h"
 #include "ui/dialog/objects.h"
 #include "ui/dialog/selectorsdialog.h"
 #if WITH_LIBSPELLING
@@ -118,6 +120,7 @@ std::unique_ptr<DialogBase> DialogContainer::dialog_factory(Glib::ustring const 
     else if (dialog_type == "IconPreview")        return std::make_unique<IconPreviewPanel>();
     else if (dialog_type == "LivePathEffect")     return std::make_unique<LivePathEffectEditor>();
     else if (dialog_type == "ObjectProperties")   return std::make_unique<ObjectAttributes>();
+    else if (dialog_type == "Stroke")             return std::make_unique<StrokePanel>();
     else if (dialog_type == "Objects")            return std::make_unique<ObjectsPanel>();
     else if (dialog_type == "Preferences")        return std::make_unique<InkscapePreferences>();
     else if (dialog_type == "Selectors")          return std::make_unique<SelectorsDialog>();
@@ -943,6 +946,33 @@ Glib::RefPtr<Glib::KeyFile> DialogContainer::save_container_state()
     }
 
     return keyfile;
+}
+
+void DialogContainer::reset_workspace()
+{
+    // Load before changing anything, so a missing/corrupt resource is harmless.
+    auto defaults = Glib::KeyFile::create();
+    auto filename = IO::Resource::get_filename(IO::Resource::UIS, "default-dialog-state.ini");
+    try {
+        if (!defaults->load_from_file(filename)) return;
+    } catch (Glib::Error const &error) {
+        g_warning("Cannot reset workspace: %s", error.what());
+        return;
+    }
+
+    auto &manager = DialogManager::singleton();
+    for (auto window : manager.get_all_floating_dialog_windows()) {
+        // Floating panels belonging to other document windows stay where they are.
+        if (window->get_container()->get_inkscape_window() == _inkscape_window) window->close();
+    }
+    std::vector<DialogMultipaned *> columns;
+    for (auto const &child : _columns->get_multipaned_children()) {
+        if (auto column = dynamic_cast<DialogMultipaned *>(child.get())) columns.push_back(column);
+    }
+    for (auto column : columns) _columns->remove(*column);
+    for (auto const &data : get_dialog_data_list()) manager.remove_dialog_floating_state(data.key);
+    load_container_state(defaults.get(), false);
+    manager.save_dialogs_state(this);
 }
 
 // Signals -----------------------------------------------------
