@@ -157,6 +157,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/measure-tool-settings.cpp
 	dialog/new-from-template.cpp
 	dialog/object-attributes.cpp
+	dialog/stroke-panel.cpp
 	dialog/object-properties.cpp
 	dialog/objects.cpp
 	dialog/polar-arrange-tab.cpp
@@ -398,6 +399,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/measure-tool-settings.h
 	dialog/new-from-template.h
 	dialog/object-attributes.h
+	dialog/stroke-panel.h
 	dialog/object-properties.h
 	dialog/objects.h
 	dialog/polar-arrange-tab.h

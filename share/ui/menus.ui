@@ -612,6 +612,10 @@
           <attribute name="icon">show-dialogs</attribute>
         </item>
         <item>
+          <attribute name="label" translatable="yes">Reset Workspace</attribute>
+          <attribute name="action">win.workspace-reset</attribute>
+        </item>
+        <item>
           <attribute name="label" translatable="yes">_Command Palette</attribute>
           <attribute name="action">win.canvas-command-palette</attribute>
         </item>

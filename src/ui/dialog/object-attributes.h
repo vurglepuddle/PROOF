@@ -195,6 +195,7 @@ private:
     SPItem* _current_item = nullptr;
     XML::SignalObserver _observer;
     sigc::scoped_connection _cursor_move;
+    sigc::scoped_connection _document_modified;
 };
 
 } // namespace Inkscape::UI::Dialog

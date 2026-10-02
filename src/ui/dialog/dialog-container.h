@@ -55,6 +55,7 @@ public:
     void unlink_dialog(DialogBase *dialog);
     std::multimap<Glib::ustring, DialogBase *> const &get_dialogs() const { return dialogs; }
     void toggle_dialogs();
+    void reset_workspace();
     void update_dialogs(); // Update all linked dialogs
     void set_inkscape_window(InkscapeWindow *inkscape_window);
     InkscapeWindow *get_inkscape_window() { return _inkscape_window; }
