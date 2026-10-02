@@ -52,6 +52,7 @@
 #include "actions/actions-svg-processing.h"
 #include "actions/actions-undo-document.h"
 #include "colors/document-cms.h"
+#include "colors/document-colors.h"
 #include "debug/console-output-undo-observer.h"
 #include "desktop.h"
 #include "display/control/canvas-item-drawing.h"
@@ -387,6 +388,11 @@ std::unique_ptr<SPDocument> SPDocument::createDoc(
 
     // Recursively build object tree
     document->root->invoke_build(document.get(), rroot, false);
+
+    // Embedded profiles may follow the artwork that refers to them.
+    if (Inkscape::Colors::DocumentColors::assignedSpace(document.get())) {
+        Inkscape::Colors::DocumentColors::refresh(document.get());
+    }
 
     /* Eliminate obsolete sodipodi:docbase, for privacy reasons */
     rroot->removeAttribute("sodipodi:docbase");

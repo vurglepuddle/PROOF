@@ -29,6 +29,8 @@
 
 #include "colors/cms/profile.h"
 #include "colors/document-cms.h"
+#include "colors/document-colors.h"
+#include "colors/spaces/cms.h"
 #include "inkscape-window.h"
 #include "object/color-profile.h"
 #include "object/sp-guide.h"
@@ -49,6 +51,7 @@
 #include "ui/widget/entity-entry.h"
 #include "ui/widget/notebook-page.h"
 #include "ui/widget/page-properties.h"
+#include "ui/widget/document-color-settings.h"
 #include "ui/widget/generic/popover-menu.h"
 #include "ui/widget/generic/spin-button.h"
 #include "util/expression-evaluator.h"
@@ -707,6 +710,8 @@ void DocumentProperties::populate_linked_profiles_box()
                        static_caster<SPObject, Inkscape::ColorProfile>());
 
         for (auto const &profile: _current) {
+            auto assigned = Colors::DocumentColors::assignedSpace(document);
+            if (assigned && assigned->getName() == profile->getName()) continue;
             Gtk::TreeModel::Row row = *(_LinkedProfilesListStore->append());
             row[_LinkedProfilesListColumns.nameColumn] = profile->getName();
         }
@@ -734,6 +739,8 @@ void DocumentProperties::removeSelectedProfile(){
     }
     if (auto document = getDocument()) {
         if (auto colorprofile = document->getDocumentCMS().getColorProfileForSpace(name)) {
+            auto assigned = Colors::DocumentColors::assignedSpace(document);
+            if (assigned && assigned->getName() == name) return;
             colorprofile->deleteObject(true, false);
             DocumentUndo::done(document, RC_("Undo", "Remove linked color profile"), "");
         }
@@ -752,15 +759,19 @@ bool DocumentProperties::_AvailableProfilesList_separator(Glib::RefPtr<Gtk::Tree
 
 void DocumentProperties::build_cms()
 {
+    _document_colors = Gtk::make_managed<UI::Widget::DocumentColorSettings>();
+    _page_cms->table().attach(*_document_colors, 0, 0, 3, 1);
+    _document_colors->set_margin_bottom(20);
     Gtk::Label *label_link= Gtk::make_managed<Gtk::Label>("", Gtk::Align::START);
-    label_link->set_markup (_("<b>Linked Color Profiles:</b>"));
+    label_link->set_markup (_("<b>Additional Linked Profiles:</b>"));
+    label_link->set_tooltip_text(_("Profiles available to individual colors. Use Document Color above to assign the document profile."));
     auto const label_avail = Gtk::make_managed<Gtk::Label>("", Gtk::Align::START);
     label_avail->set_markup (_("<b>Available Color Profiles:</b>"));
 
     _unlink_btn.set_tooltip_text(_("Unlink Profile"));
     docprops_style_button(_unlink_btn, INKSCAPE_ICON("list-remove"));
 
-    int row = 0;
+    int row = 1;
 
     label_link->set_hexpand();
     label_link->set_halign(Gtk::Align::START);
@@ -1442,6 +1453,7 @@ void DocumentProperties::update_widgets()
 {
     auto desktop = getDesktop();
     auto document = getDocument();
+    if (_document_colors) _document_colors->set_document(document);
     if (_wr.isUpdating() || !document) return;
 
     auto nv = desktop->getNamedView();
@@ -1581,6 +1593,7 @@ void DocumentProperties::WatchConnection::notifyAttributeChanged(XML::Node&, GQu
 
 void DocumentProperties::documentReplaced()
 {
+    if (_document_colors) _document_colors->set_document(getDocument());
     _root_connection.disconnect();
     _namedview_connection.disconnect();
     _cms_connection.disconnect();

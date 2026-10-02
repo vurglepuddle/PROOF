@@ -20,6 +20,7 @@
 #include "ui/dialog/global-palettes.h"
 #include "ui/widget/edit-operation.h"
 #include "ui/widget/palette_t.h"
+#include "xml/helper-observer.h"
 
 namespace Gtk {
 class Builder;
@@ -107,6 +108,7 @@ private:
     // Asynchronous update mechanism.
     sigc::connection conn_gradients;
     sigc::connection conn_defs;
+    XML::SignalObserver _color_settings_observer;
     bool gradients_changed = false;
     bool defs_changed = false;
     bool selection_changed = false;

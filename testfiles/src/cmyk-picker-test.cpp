@@ -10,27 +10,34 @@
 #include <vector>
 
 #include <glibmm/main.h>
+#include <glibmm/i18n.h>
 #include <gtest/gtest.h>
 #include <gtkmm/init.h>
 #include <gtkmm/window.h>
 
 #include "colors/color-set.h"
 #include "colors/document-cms.h"
+#include "colors/document-colors.h"
+#include "colors/cms/profile.h"
 #include "colors/spaces/cms.h"
 #include "doc-per-case-test.h"
 #include "document.h"
+#include "document-undo.h"
 #include "extension/init.h"
 #include "gradient-chemistry.h"
 #include "inkscape.h"
 #include "object/sp-gradient.h"
 #include "object/sp-item.h"
 #include "object/sp-stop.h"
+#include "spot-ink.h"
+#include "xml/repr.h"
 #include "style.h"
 #include "colors/color.h"
 #include "colors/spaces/base.h"
 #include "colors/spaces/enum.h"
 #include "preferences.h"
 #include "ui/widget/color-picker-panel.h"
+#include "ui/widget/document-color-settings.h"
 #include "ui/widget/edit-operation.h"
 #include "ui/widget/paint-switch.h"
 #include "ui/widget/generic/spin-button.h"
@@ -301,3 +308,186 @@ TEST_F(CmykPickerTest, SwatchEditorKeepsCorporateCmykThroughEditsAndReselection)
 
 INSTANTIATE_TEST_SUITE_P(PlateTypes, CmykPickerTest,
                          ::testing::Values(ColorPickerPanel::None, ColorPickerPanel::Circle, ColorPickerPanel::Rect));
+
+namespace DC = Colors::DocumentColors;
+
+namespace {
+std::unique_ptr<SPDocument> color_document() {
+    return SPDocument::createNewDocFromMem(std::string(R"SVG(<svg xmlns="http://www.w3.org/2000/svg"
+        xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="200" height="100">
+        <defs><linearGradient id="process" inkscape:swatch="solid">
+        <stop id="stop" offset="0" style="stop-color:device-cmyk(0.05 1 0.45 0.22);stop-opacity:0.7"/>
+        </linearGradient></defs>
+        <rect id="flat" width="100" height="100" style="fill:device-cmyk(0.05 1 0.45 0.22);fill-opacity:0.4"/>
+        <rect id="rgb" x="100" width="100" height="100" fill="#cd2468"/>
+        </svg>)SVG"));
+}
+std::shared_ptr<Colors::CMS::Profile> test_profile() {
+    return Colors::CMS::Profile::create_from_uri(INKSCAPE_TESTS_DIR "/data/colors/default_cmyk.icc");
+}
+Color fill_color(SPDocument *doc) { return doc->getObjectById("flat")->style->fill.getColor(); }
+void expect_channels(Color const &color) {
+    EXPECT_EQ(color.getSpace()->getComponentType(), Type::CMYK);
+    ASSERT_GE(color.size(), 4u);
+    EXPECT_NEAR(color[0], 0.05, 1e-6);
+    EXPECT_NEAR(color[1], 1.0, 1e-6);
+    EXPECT_NEAR(color[2], 0.45, 1e-6);
+    EXPECT_NEAR(color[3], 0.22, 1e-6);
+}
+}
+
+TEST_F(CmykDocumentTest, AssignEmbedsProfilePreservesInkAndRoundTrips) {
+    auto document = color_document();
+    auto other = color_document();
+    auto profile = test_profile();
+    ASSERT_TRUE(profile);
+    auto before = fill_color(document.get()).toRGBA();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, profile, Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    auto assigned = DC::assignedSpace(document.get());
+    ASSERT_TRUE(assigned);
+    expect_channels(fill_color(document.get()));
+    EXPECT_NE(fill_color(document.get()).toRGBA(), before);
+    EXPECT_EQ(fill_color(other.get()).toRGBA(), before) << "Another window must remain unchanged";
+    EXPECT_FALSE(DC::assignedSpace(other.get()));
+    EXPECT_NEAR(document->getObjectById("flat")->style->fill_opacity.as_double(), 0.4, 1e-6);
+    auto stop = cast<SPStop>(document->getObjectById("stop"));
+    expect_channels(stop->getColor());
+    EXPECT_NEAR(stop->getColor().getOpacity(), 0.7, 1e-6);
+    auto parsed = document->getDocumentCMS().parse("device-cmyk(0.05 1 0.45 0.22)");
+    ASSERT_TRUE(parsed);
+    expect_channels(*parsed);
+    EXPECT_EQ(parsed->getSpace(), assigned);
+
+    auto saved = sp_repr_save_buf(document->getReprDoc()).raw();
+    EXPECT_NE(saved.find("base64,"), std::string::npos) << "Assigned ICC must travel with the SVG";
+    auto reloaded = SPDocument::createNewDocFromMem(saved);
+    ASSERT_TRUE(reloaded);
+    expect_channels(fill_color(reloaded.get()));
+    EXPECT_EQ(fill_color(reloaded.get()).toRGBA(), fill_color(document.get()).toRGBA());
+    ASSERT_TRUE(DC::assignedSpace(reloaded.get()));
+    EXPECT_EQ(DC::assignedSpace(reloaded.get())->getProfile()->dumpData(), assigned->getProfile()->dumpData());
+}
+
+TEST_F(CmykDocumentTest, AssignUndoRedoAndUnmanagedPreserveChannels) {
+    auto document = color_document();
+    DocumentUndo::setUndoSensitive(document.get(), true);
+    auto before = fill_color(document.get()).toRGBA();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    DocumentUndo::done(document.get(), RC_("Undo", "Assign profile"), "");
+    auto managed = fill_color(document.get()).toRGBA();
+    ASSERT_TRUE(DocumentUndo::undo(document.get()));
+    document->ensureUpToDate();
+    EXPECT_FALSE(DC::assignedSpace(document.get()));
+    expect_channels(fill_color(document.get()));
+    EXPECT_EQ(fill_color(document.get()).toRGBA(), before);
+    ASSERT_TRUE(DocumentUndo::redo(document.get()));
+    document->ensureUpToDate();
+    ASSERT_TRUE(DC::assignedSpace(document.get())) << "Redo must restore the assigned ICC profile";
+    expect_channels(fill_color(document.get()));
+    EXPECT_EQ(fill_color(document.get()).toRGBA(), managed);
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, {}, Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    EXPECT_FALSE(DC::assignedSpace(document.get()));
+    expect_channels(fill_color(document.get()));
+    EXPECT_EQ(fill_color(document.get()).toRGBA(), before);
+}
+
+TEST_F(CmykDocumentTest, ModeConversionAndWrongProfileValidation) {
+    auto document = color_document();
+    auto rgb = Colors::CMS::Profile::create_srgb();
+    auto original = sp_repr_save_buf(document->getReprDoc());
+    EXPECT_FALSE(DC::assign(document.get(), Type::CMYK, rgb, Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    EXPECT_EQ(sp_repr_save_buf(document->getReprDoc()), original);
+    SpotInk::Ink ink{"Corporate Spot", Color(Type::CMYK, {0.05, 1, 0.45, 0.22}), 0.5};
+    auto spot_id = SpotInk::ensure(document.get(), ink);
+    auto spot_before = SpotInk::read(document->getObjectById(spot_id)->getRepr());
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    auto expected = fill_color(document.get()).converted(Type::RGB);
+    ASSERT_TRUE(expected);
+    ASSERT_TRUE(DC::assign(document.get(), Type::RGB, rgb, Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    EXPECT_EQ(fill_color(document.get()).getSpace()->getComponentType(), Type::RGB);
+    EXPECT_EQ(fill_color(document.get()).toRGBA(), expected->toRGBA());
+    auto spot_after = SpotInk::read(document->getObjectById(spot_id)->getRepr());
+    ASSERT_TRUE(spot_after && spot_before);
+    EXPECT_EQ(spot_after->alternate, spot_before->alternate);
+    EXPECT_EQ(spot_after->tint, spot_before->tint);
+}
+
+TEST_F(CmykPickerTest, ProfiledCmykSlidersEditInkWithoutRgbRoundTrip) {
+    auto document = color_document();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    auto colors = std::make_shared<ColorSet>();
+    colors->set(Color(0x000000ff));
+    auto panel = ColorPickerPanel::create(Type::HSL, ColorPickerPanel::None, colors);
+    panel->set_color(fill_color(document.get()));
+    Gtk::Window window;
+    window.set_child(*panel);
+    window.present();
+    pump();
+    std::vector<InkSpinButton *> spins;
+    collect_spins(*panel, spins);
+    ASSERT_GE(spins.size(), 4u);
+    EXPECT_NEAR(spins[0]->get_value(), 5.0, 1e-6);
+    EXPECT_NEAR(spins[3]->get_value(), 22.0, 1e-6);
+    spins[0]->set_value(6.0);
+    pump();
+    auto edited = colors->getAverage();
+    EXPECT_EQ(edited.getSpace(), DC::assignedSpace(document.get()));
+    EXPECT_NEAR(edited[0], 0.06, 1e-6);
+    EXPECT_NEAR(edited[1], 1.0, 1e-6);
+    EXPECT_NEAR(edited[2], 0.45, 1e-6);
+    EXPECT_NEAR(edited[3], 0.22, 1e-6);
+    window.unset_child();
+}
+
+TEST_F(CmykPickerTest, DocumentSettingsFilterProfilesAndApplyToCurrentDocument) {
+    auto document = color_document();
+    auto other = color_document();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    UI::Widget::DocumentColorSettings settings;
+    settings.set_document(document.get());
+    Gtk::Window window;
+    window.set_default_size(580, 680);
+    window.set_child(settings);
+    window.present();
+    pump();
+    auto mode = dynamic_cast<Gtk::ComboBoxText *>(find_named(settings, "document-color-mode"));
+    auto assignment = dynamic_cast<Gtk::ComboBoxText *>(find_named(settings, "document-color-assignment"));
+    auto profiles = dynamic_cast<Gtk::ComboBoxText *>(find_named(settings, "document-color-profile"));
+    auto apply = dynamic_cast<Gtk::Button *>(find_named(settings, "document-color-apply"));
+    ASSERT_TRUE(mode && assignment && profiles && apply);
+    EXPECT_EQ(mode->get_active_id(), "cmyk");
+    EXPECT_EQ(assignment->get_active_id(), "profile");
+    EXPECT_EQ(profiles->get_active_text(), DC::assignedSpace(document.get())->getProfile()->getName());
+    for (auto const &profile : DC::profiles(Type::CMYK)) EXPECT_EQ(profile->getColorSpace(), cmsSigCmykData);
+    for (auto const &profile : DC::profiles(Type::RGB)) EXPECT_EQ(profile->getColorSpace(), cmsSigRgbData);
+
+    if (auto path = std::getenv("INKSCAPE_COLOR_SETTINGS_SNAPSHOT")) {
+        auto paintable = gtk_widget_paintable_new(GTK_WIDGET(settings.gobj()));
+        auto snapshot = gtk_snapshot_new();
+        GdkRGBA background{1, 1, 1, 1};
+        graphene_rect_t bounds = GRAPHENE_RECT_INIT(0, 0, float(settings.get_width()), float(settings.get_height()));
+        gtk_snapshot_append_color(snapshot, &background, &bounds);
+        gdk_paintable_snapshot(paintable, snapshot, settings.get_width(), settings.get_height());
+        auto node = gtk_snapshot_free_to_node(snapshot);
+        ASSERT_TRUE(node);
+        auto texture = gsk_renderer_render_texture(gtk_native_get_renderer(GTK_NATIVE(window.gobj())), node, nullptr);
+        ASSERT_TRUE(texture);
+        EXPECT_TRUE(gdk_texture_save_to_png(texture, path));
+        g_object_unref(texture);
+        gsk_render_node_unref(node);
+        g_object_unref(paintable);
+    }
+    mode->set_active_id("rgb");
+    assignment->set_active_id("working");
+    g_signal_emit_by_name(apply->gobj(), "clicked");
+    pump();
+    EXPECT_EQ(DC::mode(document.get()), Type::RGB);
+    ASSERT_TRUE(DC::assignedSpace(document.get()));
+    EXPECT_EQ(DC::assignedSpace(document.get())->getProfile()->getColorSpace(), cmsSigRgbData);
+    settings.set_document(other.get());
+    EXPECT_EQ(assignment->get_active_id(), "none");
+    EXPECT_FALSE(DC::assignedSpace(other.get()));
+    settings.set_document(nullptr);
+    EXPECT_FALSE(settings.get_sensitive());
+    window.unset_child();
+}

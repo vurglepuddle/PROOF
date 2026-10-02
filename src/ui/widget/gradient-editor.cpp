@@ -214,7 +214,7 @@ void GradientEditor::stop_selected() {
     _colors->clear();
 
     if (auto stop = current_stop()) {
-        _colors->set(stop->getId(), stop->getColor());
+        _color_picker->set_color(stop->getColor());
 
         auto [before, after] = sp_get_before_after_stops(stop);
         _offset_btn.set_range(before ? before->offset * 100 : 0, after ? after->offset * 100 : 100);

@@ -27,6 +27,7 @@
 #include "attribute-rel-util.h"
 #include "color-profile.h"
 #include "document.h"
+#include "colors/document-colors.h"
 #include "io/fix-broken-links.h"
 #include "preferences.h"
 #include "style.h"
@@ -1178,6 +1179,10 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
 {
     auto const key = g_quark_to_string(key_);
     readAttr(key);
+    if (document && document->getReprRoot() == getRepr() &&
+        (!std::strcmp(key, "proof:color-mode") || !std::strcmp(key, "proof:color-profile"))) {
+        Inkscape::Colors::DocumentColors::refresh(document);
+    }
 }
 
 void SPObject::notifyContentChanged(Inkscape::XML::Node &, Util::ptr_shared, Util::ptr_shared)

@@ -208,6 +208,7 @@ target_sources(inkscape_base PRIVATE
 	widget/color-palette.cpp
 	widget/color-palette-preview.cpp
 	widget/color-picker-panel.cpp
+	widget/document-color-settings.cpp
 	widget/color-picker.cpp
 	widget/color-plate.cpp
 	widget/color-preview.cpp
@@ -542,6 +543,7 @@ target_sources(inkscape_base PRIVATE
 	widget/color-palette-preview.h
 	widget/color-picker.h
 	widget/color-picker-panel.h
+	widget/document-color-settings.h
 	widget/color-plate.h
 	widget/color-preview.h
 	widget/color-slider.h

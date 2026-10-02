@@ -86,6 +86,7 @@ private:
     std::vector<std::shared_ptr<ColorProfileLink>> _links;
 
     sigc::scoped_connection _resource_connection;
+    sigc::scoped_connection _reconstruction_connection;
     sigc::signal<void()> _changed_signal;
 
     mutable std::map<std::string, std::shared_ptr<Space::CMS>> _spaces;

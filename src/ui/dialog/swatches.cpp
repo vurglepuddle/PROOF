@@ -14,6 +14,7 @@
 
 #include "swatches.h"
 
+#include <cstring>
 #include <glibmm/convert.h>
 #include <glibmm/i18n.h>
 #include <gtkmm/accelerator.h>
@@ -27,6 +28,7 @@
 #include "desktop.h"
 #include "document.h"
 #include "object/sp-defs.h"
+#include "object/sp-root.h"
 #include "object/sp-gradient-reference.h"
 #include "style.h"
 #include "ui/builder-utils.h"
@@ -77,6 +79,12 @@ SwatchesPanel::SwatchesPanel(PanelType panel_type, char const *prefsPath)
     _delete_btn.set_visible(false);
 
     _palette = Gtk::make_managed<Inkscape::UI::Widget::ColorPalette>();
+    _color_settings_observer.signal_changed().connect([this](auto change, char const *name) {
+        if (change == XML::SignalObserver::Attribute && name &&
+            (!std::strcmp(name, "proof:color-mode") || !std::strcmp(name, "proof:color-profile"))) {
+            for (auto const &[key, widget] : widgetmap) widget->queue_draw();
+        }
+    });
     _palette->set_visible();
     if (panel_type == Compact) {
         append(*_palette);
@@ -228,6 +236,8 @@ SPGradient* SwatchesPanel::get_selected_vector() const {
 
 void SwatchesPanel::documentReplaced()
 {
+    _color_settings_observer.set(getDocument() ? getDocument()->getRoot() : nullptr);
+    for (auto const &[key, widget] : widgetmap) widget->queue_draw();
     if (getDocument()) {
         if (_current_palette_id == auto_id) {
             track_gradients();
