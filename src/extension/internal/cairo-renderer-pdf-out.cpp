@@ -96,7 +96,7 @@ pdf_render_document_to_file(SPDocument *doc, gchar const *filename, unsigned int
                && renderer.setupDocument(&ctx, doc, root)
                && renderer.renderPages(&ctx, doc, flags.stretch_to_fit);
     if (ret) {
-        ctx.finish();
+        ret = ctx.finish();
     }
 
     root->invoke_hide(dkey);
@@ -169,7 +169,7 @@ CairoRendererPdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, 
 
     flags.stretch_to_fit = false;
     try {
-        flags.stretch_to_fit = (strcmp(ext->get_param_optiongroup("stretch"), "relative") == 0);
+        flags.stretch_to_fit = (strcmp(mod->get_param_optiongroup("stretch"), "relative") == 0);
     } catch(...) {
         g_warning("Parameter <stretch> might not exist");
     }
@@ -240,6 +240,43 @@ CairoRendererPdfOutput::init ()
                 "<filetypename>Cairo PDF (*.pdf)</filetypename>\n"
                 "<filetypetooltip>Cairo PDF File</filetypetooltip>\n"
             "</output>\n"
+        "</inkscape-extension>", std::make_unique<CairoRendererPdfOutput>());
+    // clang-format on
+
+    // Illustrator can open PDF artwork in an .ai container. This intentionally
+    // carries no Illustrator private data: retaining the source's private stream
+    // would make Illustrator reopen stale artwork instead of the user's edits.
+    // Keep this a lossy copy format so the SVG remains the working document.
+    // clang-format off
+    Inkscape::Extension::build_from_mem(
+        "<inkscape-extension xmlns=\"" INKSCAPE_EXTENSION_URI "\">"
+            "<name>Illustrator interchange</name>"
+            "<id>org.inkscape.output.ai.pdf</id>"
+            "<label>" N_("PDF-based artwork for opening in Illustrator. Save your editable working document as SVG first.") "</label>"
+            "<param name=\"PDFversion\" gui-text=\"" N_("PDF compatibility:") "\" type=\"optiongroup\" appearance=\"combo\">"
+                "<option value=\"PDF-1.5\">" N_("PDF 1.5") "</option>"
+                "<option value=\"PDF-1.4\">" N_("PDF 1.4") "</option>"
+            "</param>"
+            "<param name=\"textToPath\" gui-text=\"" N_("Text:") "\" type=\"optiongroup\" appearance=\"radio\">"
+                "<option value=\"embed\">" N_("Embed fonts (editing in Illustrator requires installed fonts)") "</option>"
+                "<option value=\"paths\">" N_("Convert to paths (preserve appearance; text is no longer editable)") "</option>"
+            "</param>"
+            "<param name=\"blurToBitmap\" gui-text=\"" N_("Rasterize filter effects") "\" type=\"bool\">true</param>"
+            "<param name=\"resolution\" gui-text=\"" N_("Resolution for effects (dpi):") "\" type=\"int\" min=\"1\" max=\"10000\">300</param>"
+            "<param name=\"stretch\" gui-text=\"" N_("Page rounding:") "\" type=\"optiongroup\" appearance=\"combo\">"
+                "<option value=\"absolute\">" N_("Preserve object dimensions") "</option>"
+                "<option value=\"relative\">" N_("Stretch artwork to rounded page dimensions") "</option>"
+            "</param>"
+            "<separator/>"
+            "<label>" N_("RGB interchange: CMYK separations, spot inks, original layers and Illustrator live effects are not preserved. Complex masks and blends need visual review. All pages are exported; page sizes round up to whole PDF points.") "</label>"
+            "<output is_exported=\"true\" priority=\"6\">"
+                "<extension>.ai</extension>"
+                "<mimetype>application/pdf</mimetype>"
+                "<filetypename>" N_("Illustrator interchange (*.ai, PDF-based)") "</filetypename>"
+                "<filetypetooltip>" N_("PDF artwork for Illustrator; not native Illustrator editing data") "</filetypetooltip>"
+                "<dataloss>true</dataloss>"
+                "<savecopyonly>true</savecopyonly>"
+            "</output>"
         "</inkscape-extension>", std::make_unique<CairoRendererPdfOutput>());
     // clang-format on
 

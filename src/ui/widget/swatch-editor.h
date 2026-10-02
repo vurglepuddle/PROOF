@@ -10,8 +10,10 @@
 #include <gtkmm/box.h>
 #include <gtkmm/builder.h>
 #include <gtkmm/button.h>
+#include <gtkmm/checkbutton.h>
 #include <gtkmm/entry.h>
 #include <gtkmm/gridview.h>
+#include <gtkmm/label.h>
 #include <gtkmm/popover.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/searchentry2.h>
@@ -53,6 +55,9 @@ private:
     void rebuild();
     void set_view_list_mode(bool list);
     void update_selection(const std::string& id);
+    // PROOF: spot-ink switch and description for the selected swatch.
+    void update_spot_ui(SPGradient* swatch);
+    void toggle_spot();
 
     Glib::RefPtr<Gtk::Builder> _builder;
     SPDesktop* _desktop = nullptr;
@@ -86,6 +91,9 @@ private:
     Glib::ustring _prefs_path;
     OperationBlocker _update;
     ResizingSeparator& _separator;
+    Gtk::Box _spot_box;
+    Gtk::CheckButton _spot_toggle;
+    Gtk::Label _spot_info;
 };
 
 } // namespace

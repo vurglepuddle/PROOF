@@ -42,6 +42,7 @@ target_sources(inkscape_base PRIVATE
 	quote.h
 	rebase-hrefs.h
 	repr-action-test.h
+	proof-ns.h
 	repr-sorting.h
 	repr.h
 	simple-document.h

@@ -39,6 +39,7 @@
 #include "util/value-utils.h"
 #include "util/variant-visitor.h"
 #include "colors/xml-color.h"
+#include "spot-ink.h"
 
 namespace Inkscape::UI::Dialog {
 namespace {
@@ -78,11 +79,16 @@ ColorItem::ColorItem(DialogBase *dialog)
     common_setup();
 }
 
-ColorItem::ColorItem(Colors::Color color, DialogBase *dialog)
+ColorItem::ColorItem(Colors::Color color, DialogBase *dialog, bool spot, double spot_tint)
     : dialog(dialog)
+    , spot(spot)
+    , spot_tint(spot_tint)
 {
     description = color.getName();
     color_id = color_to_id(color);
+    if (spot) {
+        tooltip = _("Spot ink: applied as a linked document swatch");
+    }
     data = std::move(color);
     common_setup();
 }
@@ -128,6 +134,17 @@ ColorItem::~ColorItem() = default;
 
 bool ColorItem::is_group() const {
     return !dialog && color_id == "-" && !description.empty();
+}
+
+bool ColorItem::is_spot() const
+{
+    if (spot) {
+        return true;
+    }
+    if (auto const graddata = std::get_if<GradientData>(&data); graddata && graddata->gradient) {
+        return SpotInk::read(graddata->gradient->getRepr()).has_value();
+    }
+    return false;
 }
 
 bool ColorItem::is_filler() const {
@@ -184,7 +201,8 @@ void ColorItem::draw_color(Glib::RefPtr<Gtk::Snapshot> const &snapshot, int w, i
         }
     },
     [&] (Colors::Color const &data) {
-        auto const col = to_gtk(data);
+        // PROOF: a tint swatch of a spot ink shows its tinted colour.
+        auto const col = to_gtk(spot && spot_tint < 1.0 ? SpotInk::display_color(data, spot_tint) : data);
         // there's no way to query background color to check if a color item stands out,
         // so we apply faint outline to let users make out color shapes blending with a background
         auto const fg = ::get_color(*this);
@@ -226,6 +244,27 @@ void ColorItem::snapshot_vfunc(Glib::RefPtr<Gtk::Snapshot> const &snapshot)
     int h = get_height();
 
     draw_color(snapshot, w, h);
+
+    // PROOF: spot-ink marker, a white corner triangle with a dot (as in Illustrator).
+    if (is_spot()) {
+        auto const s = std::min(w, h) * 0.5;
+        auto builder = gsk_path_builder_new();
+        gsk_path_builder_move_to(builder, w, h - s);
+        gsk_path_builder_line_to(builder, w, h);
+        gsk_path_builder_line_to(builder, w - s, h);
+        gsk_path_builder_close(builder);
+        auto triangle = gsk_path_builder_free_to_path(builder);
+        auto const white = GdkRGBA{1, 1, 1, 0.95};
+        gtk_snapshot_append_fill(snapshot->gobj(), triangle, GSK_FILL_RULE_WINDING, &white);
+        gsk_path_unref(triangle);
+
+        builder = gsk_path_builder_new();
+        gsk_path_builder_add_circle(builder, pass_in(Geom::Point(w - s * 0.3, h - s * 0.3)), s * 0.12);
+        auto dot = gsk_path_builder_free_to_path(builder);
+        auto const black = GdkRGBA{0, 0, 0, 0.9};
+        gtk_snapshot_append_fill(snapshot->gobj(), dot, GSK_FILL_RULE_WINDING, &black);
+        gsk_path_unref(dot);
+    }
 
     // Draw fill/stroke indicators.
     if (is_fill || is_stroke) {
@@ -324,6 +363,12 @@ void ColorItem::on_click(bool stroke)
     if (is_paint_none()) {
         sp_repr_css_set_property(css.get(), attr_name, "none");
         description = stroke ? RC_("Undo", "Set stroke color to none") : RC_("Undo", "Set fill color to none");
+    } else if (auto const color = std::get_if<Colors::Color>(&data); color && spot) {
+        // PROOF: link to the ink's document swatch, creating it on first use.
+        auto name = color->getName().empty() ? std::string(_("Unnamed ink")) : color->getName();
+        auto id = SpotInk::ensure(desktop->getDocument(), SpotInk::Ink{name, *color, spot_tint});
+        sp_repr_css_set_property_string(css.get(), attr_name, "url(#" + id + ")");
+        description = stroke ? RC_("Undo", "Set stroke to spot ink") : RC_("Undo", "Set fill to spot ink");
     } else if (auto const color = std::get_if<Colors::Color>(&data)) {
         sp_repr_css_set_property_string(css.get(), attr_name, color->toString());
         description = stroke ? RC_("Undo", "Set stroke color from swatch") : RC_("Undo", "Set fill color from swatch");

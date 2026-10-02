@@ -655,7 +655,7 @@ InkscapeApplication::InkscapeApplication()
     _start_main_option_section(_("File export"));
     gapp->add_main_option_entry(T::OptionType::FILENAME, "export-filename",        'o', N_("Output file name (defaults to input filename; file type is guessed from extension if present; use '-' to write to stdout)"), N_("FILENAME"));
     gapp->add_main_option_entry(T::OptionType::BOOL,     "export-overwrite",      '\0', N_("Overwrite input file (otherwise add '_out' suffix if type doesn't change)"), "");
-    gapp->add_main_option_entry(T::OptionType::STRING,   "export-type",           '\0', N_("File type(s) to export: [svg,png,ps,eps,pdf,emf,wmf,xaml]"), N_("TYPE[,TYPE]*"));
+    gapp->add_main_option_entry(T::OptionType::STRING,   "export-type",           '\0', N_("File type(s) to export: [svg,png,ps,eps,pdf,ai,emf,wmf,xaml]"), N_("TYPE[,TYPE]*"));
     gapp->add_main_option_entry(T::OptionType::STRING,   "export-extension",      '\0', N_("Extension ID to use for exporting"),                         N_("EXTENSION-ID"));
 
     // Export - Geometry

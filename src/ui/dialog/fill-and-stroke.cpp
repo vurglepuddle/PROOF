@@ -225,7 +225,7 @@ void FillAndStroke::_ConnectPaintSignals(UI::Widget::PaintSwitch *paint_switch, 
             }
             case EditOperation::Rename: {
                 if (vector && !label.empty()) {
-                    vector->setLabel(label.c_str());
+                    sp_rename_swatch(vector, label);
                     DocumentUndo::maybeDone(doc, "swatch-rename", RC_("Undo", "Rename swatch"), INKSCAPE_ICON("dialog-fill-and-stroke"));
                 }
                 break;

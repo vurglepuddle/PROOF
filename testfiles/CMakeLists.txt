@@ -67,6 +67,8 @@ set(TEST_SOURCES
     async_funclog-test
     async_progress-test
     boolop-attr-test
+    spot-ink-test
+    cmyk-picker-test
     colors/cms-system-test
     colors/document-cms-test
     colors/dragndrop-test

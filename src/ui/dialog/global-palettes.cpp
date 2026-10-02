@@ -23,6 +23,10 @@
 #include "colors/manager.h"
 
 #include "colors/spaces/lab.h"
+#include "ui/dialog/ai-palette.h"
+#ifdef WITH_POPPLER
+#include "extension/internal/pdfinput/ai-private-data.h"
+#endif
 #include "io/resource.h"
 #include "io/sys.h"
 #include "ui/dialog/choose-file.h"
@@ -205,6 +209,16 @@ void load_acb_palette(PaletteFileData& palette, std::string const &fname) {
             palette.colors.emplace_back(std::move(color));
         }
     }
+
+    // PROOF: books end with an 8-byte marker, "spflspot" for spot-ink books (Pantone solids)
+    // or "spflproc" for process books. Older books may have none; those stay plain colours.
+    if (read_string(stream, 8) == "spflspot") {
+        for (auto &entry : palette.colors) {
+            if (auto color = std::get_if<Color>(&entry)) {
+                entry = PaletteFileData::SpotColor{std::move(*color)};
+            }
+        }
+    }
 }
 
 void load_ase_swatches(PaletteFileData& palette, std::string const &fname) {
@@ -254,13 +268,27 @@ void load_ase_swatches(PaletteFileData& palette, std::string const &fname) {
             for (unsigned i = 0; i < space->getComponentCount(); i++) {
                 data.emplace_back(read_float(stream));
             }
+            if (it->second == Space::Type::LAB && data.size() >= 3) {
+                // ASE stores L as 0..1 (fraction of 100) but a and b as actual values
+                // (about -128..127). Inkscape's Lab keeps a and b scaled to 0..1.
+                // Passing them through raw turned e.g. ORACAL white into cyan.
+                using Lab = Space::Lab;
+                auto const span = Lab::MAX_SCALE - Lab::MIN_SCALE;
+                data[1] = (data[1] - Lab::MIN_SCALE) / span;
+                data[2] = (data[2] - Lab::MIN_SCALE) / span;
+            }
             auto color = Color(space, data);
 
-            read_value<uint16_t>(stream); // type uint16, ignored for now
-            // auto mode = to_mode(type); Is this used? 0, Global, 1, Spot, else Normal
+            // Swatch type: 0 global, 1 spot, 2 normal. PROOF keeps spot inks as spot entries;
+            // global process swatches are still applied as plain colours.
+            auto const type = read_value<uint16_t>(stream);
 
             color.setName(color_name);
-            palette.colors.emplace_back(color);
+            if (type == 1) {
+                palette.colors.emplace_back(PaletteFileData::SpotColor{std::move(color)});
+            } else {
+                palette.colors.emplace_back(std::move(color));
+            }
         }
         else if (block_type == 0xc002) { // group end
         }
@@ -273,6 +301,28 @@ void load_ase_swatches(PaletteFileData& palette, std::string const &fname) {
     palette.name = Glib::path_get_basename(fname);
     auto ext = get_extension(palette.name);
     if (ext == ".ase") palette.name = palette.name.substr(0, palette.name.size() - ext.size());
+}
+
+// PROOF: load the swatches of an Illustrator document (.ai swatch library).
+void load_ai_swatches(PaletteFileData &palette, std::string const &path)
+{
+#ifdef WITH_POPPLER
+    std::string error;
+    // Swatches live in the setup section; stop decoding once the palette has been read.
+    auto records = Inkscape::Extension::Internal::read_ai_native_records(path, "%AI5_EndPalette",
+                                                                         512u * 1024 * 1024, error);
+    if (!records) {
+        throw std::runtime_error(error);
+    }
+    if (!parse_ai_palette(records->text, palette)) {
+        throw std::runtime_error(_("No swatches found in this Illustrator file."));
+    }
+    palette.name = Glib::path_get_basename(path);
+    auto ext = get_extension(palette.name);
+    if (ext == ".ai") palette.name = palette.name.substr(0, palette.name.size() - ext.size());
+#else
+    throw std::runtime_error(_("Reading Illustrator swatches requires PDF import support."));
+#endif
 }
 
 // Load GIMP color palette
@@ -392,6 +442,8 @@ PaletteResult load_palette(std::string const &path)
             load_acb_palette(p, path);
         } else if (ext == ".ase") {
             load_ase_swatches(p, path);
+        } else if (ext == ".ai") {
+            load_ai_swatches(p, path);
         } else {
             load_gimp_palette(p, path);
         }
@@ -412,7 +464,7 @@ PaletteResult load_palette(std::string const &path)
 GlobalPalettes::GlobalPalettes()
 {
     // Load the palettes.
-    for (auto const &path : Inkscape::IO::Resource::get_filenames(Inkscape::IO::Resource::PALETTES, {".gpl", ".acb", ".ase"})) {
+    for (auto const &path : Inkscape::IO::Resource::get_filenames(Inkscape::IO::Resource::PALETTES, {".gpl", ".acb", ".ase", ".ai"})) {
         auto res = load_palette(path);
         if (res.palette) {
             _palettes.emplace_back(std::move(*res.palette));
@@ -449,7 +501,8 @@ Glib::RefPtr<Gio::File> choose_palette_file(Gtk::Window* window) {
     static std::vector<std::pair<Glib::ustring, Glib::ustring>> const filters{
         {_("Gimp Color Palette"), "*.gpl"},
         {_("Adobe Color Book"), "*.acb"},
-        {_("Adobe Swatch Exchange"), "*.ase"}
+        {_("Adobe Swatch Exchange"), "*.ase"},
+        {_("Adobe Illustrator swatches"), "*.ai"}
     };
     return choose_file_open(_("Load color palette"), window, filters, current_folder);
 }

@@ -231,7 +231,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
                         do_export_ps_pdf(doc, filename_out, "image/x-postscript", *oext);
                     } else if (type == "eps") {
                         do_export_ps_pdf(doc, filename_out, "image/x-e-postscript", *oext);
-                    } else if (type == "pdf") {
+                    } else if (type == "pdf" || type == "ai") {
                         do_export_ps_pdf(doc, filename_out, "application/pdf", *oext);
                     } else {
                         do_export_extension(doc, filename_out, oext);
@@ -860,12 +860,16 @@ int InkFileExportCmd::do_export_ps_pdf(SPDocument *doc, std::string const &filen
 {
     // check if the passed extension conforms to the mime type.
     assert(std::string(extension.get_mimetype()) == mime_type);
+    bool const ai_interchange = std::string(extension.get_id()) == "org.inkscape.output.ai.pdf";
     // Start with options that are once per document.
 
     // Set export options.
     if (export_text_to_path) {
         extension.set_param_optiongroup("textToPath", "paths");
-    } else if (export_latex) {
+    } else if (ai_interchange) {
+        // Do not inherit "paths" from an earlier CLI export or GUI choice.
+        extension.set_param_optiongroup("textToPath", "embed");
+    } else if (export_latex && extension.get_param_optiongroup_contains("textToPath", "LaTeX")) {
         extension.set_param_optiongroup("textToPath", "LaTeX");
     }
 
@@ -874,7 +878,8 @@ int InkFileExportCmd::do_export_ps_pdf(SPDocument *doc, std::string const &filen
     } else {
         extension.set_param_bool("blurToBitmap", true);
 
-        gdouble dpi = 96.0;
+        // The Illustrator interchange preset uses print-sized effect rasters.
+        gdouble dpi = ai_interchange ? 300.0 : 96.0;
         if (export_dpi) {
             dpi = export_dpi;
             if ((dpi < 1) || (dpi > 10000.0)) {
@@ -887,7 +892,11 @@ int InkFileExportCmd::do_export_ps_pdf(SPDocument *doc, std::string const &filen
     }
 
     // handle --export-pdf-version
-    if (mime_type == "application/pdf") {
+    if (ai_interchange) {
+        // The generic CLI defaults to PDF 2.0. This format deliberately uses
+        // Cairo's supported older versions, regardless of that generic default.
+        extension.set_param_optiongroup("PDFversion", export_pdf_level == "1.4" ? "PDF-1.4" : "PDF-1.5");
+    } else if (mime_type == "application/pdf") {
         bool set_export_pdf_version_fail = true;
         const gchar *pdfver_param_name = "PDFversion";
         if (!export_pdf_level.empty()) {

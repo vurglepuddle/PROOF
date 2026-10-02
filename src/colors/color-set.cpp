@@ -207,16 +207,8 @@ std::optional<Color> ColorSet::get() const
  */
 bool ColorSet::_set(std::string const &id, Color const &other)
 {
-    auto it = _colors_index.find(id);
-    if (it != _colors_index.end()) {
-        auto &color = _colors[it->second].second;
-
-        auto was = color;
-        color.set(other, true);
-        return was != color;
-    }
-
-    // Add a new entry for this id
+    // Loading a selection must retain its color space, not the previous
+    // selection's space. Only explicit constraints may convert incoming data.
     Color copy = other;
 
     // Enforce constraints on space and alpha if any
@@ -227,6 +219,12 @@ bool ColorSet::_set(std::string const &id, Color const &other)
         copy.enableOpacity(*_alpha_constraint);
     }
 
+    auto it = _colors_index.find(id);
+    if (it != _colors_index.end()) {
+        return _colors[it->second].second.set(copy, false);
+    }
+
+    // Add a new entry for this id
     size_t pos = _colors.size();
     _colors.emplace_back(id, copy);
     _colors_index.emplace(_colors.back().first, pos);

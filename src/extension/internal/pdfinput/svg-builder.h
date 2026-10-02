@@ -53,6 +53,7 @@ class Function;
 class GfxState;
 struct GfxColor;
 class GfxColorSpace;
+class GfxSeparationColorSpace;
 enum GfxClipType;
 struct GfxRGB;
 class GfxPath;
@@ -251,8 +252,13 @@ private:
     static bool _attrEqual(Inkscape::XML::Node *a, Inkscape::XML::Node *b, char const *attr);
 
     // Colors
-    std::string convertGfxColor(const GfxColor &color, GfxColorSpace *space, Colors::RenderingIntent intent);
-    std::string convertGfxColor(const GfxColor *color, GfxColorSpace *space, Colors::RenderingIntent intent);
+    // as_paint: the result is a fill/stroke value, so a spot ink may be returned as url(#swatch).
+    // Otherwise (gradient stops, masks) a spot ink becomes its tinted alternate colour.
+    std::string convertGfxColor(const GfxColor &color, GfxColorSpace *space, Colors::RenderingIntent intent,
+                                bool as_paint = false);
+    std::string convertGfxColor(const GfxColor *color, GfxColorSpace *space, Colors::RenderingIntent intent,
+                                bool as_paint = false);
+    std::string _convertSeparation(const GfxColor &color, GfxSeparationColorSpace *space, bool as_paint);
     std::string _getColorSpace(cmsHPROFILE hp, Colors::RenderingIntent intent);
     std::shared_ptr<Colors::Space::AnySpace> _getColorSpace(std::shared_ptr<Colors::CMS::Profile> const &profile, Colors::RenderingIntent intent);
 

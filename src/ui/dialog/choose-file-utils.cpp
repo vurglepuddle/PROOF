@@ -123,7 +123,7 @@ create_open_filters() {
 // Optionally, return a custom list for the Save dialog (hopefully to disappear).
 // With native dialogs, we can only examine the file path on return.
 Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>>
-create_export_filters(bool for_save) {
+create_export_filters(bool for_save, bool allow_save_copy) {
 
     auto filters = Gio::ListStore<Gtk::FileFilter>::create();
 
@@ -143,12 +143,12 @@ create_export_filters(bool for_save) {
         // std::cout << "  " << extension
         //           << "  exported: " << std::boolalpha << omod->is_exported()
         //           << "  raster: "   << std::boolalpha << omod->is_raster()
-        //           << "  save copy only: " << std::boolalpha << omod->savecopy_only()  // Always false!
+        //           << "  save copy only: " << std::boolalpha << omod->savecopy_only()
         //           << "  " << omod->get_filetypename()
         //           << std::endl;
 
         // Save dialogs cannot handle raster images.
-        if (for_save && omod->is_raster()) {
+        if (for_save && (omod->is_raster() || (omod->savecopy_only() && !allow_save_copy))) {
             continue;
         }
 

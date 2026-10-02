@@ -26,7 +26,7 @@ void get_start_directory(std::string &start_path, Glib::ustring const &prefs_pat
 [[nodiscard]] Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>> create_open_filters();
 
 /// Create a Gtk::FileFilter for all export file types.
-[[nodiscard]] Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>> create_export_filters(bool for_save = false);
+[[nodiscard]] Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>> create_export_filters(bool for_save = false, bool allow_save_copy = false);
 
 
 } // namespace Inkscape::UI::Dialog

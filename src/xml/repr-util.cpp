@@ -23,6 +23,7 @@
 
 #include "svg/svg-length.h"
 
+#include "xml/proof-ns.h"
 #include "xml/repr.h"
 #include "xml/repr-sorting.h"
 
@@ -99,11 +100,14 @@ static void sp_xml_ns_register_defaults()
 
     defaults[6].uri = g_quark_from_static_string(SP_DC_NS_URI);
     defaults[6].prefix = g_quark_from_static_string("dc");
-    defaults[6].next = &defaults[8];
+    defaults[6].next = &defaults[7];
 
     //defaults[7].uri = g_quark_from_static_string("https://inkscape.org/namespaces/deprecated/osb");
     //defaults[7].prefix = g_quark_from_static_string("osb");
-    //defaults[7].next = &defaults[8];
+    // PROOF: slot 7 now holds the PROOF extension namespace (spot inks).
+    defaults[7].uri = g_quark_from_static_string(SP_PROOF_NS_URI);
+    defaults[7].prefix = g_quark_from_static_string(SP_PROOF_NS_PREFIX);
+    defaults[7].next = &defaults[8];
 
     // Inkscape versions prior to 0.44 would write this namespace
     // URI instead of the correct sodipodi namespace; by adding this
