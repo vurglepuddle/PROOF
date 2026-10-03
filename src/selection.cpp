@@ -26,6 +26,7 @@
 #include <glibmm/i18n.h>
 
 #include "desktop.h"
+#include "ui/widget/canvas/framecheck.h"
 #include "document-undo.h"
 #include "document.h"
 #include "inkscape.h"
@@ -86,6 +87,7 @@ gboolean Selection::_emit_modified(Selection *selection)
 
 void Selection::_emitModified(guint flags)
 {
+    auto framecheck = FrameCheck::maybe("selection_modified");
     _modified_signal.emit(this, flags);
 
     if (!_desktop || isEmpty()) {

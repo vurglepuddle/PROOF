@@ -303,6 +303,9 @@ public:
     Geom::Point displacement, velocity;
     void autoscroll_begin(Geom::Point const &to);
     void autoscroll_end();
+
+    // PROOF: frame-clock hook that brings the document up to date before each frame.
+    gulong before_paint_handler = 0;
 };
 
 /*
@@ -550,10 +553,26 @@ void Canvas::on_realize()
     parent_type::on_realize();
     d->activate_graphics();
     if (_drawing) d->activate();
+
+    // PROOF: on Windows GTK starts frames back to back while panels are repainting during a drag,
+    // starving idle callbacks. The document update the canvas waits for then ran only every
+    // ~90 ms. Run it before each frame instead: after input is flushed, before layout and paint.
+    d->before_paint_handler = g_signal_connect(gtk_widget_get_frame_clock(GTK_WIDGET(gobj())), "before-paint",
+        G_CALLBACK(+[] (GdkFrameClock *, Canvas *canvas) {
+            if (auto desktop = canvas->get_desktop(); desktop && desktop->getDocument()) {
+                auto framecheck = canvas->d->prefs.debug_framecheck ? FrameCheck::Event("frame_document_update")
+                                                                     : FrameCheck::Event();
+                desktop->getDocument()->flushPendingUpdates();
+            }
+        }), this);
 }
 
 void Canvas::on_unrealize()
 {
+    if (d->before_paint_handler) {
+        g_signal_handler_disconnect(gtk_widget_get_frame_clock(GTK_WIDGET(gobj())), d->before_paint_handler);
+        d->before_paint_handler = 0;
+    }
     if (_drawing) d->deactivate();
     d->deactivate_graphics();
     parent_type::on_unrealize();
@@ -600,6 +619,7 @@ void CanvasPrivate::schedule_redraw(bool instant)
     }
 
     redraw_active = true;
+    if (prefs.debug_framecheck) FrameCheck::Event("redraw_scheduled");
 
     auto callback = [this] {
         if (q->get_opengl_enabled()) {
@@ -624,6 +644,7 @@ void CanvasPrivate::schedule_redraw(bool instant)
 void CanvasPrivate::launch_redraw()
 {
     assert(redraw_active);
+    if (prefs.debug_framecheck) FrameCheck::Event("redraw_launched");
 
     if (q->_render_mode != render_mode) {
         if ((render_mode == RenderMode::OUTLINE_OVERLAY) != (q->_render_mode == RenderMode::OUTLINE_OVERLAY) && !q->get_opengl_enabled()) {
@@ -758,6 +779,7 @@ void CanvasPrivate::launch_redraw()
 void CanvasPrivate::after_redraw()
 {
     assert(redraw_active);
+    if (prefs.debug_framecheck) FrameCheck::Event("redraw_finished");
 
     // Unsnapshot the CanvasItems and DrawingItems.
     canvasitem_ctx->unsnapshot();

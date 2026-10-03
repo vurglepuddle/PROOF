@@ -26,6 +26,7 @@
 #include "ui/tools/tool-base.h" // get_latin_keyval
 #include "ui/util.h"
 #include "ui/widget/canvas.h"
+#include "ui/widget/canvas/framecheck.h"
 
 namespace Inkscape::UI::Dialog {
 
@@ -180,14 +181,18 @@ void DialogBase::setDesktop(SPDesktop *new_desktop)
             selection = sel;
             _select_changed = selection->connectChanged([this](Inkscape::Selection *selection) {
                 _changed_while_hidden = !_showing;
-                if (_showing)
+                if (_showing) {
+                    auto framecheck = FrameCheck::maybe(_name.c_str(), 1);
                     selectionChanged(selection);
+                }
             });
             _select_modified = selection->connectModified([this](Inkscape::Selection *selection, guint flags) {
                 _modified_while_hidden = !_showing;
                 _modified_flags = flags;
-                if (_showing)
+                if (_showing) {
+                    auto framecheck = FrameCheck::maybe(_name.c_str());
                     selectionModified(selection, flags);
+                }
             });
         }
 

@@ -56,6 +56,7 @@
 #include "ui/shortcuts.h"
 #include "ui/util.h"
 #include "ui/widget/desktop-widget.h"
+#include "ui/widget/canvas/framecheck.h"
 #include "util/enums.h"
 
 using Inkscape::UI::Dialog::DialogManager;
@@ -205,6 +206,26 @@ void InkscapeWindow::on_realize()
     _toplevel_state_connection = get_toplevel()->property_state().signal_changed().connect(
         sigc::mem_fun(*this, &InkscapeWindow::on_toplevel_state_changed)
     );
+
+    // PROOF: with Framecheck on, log GTK's own frame phases for the whole window. These handlers
+    // run after GTK's, so each phase is measured from the end of the previous one.
+    if (Inkscape::FrameCheck::enabled()) {
+        static gint64 last = 0;
+        auto phase = +[] (GdkFrameClock *, gpointer name) {
+            auto now = g_get_monotonic_time();
+            if (name) {
+                Inkscape::FrameCheck::Event event(static_cast<char const *>(name));
+                event.start = last;
+            }
+            last = now;
+        };
+        auto clock = G_OBJECT(gtk_widget_get_frame_clock(GTK_WIDGET(gobj())));
+        g_signal_connect(clock, "before-paint", G_CALLBACK(phase), nullptr);
+        g_signal_connect(clock, "update", G_CALLBACK(phase), (gpointer) "gtk_update");
+        g_signal_connect(clock, "layout", G_CALLBACK(phase), (gpointer) "gtk_layout");
+        g_signal_connect(clock, "paint", G_CALLBACK(phase), (gpointer) "gtk_paint");
+        g_signal_connect(clock, "after-paint", G_CALLBACK(phase), (gpointer) "gtk_after_paint");
+    }
 }
 
 InkscapeWindow::~InkscapeWindow() = default;

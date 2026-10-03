@@ -161,6 +161,9 @@ public:
     bool rerouting_handler();
 
     void requestModified();
+    /// PROOF: run pending idle updates now. While GTK paints back-to-back frames on Windows,
+    /// idle callbacks are starved; the canvas calls this before each frame.
+    void flushPendingUpdates();
     bool _updateDocument(int flags, unsigned int object_modified_tag = 0); // Used by stand-alone sp_document_idle_handler
     int ensureUpToDate(unsigned int object_modified_tag = 0);
 

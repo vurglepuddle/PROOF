@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "framecheck.h"
+#include "preferences.h"
 
 namespace fs = std::filesystem;
 
@@ -23,6 +24,11 @@ void Event::write()
 
     auto lock = std::lock_guard(mutex);
     logfile << name << ' ' << start << ' ' << g_get_monotonic_time() << ' ' << subtype << std::endl;
+}
+
+bool enabled()
+{
+    return Preferences::get()->getBool("/options/rendering/debug_framecheck");
 }
 
 } // namespace Inkscape::FrameCheck
