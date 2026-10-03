@@ -44,6 +44,9 @@ public:
     };
 
     void setBboxesVisible(bool visible);
+    /// PROOF: hide the cue while the selection is being dragged, as Illustrator does. It would
+    /// otherwise trail behind the moving objects; it reappears at the result on release.
+    void setTransforming(bool transforming);
 
 private:
     class BoundingBoxPrefsObserver: public Preferences::Observer
@@ -68,6 +71,8 @@ private:
     void _boundingBoxPrefsChanged(int prefs_bbox);
 
     bool _bboxes_visible = true;
+    bool _transforming = false;
+    bool _visible() const { return _bboxes_visible && !_transforming; }
     SPDesktop *_desktop;
     Selection *_selection;
     sigc::connection _sel_changed_connection;

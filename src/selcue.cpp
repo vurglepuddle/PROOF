@@ -102,7 +102,7 @@ void SelCue::_updateItemBboxes(gint mode, int prefs_bbox)
                 } else if (auto rect = dynamic_cast<CanvasItemRect *>(canvas_item)) {
                     rect->set_rect(*b);
                 }
-                canvas_item->set_visible(_bboxes_visible);
+                canvas_item->set_visible(_visible());
             } else { // no bbox
                 canvas_item->set_visible(false);
             }
@@ -150,7 +150,7 @@ void SelCue::_newItemBboxes()
             if (canvas_item) {
                 canvas_item->set_pickable(false);
                 canvas_item->lower_to_bottom(); // Just low enough to not get in the way of other draggable knots.
-                canvas_item->set_visible(_bboxes_visible);
+                canvas_item->set_visible(_visible());
                 _item_bboxes.emplace_back(std::move(canvas_item));
             }
         }
@@ -176,7 +176,7 @@ void SelCue::_newItemLines()
         for (bool horz : {false, true}) {
             auto line = make_canvasitem<CanvasItemGuideLine>(_desktop->getCanvasGuides(), "", point, Geom::Point(!horz, horz));
             line->lower_to_bottom();
-            line->set_visible(true);
+            line->set_visible(!_transforming);
             line->set_stroke(0xddddaa11);
             line->set_inverted(true);
             _item_lines.emplace_back(std::move(line));
@@ -200,7 +200,7 @@ void SelCue::_newTextBaselines()
             auto canvas_item = make_canvasitem<CanvasItemCtrl>(_desktop->getCanvasControls(), CANVAS_ITEM_CTRL_TYPE_SIZER, (*pt) * item->i2dt_affine());
             canvas_item->set_size(Inkscape::HandleSize::XTINY);
             canvas_item->lower_to_bottom();
-            canvas_item->set_visible(true);
+            canvas_item->set_visible(!_transforming);
             _text_baselines.emplace_back(std::move(canvas_item));
         }
     }
@@ -222,6 +222,15 @@ void SelCue::_boundingBoxPrefsChanged(int prefs_bbox)
 void SelCue::setBboxesVisible(bool visible)
 {
     _bboxes_visible = visible;
+    _updateItemBboxes();
+}
+
+void SelCue::setTransforming(bool transforming)
+{
+    if (_transforming == transforming) {
+        return;
+    }
+    _transforming = transforming;
     _updateItemBboxes();
 }
 

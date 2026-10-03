@@ -243,6 +243,7 @@ void Inkscape::SelTrans::grab(Geom::Point const &p, gdouble x, gdouble y, bool s
 
     _grabbed = true;
     _show_handles = show_handles;
+    _selcue.setTransforming(true);
     _updateVolatileState();
     _current_relative_affine.setIdentity();
 
@@ -517,6 +518,7 @@ void Inkscape::SelTrans::ungrab()
     }
 
     _desktop->getSnapIndicator()->remove_snaptarget();
+    _selcue.setTransforming(false);
 }
 
 /* fixme: This is really bad, as we compare positions for each stamp (Lauris) */
