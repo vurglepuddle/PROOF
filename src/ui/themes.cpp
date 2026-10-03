@@ -453,6 +453,24 @@ void ThemeContext::add_gtk_css(bool only_providers, bool cached)
     }
 #endif
 
+    // PROOF: square corners everywhere, above the theme and style.css but below user.css.
+    style = get_filename(UIS, "proof-square.css");
+    if (!style.empty()) {
+        static Glib::RefPtr<Gtk::CssProvider> _squareprovider;
+        if (_squareprovider) {
+            Gtk::StyleProvider::remove_provider_for_display(display, _squareprovider);
+        }
+        if (!_squareprovider) {
+            _squareprovider = Gtk::CssProvider::create();
+        }
+        try {
+            _squareprovider->load_from_path(style);
+        } catch (const Gtk::CssParserError &ex) {
+            g_critical("CSSProviderError::load_from_path(): failed to load '%s'\n(%s)", style.c_str(), ex.what());
+        }
+        Gtk::StyleProvider::add_provider_for_display(display, _squareprovider, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+    }
+
     style = get_filename(UIS, "user.css");
     if (!style.empty()) {
         if (_userprovider) {
