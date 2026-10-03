@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ * PROOF: square corners throughout the interface: windows and dialogs (including the file
+ * dialogs), menus, popovers, tooltips, buttons, fields, tabs, lists and scroll bars.
+ *
+ * Loaded above the GTK theme and style.css (see ThemeContext::add_gtk_css), so this one rule
+ * wins over any rounded rule there, whatever its specificity. user.css still loads above it.
+ * Radio buttons stay round: there the circle tells them apart from check boxes.
+ */
+* { border-radius: 0; }
+
+radio { border-radius: 100%; }
