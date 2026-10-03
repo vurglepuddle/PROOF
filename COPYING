@@ -1,7 +1,15 @@
-Inkscape license
-================
+PROOF license and attribution
+============================
 
-Most Inkscape source code is available under the GNU General Public License, version 2 or later.
+PROOF is a modified fork of Inkscape (https://inkscape.org/), developed
+independently of the upstream project. It retains Inkscape's licensing terms,
+copyright notices, and contributor credits. See AUTHORS for the inherited
+contributor list and individual source files for copyright attribution.
+See CREDITS.md for project acknowledgments, major components, and format-research
+references.
+
+Most source code is available under the GNU General Public License, version 2
+or later (GPL-2.0-or-later).
 
 Notable exceptions are:
 - all javascript polyfill libraries are CC0 / Public Domain
@@ -9,27 +17,31 @@ Notable exceptions are:
 - a few files copied from GIMP, which are available under GNU (L)GPL version 3 or later.
 - a few files which are dual-licensed, which means that they offer the additional permission to alternatively use them under another license.
 
-As such, the complete binaries of Inkscape are currently covered by the terms of GNU GPL version 3 or later.
+The complete application binaries are covered by the GNU General Public
+License, version 3 or later (GPL-3.0-or-later), as in the upstream project.
+PROOF's name and branding do not replace the licenses of inherited code or
+third-party components.
 
-License of individual source files 
-==================================
+Individual files and third-party components
+==========================================
 
-The license of each individual inkscape source file can be found in the first few lines after "SPDX-License-Identifier:". The license text of every such license can be found in LICENSES/. Some files are dual-licensed, e.g. "GPL-2.0-or-later OR MPL-1.1", which means you can choose one of these licenses.
+The license of each source file is identified by its SPDX-License-Identifier
+header where present. Full license texts are retained in LICENSES/, including:
+- LICENSES/GPL-2.0-or-later.txt
+- LICENSES/GPL-3.0-or-later.txt
 
-Libraries have their COPYING or LICENSE file in the respective subdirectory.
+Some files are dual-licensed, for example GPL-2.0-or-later OR MPL-1.1, allowing
+a choice between those licenses.
+
+Libraries also retain their own COPYING or LICENSE files in their respective
+subdirectories. Those notices and terms continue to apply.
 
 See also https://spdx.org/licenses/ for the full license texts, and https://spdx.org/ids for the standardized header format.
 
 
-License Compatibility
-=====================
+License references
+==================
 
-Suggested reading for license version compatibility: https://www.gnu.org/licenses/gpl-faq.html#AllCompatibility
-
-Roughly summarized (I am not a lawyer, this is not legal advice):
-- You may legally make the following license changes without having to ask anyone:
-  LGPL-2.1-or-later -> GPL-2.0-or-later -> GPL-3.0-or-later
-  LGPL-3.0-or-later -> GPL-3.0-or-later
-- Due to that, the resulting inkscape must be under GPL-3.0-or-later.
-- Any license that is not "-or-later" is evil and must not be used in the inkscape project.
+GNU license compatibility guidance:
+https://www.gnu.org/licenses/gpl-faq.html#AllCompatibility
 

@@ -144,6 +144,6 @@ Some libraries can cause trouble if they are picked up from the SDK instead of H
 
 
 ## See also
-- [Contributing and Developing](../../CONTRIBUTING.md)
-- [Advanced Information on Compiling Inkscape](doc/build/general_advanced.md)
+- [PROOF project overview](../../README.md)
+- [Advanced Information on Compiling Inkscape](general_advanced.md)
 

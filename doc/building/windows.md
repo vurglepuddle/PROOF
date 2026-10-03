@@ -103,8 +103,8 @@ For some additional details which have not been incorporated into this page yet,
 To install the self-built Inkscape, generate an EXE or MSI installer as described above and run it.
 
 ## See also
-- [Contributing and Developing](../../CONTRIBUTING.md)
-- [Advanced Information on Compiling Inkscape](doc/build/general_advanced.md)
+- [PROOF project overview](../../README.md)
+- [Advanced Information on Compiling Inkscape](general_advanced.md)
 
 ## Troubleshooting
 
@@ -168,4 +168,4 @@ Some background information on why the build flags were chosen.
 
 - `-DBUILD_SHARED_LIBS=OFF` avoids trying to build with [too many debug symbols](https://stackoverflow.com/questions/47135973/error-export-ordinal-too-large-104116).
 - `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` results in `build/compile_commands.json`. IntelliSense in VSCode uses this to avoid reporting false errors in the code.
-- The other build flags are the recommended default also for [Linux](../linux.md).
+- The other build flags are the recommended default also for [Linux](linux.md).
