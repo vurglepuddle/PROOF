@@ -619,6 +619,13 @@ void DialogContainer::load_container_state(Glib::KeyFile *keyfile, bool include_
             if (floating) {
                 dialog_window = new DialogWindow(_inkscape_window, nullptr);
                 if (dialog_window) {
+                    // PROOF: size the window before adding dialogs, as recreate_dialogs_from_state()
+                    // does. Adding a dialog can show the window, and GTK ignores a default size
+                    // set after that, so saved floating windows came back at the initial size and
+                    // the next save recorded that, shrinking them for good.
+                    if (has_position) {
+                        dm_restore_window_position(*dialog_window, pos);
+                    }
                     active_container = dialog_window->get_container();
                     active_columns = dialog_window->get_container()->get_columns();
                 }
@@ -724,9 +731,7 @@ void DialogContainer::load_container_state(Glib::KeyFile *keyfile, bool include_
         }
 
         if (dialog_window) {
-            if (has_position) {
-                dm_restore_window_position(*dialog_window, pos);
-            } else {
+            if (!has_position) {
                 dialog_window->update_window_size_to_fit_children();
             }
 
