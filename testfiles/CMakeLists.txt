@@ -68,6 +68,7 @@ set(TEST_SOURCES
     async_progress-test
     boolop-attr-test
     spot-ink-test
+    box-frame-test
     cmyk-picker-test
     colors/cms-system-test
     colors/document-cms-test

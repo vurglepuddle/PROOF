@@ -24,6 +24,7 @@
 #include "preferences.h"
 
 class  SPDesktop;
+class  SPItem;
 
 namespace Inkscape {
 
@@ -71,6 +72,8 @@ private:
     void _newItemBboxes();
     void _newItemLines();
     void _newTextBaselines();
+    void _newItemCenters();
+    bool _setItemBox(CanvasItem &canvas_item, SPItem &item, int prefs_bbox) const;
     void _boundingBoxPrefsChanged(int prefs_bbox);
 
     bool _bboxes_visible = true;
@@ -84,6 +87,7 @@ private:
     std::vector<CanvasItemPtr<CanvasItem>> _item_bboxes;
     std::vector<CanvasItemPtr<CanvasItem>> _text_baselines;
     std::vector<CanvasItemPtr<CanvasItem>> _item_lines;
+    std::vector<CanvasItemPtr<CanvasItem>> _item_centers; ///< PROOF: centres of shapes in the selection
 
     BoundingBoxPrefsObserver _bounding_box_prefs_observer;
 };

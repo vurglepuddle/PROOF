@@ -16,6 +16,7 @@
 #include <glibmm/i18n.h>
 
 #include "actions-helper.h"
+#include "box-frame.h"
 
 
 #include "colors/document-colors.h"
@@ -46,7 +47,9 @@ void prune_inkscape_from_node(Inkscape::XML::Node *repr)
             std::vector<gchar const*> attrsRemoved;
             for ( const auto & it : repr->attributeList()) {
                 const gchar* attrName = g_quark_to_string(it.key);
-                if ((strncmp("inkscape:", attrName, 9) == 0) || (strncmp("sodipodi:", attrName, 9) == 0)) {
+                // PROOF: the box angle is editor state too; spot inks (proof:ink...) stay.
+                if ((strncmp("inkscape:", attrName, 9) == 0) || (strncmp("sodipodi:", attrName, 9) == 0) ||
+                    strcmp(Inkscape::BOX_ANGLE_ATTRIBUTE, attrName) == 0) {
                     attrsRemoved.push_back(attrName);
                 }
             }

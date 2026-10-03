@@ -360,13 +360,15 @@ bool CanvasItemCtrl::_pick_zone_contains(Geom::Point const &p) const
     auto const a = z.a * affine();
     auto const b = z.b * affine();
 
-    if (z.outward != Geom::Point(0, 0)) {
-        // Work in the corner's own frame: u and v grow away from the box.
-        auto const out = (z.a + z.outward) * affine() - a;
-        double const sx = out.x() < 0 ? -1 : 1;
-        double const sy = out.y() < 0 ? -1 : 1;
-        double const u = (p.x() - a.x()) * sx;
-        double const v = (p.y() - a.y()) * sy;
+    if (z.out_u != Geom::Point(0, 0)) {
+        // Work in the corner's own frame, which turns with the box: u and v grow away from it.
+        auto const along = [&](Geom::Point const &out) {
+            auto const dir = (z.a + out) * affine() - a;
+            double const length = Geom::L2(dir);
+            return length > 0 ? Geom::dot(p - a, dir / length) : 0.0;
+        };
+        double const u = along(z.out_u);
+        double const v = along(z.out_v);
         return std::max(u, v) >= 0 && u >= -z.overlap && v >= -z.overlap && u <= z.reach && v <= z.reach;
     }
 
@@ -414,8 +416,8 @@ Geom::OptRect CanvasItemCtrl::_pick_zone_bounds() const
     }
     auto const &z = *_pick_zone;
     auto const a = z.a * affine();
-    if (z.outward != Geom::Point(0, 0)) {
-        double const r = std::max(z.reach, z.overlap);
+    if (z.out_u != Geom::Point(0, 0)) {
+        double const r = std::max(z.reach, z.overlap) * M_SQRT2; // The region may be turned.
         return Geom::Rect(a - Geom::Point(r, r), a + Geom::Point(r, r));
     }
     Geom::Rect r(a, z.b * affine());

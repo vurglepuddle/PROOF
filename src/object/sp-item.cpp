@@ -19,6 +19,7 @@
 #include <glibmm/i18n.h>
 
 #include "attributes.h"
+#include "box-frame.h"
 #include "colors/manager.h"
 #include "conditions.h"
 #include "conn-avoid-ref.h"
@@ -1741,6 +1742,10 @@ void SPItem::doWriteTransform(Geom::Affine const &transform, Geom::Affine const 
         )
     {
         transform_attr = this->set_transform(transform);
+        // PROOF: the part taken into the object's own coordinates must not turn its box.
+        if (!transform_attr.isSingular()) {
+            Inkscape::box_angle_embed(*this, transform * transform_attr.inverse());
+        }
     }
     if (freeze_stroke_width) {
         freeze_stroke_width_recursive(false);

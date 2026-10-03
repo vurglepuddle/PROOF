@@ -25,6 +25,7 @@
 
 #include "attributes.h"
 #include "attribute-rel-util.h"
+#include "box-frame.h"
 #include "color-profile.h"
 #include "document.h"
 #include "colors/document-colors.h"
@@ -1182,6 +1183,10 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
     if (document && document->getReprRoot() == getRepr() &&
         (!std::strcmp(key, "proof:color-mode") || !std::strcmp(key, "proof:color-profile"))) {
         Inkscape::Colors::DocumentColors::assignmentChanged(document);
+    }
+    // PROOF: redraw the transform box when its angle changes, also on undo and redo.
+    if (!std::strcmp(key, Inkscape::BOX_ANGLE_ATTRIBUTE)) {
+        requestModified(SP_OBJECT_MODIFIED_FLAG);
     }
 }
 
