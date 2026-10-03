@@ -110,6 +110,15 @@ DialogWindow::DialogWindow(InkscapeWindow *inkscape_window, Gtk::Widget *page)
         int height = natural_size.get_height() + overhead + NOTEBOOK_TAB_HEIGHT;
         window_width = std::max(width, window_width);
         window_height = std::max(height, window_height);
+
+        // PROOF: stay within three quarters of the main window, so a long dialog such as
+        // Preferences does not open taller than the screen.
+        if (inkscape_window) {
+            int const max_width = inkscape_window->get_width() * 3 / 4;
+            int const max_height = inkscape_window->get_height() * 3 / 4;
+            if (max_width >= MINIMUM_WINDOW_WIDTH) window_width = std::min(window_width, max_width);
+            if (max_height >= MINIMUM_WINDOW_HEIGHT) window_height = std::min(window_height, max_height);
+        }
     }
 
     // Set window sizing

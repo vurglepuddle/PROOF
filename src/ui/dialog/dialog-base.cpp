@@ -120,7 +120,12 @@ void DialogBase::blink()
 
 void DialogBase::focus_dialog() {
     set_visible(true);
-    if (auto window = dynamic_cast<Gtk::Window*>(get_root())) {
+    // PROOF: only raise a window that is already showing. A floating DialogWindow under
+    // construction is hidden until its size is set, and presenting it here (as adding the
+    // first tab did) showed it at its minimum size; GTK then ignores the default size, so new
+    // floating dialogs opened tiny and saved sizes were lost on restart. Every place that
+    // creates a DialogWindow shows it once it is sized.
+    if (auto window = dynamic_cast<Gtk::Window*>(get_root()); window && window->get_visible()) {
         window->present();
     }
     // widget that had focus, if any
