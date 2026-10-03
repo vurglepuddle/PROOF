@@ -18,6 +18,7 @@
 #include "actions-helper.h"
 
 
+#include "colors/document-colors.h"
 #include "document.h"
 #include "inkscape-application.h"
 #include "style.h"
@@ -708,6 +709,7 @@ std::vector<std::vector<Glib::ustring>> doc_svg_processing_actions =
     {"doc.remove-marker-context-paint",  N_("Remove Marker Context Paint"),  SECTION, N_("Remove context paints from markers") },
 
     {"doc.insert-text-fallback",         N_("Insert Text Fallback"),         SECTION, N_("Replace SVG2 text with SVG1.1 text") },
+    {"doc.insert-color-fallback",        N_("Insert Color Fallback"),        SECTION, N_("Add RGB fallbacks for ICC and CMYK colors") },
     {"doc.insert-mesh-polyfill",         N_("Insert Mesh Polyfill"),         SECTION, N_("Insert JavaScript for rendering meshes") },
     {"doc.insert-hatch-polyfill",        N_("Insert Hatch Polyfill"),        SECTION, N_("Insert JavaScript for rendering hatches") },
 
@@ -753,6 +755,7 @@ void add_actions_processing(SPDocument* doc)
 
     group->add_action("remove-marker-context-paint",  [doc]() { remove_marker_context_paint(doc->getReprRoot(), doc->getDefs()->getRepr()); });
     group->add_action("insert-text-fallback",         [doc]() { insert_text_fallback(doc->getReprRoot(), doc->getOriginalDocument()); });
+    group->add_action("insert-color-fallback",        [doc]() { Inkscape::Colors::DocumentColors::insertFallbacks(doc); });
     group->add_action("insert-mesh-polyfill",         [doc]() { insert_mesh_polyfill(doc->getReprRoot()); });
     group->add_action("insert-hatch-polyfill",        [doc]() { insert_hatch_polyfill(doc->getReprRoot()); });
     group->add_action("all-clones-to-objects",        [doc]() {

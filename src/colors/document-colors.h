@@ -6,6 +6,7 @@
 #include "spaces/enum.h"
 
 class SPDocument;
+namespace Inkscape::XML { class Node; }
 
 namespace Inkscape::Colors {
 namespace CMS { class Profile; }
@@ -28,6 +29,28 @@ void refresh(SPDocument *document);
 // Returns an error before changing the document for an incompatible profile.
 std::string assign(SPDocument *document, Space::Type mode,
                    std::shared_ptr<CMS::Profile> const &profile, RenderingIntent intent);
+
+// Every document has a mode and, where a profile is available, an assigned profile.
+// Mode for new documents: the user's last choice, initially CMYK when a CMYK working profile exists.
+Space::Type newDocumentMode();
+void setNewDocumentMode(Space::Type mode);
+// CMYK if any process paint is CMYK, otherwise RGB.
+Space::Type inferMode(SPDocument *document);
+// For a document without proof:color-mode only: an embedded profile of that mode is kept
+// (as Illustrator preserves embedded profiles), otherwise the working profile is assigned.
+// Paint values are not rewritten. Returns false if the document already has a mode.
+bool adopt(SPDocument *document, Space::Type mode);
+// File > Document Color Mode: converts to the mode with its working profile and remembers it.
+// Returns an error before changing the document if no working profile is available.
+std::string switchMode(SPDocument *document, Space::Type mode);
+// Called when proof:color-mode or proof:color-profile changes on the root.
+void assignmentChanged(SPDocument *document);
+
+// Browsers and Illustrator drop a whole icc-color()/device-cmyk() declaration. Saving adds
+// the RGB preview as a presentation attribute next to such style paints; the style still
+// wins wherever it is understood. Loading removes them so they can never go stale.
+void insertFallbacks(SPDocument *document);
+void stripFallbacks(XML::Node *root);
 }
 }
 #endif

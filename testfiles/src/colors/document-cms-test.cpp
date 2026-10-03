@@ -147,11 +147,12 @@ TEST_F(ColorDocumentCMSObjsTest, checkProfileName)
 TEST_F(ColorDocumentCMSObjsTest, createColorProfile)
 {
     auto &tr = doc->getDocumentCMS();
-    ASSERT_FALSE(tr.getSpace("C.icc"));
+    ASSERT_FALSE(tr.getSpace("C-icc"));
 
-    tr.attachProfileToDoc("C.icc", ColorProfileStorage::LOCAL_ID, RenderingIntent::AUTO);
-    ASSERT_TRUE(tr.getSpace("C.icc"));
-    auto space = tr.getSpace("C.icc");
+    // PROOF: document names are CSS-safe, so the profile "C.icc" is attached as "C-icc".
+    EXPECT_EQ(tr.attachProfileToDoc("C.icc", ColorProfileStorage::LOCAL_ID, RenderingIntent::AUTO), "C-icc");
+    ASSERT_TRUE(tr.getSpace("C-icc"));
+    auto space = tr.getSpace("C-icc");
 
     ASSERT_TRUE(space);
     ASSERT_EQ(space->getIntent(), RenderingIntent::AUTO);

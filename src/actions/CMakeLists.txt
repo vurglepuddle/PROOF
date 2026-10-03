@@ -20,6 +20,8 @@ target_sources(inkscape_base PRIVATE
   actions-dialogs.h
   actions-edit-document.h
   actions-edit-document.cpp
+  actions-document-colors.h
+  actions-document-colors.cpp
   actions-edit-window.h
   actions-edit-window.cpp
   actions-edit.h

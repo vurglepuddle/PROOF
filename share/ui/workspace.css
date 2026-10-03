@@ -89,3 +89,10 @@ headerbar.workspace-header windowcontrols button {
 headerbar.workspace-header windowcontrols button:hover { background: #494949; }
 headerbar.workspace-header windowcontrols button.close:hover { background: #b44444; }
 headerbar.workspace-header .workspace-window-title { font-weight: normal; margin: 0 12px; }
+
+/* Square menus. GTK 4 rounds the menu body, every item and the menubar highlight. */
+popover.menu > contents,
+popover.menu > arrow { border-radius: 0; }
+popover.menu > contents { padding: 3px 0; }
+popover.menu modelbutton,
+menubar > item { border-radius: 0; }

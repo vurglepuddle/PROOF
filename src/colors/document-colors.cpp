@@ -2,6 +2,7 @@
 #include "document-colors.h"
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <cstring>
 #include <functional>
 #include <string_view>
 
@@ -10,12 +11,14 @@
 #include "document-cms.h"
 #include "manager.h"
 #include "spaces/cms.h"
+#include "utils.h"
 #include "document.h"
 #include "object/color-profile.h"
 #include "object/sp-root.h"
 #include "preferences.h"
 #include "style.h"
 #include "xml/repr.h"
+#include "xml/sp-css-attr.h"
 
 namespace Inkscape::Colors::DocumentColors {
 namespace {
@@ -173,5 +176,125 @@ std::string assign(SPDocument *document, Space::Type target_mode,
     refresh(document);
     document->ensureUpToDate();
     return {};
+}
+}
+
+namespace Inkscape::Colors::DocumentColors {
+namespace {
+constexpr auto NEW_MODE = "/options/workingcolors/newmode";
+char const *mode_name(Space::Type type) { return type == Space::Type::CMYK ? "CMYK" : "RGB"; }
+}
+
+Space::Type newDocumentMode() {
+    auto value = Preferences::get()->getString(NEW_MODE);
+    if (value == "CMYK") return Space::Type::CMYK;
+    if (value == "RGB") return Space::Type::RGB;
+    return workingProfile(Space::Type::CMYK) ? Space::Type::CMYK : Space::Type::RGB;
+}
+
+void setNewDocumentMode(Space::Type type) {
+    if (type == Space::Type::RGB || type == Space::Type::CMYK) Preferences::get()->setString(NEW_MODE, mode_name(type));
+}
+
+Space::Type inferMode(SPDocument *document) {
+    bool cmyk = false;
+    auto check = [&](Color const &color) { cmyk = cmyk || color.getSpace()->getComponentType() == Space::Type::CMYK; };
+    std::function<void(SPObject *)> walk = [&](SPObject *object) {
+        if (auto style = object->style; style && !cmyk) {
+            if (style->fill.isColor()) check(style->fill.getColor());
+            if (style->stroke.isColor()) check(style->stroke.getColor());
+            if (style->stop_color.set && !style->stop_color.currentcolor) check(style->stop_color.getColor());
+        }
+        for (auto &child : object->children) {
+            if (cmyk) return;
+            walk(&child);
+        }
+    };
+    if (document && document->getRoot()) walk(document->getRoot());
+    return cmyk ? Space::Type::CMYK : Space::Type::RGB;
+}
+
+bool adopt(SPDocument *document, Space::Type target_mode) {
+    if (!document || !document->getRoot() || document->getReprRoot()->attribute(MODE)) return false;
+    auto &cms = document->getDocumentCMS();
+    std::string name;
+    for (auto cp : cms.getObjects()) {
+        auto space = cms.getSpace(cp->getName());
+        if (space && space->hasValidCmsProfile() && space->getComponentType() == target_mode) {
+            name = space->getName();
+            break;
+        }
+    }
+    if (name.empty()) {
+        if (auto profile = workingProfile(target_mode)) {
+            name = cms.attachProfileToDoc(*profile, ColorProfileStorage::HREF_DATA, workingIntent());
+        }
+    }
+    auto root = document->getReprRoot();
+    root->setAttribute(PROFILE, name.empty() ? nullptr : name.c_str());
+    root->setAttribute(MODE, mode_name(target_mode));
+    return true;
+}
+
+std::string switchMode(SPDocument *document, Space::Type target_mode) {
+    if (!document || !document->getRoot()) return "No active document.";
+    if (document->getReprRoot()->attribute(MODE) && mode(document) == target_mode && assignedSpace(document)) {
+        setNewDocumentMode(target_mode);
+        return {};
+    }
+    auto profile = workingProfile(target_mode);
+    if (!profile) {
+        return target_mode == Space::Type::CMYK
+                   ? "No CMYK working profile is available. Choose one in Document Properties > Color."
+                   : "No RGB working profile is available. Choose one in Document Properties > Color.";
+    }
+    auto error = assign(document, target_mode, profile, workingIntent());
+    if (error.empty()) setNewDocumentMode(target_mode);
+    return error;
+}
+
+void assignmentChanged(SPDocument *document) {
+    if (!document) return;
+    refresh(document);
+    document->getDocumentCMS().emitAssignmentChanged();
+}
+}
+
+namespace Inkscape::Colors::DocumentColors {
+namespace {
+constexpr char const *FALLBACK_PROPERTIES[] = {"fill", "stroke", "stop-color", "flood-color", "lighting-color", "color"};
+bool non_css(char const *value) {
+    return value && (std::strstr(value, "icc-color") || std::strstr(value, "icc-named-color") ||
+                     std::strstr(value, "device-cmyk"));
+}
+// Visit elements whose inline style has an ICC or CMYK paint.
+template <typename F>
+void visit_style_paints(XML::Node *root, F const &fn) {
+    sp_repr_visit_descendants(root, [&](XML::Node *node) {
+        if (non_css(node->attribute("style"))) {
+            auto css = sp_repr_css_attr(node, "style");
+            for (auto property : FALLBACK_PROPERTIES) {
+                if (auto value = css->attribute(property); non_css(value)) fn(node, property, value);
+            }
+            sp_repr_css_attr_unref(css);
+        }
+        return true;
+    });
+}
+}
+
+void insertFallbacks(SPDocument *document) {
+    if (!document || !document->getReprRoot()) return;
+    auto &cms = document->getDocumentCMS();
+    visit_style_paints(document->getReprRoot(), [&](XML::Node *node, char const *property, char const *value) {
+        if (auto color = cms.parse(value)) node->setAttribute(property, rgba_to_hex(color->toRGBA(), false));
+    });
+}
+
+void stripFallbacks(XML::Node *root) {
+    if (!root) return;
+    visit_style_paints(root, [](XML::Node *node, char const *property, char const *) {
+        node->removeAttribute(property);
+    });
 }
 }

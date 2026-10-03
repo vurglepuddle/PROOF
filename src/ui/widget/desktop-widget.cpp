@@ -32,6 +32,9 @@
 #include <gtkmm/popovermenu.h>
 
 #include "actions/actions-view-mode.h"
+#include "colors/document-cms.h"
+#include "colors/document-colors.h"
+#include "colors/spaces/enum.h"
 #include "conn-avoid-ref.h"
 #include "document.h"
 #include "enums.h"
@@ -423,38 +426,35 @@ void SPDesktopWidget::_updateTitle()
             Name += ": ";
             Name += std::to_string(v);
         }
-        Name += " (";
+        // PROOF: the document color mode always leads, as in Illustrator's title.
+        std::vector<std::string> modes{
+            Inkscape::Colors::DocumentColors::mode(doc) == Inkscape::Colors::Space::Type::CMYK ? "CMYK" : "RGB"};
 
         auto const canvas = _desktop->getCanvas();
         auto const render_mode = canvas->get_render_mode();
         auto const color_mode  = canvas->get_color_mode();
 
         if (render_mode == Inkscape::RenderMode::OUTLINE) {
-            Name += N_("outline");
+            modes.emplace_back(N_("outline"));
         } else if (render_mode == Inkscape::RenderMode::NO_FILTERS) {
-            Name += N_("no filters");
+            modes.emplace_back(N_("no filters"));
         } else if (render_mode == Inkscape::RenderMode::VISIBLE_HAIRLINES) {
-            Name += N_("enhance thin lines");
+            modes.emplace_back(N_("enhance thin lines"));
         } else if (render_mode == Inkscape::RenderMode::OUTLINE_OVERLAY) {
-            Name += N_("outline overlay");
-        }
-
-        if (color_mode != Inkscape::ColorMode::NORMAL &&
-            render_mode != Inkscape::RenderMode::NORMAL) {
-            Name += ", ";
+            modes.emplace_back(N_("outline overlay"));
         }
 
         if (color_mode == Inkscape::ColorMode::GRAYSCALE) {
-            Name += N_("grayscale");
+            modes.emplace_back(N_("grayscale"));
         } else if (color_mode == Inkscape::ColorMode::PRINT_COLORS_PREVIEW) {
-            Name += N_("print colors preview");
+            modes.emplace_back(N_("print colors preview"));
         }
 
-        if (Name.back() == '(') {
-            Name.erase(Name.size() - 2);
-        } else {
-            Name += ")";
+        Name += " (";
+        for (std::size_t i = 0; i < modes.size(); ++i) {
+            Name += (i ? ", " : "") + modes[i];
         }
+        Name += ")";
 
         Name += " - Inkscape";
 
@@ -517,6 +517,8 @@ void SPDesktopWidget::_updateNamedview()
             tool_toolbars->setActiveUnit(_desktop->getNamedView()->getDisplayUnit());
         }
     });
+
+    _color_mode_connection = _desktop->doc()->getDocumentCMS().connectAssignmentChanged([this] { _updateTitle(); });
 
     _updateUnit();
     _updateTitle();

@@ -25,7 +25,7 @@ private:
     bool _updating = false;
     bool _populated = false;
     Gtk::Grid _grid;
-    Gtk::ComboBoxText _mode, _assignment, _profile, _rgb, _cmyk, _intent;
+    Gtk::ComboBoxText _mode, _assignment, _profile, _new_mode, _rgb, _cmyk, _intent;
     Gtk::CheckButton _bpc{"Black point compensation"};
     Gtk::Button _apply{"Assign Profile"};
     Gtk::Label _status, _help;

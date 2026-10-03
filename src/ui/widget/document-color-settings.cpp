@@ -36,6 +36,7 @@ DocumentColorSettings::DocumentColorSettings() : Gtk::Box(Gtk::Orientation::VERT
     _assignment.set_name("document-color-assignment");
     _profile.set_name("document-color-profile");
     _apply.set_name("document-color-apply");
+    _new_mode.set_name("document-color-new-mode");
     _grid.set_column_spacing(12);
     _grid.set_row_spacing(8);
     append(_grid);
@@ -78,9 +79,12 @@ DocumentColorSettings::DocumentColorSettings() : Gtk::Box(Gtk::Orientation::VERT
     _grid.attach(_help, 0, row++, 2, 1);
 
     heading(_("Working Spaces"));
+    _new_mode.append("cmyk", "CMYK");
+    _new_mode.append("rgb", "RGB");
+    line(_("New documents"), _new_mode);
     line(_("RGB"), _rgb);
     line(_("CMYK"), _cmyk);
-    auto defaults = Gtk::make_managed<Gtk::Label>(_("Defaults for profile assignment. Existing documents keep their embedded profiles."));
+    auto defaults = Gtk::make_managed<Gtk::Label>(_("Assigned to new documents, to files opened without a color mode and by File > Document Color Mode. Documents keep their embedded profiles. Choosing a mode makes it the default for new documents."));
     defaults->set_wrap();
     defaults->set_max_width_chars(48);
     defaults->set_xalign(0);
@@ -104,6 +108,9 @@ DocumentColorSettings::DocumentColorSettings() : Gtk::Box(Gtk::Orientation::VERT
         _profile.set_sensitive(_assignment.get_active_id() == "profile");
     });
     _apply.signal_clicked().connect(sigc::mem_fun(*this, &DocumentColorSettings::apply));
+    _new_mode.signal_changed().connect([this] {
+        if (!_updating) DC::setNewDocumentMode(_new_mode.get_active_id() == "cmyk" ? Type::CMYK : Type::RGB);
+    });
     _rgb.signal_changed().connect([this] { if (!_updating) DC::setWorkingProfile(Type::RGB, chosen(_rgb, _rgb_profiles)); });
     _cmyk.signal_changed().connect([this] { if (!_updating) DC::setWorkingProfile(Type::CMYK, chosen(_cmyk, _cmyk_profiles)); });
     _intent.signal_changed().connect([this] {
@@ -158,6 +165,7 @@ void DocumentColorSettings::update() {
     if (!_populated) return;
     _updating = true;
     set_sensitive(_document != nullptr);
+    _new_mode.set_active_id(DC::newDocumentMode() == Type::CMYK ? "cmyk" : "rgb");
     auto type = DC::mode(_document);
     _mode.set_active_id(type == Type::CMYK ? "cmyk" : "rgb");
     update_profiles();
@@ -181,6 +189,7 @@ void DocumentColorSettings::apply() {
     _updating = true;
     auto error = DC::assign(_document, type, profile, DC::workingIntent());
     if (error.empty()) {
+        DC::setNewDocumentMode(type);
         if (converting) DocumentUndo::done(_document, RC_("Undo", "Change document color mode"), "document-properties");
         else DocumentUndo::done(_document, RC_("Undo", "Assign document color profile"), "document-properties");
     }

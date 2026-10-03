@@ -96,6 +96,21 @@
           <attribute name="target">DocumentProperties</attribute>
           <attribute name="icon">document-properties</attribute>
         </item>
+        <submenu>
+          <attribute name="label" translatable="yes">Document Color _Mode</attribute>
+          <section>
+            <item>
+              <attribute name="label" translatable="yes">_CMYK Color</attribute>
+              <attribute name="action">doc.document-color-mode</attribute>
+              <attribute name="target">CMYK</attribute>
+            </item>
+            <item>
+              <attribute name="label" translatable="yes">_RGB Color</attribute>
+              <attribute name="action">doc.document-color-mode</attribute>
+              <attribute name="target">RGB</attribute>
+            </item>
+          </section>
+        </submenu>
       </section>
       <section>
         <item>

@@ -118,6 +118,7 @@ public:
 
 private:
     sigc::scoped_connection modified_connection;
+    sigc::scoped_connection _color_mode_connection;
 
     std::vector<SPDesktop *> _desktops;
     SPDesktop *_desktop = nullptr;

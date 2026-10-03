@@ -62,6 +62,12 @@ public:
     {
         return _modified_signal.connect(slot);
     }
+    // PROOF: the document's color mode or assigned profile (proof:color-*) changed.
+    sigc::connection connectAssignmentChanged(sigc::slot<void()> const &slot)
+    {
+        return _assignment_signal.connect(slot);
+    }
+    void emitAssignmentChanged() { _assignment_signal.emit(); }
 
     std::pair<std::string, bool> checkProfileName(Colors::CMS::Profile const &profile, RenderingIntent intent, std::optional<std::string> name = {}) const;
     std::optional<std::string> attachProfileToDoc(std::string const &lookup, ColorProfileStorage storage,
@@ -88,6 +94,7 @@ private:
     sigc::scoped_connection _resource_connection;
     sigc::scoped_connection _reconstruction_connection;
     sigc::signal<void()> _changed_signal;
+    sigc::signal<void()> _assignment_signal;
 
     mutable std::map<std::string, std::shared_ptr<Space::CMS>> _spaces;
 
