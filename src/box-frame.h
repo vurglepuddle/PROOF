@@ -24,13 +24,23 @@
 
 namespace Inkscape {
 
-/// The angle of an object's box in its own coordinates, in degrees, when it is not upright there.
+/// The angle of an object's box in its own coordinates, in degrees from -180 to 180, when it is
+/// not upright there.
 inline constexpr char const *BOX_ANGLE_ATTRIBUTE = "proof:box-angle";
 
 /// The angle of the box these objects share, in desktop coordinates: radians in (-pi/4, pi/4],
 /// and 0 when their angles differ. A box repeats every quarter turn, so a rectangle turned by
 /// 30 degrees and one turned by 120 share a box.
 double box_angle(std::vector<SPItem *> const &items);
+
+/// The angle these objects are turned by, as Illustrator shows it in Transform: radians in
+/// desktop coordinates, from -pi to pi, of the first object when all share a box (a rectangle
+/// turned by 120 degrees shows 120, not 30), and nothing when the box is upright because their
+/// angles differ.
+std::optional<double> box_rotation(std::vector<SPItem *> const &items);
+
+/// The middle of the box these objects share, in desktop coordinates.
+std::optional<Geom::Point> box_middle(std::vector<SPItem *> const &items, SPItem::BBoxType type);
 
 /// The bounds of the objects in the frame of a box at `angle` (desktop coordinates turned by
 /// -angle), where that box is upright. `stroked` gives visual bounds without filters.

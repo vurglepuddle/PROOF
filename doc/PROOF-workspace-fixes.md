@@ -113,3 +113,24 @@ Import dialogs are native and already square on Windows 10.
 
 Earlier minimise tests in this session sent `WM_SYSCOMMAND` to a stale window
 handle and did nothing. Only the runs above, which confirm `IsIconic`, count.
+
+## The transform box disappeared from a selected object (2026-10-04)
+
+**Report:** in a new document a selected rectangle showed no box, handles or
+centre dot. The user could not reproduce it.
+
+**Found by reading the code** (not reproduced): Fill and Stroke > Advanced has
+a Recolor section, and Recolor Art hides selection boxes while it is open
+(`SPDesktop::setHideSelectionBoxes`). It shows them again when it is hidden.
+Fill and Stroke reattaches Recolor to each new desktop when the section is
+left expanded, even with the dialog out of sight. The boxes were then hidden
+with nothing on screen to show them again. Opening a new document is one way
+to get a new desktop, which fits the report.
+
+**Fix:** Recolor Art hides the boxes only while it is on screen (`map`), and
+the Advanced tab loads it only when it is mapped.
+
+Also checked: a handle drag that misses its button release cannot leave the
+transform box stuck mid-drag. The handle holds the pointer from press to
+release, and the canvas does not send it enter or leave events meanwhile.
+If the box disappears again, note which panels and dialogs were open.
