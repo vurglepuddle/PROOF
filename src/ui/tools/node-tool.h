@@ -12,6 +12,8 @@
 #ifndef INKSCAPE_UI_TOOLS_NODE_TOOL_H
 #define INKSCAPE_UI_TOOLS_NODE_TOOL_H
 
+#include <optional>
+
 #include "ui/tools/tool-base.h"
 
 namespace Inkscape {
@@ -24,6 +26,7 @@ namespace Inkscape {
         class ControlPointSelection;
         class Selector;
         class ControlPoint;
+        class SelectableControlPoint;
 
         struct PathSharedData;
     }
@@ -31,7 +34,9 @@ namespace Inkscape {
     class Selection;
     class Rubberband;
     class CanvasItemGroup;
+    struct ButtonPressEvent;
     struct ButtonReleaseEvent;
+    struct MotionEvent;
 }
 
 namespace Inkscape::UI::Tools {
@@ -68,6 +73,27 @@ private:
     Inkscape::UI::PathSharedData* _path_data = nullptr;
     Inkscape::CanvasItemGroup *_transform_handle_group = nullptr;
     SPItem *_last_over = nullptr;
+
+    /**
+     * PROOF: a press on an object outside any handle, as with Illustrator's Direct Selection. It
+     * selects the object and the anchor under the pointer, or all its anchors, and a drag moves
+     * what was selected. Objects without anchors move whole.
+     */
+    struct DirectPress
+    {
+        Geom::Point origin;        ///< Desktop point of the press.
+        Geom::Point origin_w;      ///< Window point of the press, for the drag tolerance.
+        Geom::Point reference;     ///< The point that snaps: the grabbed anchor, or the nearest one.
+        Geom::Point applied;       ///< The move applied so far.
+        bool whole_items = false;
+        bool moved = false;
+    };
+    std::optional<DirectPress> _direct_press;
+    bool _directPress(ButtonPressEvent const &event);
+    void _directDrag(MotionEvent const &event);
+    void _directRelease();
+    void _directCancel();
+    Inkscape::UI::SelectableControlPoint *_nodeNear(Geom::Point const &window_point, double radius) const;
 
     bool cursor_drag = false;
     bool show_handles = false;

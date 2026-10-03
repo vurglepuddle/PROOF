@@ -54,8 +54,12 @@ private:
 
     static bool _drags_stroke;
     static bool _segment_was_degenerate;
+    // PROOF: a straight segment being moved whole, and where its ends started.
+    static bool _moves_segment;
+    static Geom::Point _segment_start[2];
     static Geom::Point _stroke_drag_origin;
     void _insertNode(bool take_selection);
+    void _moveSegment(Geom::Point &new_pos, MotionEvent const &event);
 };
 
 } // namespace Inkscape::UI
