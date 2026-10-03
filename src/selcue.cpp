@@ -128,16 +128,21 @@ void SelCue::_newItemBboxes()
     int prefs_bbox = prefs->getBool("/tools/bounding_box");
 
     auto items = _selection->items();
+    bool const box_shows_it = _transform_box && std::ranges::distance(items) == 1;
     for (auto item : items) {
         Geom::OptRect const bbox = (prefs_bbox == 0) ? item->desktopVisualBounds() : item->desktopGeometricBounds();
 
-        if (bbox) {
+        if (bbox && !box_shows_it) {
             CanvasItemPtr<CanvasItem> canvas_item;
 
             if (mode == MARK) {
                 auto ctrl = make_canvasitem<CanvasItemCtrl>(_desktop->getCanvasControls(), CANVAS_ITEM_CTRL_TYPE_SHAPER,
                                                             Geom::Point(bbox->min().x(), bbox->max().y()));
                 canvas_item = std::move(ctrl);
+            } else if (mode == BBOX && _transform_box) {
+                auto rect = make_canvasitem<CanvasItemRect>(_desktop->getCanvasControls(), *bbox);
+                rect->set_stroke(0x277fffff);
+                canvas_item = std::move(rect);
             } else if (mode == BBOX) {
                 auto rect = make_canvasitem<CanvasItemRect>(_desktop->getCanvasControls(), *bbox);
                 rect->set_stroke(0xffffffa0);
@@ -223,6 +228,12 @@ void SelCue::setBboxesVisible(bool visible)
 {
     _bboxes_visible = visible;
     _updateItemBboxes();
+}
+
+void SelCue::setTransformBox(bool transform_box)
+{
+    _transform_box = transform_box;
+    _newItemBboxes();
 }
 
 void SelCue::setTransforming(bool transforming)

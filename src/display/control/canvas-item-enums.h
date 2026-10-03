@@ -66,6 +66,9 @@ enum CanvasItemCtrlType {
     CANVAS_ITEM_CTRL_TYPE_GUIDE_HANDLE,
     CANVAS_ITEM_CTRL_TYPE_POINTER, // pointy, triangular handle
     CANVAS_ITEM_CTRL_TYPE_MOVE,
+    CANVAS_ITEM_CTRL_TYPE_BOX_CORNER, // PROOF transform box corner
+    CANVAS_ITEM_CTRL_TYPE_BOX_CENTER, // PROOF transform box centre mark
+    CANVAS_ITEM_CTRL_TYPE_BOX_RADIUS, // PROOF corner radius handle
     // Rubberbands
     RUBBERBAND_RECT,
     RUBBERBAND_TOUCHPATH,

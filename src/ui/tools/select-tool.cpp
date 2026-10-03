@@ -75,7 +75,7 @@ SelectTool::SelectTool(SPDesktop *desktop)
     _describer = new Inkscape::SelectionDescriber(
                 desktop->getSelection(),
                 *desktop->messageStack(),
-                _("Click selection again to toggle scale/rotation handles"),
+                _("Drag a corner or edge to scale, or just outside a corner to rotate"),
                 no_selection_msg);
 
     _seltrans = new Inkscape::SelTrans(desktop);
@@ -486,6 +486,10 @@ bool SelectTool::root_handler(CanvasEvent const &event)
         [&] (MotionEvent const &event) {
             _live_point = event.pos;
 
+            if (!(event.modifiers & GDK_BUTTON1_MASK) && !_seltrans->isGrabbed()) {
+                _seltrans->setPointer(_desktop->w2d(event.pos));
+            }
+
             if (grabbed && mod_select_remove_snap->active(event.modifiers)) {
                 _desktop->getSnapIndicator()->remove_snaptarget();
             }
@@ -571,10 +575,14 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                             bool down_on_selected = item_at_point && selection->includes(item_at_point, true);
                             bool allow_duplicate = duplicate_drag && (_duplicate_down_on_selected || down_on_selected);
 
+                            // PROOF: measure the move from where the button went down, so the
+                            // selection keeps up with the pointer. Grabbing here, once past the
+                            // drag tolerance, left it that many pixels behind for the whole drag.
+                            auto const origin = _desktop->w2d(Geom::Point(xyp));
                             if (allow_duplicate) {
-                                _duplicate_drag(p);
+                                _duplicate_drag(origin);
                             } else {
-                                _seltrans->grab(p, -1, -1, false, true);
+                                _seltrans->grab(origin, -1, -1, false, true);
                             }
                             moved = true;
                         }
@@ -1044,11 +1052,11 @@ void SelectTool::handleClick(ButtonReleaseEvent const &event, Selection *selecti
                 SPObject *single = selection->single();
                 auto singleGroup = cast<SPGroup>(single);
 
-                // without shift, increase state (i.e. toggle scale/rotation handles)
-                if (selection->includes(local_item) ||
-                    (singleGroup && singleGroup->layerMode() == SPGroup::LAYER && single->isAncestorOf(local_item))) {
-                    _seltrans->increaseState();
-                } else {
+                // PROOF: clicking the selection again keeps it as it is. Inkscape toggled to
+                // rotate/skew handles here; the transform box rotates from outside its corners.
+                bool const clicked_selection = selection->includes(local_item) ||
+                    (singleGroup && singleGroup->layerMode() == SPGroup::LAYER && single->isAncestorOf(local_item));
+                if (!clicked_selection) {
                     _seltrans->resetState();
                     selection->set(local_item);
                 }
@@ -1118,7 +1126,7 @@ std::pair<Rubberband::Mode, CanvasItemCtrlType> SelectTool::get_default_rubberba
 
 void SelectTool::onHideSelectionChanged(bool hide)
 {
-    _seltrans->getSelCue().setBboxesVisible(!hide);
+    _seltrans->setBoxesHidden(hide);
 }
 
 } // namespace Inkscape::UI::Tools

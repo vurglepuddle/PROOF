@@ -187,6 +187,9 @@ double CanvasItemCtrl::closest_distance_to(Geom::Point const &p) const
  */
 bool CanvasItemCtrl::contains(Geom::Point const &p, double tolerance)
 {
+    if (_pick_zone) {
+        return _pick_zone_contains(p);
+    }
     // TODO: Different criteria for different shapes.
     if (!_bounds) {
         return false;
@@ -341,6 +344,83 @@ void CanvasItemCtrl::set_preferred_size_parity(int value)
         _size_parity = value;
         request_redraw();
     });
+}
+
+void CanvasItemCtrl::set_pick_zone(std::optional<PickZone> zone)
+{
+    defer([=, this] {
+        _pick_zone = zone;
+        request_update(); // The pick zone is part of the bounds.
+    });
+}
+
+bool CanvasItemCtrl::_pick_zone_contains(Geom::Point const &p) const
+{
+    auto const &z = *_pick_zone;
+    auto const a = z.a * affine();
+    auto const b = z.b * affine();
+
+    if (z.outward != Geom::Point(0, 0)) {
+        // Work in the corner's own frame: u and v grow away from the box.
+        auto const out = (z.a + z.outward) * affine() - a;
+        double const sx = out.x() < 0 ? -1 : 1;
+        double const sy = out.y() < 0 ? -1 : 1;
+        double const u = (p.x() - a.x()) * sx;
+        double const v = (p.y() - a.y()) * sy;
+        return std::max(u, v) >= 0 && u >= -z.overlap && v >= -z.overlap && u <= z.reach && v <= z.reach;
+    }
+
+    auto const ab = b - a;
+    double const len2 = Geom::dot(ab, ab);
+    double t = len2 > 0 ? Geom::dot(p - a, ab) / len2 : 0;
+    t = std::clamp(t, 0.0, 1.0);
+    auto const d = p - (a + ab * t);
+    if (Geom::L2(d) > z.radius) {
+        return false;
+    }
+    if (z.inner) {
+        // Measure inward across a segment, or straight toward the centre from a point.
+        auto const in = *z.inner * affine();
+        Geom::Point toward;
+        double room;
+        if (len2 > 0) {
+            toward = Geom::rot90(ab) / std::sqrt(len2);
+            room = Geom::dot(in - a, toward);
+            if (room < 0) {
+                toward = -toward;
+                room = -room;
+            }
+        } else {
+            toward = in - a;
+            room = Geom::L2(toward);
+            if (room > 0) {
+                toward /= room;
+            }
+        }
+        if (room < z.min_room) {
+            return false;
+        }
+        if (room > 0 && Geom::dot(d, toward) > std::min(z.radius, room / 4)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Geom::OptRect CanvasItemCtrl::_pick_zone_bounds() const
+{
+    if (!_pick_zone) {
+        return {};
+    }
+    auto const &z = *_pick_zone;
+    auto const a = z.a * affine();
+    if (z.outward != Geom::Point(0, 0)) {
+        double const r = std::max(z.reach, z.overlap);
+        return Geom::Rect(a - Geom::Point(r, r), a + Geom::Point(r, r));
+    }
+    Geom::Rect r(a, z.b * affine());
+    r.expandBy(z.radius);
+    return r;
 }
 
 void CanvasItemCtrl::set_angle(double angle)
@@ -503,6 +583,12 @@ void CanvasItemCtrl::_update(bool)
 
     // The bounding box we want to invalidate in cairo, rounded out to catch any stray pixels
     _bounds = Geom::Rect::from_xywh(_pos - Geom::Point(w_half, w_half), {width, width}).roundOutwards();
+
+    // Parent groups only pick within their children's bounds, so those must cover the pick zone.
+    if (auto zone = _pick_zone_bounds()) {
+        _bounds.unionWith(*zone);
+        _bounds = _bounds->roundOutwards();
+    }
 
     // Queue redraw of new area
     request_redraw();

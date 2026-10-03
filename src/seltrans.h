@@ -17,12 +17,15 @@
  */
 
 #include <array>
+#include <map>
+#include <string>
 #include <vector>
 #include <2geom/point.h>
 #include <2geom/affine.h>
 #include <2geom/rect.h>
 #include <cstddef>
 #include <sigc++/sigc++.h>
+#include <glibmm/refptr.h>
 
 #include "message-context.h"
 #include "seltrans-handles.h"
@@ -32,13 +35,19 @@
 #include "ui/knot/knot.h"
 
 class  SPDesktop;
+class  SPRect;
 struct SPCanvasItem;
 struct SPSelTransHandle;
+
+namespace Gdk {
+class Cursor;
+}
 
 namespace Inkscape {
 
 class CanvasItemCtrl;
 class CanvasItemCurve;
+class CanvasItemRect;
 
 Geom::Scale calcScaleFactors(Geom::Point const &initial_point, Geom::Point const &new_point, Geom::Point const &origin, bool const skew = false);
 
@@ -75,7 +84,7 @@ public:
     int skewRequest(Geom::Point &pt, unsigned int state, bool is_horz);
     int rotateRequest(Geom::Point &pt, unsigned int state);
     int centerRequest(Geom::Point &pt, unsigned int state);
-    int originRequest(Geom::Point &pt, unsigned int state);
+    int originRequest(Geom::Point &pt, unsigned int state, bool around_center = false);
 
     // StKey transforms functionality
     enum class StickyTransform
@@ -123,6 +132,11 @@ public:
 
     void getNextClosestPoint(bool reverse);
     SelCue &getSelCue() { return _selcue; }
+    /// Hide or show the selection cue and the transform box together.
+    void setBoxesHidden(bool hidden);
+    /// The pointer moved, in desktop coordinates, with no button down: corner radius handles
+    /// show while it is over the selection.
+    void setPointer(Geom::Point const &p);
 
 private:
     class BoundingBoxPrefsObserver: public Preferences::Observer
@@ -145,6 +159,16 @@ private:
     void _boundingBoxPrefsChanged(int prefs_bbox);
     void _makeHandles();
     void _showHandles(SPSelTransType type);
+    void _updateBox();
+    void _setBoxHandleZone(int index, Geom::Point const &position);
+    Glib::RefPtr<Gdk::Cursor> _boxCursor(std::string const &name);
+    void _clickThrough(unsigned state);
+    SPRect *_radiusRect() const;
+    void _makeRadiusKnots();
+    void _updateRadiusKnots();
+    bool _radiusRequest(int corner, SPKnot *knot, Geom::Point *position);
+    void _radiusGrab(int corner, SPKnot *knot);
+    void _radiusUngrab();
     Geom::Point _getGeomHandlePos(Geom::Point const &visual_handle_pos);
     Geom::Point _calcAbsAffineDefault(Geom::Scale const default_scale);
     Geom::Point _calcAbsAffineGeom(Geom::Scale const geom_scale);
@@ -201,6 +225,17 @@ private:
     bool _center_is_set; ///< we've already set _center, no need to reread it from items
 
     SPKnot *knots[NUMHANDS];
+    // PROOF transform box: a thin box and centre dot drawn around the selection.
+    CanvasItemPtr<CanvasItemRect> _box;
+    CanvasItemPtr<CanvasItemCtrl> _center_mark;
+    bool _boxes_hidden = false;
+    std::map<std::string, Glib::RefPtr<Gdk::Cursor>> _box_cursors;
+    // PROOF: corner radius handles, inside each corner of a single selected rectangle.
+    std::array<SPKnot *, 4> _radius_knots{};
+    bool _radius_hover = false;
+    int _radius_dragging = -1;    ///< The corner being dragged, or -1.
+    double _radius_start = 0;     ///< Radius when the drag began, in the rectangle's units.
+    double _radius_inset_start = 0;
     CanvasItemPtr<CanvasItemCtrl> _norm;
     CanvasItemPtr<CanvasItemCtrl> _grip;
     std::array<CanvasItemPtr<CanvasItemCurve>, 4> _l;

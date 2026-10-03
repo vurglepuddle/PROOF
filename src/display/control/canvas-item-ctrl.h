@@ -19,6 +19,7 @@
  */
 
 #include <memory>
+#include <optional>
 #include <2geom/point.h>
 
 #include "canvas-item.h"
@@ -64,6 +65,23 @@ public:
     void set_normal(bool selected = false);
     void set_preferred_size_parity(int value);
 
+    /**
+     * PROOF: pick through an area other than the drawn handle. Transform-box zones use this to
+     * follow a whole bounding-box edge, or to sit just outside a corner, at a fixed screen size.
+     * Points are in document coordinates; distances are in screen pixels.
+     */
+    struct PickZone
+    {
+        Geom::Point a, b;          ///< Segment picked within `radius`; a == b for a single point.
+        double radius = 0;
+        std::optional<Geom::Point> inner; ///< The box centre: reach a quarter of the way toward it
+        double min_room = 0;       ///< at most, and nothing when it is closer than this.
+        Geom::Point outward;       ///< Non-zero: pick only beyond corner `a`, away from the box.
+        double reach = 0;          ///< How far the outward region extends.
+        double overlap = 0;        ///< How far it reaches back along the box edges.
+    };
+    void set_pick_zone(std::optional<PickZone> zone);
+
     // do not call directly; only used for invisible handle
     void _set_size(int size);
 protected:
@@ -99,6 +117,9 @@ private:
     Geom::Point _pos;
     // preferred size parity in logical pixels -1 disabled, 0-even, 1-odd >1 minimum size and parity
     int _size_parity = -1;
+    std::optional<PickZone> _pick_zone;
+    bool _pick_zone_contains(Geom::Point const &p) const;
+    Geom::OptRect _pick_zone_bounds() const;
 
     // get effective stroke width
     float get_stroke_width() const;

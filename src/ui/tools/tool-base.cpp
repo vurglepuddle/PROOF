@@ -255,8 +255,12 @@ void ToolBase::use_tool_cursor()
  */
 void ToolBase::use_cursor(Glib::RefPtr<Gdk::Cursor> cursor)
 {
-    if (auto window = dynamic_cast<Gtk::Window *>(_desktop->getCanvas()->get_root())) {
-        window->set_cursor(cursor ? cursor : _cursor);
+    // PROOF: GTK 4 shows the cursor of the widget under the pointer, and the canvas always has
+    // the tool cursor, so a cursor set on the window (as before) never appeared over a knot.
+    if (cursor) {
+        _desktop->getCanvas()->set_cursor(cursor);
+    } else {
+        use_tool_cursor();
     }
 }
 
