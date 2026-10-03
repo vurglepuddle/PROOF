@@ -18,6 +18,8 @@
 
 #include "display/control/canvas-item-bpath.h"
 #include "display/control/canvas-item-group.h"
+#include "display/control/snap-indicator.h"
+#include "document-undo.h"
 #include "path/path-curve.h"
 #include "live_effects/effect.h"
 #include "message-context.h"
@@ -35,6 +37,9 @@
 #include "ui/tool/curve-drag-point.h"
 #include "ui/tool/multi-path-manipulator.h"
 #include "ui/tool/path-manipulator.h"
+#include "ui/tool/selectable-control-point.h"
+#include "ui/icon-names.h"
+#include "util/units.h"
 #include "ui/widget/events/canvas-event.h"
 #include "util-string/ustring-format.h"
 
@@ -423,6 +428,12 @@ bool NodeTool::root_handler(CanvasEvent const &event)
 
     inspect_event(event,
     [&] (MotionEvent const &event) {
+        if (_direct_press && (event.modifiers & GDK_BUTTON1_MASK)) {
+            _directDrag(event);
+            ret = true;
+            return;
+        }
+
         sp_update_helperpath(_desktop);
         auto over_item = sp_event_context_find_item(_desktop, event.pos, false, true);
 
@@ -514,6 +525,11 @@ bool NodeTool::root_handler(CanvasEvent const &event)
         // Unconfigurable shortcuts
         switch (get_latin_keyval(event)) {
         case GDK_KEY_Escape: // deselect everything
+            if (_direct_press) {
+                _directCancel();
+                ret = true;
+                return;
+            }
             if (_selected_nodes->empty()) {
                 Inkscape::SelectionHelper::selectNone(_desktop);
             } else {
@@ -575,6 +591,10 @@ bool NodeTool::root_handler(CanvasEvent const &event)
         auto const desktop_pt = _desktop->w2d(event_pt);
 
         if (event.num_press == 1) {
+            if (_directPress(event)) {
+                ret = true;
+                return;
+            }
             rubberband->start(_desktop, desktop_pt, true);
             switch_rubberband_mode(event.modifiers);
             ret = true;
@@ -586,6 +606,12 @@ bool NodeTool::root_handler(CanvasEvent const &event)
     [&] (ButtonReleaseEvent const &event) {
 
         if (event.button != 1) {
+            return;
+        }
+
+        if (_direct_press) {
+            _directRelease();
+            ret = true;
             return;
         }
 
@@ -729,6 +755,140 @@ void NodeTool::update_tip()
                                                                     "Drag to select objects to edit"));
         }
     }
+}
+
+Inkscape::UI::SelectableControlPoint *NodeTool::_nodeNear(Geom::Point const &window_point, double radius) const
+{
+    Inkscape::UI::SelectableControlPoint *nearest = nullptr;
+    double best = radius;
+    for (auto point : _selected_nodes->allPoints()) {
+        double const d = Geom::distance(_desktop->d2w(point->position()), window_point);
+        if (d <= best) {
+            best = d;
+            nearest = point;
+        }
+    }
+    return nearest;
+}
+
+/**
+ * PROOF: Illustrator's Direct Selection press, for a press on an object outside any handle with
+ * no modifier. It selects that object alone, inside groups too. With the pointer on one of its
+ * anchors only that anchor is selected; otherwise all of them are, and a drag moves the whole
+ * object. An unselected object's anchor can so be selected and dragged in one gesture, where
+ * Inkscape needed a click to show the anchors first and dragged a selection box over the fill.
+ */
+bool NodeTool::_directPress(ButtonPressEvent const &event)
+{
+    if (event.modifiers & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK)) {
+        return false;
+    }
+    auto item = sp_event_context_find_item(_desktop, event.pos, false, true);
+    if (!item) {
+        return false;
+    }
+
+    auto selection = _desktop->getSelection();
+    if (selection->single() != item) {
+        selection->set(item); // Builds the anchors at once.
+    }
+
+    DirectPress press;
+    press.origin = _desktop->w2d(event.pos);
+    press.origin_w = event.pos;
+    press.reference = press.origin;
+
+    auto const tolerance = Preferences::get()->getIntLimited("/options/grabsensitivity/value", 8, 1, 100);
+    if (auto node = _nodeNear(event.pos, tolerance)) {
+        _selected_nodes->clear();
+        _selected_nodes->insert(node);
+        press.reference = node->position();
+    } else if (!_selected_nodes->allPoints().empty()) {
+        _selected_nodes->selectAll();
+        if (auto nearest = _nodeNear(event.pos, Geom::infinity())) {
+            press.reference = nearest->position();
+        }
+    } else {
+        press.whole_items = true;
+    }
+    _direct_press = press;
+    return true;
+}
+
+void NodeTool::_directDrag(MotionEvent const &event)
+{
+    auto &press = *_direct_press;
+    if (!press.moved) {
+        auto const tolerance = Preferences::get()->getIntLimited("/options/dragtolerance/value", 0, 0, 100);
+        if (Geom::LInfty(event.pos - press.origin_w) < tolerance) {
+            return;
+        }
+        press.moved = true;
+    }
+
+    Geom::Point delta = _desktop->w2d(event.pos) - press.origin;
+    if (event.modifiers & GDK_SHIFT_MASK) {
+        // Horizontal, vertical or diagonal, as in Illustrator.
+        double const step = M_PI / 4;
+        double const angle = std::round(Geom::atan2(delta) / step) * step;
+        delta = Geom::Point::polar(angle, Geom::dot(delta, Geom::Point::polar(angle)));
+        _desktop->getSnapIndicator()->remove_snaptarget();
+    } else if (!mod_move_no_snapping->active(event.modifiers)) {
+        auto &m = _desktop->getNamedView()->snap_manager;
+        m.setupIgnoreSelection(_desktop, true);
+        Inkscape::SnapCandidatePoint scp(press.reference + delta, Inkscape::SNAPSOURCE_NODE_CUSP);
+        auto const sp = m.freeSnap(scp, Geom::OptRect(), false);
+        m.unSetup();
+        if (sp.getSnapped()) {
+            delta = sp.getPoint() - press.reference;
+            _desktop->getSnapIndicator()->set_new_snaptarget(sp);
+        } else {
+            _desktop->getSnapIndicator()->remove_snaptarget();
+        }
+    }
+
+    auto const step = delta - press.applied;
+    if (press.whole_items) {
+        _desktop->getSelection()->moveRelative(step);
+    } else {
+        _selected_nodes->transform(Geom::Translate(step));
+    }
+    press.applied = delta;
+
+    auto const units = _desktop->getNamedView()->display_units;
+    defaultMessageContext()->setF(Inkscape::NORMAL_MESSAGE, _("<b>Move</b> by %s, %s; with <b>Shift</b> to restrict the angle"),
+                                  Inkscape::Util::Quantity(delta.x(), "px").string(units).c_str(),
+                                  Inkscape::Util::Quantity(delta.y(), "px").string(units).c_str());
+    gobble_motion_events(GDK_BUTTON1_MASK);
+}
+
+void NodeTool::_directRelease()
+{
+    auto const press = *_direct_press;
+    _direct_press.reset();
+    _desktop->getSnapIndicator()->remove_snaptarget();
+    if (!press.moved || press.applied == Geom::Point()) {
+        return;
+    }
+    if (press.whole_items) {
+        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Move"), INKSCAPE_ICON("tool-node-editor"));
+    } else {
+        _selected_nodes->signal_commit.emit(Inkscape::UI::COMMIT_MOUSE_MOVE);
+    }
+    update_tip();
+}
+
+void NodeTool::_directCancel()
+{
+    auto const press = *_direct_press;
+    _direct_press.reset();
+    _desktop->getSnapIndicator()->remove_snaptarget();
+    if (press.whole_items) {
+        _desktop->getSelection()->moveRelative(-press.applied);
+    } else {
+        _selected_nodes->transform(Geom::Translate(-press.applied));
+    }
+    _desktop->messageStack()->flash(Inkscape::NORMAL_MESSAGE, _("Move canceled."));
 }
 
 void NodeTool::select_area(Geom::Path const &path, ButtonReleaseEvent const &event)

@@ -10,10 +10,12 @@
 #include "ui/tool/curve-drag-point.h"
 
 #include <glib/gi18n.h>
+#include <2geom/angle.h>
 
 #include "control-point-selection.h"
 #include "desktop.h"
 #include "multi-path-manipulator.h"
+#include "display/control/snap-indicator.h"
 #include "object/sp-namedview.h"
 #include "path-manipulator.h"
 #include "ui/widget/events/canvas-event.h"
@@ -25,6 +27,8 @@ namespace UI {
 
 bool CurveDragPoint::_drags_stroke = false;
 bool CurveDragPoint::_segment_was_degenerate = false;
+bool CurveDragPoint::_moves_segment = false;
+Geom::Point CurveDragPoint::_segment_start[2];
 
 CurveDragPoint::CurveDragPoint(PathManipulator &pm) :
     ControlPoint(pm._multi_path_manipulator._path_data.node_data.desktop, Geom::Point(), SP_ANCHOR_CENTER,
@@ -46,13 +50,24 @@ bool CurveDragPoint::_eventHandler(Inkscape::UI::Tools::ToolBase *event_context,
     return ControlPoint::_eventHandler(event_context, event);
 }
 
-bool CurveDragPoint::grabbed(MotionEvent const &/*event*/)
+bool CurveDragPoint::grabbed(MotionEvent const &event)
 {
     _pm._selection.hideTransformHandles();
     NodeList::iterator second = first.next();
 
+    // PROOF: as with Illustrator's Direct Selection, dragging a straight segment moves it, both
+    // of its anchors following the pointer. Alt bends it into a curve instead, as Inkscape did.
+    bool const straight = first->front()->isDegenerate() && second->back()->isDegenerate();
+    _moves_segment = straight && !_pm._isBSpline() && !(event.modifiers & GDK_ALT_MASK);
+    if (_moves_segment) {
+        _segment_was_degenerate = false;
+        _segment_start[0] = first->position();
+        _segment_start[1] = second->position();
+        return false;
+    }
+
     // move the handles to 1/3 the length of the segment for line segments
-    if (first->front()->isDegenerate() && second->back()->isDegenerate()) {
+    if (straight) {
         _segment_was_degenerate = true;
 
         // delta is a vector equal 1/3 of distance from first to second
@@ -76,6 +91,11 @@ void CurveDragPoint::dragged(Geom::Point &new_pos, MotionEvent const &event)
 
     auto const bspline_handles = Modifiers::Modifier::get(Modifiers::Type::NODE_BSPLINE_HANDLES)->active(event.modifiers);
     auto const no_snap = Modifiers::Modifier::get(Modifiers::Type::MOVE_NO_SNAPPING)->active(event.modifiers);
+
+    if (_moves_segment) {
+        _moveSegment(new_pos, event);
+        return;
+    }
 
     // special cancel handling - retract handles when if the segment was degenerate
     if (_is_drag_cancelled(event) && _segment_was_degenerate) {
@@ -131,10 +151,59 @@ void CurveDragPoint::dragged(Geom::Point &new_pos, MotionEvent const &event)
     _pm.update();
 }
 
+/**
+ * PROOF: move a straight segment whole. Shift keeps the move horizontal, vertical or diagonal;
+ * otherwise whichever end lands nearer a snap target snaps, and the other end follows.
+ */
+void CurveDragPoint::_moveSegment(Geom::Point &new_pos, MotionEvent const &event)
+{
+    NodeList::iterator second = first.next();
+    Geom::Point const origin = _last_drag_origin();
+
+    if (_is_drag_cancelled(event)) {
+        first->move(_segment_start[0]);
+        second->move(_segment_start[1]);
+        new_pos = origin;
+        _pm.update();
+        return;
+    }
+
+    Geom::Point delta = new_pos - origin;
+    if (event.modifiers & GDK_SHIFT_MASK) {
+        double const step = M_PI / 4;
+        double const angle = std::round(Geom::atan2(delta) / step) * step;
+        delta = Geom::Point::polar(angle, Geom::dot(delta, Geom::Point::polar(angle)));
+    } else if (!Modifiers::Modifier::get(Modifiers::Type::MOVE_NO_SNAPPING)->active(event.modifiers)) {
+        auto &m = _desktop->getNamedView()->snap_manager;
+        m.setup(_desktop, true, static_cast<SPItem *>(_pm._path));
+        std::optional<Inkscape::SnappedPoint> best;
+        Geom::Point correction;
+        for (auto const &start : _segment_start) {
+            Inkscape::SnapCandidatePoint scp(start + delta, Inkscape::SNAPSOURCE_NODE_CUSP);
+            auto sp = m.freeSnap(scp, Geom::OptRect(), false);
+            if (sp.getSnapped() && (!best || sp.getSnapDistance() < best->getSnapDistance())) {
+                best = sp;
+                correction = sp.getPoint() - (start + delta);
+            }
+        }
+        m.unSetup();
+        if (best) {
+            delta += correction;
+            _desktop->getSnapIndicator()->set_new_snaptarget(*best);
+        }
+    }
+
+    first->move(_segment_start[0] + delta);
+    second->move(_segment_start[1] + delta);
+    new_pos = origin + delta;
+    _pm.update();
+}
+
 void CurveDragPoint::ungrabbed(ButtonReleaseEvent const *)
 {
     _pm._updateDragPoint(_desktop->d2w(position()));
-    _pm._commit(RC_("Undo", "Drag curve"));
+    _pm._commit(_moves_segment ? RC_("Undo", "Move segment") : RC_("Undo", "Drag curve"));
+    _moves_segment = false;
     _pm._selection.restoreTransformHandles();
 }
 
@@ -248,7 +317,7 @@ Glib::ustring CurveDragPoint::_getTip(unsigned state) const
                                          "click to select (more: %1)"), more_labels);
     }
     if (linear) {
-        return Glib::ustring::compose(C_("Path segment tip", "<b>Linear segment</b>: drag to convert to a Bezier segment, "
+        return Glib::ustring::compose(C_("Path segment tip", "<b>Linear segment</b>: drag to move it, Alt+drag to bend it, "
                                          "doubleclick to insert node, click to select (more: %1)"), more_labels);
     } else {
         return Glib::ustring::compose(C_("Path segment tip", "<b>Bezier segment</b>: drag to shape the segment, doubleclick to insert node, "

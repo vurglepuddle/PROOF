@@ -165,10 +165,9 @@ void SelectionHelper::selectNone(SPDesktop *dt)
         nt->_selected_nodes->clear();
     } else if (!dt->getSelection()->isEmpty()) {
         dt->getSelection()->clear();
-    } else {
-        // If nothing selected switch to selection tool
-        set_active_tool(dt, "Select");
     }
+    // PROOF: with nothing selected, Inkscape switched to the selection tool here. Escape and
+    // Deselect never change the tool in Illustrator, so the current tool stays.
 }
 
 void SelectionHelper::selectSameFillStroke(SPDesktop *dt)
