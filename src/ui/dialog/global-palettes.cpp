@@ -28,6 +28,7 @@
 #include "extension/internal/pdfinput/ai-private-data.h"
 #endif
 #include "io/resource.h"
+#include "preferences.h"
 #include "io/sys.h"
 #include "ui/dialog/choose-file.h"
 #include "util/delete-with.h"
@@ -497,14 +498,27 @@ const PaletteFileData* GlobalPalettes::find_palette(const Glib::ustring& id) con
 }
 
 Glib::RefPtr<Gio::File> choose_palette_file(Gtk::Window* window) {
-    static std::string current_folder;
     static std::vector<std::pair<Glib::ustring, Glib::ustring>> const filters{
         {_("Gimp Color Palette"), "*.gpl"},
         {_("Adobe Color Book"), "*.acb"},
         {_("Adobe Swatch Exchange"), "*.ase"},
         {_("Adobe Illustrator swatches"), "*.ai"}
     };
-    return choose_file_open(_("Load color palette"), window, filters, current_folder);
+    // PROOF: open in the folder last loaded from, remembered across sessions, or else in the
+    // user's palette folder, which PROOF reads palettes from, instead of the home folder.
+    static constexpr auto folder_pref = "/dialogs/swatches/import-folder";
+    auto prefs = Inkscape::Preferences::get();
+    std::string current_folder = prefs->getString(folder_pref).raw();
+    if (current_folder.empty() || !Glib::file_test(current_folder, Glib::FileTest::IS_DIR)) {
+        using namespace Inkscape::IO::Resource;
+        current_folder = get_path_string(USER, PALETTES);
+        g_mkdir_with_parents(current_folder.c_str(), 0755);
+    }
+    auto file = choose_file_open(_("Load color palette"), window, filters, current_folder);
+    if (file) {
+        prefs->setString(folder_pref, current_folder);
+    }
+    return file;
 }
 
 GlobalPalettes const &GlobalPalettes::get()
