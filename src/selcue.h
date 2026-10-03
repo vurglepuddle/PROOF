@@ -47,6 +47,9 @@ public:
     /// PROOF: hide the cue while the selection is being dragged, as Illustrator does. It would
     /// otherwise trail behind the moving objects; it reappears at the result on release.
     void setTransforming(bool transforming);
+    /// PROOF: the select tool draws its own transform box around the selection, so a single
+    /// object needs no cue of its own, and the boxes of several objects are thin and solid.
+    void setTransformBox(bool transform_box);
 
 private:
     class BoundingBoxPrefsObserver: public Preferences::Observer
@@ -72,6 +75,7 @@ private:
 
     bool _bboxes_visible = true;
     bool _transforming = false;
+    bool _transform_box = false;
     bool _visible() const { return _bboxes_visible && !_transforming; }
     SPDesktop *_desktop;
     Selection *_selection;

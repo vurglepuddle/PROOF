@@ -41,17 +41,21 @@
 #include "display/control/canvas-item-curve.h"
 #include "display/control/canvas-item-enums.h"
 #include "display/control/canvas-item-group.h"
+#include "display/control/canvas-item-rect.h"
 #include "live_effects/effect-enum.h"
 #include "live_effects/effect.h"
 
 #include "object/sp-item-transform.h"
 #include "object/sp-namedview.h"
+#include "object/sp-rect.h"
 #include "object/sp-root.h"
 
+#include "ui/cursor-utils.h"
 #include "ui/icon-names.h"
 #include "ui/modifiers.h"
 #include "ui/knot/knot.h"
 #include "ui/tools/select-tool.h"
+#include "ui/widget/canvas.h"
 #include "ui/widget/events/canvas-event.h"
 
 using Inkscape::DocumentUndo;
@@ -123,7 +127,17 @@ Inkscape::SelTrans::SelTrans(SPDesktop *desktop) :
 
     _center_is_set = false; // reread _center from items, or set to bbox midpoint
 
+    _box = make_canvasitem<CanvasItemRect>(desktop->getCanvasControls());
+    _box->set_stroke(0x277fffff);
+    _box->set_pickable(false);
+    _box->set_visible(false);
+    _center_mark = make_canvasitem<CanvasItemCtrl>(desktop->getCanvasControls(), CANVAS_ITEM_CTRL_TYPE_BOX_CENTER);
+    _center_mark->set_pickable(false);
+    _center_mark->set_visible(false);
+    _selcue.setTransformBox(true);
+
     _makeHandles();
+    _makeRadiusKnots();
     _updateHandles();
 
     _selection = desktop->getSelection();
@@ -161,9 +175,15 @@ Inkscape::SelTrans::~SelTrans()
         SPKnot::unref(knot);
         knot = nullptr;
     }
+    for (auto &knot : _radius_knots) {
+        SPKnot::unref(knot);
+        knot = nullptr;
+    }
 
     _norm.reset();
     _grip.reset();
+    _box.reset();
+    _center_mark.reset();
     for (auto &i : _l) {
         i.reset();
     }
@@ -681,12 +701,16 @@ void Inkscape::SelTrans::_updateHandles()
 
     if ( !_show_handles || _empty ) {
         _desktop->getSelection()->setAnchor(0.0, 0.0, false);
+        _updateBox();
+        _updateRadiusKnots();
         return;
     }
 
     if ( _state == STATE_SCALE ) {
         _showHandles(HANDLE_STRETCH);
         _showHandles(HANDLE_SCALE);
+        // PROOF: rotate from just outside the corners at any time, with no separate mode.
+        _showHandles(HANDLE_ROTATE);
     } else if(_state == STATE_ALIGN) {
        _showHandles(HANDLE_SIDE_ALIGN);
        _showHandles(HANDLE_CORNER_ALIGN);
@@ -696,6 +720,8 @@ void Inkscape::SelTrans::_updateHandles()
         _showHandles(HANDLE_ROTATE);
         _showHandles(HANDLE_CENTER);
     }
+    _updateBox();
+    _updateRadiusKnots();
 
     // Set anchor point, 0.0 is always set if nothing is selected (top/left).
     bool set = false;
@@ -753,12 +779,280 @@ void Inkscape::SelTrans::_showHandles(SPSelTransType type)
         Geom::Point const bpos(hands[i].x, (hands[i].y - 0.5) * (-y_dir) + 0.5);
         Geom::Point p(_bbox->min() + (_bbox->dimensions() * Geom::Scale(bpos)));
         knots[i]->moveto(p);
+        _setBoxHandleZone(i, p);
         knots[i]->show();
 
         // This controls the center handle's position, because the default can
         // be moved and needs to be remembered.
         if( type == HANDLE_CENTER && _center )
             knots[i]->moveto(*_center);
+    }
+}
+
+/**
+ * PROOF: draw the transform box, a thin line around the selection with a dot at the centre of
+ * rotation. Like the handles it is hidden while transforming and shown again at the result.
+ */
+void Inkscape::SelTrans::_updateBox()
+{
+    bool const visible = _show_handles && !_empty && _bbox && !_boxes_hidden;
+    _box->set_visible(visible);
+    // The draggable centre handle replaces the dot while it is shown.
+    _center_mark->set_visible(visible && _center && _state != STATE_ROTATE);
+    if (visible) {
+        _box->set_rect(*_bbox);
+        if (_center) {
+            _center_mark->set_position(*_center);
+        }
+    }
+}
+
+void Inkscape::SelTrans::setBoxesHidden(bool hidden)
+{
+    _boxes_hidden = hidden;
+    _selcue.setBboxesVisible(!hidden);
+    _updateBox();
+    _updateRadiusKnots();
+}
+
+Glib::RefPtr<Gdk::Cursor> Inkscape::SelTrans::_boxCursor(std::string const &name)
+{
+    auto &cursor = _box_cursors[name];
+    if (!cursor) {
+        if (name.ends_with(".svg")) {
+            cursor = load_svg_cursor(*_desktop->getCanvas(), name);
+        } else {
+            cursor = Gdk::Cursor::create(name);
+        }
+    }
+    return cursor;
+}
+
+/**
+ * PROOF: pick zones and cursors of the transform box. Corners pick a little beyond their
+ * squares, the invisible edge handles along the whole edge, and the invisible rotation handles
+ * just outside each corner. Zones reach only a short way into the box, so the object itself can
+ * still be dragged when it is small on screen; edges of a very thin box are not picked at all.
+ */
+void Inkscape::SelTrans::_setBoxHandleZone(int i, Geom::Point const &p)
+{
+    auto const &handle = hands[i];
+    auto const mid = _bbox->midpoint();
+    auto const dir = _desktop->d2w(p) - _desktop->d2w(mid); // On screen, y down.
+
+    CanvasItemCtrl::PickZone zone;
+    zone.a = zone.b = p;
+    zone.inner = mid;
+    std::string cursor;
+
+    switch (handle.type) {
+        case HANDLE_SCALE:
+            zone.radius = 6;
+            cursor = (dir.x() < 0) == (dir.y() < 0) ? "nwse-resize" : "nesw-resize";
+            break;
+        case HANDLE_STRETCH: {
+            // The edge runs between the two corners either side of its midpoint.
+            auto const along = handle.x == 0.5 ? Geom::Point(_bbox->width() / 2, 0) : Geom::Point(0, _bbox->height() / 2);
+            zone.a = p - along;
+            zone.b = p + along;
+            zone.radius = 5;
+            zone.min_room = 6;
+            cursor = std::abs(dir.x()) > std::abs(dir.y()) ? "ew-resize" : "ns-resize";
+            break;
+        }
+        case HANDLE_ROTATE:
+            zone.inner.reset();
+            zone.outward = p - mid;
+            zone.reach = 20;
+            zone.overlap = 8;
+            cursor = std::string("proof-rotate-") + (dir.y() < 0 ? "n" : "s") + (dir.x() < 0 ? "w" : "e") + ".svg";
+            break;
+        default:
+            return;
+    }
+
+    knots[i]->ctrl->set_pick_zone(zone);
+    if (auto c = _boxCursor(cursor)) {
+        knots[i]->setCursor(SP_KNOT_STATE_MOUSEOVER, c);
+        knots[i]->setCursor(SP_KNOT_STATE_DRAGGING, c);
+    }
+}
+
+namespace {
+
+/// A corner of a rectangle in its own coordinates, and the direction into the rectangle from it.
+struct RectCorner
+{
+    Geom::Point corner;
+    Geom::Point inward;
+};
+
+RectCorner rect_corner(SPRect const &rect, int i)
+{
+    double const x = rect.x.computed, y = rect.y.computed, w = rect.width.computed, h = rect.height.computed;
+    switch (i) {
+        case 0: return {{x, y}, {1, 1}};
+        case 1: return {{x + w, y}, {-1, 1}};
+        case 2: return {{x + w, y + h}, {-1, -1}};
+        default: return {{x, y + h}, {1, -1}};
+    }
+}
+
+double rect_radius(SPRect const &rect)
+{
+    return rect.rx._set ? rect.rx.computed : rect.ry._set ? rect.ry.computed : 0;
+}
+
+/// How far into the corner a radius handle sits: at the radius, or a little in when it is small.
+constexpr double RADIUS_HANDLE_MIN_INSET = 12; // screen pixels
+/// Rectangles narrower than this on screen show no radius handles, leaving room to move them.
+constexpr double RADIUS_HANDLES_MIN_SIZE = 48;
+
+} // namespace
+
+/**
+ * PROOF: the rectangle whose corners can be rounded on canvas: a single selected rectangle
+ * without path effects (the Corners effect has its own handles in the node tool).
+ */
+SPRect *Inkscape::SelTrans::_radiusRect() const
+{
+    auto rect = cast<SPRect>(_desktop->getSelection()->singleItem());
+    if (!rect || rect->hasPathEffectRecursive()) {
+        return nullptr;
+    }
+    return rect;
+}
+
+void Inkscape::SelTrans::_makeRadiusKnots()
+{
+    for (int i = 0; i < 4; i++) {
+        auto knot = new SPKnot(_desktop, _("<b>Round the corners</b>: drag into the shape for a larger radius"),
+                               CANVAS_ITEM_CTRL_TYPE_BOX_RADIUS, "SelTrans:radius");
+        knot->updateCtrl();
+        knot->request_signal.connect([this, i](SPKnot *knot, Geom::Point *position, unsigned) {
+            return _radiusRequest(i, knot, position);
+        });
+        knot->grabbed_signal.connect([this, i](SPKnot *knot, unsigned) { _radiusGrab(i, knot); });
+        knot->ungrabbed_signal.connect([this](SPKnot *, unsigned) { _radiusUngrab(); });
+        knot->hide();
+        _radius_knots[i] = knot;
+    }
+}
+
+void Inkscape::SelTrans::setPointer(Geom::Point const &p)
+{
+    bool const hover = _bbox && _bbox->contains(p);
+    if (hover != _radius_hover) {
+        _radius_hover = hover;
+        _updateRadiusKnots();
+    }
+}
+
+/**
+ * PROOF: corner radius handles, as in Figma: small circles inside the corners of a selected
+ * rectangle, shown while the pointer is over it. They sit at the radius, or a fixed distance in
+ * from a sharp corner, and round all four corners together.
+ */
+void Inkscape::SelTrans::_updateRadiusKnots()
+{
+    bool const dragging = _radius_dragging >= 0;
+    auto rect = _radiusRect();
+    bool show = rect && (_radius_hover || dragging) && (_show_handles || dragging) && !_empty &&
+                _state == STATE_SCALE && !_boxes_hidden;
+
+    Geom::Affine i2dt;
+    double inset = 0;
+    if (show) {
+        i2dt = rect->i2dt_affine();
+        double const scale = _desktop->current_zoom() * i2dt.descrim(); // Screen pixels per unit.
+        double const size = std::min(rect->width.computed, rect->height.computed);
+        show = scale > 0 && size * scale >= RADIUS_HANDLES_MIN_SIZE;
+        if (show) {
+            inset = std::min(std::max(rect_radius(*rect), RADIUS_HANDLE_MIN_INSET / scale), size / 2);
+        }
+    }
+
+    for (int i = 0; i < 4; i++) {
+        auto knot = _radius_knots[i];
+        if (!show) {
+            knot->hide();
+        } else if (i != _radius_dragging) { // The dragged handle follows the pointer.
+            auto const c = rect_corner(*rect, i);
+            knot->moveto((c.corner + c.inward * inset) * i2dt);
+            knot->show();
+        }
+    }
+}
+
+void Inkscape::SelTrans::_radiusGrab(int corner, SPKnot *knot)
+{
+    auto rect = _radiusRect();
+    if (!rect) {
+        return;
+    }
+    _radius_dragging = corner;
+    _radius_start = rect_radius(*rect);
+    auto const c = rect_corner(*rect, corner);
+    _radius_inset_start = Geom::dot(knot->position() * rect->i2dt_affine().inverse() - c.corner, c.inward) / 2;
+}
+
+bool Inkscape::SelTrans::_radiusRequest(int corner, SPKnot *knot, Geom::Point *position)
+{
+    auto rect = _radiusRect();
+    if (!rect || corner != _radius_dragging) {
+        return true;
+    }
+
+    // Slide along the corner's diagonal, in the rectangle's own coordinates; the radius changes by
+    // as much as the handle moves, so that it does not jump when a sharp corner is first dragged.
+    auto const i2dt = rect->i2dt_affine();
+    auto const c = rect_corner(*rect, corner);
+    double const max = std::min(rect->width.computed, rect->height.computed) / 2;
+    double const inset = std::clamp(Geom::dot(*position * i2dt.inverse() - c.corner, c.inward) / 2, 0.0, max);
+    double const radius = std::clamp(_radius_start + inset - _radius_inset_start, 0.0, max);
+    rect->setRx(radius > 0, radius);
+    rect->setRy(radius > 0, radius);
+
+    *position = (c.corner + c.inward * inset) * i2dt;
+    knot->moveto(*position);
+
+    auto const shown = Inkscape::Util::Quantity(rect->getVisibleRx(), "px");
+    _message_context.setF(Inkscape::IMMEDIATE_MESSAGE, _("<b>Corner radius</b>: %s"),
+                          shown.string(_desktop->getNamedView()->display_units).c_str());
+    return true;
+}
+
+void Inkscape::SelTrans::_radiusUngrab()
+{
+    _radius_dragging = -1;
+    _message_context.clear();
+    if (auto rect = _radiusRect()) {
+        rect->updateRepr();
+        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Round corners"), INKSCAPE_ICON("draw-rectangle"));
+    }
+    _updateRadiusKnots();
+}
+
+/**
+ * PROOF: a click without a drag on an invisible zone acts as a click on the canvas there, so
+ * that clicking just beside the selection still selects what is under the pointer, or deselects.
+ */
+void Inkscape::SelTrans::_clickThrough(unsigned state)
+{
+    using namespace Inkscape::Modifiers;
+    auto selection = _desktop->getSelection();
+    auto const w = _desktop->d2w(_desktop->point());
+    bool const in_groups = Modifier::get(Type::SELECT_IN_GROUPS)->active(state);
+    bool const add = Modifier::get(Type::SELECT_ADD_TO)->active(state);
+    auto item = UI::Tools::sp_event_context_find_item(_desktop, w, false, in_groups);
+    if (!item) {
+        if (!add) {
+            selection->clear();
+        }
+    } else if (add) {
+        selection->toggle(item);
+    } else if (!selection->includes(item)) {
+        selection->set(item);
     }
 }
 
@@ -777,7 +1071,9 @@ void Inkscape::SelTrans::_makeHandles()
             case HANDLE_SCALE:
             {
                 auto tip = Glib::ustring::compose(_("<b>Scale</b> selection; with <b>%1</b> to scale uniformly; with <b>%2</b> to scale around rotation center"), confine_mod, center_mod);
-                knots[i] = new SPKnot(_desktop, tip.c_str(), CANVAS_ITEM_CTRL_TYPE_ADJ_HANDLE, "SelTrans");
+                // PROOF: square corners only; each edge is an invisible zone along its length.
+                auto const type = hands[i].type == HANDLE_SCALE ? CANVAS_ITEM_CTRL_TYPE_BOX_CORNER : CANVAS_ITEM_CTRL_TYPE_INVISIPOINT;
+                knots[i] = new SPKnot(_desktop, tip.c_str(), type, "SelTrans");
                 break;
             }
             case HANDLE_SKEW:
@@ -788,8 +1084,9 @@ void Inkscape::SelTrans::_makeHandles()
             }
             case HANDLE_ROTATE:
             {
-                auto tip = Glib::ustring::compose(_("<b>Rotate</b> selection; with <b>%1</b> to snap angle; with <b>%2</b> to rotate around the opposite corner"), increment_mod, center_mod);
-                knots[i] = new SPKnot(_desktop, tip.c_str(), CANVAS_ITEM_CTRL_TYPE_ADJ_ROTATE, "SelTrans");
+                auto tip = Glib::ustring::compose(_("<b>Rotate</b> selection; with <b>%1</b> to snap angle; with <b>%2</b> to rotate around the opposite corner"), confine_mod, center_mod);
+                // PROOF: an invisible zone just outside the corner, with a rotate cursor.
+                knots[i] = new SPKnot(_desktop, tip.c_str(), CANVAS_ITEM_CTRL_TYPE_INVISIPOINT, "SelTrans");
                 break;
             }
             case HANDLE_CENTER:
@@ -817,7 +1114,9 @@ void Inkscape::SelTrans::_makeHandles()
                 knots[i] = new SPKnot(_desktop, "", CANVAS_ITEM_CTRL_TYPE_ADJ_HANDLE, "SelTrans");
         }
 
-        knots[i]->setAnchor(hands[i].anchor);
+        // PROOF: box handles sit centred on their point; their zones are set in _showHandles.
+        bool const box_handle = hands[i].type == HANDLE_SCALE || hands[i].type == HANDLE_STRETCH || hands[i].type == HANDLE_ROTATE;
+        knots[i]->setAnchor(box_handle ? SP_ANCHOR_CENTER : hands[i].anchor);
         knots[i]->updateCtrl();
 
         knots[i]->request_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_request), &hands[i]));
@@ -826,6 +1125,15 @@ void Inkscape::SelTrans::_makeHandles()
         knots[i]->ungrabbed_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_ungrab), &hands[i]));
         knots[i]->click_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_click), &hands[i]));
         knots[i]->event_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_event), &hands[i]));
+    }
+
+    // Corners win over edges, and edges over the rotation zones around them.
+    for (auto type : {HANDLE_ROTATE, HANDLE_STRETCH, HANDLE_SCALE}) {
+        for (int i = 0; i < NUMHANDS; i++) {
+            if (hands[i].type == type) {
+                knots[i]->ctrl->raise_to_top();
+            }
+        }
     }
 }
 
@@ -884,7 +1192,6 @@ void Inkscape::SelTrans::handleClick(SPKnot *knot, guint state, SPSelTransHandle
                 DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Reset center"), INKSCAPE_ICON("tool-pointer"));
             }
             // no break, continue.
-        case HANDLE_STRETCH:
         case HANDLE_SCALE:
             {
                 bool was_selected = knot->is_selected();
@@ -896,6 +1203,10 @@ void Inkscape::SelTrans::handleClick(SPKnot *knot, guint state, SPSelTransHandle
                 }
                 _updateHandles();
             }
+            break;
+        case HANDLE_STRETCH:
+        case HANDLE_ROTATE:
+            _clickThrough(state);
             break;
         case HANDLE_SIDE_ALIGN:
         case HANDLE_CORNER_ALIGN:
@@ -954,13 +1265,13 @@ void Inkscape::SelTrans::handleNewEvent(Geom::Point *position, guint state, SPSe
     }
 }
 
-int Inkscape::SelTrans::originRequest(Geom::Point &/*pt*/, unsigned int state)
+int Inkscape::SelTrans::originRequest(Geom::Point &/*pt*/, unsigned int state, bool around_center)
 {
-    // When holding shift while rotating or skewing, the transformation will be
-    // relative to the point opposite of the handle; otherwise it will be relative
-    // to the center as set for the selection
+    // Scaling is relative to the point opposite the handle, rotating and skewing to the center
+    // set for the selection; the off-center modifier swaps the two. PROOF: this follows the
+    // handle rather than the handle mode, since rotation is available while scaling.
     auto off_center = Modifiers::Modifier::get(Modifiers::Type::TRANS_OFF_CENTER)->active(state);
-    if (!is_stkey() && off_center == (_state == STATE_ROTATE)) {
+    if (!is_stkey() && off_center == around_center) {
         _origin = _opposite;
         _origin_for_bboxpoints = _opposite_for_bboxpoints;
         _origin_for_specpoints = _opposite_for_specpoints;
@@ -1267,7 +1578,7 @@ gboolean Inkscape::SelTrans::skewRequest(Geom::Point &pt, guint state, bool is_h
     Geom::Dim2 dim_a = is_horz ? Geom::X : Geom::Y;
     Geom::Dim2 dim_b = is_horz ? Geom::Y : Geom::X;
 
-    originRequest(pt, state);
+    originRequest(pt, state, true);
 
     // _point and _origin are noisy, ranging from 1 to 1e-9 or even smaller; this is due to the
     // limited SVG output precision, which can be arbitrarily set in the preferences
@@ -1373,7 +1684,7 @@ gboolean Inkscape::SelTrans::rotateRequest(Geom::Point &pt, guint state)
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
     double snaps = prefs->getDoubleLimited("/options/rotationsnapsperpi/value", 12.0, 0.1, 1800.0);
 
-    originRequest(pt, state);
+    originRequest(pt, state, true);
 
     // rotate affine in rotate
     Geom::Point const d1 = _point - _origin;

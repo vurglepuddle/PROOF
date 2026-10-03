@@ -209,6 +209,58 @@ Notes:
     shape: "middle-align";
 }
 
+/* PROOF transform box: small white corner squares with the selection-blue edge, and a centre
+   dot, in place of Inkscape's arrows. The box edges and the rotation areas outside the corners
+   are invisible pick zones. */
+.proof-box-corner {
+    shape: "square";
+    fill: white;
+    stroke: #277fff;
+    stroke-width: 1px;
+    outline-width: 0px;
+    scale: 1.5;
+    size-extra: 2px;
+    stroke-scale: 0;
+}
+
+.proof-box-corner:hover {
+    fill: #cfe2ff;
+}
+
+.proof-box-corner:selected,
+.proof-box-corner:click {
+    fill: #277fff;
+}
+
+.proof-box-center {
+    shape: "circle";
+    fill: #277fff;
+    stroke-width: 0px;
+    outline: white;
+    outline-width: 1px;
+    outline-opacity: 90%;
+    scale: 0.75;
+    size-extra: 1.5px;
+    stroke-scale: 0;
+}
+
+/* PROOF corner radius handles, shown inside the corners while hovering a rectangle */
+.proof-box-radius {
+    shape: "circle";
+    fill: white;
+    stroke: #277fff;
+    stroke-width: 1px;
+    outline-width: 0px;
+    scale: 1.5;
+    size-extra: 1px;
+    stroke-scale: 0;
+}
+
+.proof-box-radius:hover,
+.proof-box-radius:click {
+    fill: #277fff;
+}
+
 .inkscape-center {
     shape: "plus";
     stroke-width: 1px;
