@@ -207,6 +207,11 @@ public:
     void update_from_paint(const SPIPaint& paint) override;
     void set_fill_rule(FillRule fill_rule) override;
     void _set_mode(PaintMode mode);
+    // true if 'page' is the editor of the current paint mode
+    bool showing(Gtk::Widget const &page) const {
+        auto it = _pages.find(_mode);
+        return it != _pages.end() && it->second == &page;
+    }
 
     sigc::signal<void (SPGradient* gradient, SPGradientType type)> get_gradient_changed() override {
         return _signal_gradient_changed;
@@ -369,7 +374,8 @@ PaintSwitchImpl::PaintSwitchImpl(bool support_no_paint, bool support_fill_rule, 
         btn->set_group(_mode_group);
         auto mode = i.mode;
         btn->signal_toggled().connect([=,this]{
-            if (btn->get_active() && !_update.pending()) {
+            // PROOF: only a visible button can be a click; a hidden switch never changes paint.
+            if (btn->get_active() && !_update.pending() && btn->get_mapped()) {
                 switch_paint_mode(mode);
             }
         });
@@ -430,16 +436,22 @@ PaintSwitchImpl::PaintSwitchImpl(bool support_no_paint, bool support_fill_rule, 
         store_color_type(type);
     });
 
-    _mesh.signal_changed().connect([this](auto mesh) { fire_mesh_changed(mesh); });
+    // PROOF: each editor below changes the paint only while its own page is showing. Hidden
+    // editors can still emit (the pattern editor's scale, offset and name fields do on any
+    // value change), and the pattern editor then assigned its first stock pattern to an object
+    // painted with a flat colour.
+    _mesh.signal_changed().connect([this](auto mesh) {
+        if (showing(_mesh)) fire_mesh_changed(mesh);
+    });
 
     _swatch.signal_changed().connect([this](auto swatch, auto operation, auto replacement) {
-        fire_swatch_changed(swatch, operation, replacement, {}, {});
+        if (showing(_swatch)) fire_swatch_changed(swatch, operation, replacement, {}, {});
     });
     _swatch.signal_color_changed().connect([this](auto swatch, auto& color) {
-        fire_swatch_changed(swatch, EditOperation::Change, nullptr, color, {});
+        if (showing(_swatch)) fire_swatch_changed(swatch, EditOperation::Change, nullptr, color, {});
     });
     _swatch.signal_label_changed().connect([this](auto swatch, auto& label) {
-        fire_swatch_changed(swatch, EditOperation::Rename, nullptr, {}, label);
+        if (showing(_swatch)) fire_swatch_changed(swatch, EditOperation::Rename, nullptr, {}, label);
     });
     _swatch.get_picker().get_color_space_changed().connect([](auto type) {
         store_color_type(type);
@@ -455,7 +467,9 @@ PaintSwitchImpl::PaintSwitchImpl(bool support_no_paint, bool support_fill_rule, 
         _signal_inherit_mode_changed.emit(mode);
     });
 
-    _gradient.signal_changed().connect([this](auto gradient) { fire_gradient_changed(gradient, _mode); });
+    _gradient.signal_changed().connect([this](auto gradient) {
+        if (showing(_gradient)) fire_gradient_changed(gradient, _mode);
+    });
     _gradient.set_margin_top(4);
     _gradient.get_picker().get_color_space_changed().connect([](auto type) {
         store_color_type(type);
@@ -469,8 +483,12 @@ PaintSwitchImpl::PaintSwitchImpl(bool support_no_paint, bool support_fill_rule, 
 
     // force height to reveal a list of patterns:
     _pattern.set_name("PatternEditorPopup");
-    _pattern.signal_changed().connect([this] { fire_pattern_changed(); });
-    _pattern.signal_color_changed().connect([this](auto) { fire_pattern_changed(); });
+    _pattern.signal_changed().connect([this] {
+        if (showing(_pattern)) fire_pattern_changed();
+    });
+    _pattern.signal_color_changed().connect([this](auto) {
+        if (showing(_pattern)) fire_pattern_changed();
+    });
     _pattern.signal_edit().connect([this] {
         if (_desktop) set_active_tool(_desktop, "Node");
     });
@@ -492,7 +510,7 @@ PaintSwitchImpl::PaintSwitchImpl(bool support_no_paint, bool support_fill_rule, 
     }
 
     _color->signal_changed.connect([this] {
-        fire_flat_color_changed();
+        if (showing(_flat_color)) fire_flat_color_changed();
     });
 }
 
@@ -582,6 +600,9 @@ void PaintSwitchImpl::_set_mode(PaintMode mode) {
         }
     }
     if (auto mode_btn = _mode_buttons[mode == PaintMode::Hatch ? PaintMode::Pattern : mode]) {
+        // PROOF: this only shows the mode. Without the block, the button's toggled handler
+        // treated it as a click and re-applied that kind of paint, e.g. the last chosen pattern.
+        auto scoped(_update.block());
         mode_btn->set_active();
     }
     // color picker available?

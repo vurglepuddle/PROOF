@@ -12,6 +12,7 @@
 
 #include "paint-popover-manager.h"
 
+#include <glibmm/main.h>
 #include <gtkmm/menubutton.h>
 #include <gtkmm/popover.h>
 
@@ -75,6 +76,17 @@ PaintPopoverManager::Registration PaintPopoverManager::register_button(Gtk::Menu
         data.connections.push_back(
             pop->signal_map().connect([pop, btn_ptr]() {
                 Inkscape::UI::Widget::Utils::smart_position(*pop, *btn_ptr);
+            })
+        );
+        // PROOF: the paint switch is shared and stays alive after the popover closes, so keep
+        // it connected to the object only while the popover is open. Otherwise anything the
+        // switch emitted later, e.g. on window activation, changed the last object edited.
+        // Disconnect on idle, so an entry that commits as focus leaves still applies.
+        data.connections.push_back(
+            pop->signal_closed().connect([&data, pop]() {
+                Glib::signal_idle().connect_once([&data, pop]() {
+                    if (!pop->is_visible()) data.clear_connections();
+                });
             })
         );
     });
