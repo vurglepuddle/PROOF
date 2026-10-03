@@ -1191,18 +1191,10 @@ void Inkscape::SelTrans::handleClick(SPKnot *knot, guint state, SPSelTransHandle
                 }
                 DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Reset center"), INKSCAPE_ICON("tool-pointer"));
             }
-            // no break, continue.
+            break;
         case HANDLE_SCALE:
-            {
-                bool was_selected = knot->is_selected();
-                for (auto & child_knot : knots) {
-                    child_knot->selectKnot(false);
-                }
-                if (!was_selected) {
-                    knot->selectKnot(true);
-                }
-                _updateHandles();
-            }
+            // PROOF: a click on a corner or the centre changes nothing, as in Illustrator and
+            // Figma. Inkscape made the clicked handle the reference point for transforms.
             break;
         case HANDLE_STRETCH:
         case HANDLE_ROTATE:

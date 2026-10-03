@@ -9,6 +9,11 @@ its click-again rotate/skew mode.
 - **Box:** a 1 px line in the selection blue (`#277fff`) around the selection
   bounds, with a small dot at the centre of rotation. Box, handles and dot are
   hidden while transforming and redrawn at the result on release.
+- **Bounds:** geometric by default, without stroke, as in Illustrator with
+  "Use Preview Bounds" off. The box, the Properties panel and the toolbar
+  measure the shape itself. Preferences > Tools > Bounding box still switches
+  to visual bounds. Profiles saved before 2026-10-03 are switched once
+  (`/proof/upgrades/geometric-bounds`), and a later choice is kept.
 - **Corners:** four small white squares with a blue edge, centred on the
   corners. Dragging scales from the opposite corner. Shift keeps proportions
   and Alt scales from the centre (Illustrator keymap modifiers).
@@ -28,7 +33,10 @@ its click-again rotate/skew mode.
   outline around each object. A single object has no separate outline.
 - **Clicks:** a click without a drag in an invisible zone acts as a click on
   the canvas there. It selects what is under the pointer, or deselects over
-  empty canvas.
+  empty canvas. A click on a corner square or the centre dot does nothing, as
+  in Illustrator and Figma. Inkscape made the clicked handle the transform
+  reference point (a filled square with guide lines). Shift+click on the
+  centre still resets a moved centre of rotation.
 - **Small objects:** zones reach only a quarter of the way into the box, at
   most 5 px (6 px for corners), and the edge zones of a box under 12 px across
   are not picked. A small or thin object can still be dragged by its middle.
@@ -81,3 +89,8 @@ cursor and measures results from screenshots by colour. 28 of 28 checks pass:
 - radius handles on hover, rounding and undo
 
 Evidence is in `artifacts/transform-box/run-*`.
+
+`tools/ui-fixes-check.py` covers the 2026-10-03 follow-ups on a rectangle with
+a 24 px stroke: the box runs through the middle of the stroke, and a corner
+click leaves the square unchanged while a corner drag still scales from the
+opposite corner (`artifacts/ui-fixes/run-*`).

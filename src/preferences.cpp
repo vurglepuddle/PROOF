@@ -64,15 +64,31 @@ private:
     Glib::ustring const _filter;
 };
 
+/**
+ * PROOF: apply a changed default once to profiles saved before the change, keeping any choice
+ * the user makes afterwards. Each change is recorded under /proof/upgrades.
+ */
+static void upgrade_proof_defaults(Preferences &prefs)
+{
+    // Measure and transform by geometric bounds, without stroke, as Illustrator does by default
+    // ("Use Preview Bounds" off). The Inkscape default was the visual bounding box.
+    if (!prefs.getBool("/proof/upgrades/geometric-bounds")) {
+        prefs.setInt("/tools/bounding_box", 1);
+        prefs.setBool("/proof/upgrades/geometric-bounds", true);
+    }
+}
+
 Preferences::Preferences()
 {
     _prefs_filename = Inkscape::IO::Resource::profile_path(PREFERENCES_FILE_NAME);
 
     _loadDefaults();
     _load();
+    upgrade_proof_defaults(*this);
 
     _initialized = true;
 }
+
 
 Preferences::~Preferences()
 {
