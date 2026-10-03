@@ -49,7 +49,7 @@ Svgz::init()
             "<input priority='2'>\n"
                 "<extension>.svgz</extension>\n"
                 "<mimetype>image/svg+xml-compressed</mimetype>\n"
-                "<filetypename>" N_("Compressed Inkscape SVG (*.svgz)") "</filetypename>\n"
+                "<filetypename>" N_("Compressed PROOF SVG (*.svgz)") "</filetypename>\n"
                 "<filetypetooltip>" N_("SVG file format compressed with GZip") "</filetypetooltip>\n"
             "</input>\n"
         "</inkscape-extension>", std::make_unique<Svgz>());
@@ -62,10 +62,11 @@ Svgz::init()
             "<output priority='3'>\n"
                 "<extension>.svgz</extension>\n"
                 "<mimetype>image/x-inkscape-svg-compressed</mimetype>\n"
-                "<filetypename>" N_("Compressed Inkscape SVG (*.svgz)") "</filetypename>\n"
-                "<filetypetooltip>" N_("Inkscape's native file format compressed with GZip") "</filetypetooltip>\n"
+                "<filetypename>" N_("Compressed PROOF SVG (*.svgz)") "</filetypename>\n"
+                "<filetypetooltip>" N_("PROOF SVG compressed with GZip") "</filetypetooltip>\n"
                 "<dataloss>false</dataloss>\n"
             "</output>\n"
+            "<action>insert-color-fallback</action>\n"
         "</inkscape-extension>", std::make_unique<Svgz>());
 
     /* SVGZ out */
@@ -79,6 +80,7 @@ Svgz::init()
                 "<filetypename>" N_("Compressed plain SVG (*.svgz)") "</filetypename>\n"
                 "<filetypetooltip>" N_("Scalable Vector Graphics format compressed with GZip") "</filetypetooltip>\n"
             "</output>\n"
+            "<action>insert-color-fallback</action>\n"
         "</inkscape-extension>\n", std::make_unique<Svgz>());
     // clang-format on
 

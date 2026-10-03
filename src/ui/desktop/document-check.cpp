@@ -96,9 +96,9 @@ bool document_check_for_data_loss(SPDesktop *desktop)
     while (document->getReprRoot()->attribute("inkscape:dataloss") != nullptr && allow_data_loss == false) {
         // This loop catches if the user saves to a lossy format when in the loop. 
 
-        int const response = run_dialog(*window, _("_Save as Inkscape SVG"),
+        int const response = run_dialog(*window, _("_Save as PROOF SVG"),
             _("<span weight=\"bold\" size=\"larger\">The file \"%s\" was saved with a format that may cause data loss!</span>\n\n"
-              "Do you want to save this file as Inkscape SVG?"),
+              "Do you want to save this file as PROOF SVG?"),
             document->getDocumentName() ? document->getDocumentName() : "Unnamed");
 
         switch (response) {

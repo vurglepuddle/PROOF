@@ -42,6 +42,10 @@ private:
     void write();
 };
 
+/// PROOF: an event outside the canvas, logged only while Framecheck is enabled in preferences.
+bool enabled();
+inline Event maybe(char const *name, int subtype = 0) { return enabled() ? Event(name, subtype) : Event(); }
+
 } // namespace Inkscape::FrameCheck
 
 #endif // INKSCAPE_FRAMECHECK_H

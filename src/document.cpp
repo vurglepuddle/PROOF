@@ -84,6 +84,7 @@
 #include "selection.h"
 #include "style.h"
 #include "ui/widget/canvas.h"
+#include "ui/widget/canvas/framecheck.h"
 #include "ui/widget/desktop-widget.h"
 #include "util/units.h"
 #include "xml/croco-node-iface.h"
@@ -1589,6 +1590,17 @@ void SPDocument::requestModified()
     }
 }
 
+void SPDocument::flushPendingUpdates()
+{
+    if (modified_connection.connected()) {
+        idle_handler(); // disconnects itself once the document is up to date
+    }
+    if (rerouting_connection.connected()) {
+        rerouting_connection.disconnect();
+        rerouting_handler();
+    }
+}
+
 void SPDocument::setupViewport(SPItemCtx *ctx)
 {
     ctx->flags = 0;
@@ -1664,8 +1676,10 @@ bool SPDocument::_updateDocument(int update_flags, unsigned int object_modified_
 
             DocumentUndo::ScopedInsensitive _no_undo(this);
 
+            auto framecheck = Inkscape::FrameCheck::maybe("document_update");
             root->updateDisplay(&ctx, update_flags);
         }
+        auto framecheck = Inkscape::FrameCheck::maybe("document_modified");
         _emitModified(object_modified_tag);
     }
 
