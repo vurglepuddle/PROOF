@@ -76,7 +76,8 @@ public:
         double radius = 0;
         std::optional<Geom::Point> inner; ///< The box centre: reach a quarter of the way toward it
         double min_room = 0;       ///< at most, and nothing when it is closer than this.
-        Geom::Point outward;       ///< Non-zero: pick only beyond corner `a`, away from the box.
+        Geom::Point out_u, out_v;  ///< Non-zero: pick only beyond corner `a`, away from the box;
+                                   ///< they run away from it along its two edges.
         double reach = 0;          ///< How far the outward region extends.
         double overlap = 0;        ///< How far it reaches back along the box edges.
     };

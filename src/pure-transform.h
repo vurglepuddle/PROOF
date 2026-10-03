@@ -16,6 +16,7 @@
 #define SEEN_PURE_TRANSFORM_H
 
 #include <glib.h> // for g_warning
+#include <2geom/transforms.h>
 #include "snapper.h" // for SnapConstraint
 
 class SnapManager;
@@ -37,6 +38,19 @@ public:
     // Snap a group of points
     SnappedPoint best_snapped_point;
     void snap(::SnapManager *sm, std::vector<Inkscape::SnapCandidatePoint> const &points, Geom::Point const &pointer);
+};
+
+/**
+ * PROOF: scaling, stretching and skewing along the axes of a turned bounding box. The origin,
+ * scale and directions are in the box's frame, desktop coordinates turned by the inverse of
+ * `frame`; snap points and targets stay in desktop coordinates.
+ */
+class FramedTransform {
+protected:
+    explicit FramedTransform(Geom::Rotate frame) : _frame(frame) {}
+    Geom::Point toFrame(Geom::Point const &p) const { return p * _frame.inverse(); }
+    Geom::Point fromFrame(Geom::Point const &p) const { return p * _frame; }
+    Geom::Rotate _frame;
 };
 
 // **************************************************************************************************************
@@ -82,7 +96,7 @@ public:
 
 // **************************************************************************************************************
 
-class PureScale: public PureTransform {
+class PureScale: public PureTransform, protected FramedTransform {
 
 protected:
     Geom::Scale _scale;
@@ -99,7 +113,8 @@ public:
 //    PureScale(PureScale const &);   // Copy constructor
     ~PureScale() override = default;
 
-    PureScale(Geom::Scale scale, Geom::Point origin, bool uniform) : 
+    PureScale(Geom::Scale scale, Geom::Point origin, bool uniform, Geom::Rotate frame = {}) :
+        FramedTransform(frame),
         _scale (scale),
         _scale_snapped (scale),
         _origin (origin),
@@ -117,15 +132,15 @@ protected:
 
 public:
     ~PureScaleConstrained() override = default;
-    PureScaleConstrained(Geom::Scale scale, Geom::Point origin):
-        PureScale(scale, origin, true) {}; // Non-uniform constrained scaling is not supported
+    PureScaleConstrained(Geom::Scale scale, Geom::Point origin, Geom::Rotate frame = {}):
+        PureScale(scale, origin, true, frame) {}; // Non-uniform constrained scaling is not supported
 
 //    PureScaleConstrained * clone () const {return new PureScaleConstrained(*this);}
 };
 
 // **************************************************************************************************************
 
-class PureStretchConstrained: public PureTransform {
+class PureStretchConstrained: public PureTransform, protected FramedTransform {
 // A stretch is always implicitly constrained
 
 protected:
@@ -141,7 +156,9 @@ protected:
 
 public:
     ~PureStretchConstrained() override = default;;
-    PureStretchConstrained(Geom::Coord magnitude, Geom::Point origin, Geom::Dim2 direction, bool uniform) :
+    PureStretchConstrained(Geom::Coord magnitude, Geom::Point origin, Geom::Dim2 direction, bool uniform,
+                           Geom::Rotate frame = {}) :
+        FramedTransform(frame),
         _magnitude (magnitude),
         _stretch_snapped (Geom::Scale(magnitude, magnitude)),
         _origin (origin),
@@ -162,7 +179,7 @@ public:
 
 // **************************************************************************************************************
 
-class PureSkewConstrained: public PureTransform {
+class PureSkewConstrained: public PureTransform, protected FramedTransform {
 // A skew is always implicitly constrained
 
 protected:
@@ -178,7 +195,9 @@ protected:
 
 public:
     ~PureSkewConstrained() override = default;;
-    PureSkewConstrained(Geom::Coord skew, Geom::Coord scale, Geom::Point origin, Geom::Dim2 direction) :
+    PureSkewConstrained(Geom::Coord skew, Geom::Coord scale, Geom::Point origin, Geom::Dim2 direction,
+                        Geom::Rotate frame = {}) :
+        FramedTransform(frame),
         _skew (skew),
         _skew_snapped (skew),
         _scale (scale),

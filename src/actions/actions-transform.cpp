@@ -14,6 +14,7 @@
 #include <glibmm/i18n.h>
 
 #include "actions-helper.h"
+#include "box-frame.h"
 #include "desktop.h"
 #include "document-undo.h"
 #include "inkscape-application.h"
@@ -136,6 +137,21 @@ void transform_reapply(InkscapeApplication *app)
                                       INKSCAPE_ICON("tool-pointer"));
 }
 
+/// PROOF: Object > Transform > Reset Bounding Box, as in Illustrator: rotated objects keep a
+/// rotated box, and this makes it upright again without moving anything.
+void transform_reset_box(InkscapeApplication *app)
+{
+    auto selection = app->get_active_selection();
+    bool changed = false;
+    for (auto item : selection->items_vector()) {
+        changed = Inkscape::reset_box_angle(*item) || changed;
+    }
+    if (changed) {
+        Inkscape::DocumentUndo::done(app->get_active_document(), RC_("Undo", "Reset Bounding Box"),
+                                     INKSCAPE_ICON("tool-pointer"));
+    }
+}
+
 void page_rotate(const Glib::VariantBase& value, InkscapeApplication *app)
 {
     auto document = app->get_active_document();
@@ -163,6 +179,7 @@ std::vector<std::vector<Glib::ustring>> raw_data_transform = {
 
     {"app.transform-remove",        N_("Remove Transforms"),  SECTION, N_("Remove any transforms from selected objects")},
     {"app.transform-reapply",       N_("Reapply Transforms"), SECTION, N_("Reapply the last transformation to the selection")},
+    {"app.transform-reset-box",     N_("Reset Bounding Box"), SECTION, N_("Make the bounding box of rotated objects upright again")},
     {"app.page-rotate",             N_("Rotate Page 90°"),    SECTION, N_("Rotate page by 90-degree rotation steps")},
     // clang-format on
 };
@@ -201,6 +218,7 @@ add_actions_transform(InkscapeApplication* app)
     gapp->add_action_with_parameter( "transform-rotate-step",    Double, sigc::bind(sigc::ptr_fun(&transform_rotate_step),     app));
     gapp->add_action(                "transform-remove",                 sigc::bind(sigc::ptr_fun(&transform_remove),          app));
     gapp->add_action(                "transform-reapply",                sigc::bind(sigc::ptr_fun(&transform_reapply),         app));
+    gapp->add_action(                "transform-reset-box",              sigc::bind(sigc::ptr_fun(&transform_reset_box),       app));
     gapp->add_action_with_parameter( "page-rotate",              Int,    sigc::bind(sigc::ptr_fun(&page_rotate),               app));
     // clang-format on
 

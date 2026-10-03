@@ -160,7 +160,7 @@ SnappedPoint PureTranslateConstrained::snap(::SnapManager *sm, SnapCandidatePoin
 
 
 Geom::Point PureScale::getTransformedPoint(SnapCandidatePoint const &p) const {
-    return (p.getPoint() - _origin) * _scale + _origin;
+    return fromFrame((toFrame(p.getPoint()) - _origin) * _scale + _origin);
 }
 
 void PureScale::storeTransform(SnapCandidatePoint const &original_point, SnappedPoint &snapped_point) {
@@ -170,8 +170,8 @@ void PureScale::storeTransform(SnapCandidatePoint const &original_point, Snapped
     // We can therefore only calculate the scaling in this direction
     // and the scaling factor for the other direction should remain
     // untouched (unless scaling is uniform of course)
-    Geom::Point const a = snapped_point.getPoint() - _origin; // vector to snapped point
-    Geom::Point const b = original_point.getPoint() - _origin; // vector to original point (not the transformed point!)
+    Geom::Point const a = toFrame(snapped_point.getPoint()) - _origin; // vector to snapped point
+    Geom::Point const b = toFrame(original_point.getPoint()) - _origin; // vector to original point (not the transformed point!)
     for (int index = 0; index < 2; index++) {
         if (fabs(b[index]) > 1e-4) { // if SCALING CAN occur in this direction
             if (fabs(fabs(a[index]/b[index]) - fabs(_scale[index])) > 1e-7) { // if SNAPPING DID occur in this direction
@@ -215,12 +215,12 @@ void PureScale::storeTransform(SnapCandidatePoint const &original_point, Snapped
 // move in that specific direction; therefore it should only snap in that direction, so this
 // then becomes a constrained snap; otherwise we can use a free snap;
 SnappedPoint PureScale::snap(::SnapManager *sm, SnapCandidatePoint const &p, Geom::Point pt_orig, Geom::OptRect const &bbox_to_snap) const {
-    Geom::Point const b = (pt_orig - _origin); // vector to original point (not the transformed point!)
+    Geom::Point const b = (toFrame(pt_orig) - _origin); // vector to original point (not the transformed point!)
     bool const c1 = fabs(b[Geom::X]) < 1e-6;
     bool const c2 = fabs(b[Geom::Y]) < 1e-6;
     if ((c1 || c2) && !(c1 && c2)) {
         Geom::Point cvec; cvec[c1] = 1.;
-        Snapper::SnapConstraint dedicated_constraint = Inkscape::Snapper::SnapConstraint(_origin, cvec);
+        Snapper::SnapConstraint dedicated_constraint = Inkscape::Snapper::SnapConstraint(fromFrame(_origin), cvec * _frame);
         return sm->constrainedSnap(p, dedicated_constraint, bbox_to_snap);
     } else {
         return sm->freeSnap(p, bbox_to_snap);
@@ -232,8 +232,8 @@ SnappedPoint PureScaleConstrained::snap(::SnapManager *sm, SnapCandidatePoint co
     // When uniformly scaling, each point will have its own unique constraint line,
     // running from the scaling origin to the original untransformed point. We will
     // calculate that line here as a dedicated constraint
-    Geom::Point b = pt_orig - _origin;
-    Snapper::SnapConstraint dedicated_constraint = Inkscape::Snapper::SnapConstraint(_origin, b);
+    Geom::Point const origin = fromFrame(_origin);
+    Snapper::SnapConstraint dedicated_constraint = Inkscape::Snapper::SnapConstraint(origin, pt_orig - origin);
     return sm->constrainedSnap(p, dedicated_constraint, bbox_to_snap);
 }
 
@@ -249,7 +249,7 @@ Geom::Point PureStretchConstrained::getTransformedPoint(SnapCandidatePoint const
         s[_direction] = _magnitude;
         s[1 - _direction] = 1;
     }
-    return ((p.getPoint() - _origin) * s) + _origin;
+    return fromFrame(((toFrame(p.getPoint()) - _origin) * s) + _origin);
 }
 
 SnappedPoint PureStretchConstrained::snap(::SnapManager *sm, SnapCandidatePoint const &p, Geom::Point pt_orig, Geom::OptRect const &bbox_to_snap) const {
@@ -258,19 +258,19 @@ SnappedPoint PureStretchConstrained::snap(::SnapManager *sm, SnapCandidatePoint 
         // When uniformly stretching, each point will have its own unique constraint line,
         // running from the scaling origin to the original untransformed point. We will
         // calculate that line here
-        Geom::Point b = pt_orig - _origin;
-        dedicated_constraint = Inkscape::Snapper::SnapConstraint(_origin, b); // dedicated constraint
+        Geom::Point const origin = fromFrame(_origin);
+        dedicated_constraint = Inkscape::Snapper::SnapConstraint(origin, pt_orig - origin); // dedicated constraint
     } else {
         Geom::Point cvec; cvec[_direction] = 1.;
-        dedicated_constraint = Inkscape::Snapper::SnapConstraint(pt_orig, cvec);
+        dedicated_constraint = Inkscape::Snapper::SnapConstraint(pt_orig, cvec * _frame);
     }
 
     return sm->constrainedSnap(p, dedicated_constraint, bbox_to_snap);
 }
 
 void PureStretchConstrained::storeTransform(SnapCandidatePoint const &original_point, SnappedPoint &snapped_point) {
-    Geom::Point const a = snapped_point.getPoint() - _origin; // vector to snapped point
-    Geom::Point const b = original_point.getPoint() - _origin; // vector to original point (not the transformed point!)
+    Geom::Point const a = toFrame(snapped_point.getPoint()) - _origin; // vector to snapped point
+    Geom::Point const b = toFrame(original_point.getPoint()) - _origin; // vector to original point (not the transformed point!)
 
     _stretch_snapped = Geom::Scale(Geom::infinity(), Geom::infinity());
     if (fabs(b[_direction]) > 1e-4) { // if STRETCHING will occur for this point
@@ -295,13 +295,14 @@ void PureStretchConstrained::storeTransform(SnapCandidatePoint const &original_p
 
 
 Geom::Point PureSkewConstrained::getTransformedPoint(SnapCandidatePoint const &p) const {
+    Geom::Point const point = toFrame(p.getPoint());
     Geom::Point transformed;
     // Apply the skew factor
-    transformed[_direction] = (p.getPoint())[_direction] + _skew * ((p.getPoint())[1 - _direction] - _origin[1 - _direction]);
+    transformed[_direction] = point[_direction] + _skew * (point[1 - _direction] - _origin[1 - _direction]);
     // While skewing, mirroring and scaling (by integer multiples) in the opposite direction is also allowed.
     // Apply that scale factor here
-    transformed[1-_direction] = (p.getPoint() - _origin)[1 - _direction] * _scale + _origin[1 - _direction];
-    return transformed;
+    transformed[1-_direction] = (point - _origin)[1 - _direction] * _scale + _origin[1 - _direction];
+    return fromFrame(transformed);
 }
 
 SnappedPoint PureSkewConstrained::snap(::SnapManager *sm, SnapCandidatePoint const &p, Geom::Point pt_orig, Geom::OptRect const &bbox_to_snap) const {
@@ -316,12 +317,13 @@ SnappedPoint PureSkewConstrained::snap(::SnapManager *sm, SnapCandidatePoint con
     constraint_vector[1-_direction] = 0.0;
     constraint_vector[_direction] = 1.0;
 
-    return sm->constrainedSnap(p, Inkscape::Snapper::SnapConstraint(constraint_vector), bbox_to_snap);
+    return sm->constrainedSnap(p, Inkscape::Snapper::SnapConstraint(constraint_vector * _frame), bbox_to_snap);
 }
 
 void PureSkewConstrained::storeTransform(SnapCandidatePoint const &original_point, SnappedPoint &snapped_point) {
-    Geom::Point const b = original_point.getPoint() - _origin; // vector to original point (not the transformed point!)
-    _skew_snapped = (snapped_point.getPoint()[_direction] - (original_point.getPoint())[_direction]) / b[1 - _direction]; // skew factor
+    Geom::Point const original = toFrame(original_point.getPoint());
+    Geom::Point const b = original - _origin; // vector to original point (not the transformed point!)
+    _skew_snapped = (toFrame(snapped_point.getPoint())[_direction] - original[_direction]) / b[1 - _direction]; // skew factor
 
     // Store the metric for this transformation as a virtual distance
     snapped_point.setSnapDistance(std::abs(_skew_snapped - _skew));

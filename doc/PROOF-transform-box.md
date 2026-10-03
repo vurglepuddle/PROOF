@@ -43,6 +43,69 @@ its click-again rotate/skew mode.
 
 Shift+S still reaches the remaining skew mode and on-canvas alignment.
 
+## Turned box (2026-10-03)
+
+As in Illustrator, a rotated object keeps a rotated box. Dragging an edge or
+corner then stretches and scales along the object's own axes, so a rotated
+rectangle stays a rectangle instead of being sheared.
+
+What Illustrator does was checked against Illustrator 29 on this machine
+(screenshots in the session scratchpad, script `ai-bbox-probe.ps1`). The user
+expected only live shapes to keep a turned box, but plain paths keep one too:
+- Every rotated object carries its accumulated rotation, the
+  `BBAccumRotation` art tag, which Object > Transform > Reset Bounding Box
+  clears. A pen path with the tag shows a turned box; one without it shows an
+  upright box around the same shape.
+- A group has no angle of its own. It, or several selected objects, gets a
+  turned box when all its objects share an angle, and an upright one
+  otherwise. Illustrator compares exact angles (30 and 120 degrees count as
+  different); PROOF compares the boxes, which repeat every quarter turn.
+- Live shapes keep their angle as a shape property, so Reset Bounding Box is
+  greyed out for them until they are expanded.
+- Shapes show their centre (the Attributes panel's Show Center, on by default
+  for shapes and off for pen paths), also inside a group.
+
+In PROOF:
+- **The angle.** Rectangles, ellipses, stars, polygons, text, images and
+  clones keep rotation in their `transform`, so their box follows it. Paths,
+  lines and spirals take transforms into their nodes; they keep the angle in
+  `proof:box-angle` (degrees, in the object's own coordinates), the
+  counterpart of `BBAccumRotation`. `SPItem::doWriteTransform` updates it
+  whenever part of a transform goes into an object's coordinates, so the box
+  never turns when a transform is embedded: moving, rotating, ungrouping and
+  converting a rotated rectangle to a path all keep it. A transform that
+  shears the box removes the angle. Path operations make new paths with
+  upright boxes.
+- **Several objects.** A group, or a multiple selection, has a turned box when
+  every object in it (in nested groups too) has the same box. One upright,
+  sheared or differently turned object makes it upright.
+- **Interaction.** Scaling, stretching and skewing work in the box's frame,
+  including snapping (`PureScale`, `PureStretchConstrained` and
+  `PureSkewConstrained` take the frame). Corner, edge and rotation zones
+  follow the turned edges. The resize cursors are the nearest of the four
+  standard ones, and the rotate cursors come in eight directions. Rotation
+  turns about the middle of the turned box. On-canvas alignment, the last
+  Shift+S mode, uses an upright box.
+- **Thin outlines** around each of several selected objects are turned with
+  each object.
+- **Centres.** With a group or several objects selected, every rectangle,
+  ellipse, polygon and star in it shows its centre (up to 200). A single
+  shape needs none: the box's centre dot marks it.
+- **Object > Reset Bounding Box** (`app.transform-reset-box`) makes the box of
+  each selected object, or of every object in a selected group, upright
+  without moving anything. Unlike Illustrator it also works on shapes: their
+  stored angle cancels the transform's. Clones keep their box. Undo turns the
+  box back.
+- **Files.** PROOF SVG keeps `proof:box-angle`, and changing it (also by undo
+  or redo) redraws the box (`SPObject::notifyAttributeChanged`). Plain SVG
+  drops it with the other editor data. The native `.ai` writer should map it
+  to `BBAccumRotation` (radians) later.
+
+Not yet: the Properties panel shows no rotation angle (Illustrator shows the
+object's angle in its Transform section), and W/H stay upright bounds.
+Keyboard rotation (`[` `]`) turns about the upright bounds' centre, which
+differs slightly from the turned box's centre for lopsided shapes.
+
 ## Moving keeps up with the pointer
 
 A drag now measures the move from where the button went down. Inkscape
@@ -89,6 +152,23 @@ cursor and measures results from screenshots by colour. 28 of 28 checks pass:
 - radius handles on hover, rounding and undo
 
 Evidence is in `artifacts/transform-box/run-*`.
+
+`tools/turned-box-check.py` covers the turned box on
+`artifacts/turned-box/source.svg` (21 checks, `artifacts/turned-box/run-*`):
+- the box, corner squares and centre dot on a rectangle turned by 30 degrees,
+  and no upright box
+- turned resize cursors and rotate cursors
+- stretching and scaling along the turned axes, read back from the saved file
+  (still turned 30 degrees, not sheared), and undo
+- a pen path rotated with Shift keeps `proof:box-angle="30"` and a turned box
+- two objects at the same angle share a turned box
+- a group shows its shapes' centres; Reset Bounding Box makes its box
+  upright, and undo turns it back
+Reset Bounding Box has no shortcut, as in Illustrator, so the check binds one
+in its disposable profile copy (`proof_live.start(extra_keys=...)`). The
+Object menu entry is in `09-object-menu.png`. `test_box-frame` (7 cases)
+covers the angle rules: shapes, paths, moves and scales along the box,
+shearing, shared angles, groups and ungrouping, reset, and shape centres.
 
 `tools/ui-fixes-check.py` covers the 2026-10-03 follow-ups on a rectangle with
 a 24 px stroke: the box runs through the middle of the stroke, and a corner

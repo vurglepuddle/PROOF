@@ -952,6 +952,10 @@
           <attribute name="icon">object-flip-vertical</attribute>
           <attribute name="use-icon">True</attribute>
         </item>
+        <item>
+          <attribute name="label" translatable="yes">Reset Bounding Bo_x</attribute>
+          <attribute name="action">app.transform-reset-box</attribute>
+        </item>
       </section>
       <section>
         <item>

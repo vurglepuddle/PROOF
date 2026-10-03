@@ -11,6 +11,7 @@ target_sources(inkscape_base PRIVATE
   attributes.cpp
   auto-save.cpp
   axis-manip.cpp
+  box-frame.cpp
   composite-undo-stack-observer.cpp
   conditions.cpp
   conn-avoid-ref.cpp
@@ -90,6 +91,7 @@ target_sources(inkscape_base PRIVATE
   auto-save.h
   axis-manip.h
   bad-uri-exception.h
+  box-frame.h
   composite-undo-stack-observer.h
   conditions.h
   conn-avoid-ref.h

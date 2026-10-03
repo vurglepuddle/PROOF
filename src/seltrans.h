@@ -23,6 +23,7 @@
 #include <2geom/point.h>
 #include <2geom/affine.h>
 #include <2geom/rect.h>
+#include <2geom/transforms.h>
 #include <cstddef>
 #include <sigc++/sigc++.h>
 #include <glibmm/refptr.h>
@@ -45,6 +46,7 @@ class Cursor;
 
 namespace Inkscape {
 
+class CanvasItemBpath;
 class CanvasItemCtrl;
 class CanvasItemCurve;
 class CanvasItemRect;
@@ -161,6 +163,10 @@ private:
     void _showHandles(SPSelTransType type);
     void _updateBox();
     void _setBoxHandleZone(int index, Geom::Point const &position);
+    Geom::OptRect _frameBounds(SPItem::BBoxType type, bool stroked = false) const;
+    Geom::Point _toFrame(Geom::Point const &p) const { return p * _frame.inverse(); }
+    Geom::Point _fromFrame(Geom::Point const &p) const { return p * _frame; }
+    Geom::Affine _affineFromFrame(Geom::Affine const &affine) const { return _frame.inverse() * affine * _frame; }
     Glib::RefPtr<Gdk::Cursor> _boxCursor(std::string const &name);
     void _clickThrough(unsigned state);
     SPRect *_radiusRect() const;
@@ -198,6 +204,10 @@ private:
 
     SPItem::BBoxType _snap_bbox_type;
 
+    /* PROOF: the transform box turns with the selection, as in Illustrator. The boxes, _point,
+     * _point_geom, _opposite* and _origin* are in the box's frame: desktop coordinates turned by
+     * the inverse of _frame, where the box is upright. The centre stays in desktop coordinates. */
+    Geom::Rotate _frame;
     Geom::OptRect _bbox;
     Geom::OptRect _stroked_bbox;
     Geom::OptRect _geometric_bbox;
@@ -227,6 +237,7 @@ private:
     SPKnot *knots[NUMHANDS];
     // PROOF transform box: a thin box and centre dot drawn around the selection.
     CanvasItemPtr<CanvasItemRect> _box;
+    CanvasItemPtr<CanvasItemBpath> _turned_box; ///< The box when it is turned.
     CanvasItemPtr<CanvasItemCtrl> _center_mark;
     bool _boxes_hidden = false;
     std::map<std::string, Glib::RefPtr<Gdk::Cursor>> _box_cursors;
