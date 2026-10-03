@@ -1,9 +1,27 @@
 # Document color management
 
-Use **Document Setup > Color** to choose the document color mode and profile.
+Every document window is in **CMYK** or **RGB** mode, shown after the file
+name in the title bar, for example `poster.svg (CMYK)`.
 
-1. Set working RGB and CMYK profiles under **Working Spaces**. These are
-   application defaults; existing documents keep their assigned profiles.
+- **File > Document Color Mode > CMYK Color / RGB Color** converts the
+  document using that mode's working profile, in one undoable step. The
+  choice also becomes the mode for new documents. It is stored as
+  `/options/workingcolors/newmode` and initially defaults to CMYK when a CMYK
+  working profile is available.
+- **A file opened without a color mode** gets one without being edited.
+  It becomes CMYK if any process paint is CMYK, otherwise RGB. An embedded
+  profile for that mode is kept, as Illustrator's "preserve embedded
+  profiles" policy does. Otherwise the working profile is assigned. Paint
+  values are not rewritten. The document is not marked modified, and the
+  profile is written the next time it is saved.
+- **Don't color manage this document** is a mode without a profile and is
+  respected on reopening.
+
+Use **Document Properties > Color** for profile details.
+
+1. Set working RGB and CMYK profiles and the mode for **New documents**
+   under **Working Spaces**. These are application defaults; existing
+   documents keep their assigned profiles.
 2. Select **RGB** or **CMYK** under **Document Color**.
 3. Choose **Use working space**, **Assign a profile**, or **Don't color manage
    this document**. The profile list contains only profiles for that mode.
@@ -25,8 +43,8 @@ The conversion engine is **LittleCMS 2**. Relative Colorimetric with black
 point compensation is the default. Other available intents are Perceptual,
 Saturation and Absolute Colorimetric. Conversion options apply when the
 document profile is assigned; changes to defaults do not silently reassign
-open documents. New documents use the working RGB profile, initially sRGB.
-The initial CMYK default is Coated GRACoL 2006 if installed; otherwise choose
+open documents. New documents use the working profile of the new-document
+mode. The working RGB profile is initially sRGB. The initial CMYK default is Coated GRACoL 2006 if installed; otherwise choose
 a profile explicitly. A missing saved working profile is not substituted.
 
 ## Linked versus assigned
@@ -40,8 +58,43 @@ The document assignment is stored as `proof:color-mode` and
 `proof:color-profile` on the SVG root. Assigned profiles are embedded in SVG
 as `color-profile` resources; explicit process paints use `icc-color(...)`
 with an RGB fallback. Saving, reopening and undo/redo retain the assignment.
-Documents have independent assignments. Existing files are not silently
-assigned the application's current working profile on open.
+Documents have independent assignments. Files without a mode are given one
+when opened in a window, as described above. Command-line exports do not do
+this.
+
+## Opening PROOF SVG files elsewhere
+
+`icc-color()` and the `color-profile` element are SVG 1.1. Browsers and
+Illustrator do not implement them. A browser discards a whole
+`fill:#b51446 icc-color(...)` declaration, so the shape falls back to black,
+and a stroke disappears. Illustrator 29 reads the leading RGB, except when
+the profile name contains a colon, as in names generated before 2026-10-03
+(`...12647-2:2004`); then it also shows black.
+
+Saving as Inkscape SVG or Plain SVG now also writes the RGB preview of every
+ICC or CMYK style paint as a presentation attribute. Example:
+`style="fill:#b51446 icc-color(...)" fill="#b51446"`. Where the style is
+understood, it wins. Elsewhere, the RGB preview is used. PROOF removes these
+attributes when it reads a file, so they can never go stale. The CMYK value
+in `style` remains the source of truth.
+
+Verified 2026-10-03 with a copy of `TEST_HERE_FIXED.svg`: Edge rendered the
+rectangles `#000000` before and `#b51446` after, and Illustrator 29.2.1 read
+`RGB(0,0,0)` before and `RGB(181,20,70)` after. Other applications see an
+RGB file. Only PROOF reads the CMYK channels and the embedded profile.
+
+## Importing, dropping and pages
+
+Paints refer to profiles by name. When an imported SVG (Include, or as new
+pages) contains a profile whose name the document already uses, the
+document's own profile is kept and the imported copy is not added. This
+applies even if the ICC data differs, in which case a warning is logged. CMYK
+numbers are preserved, as with Illustrator's default CMYK policy. A
+differently named profile is added alongside it, and the imported artwork
+keeps that profile. Previously, every PROOF CMYK file dropped into another
+one crashed: both embed the same profile, and registering the second copy
+threw out of the document signal. A duplicate name in a single file, or a
+renamed profile resource, now logs a warning instead of aborting.
 
 ## Scope
 

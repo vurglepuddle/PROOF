@@ -84,7 +84,12 @@ bool ColorProfileLink::generateSpace()
     }
 
     if (profile) {
-        space = tracker->addProfile(profile, cp->getName(), cp->getRenderingIntent());
+        // This runs from document signals; a second resource with a used name must not abort.
+        try {
+            space = tracker->addProfile(profile, cp->getName(), cp->getRenderingIntent());
+        } catch (ColorError const &e) {
+            g_warning("Ignoring color profile '%s': %s", cp->getName().c_str(), e.what());
+        }
     } else {
         g_warning("Incomplete CMS profile, no color space created for '%s'", cp->getName().c_str());
     }
@@ -97,6 +102,8 @@ bool ColorProfileLink::generateSpace()
 bool ColorProfileLink::updateSpace()
 {
     if (space->getName() != cp->getName()) {
+        tracker->removeProfile(space);
+        space.reset();
         return generateSpace();
     }
     if (space->getIntent() != cp->getRenderingIntent()) {

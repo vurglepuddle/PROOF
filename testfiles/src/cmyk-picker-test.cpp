@@ -5,7 +5,9 @@
  * Reproduces a user report: corporate CMYK 5/100/45/22 showed as 0/100/42/26 and drifted when
  * edited. Drives the real picker widgets; needs a display, so it only runs with INKSCAPE_TEST_GUI=1.
  */
+#include <algorithm>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -20,8 +22,10 @@
 #include "colors/document-colors.h"
 #include "colors/cms/profile.h"
 #include "colors/spaces/cms.h"
+#include "colors/utils.h"
 #include "doc-per-case-test.h"
 #include "document.h"
+#include "file.h"
 #include "document-undo.h"
 #include "extension/init.h"
 #include "gradient-chemistry.h"
@@ -557,4 +561,316 @@ TEST_F(CmykPickerTest, DocumentSettingsFilterProfilesAndApplyToCurrentDocument) 
     settings.set_document(nullptr);
     EXPECT_FALSE(settings.get_sensitive());
     window.unset_child();
+}
+
+namespace {
+int profile_elements(SPDocument *document, std::string const &name) {
+    int count = 0;
+    for (auto cp : document->getDocumentCMS().getObjects()) count += cp->getName() == name;
+    return count;
+}
+std::vector<SPObject *> flats(SPDocument *document) {
+    std::vector<SPObject *> result;
+    for (auto rect : document->getObjectsByElement("rect")) {
+        if (std::string(rect->getId()).starts_with("flat")) result.push_back(rect);
+    }
+    return result;
+}
+void import_objects(SPDocument *host, SPDocument *source) {
+    std::vector<XML::Node *> result;
+    host->import(*source, nullptr, nullptr, Geom::identity(), &result, SPDocument::ImportRoot::Single,
+                 SPDocument::ImportLayersMode::ToGroup);
+}
+}
+
+// Dropping one saved PROOF CMYK file into another: both embed the same profile.
+TEST_F(CmykDocumentTest, ImportingSameEmbeddedProfileReusesIt) {
+    auto host = color_document();
+    ASSERT_TRUE(DC::assign(host.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    std::string const name = host->getReprRoot()->attribute("proof:color-profile");
+    auto assigned = DC::assignedSpace(host.get());
+    auto saved = sp_repr_save_buf(host->getReprDoc()).raw();
+    for (bool pages : {false, true}) {
+        SCOPED_TRACE(pages ? "import as pages" : "import as objects");
+        auto source = SPDocument::createNewDocFromMem(saved);
+        ASSERT_TRUE(source);
+        if (pages) {
+            ASSERT_NO_THROW(file_import_pages(host.get(), source.get()));
+        } else {
+            ASSERT_NO_THROW(import_objects(host.get(), source.get()));
+        }
+        host->ensureUpToDate();
+        EXPECT_EQ(profile_elements(host.get(), name), 1);
+        EXPECT_EQ(DC::assignedSpace(host.get()), assigned);
+    }
+    auto rects = flats(host.get());
+    EXPECT_EQ(rects.size(), 3u);
+    for (auto rect : rects) {
+        SCOPED_TRACE(rect->getId());
+        expect_channels(rect->style->fill.getColor());
+        EXPECT_EQ(rect->style->fill.getColor().getSpace(), assigned);
+    }
+}
+
+// Same name, different ICC data: the host's profile wins and CMYK numbers are kept, as in
+// Illustrator's default "preserve numbers" policy for CMYK.
+TEST_F(CmykDocumentTest, ImportingDifferentProfileWithSameNameKeepsHostProfile) {
+    auto gracol = Colors::CMS::Profile::create_from_uri("C:/Windows/System32/spool/drivers/color/CoatedGRACoL2006.icc");
+    if (!gracol) GTEST_SKIP() << "CoatedGRACoL2006.icc not installed";
+    auto make = [](Colors::CMS::Profile const &profile) {
+        auto document = color_document();
+        Inkscape::ColorProfile::createFromProfile(document.get(), profile, "Press", ColorProfileStorage::HREF_DATA,
+                                                  Colors::RenderingIntent::PERCEPTUAL);
+        document->getReprRoot()->setAttribute("proof:color-mode", "CMYK");
+        document->getReprRoot()->setAttribute("proof:color-profile", "Press");
+        DC::refresh(document.get());
+        return document;
+    };
+    auto host = make(*test_profile());
+    auto source = make(*gracol);
+    auto assigned = DC::assignedSpace(host.get());
+    ASSERT_TRUE(assigned);
+    ASSERT_NO_THROW(import_objects(host.get(), source.get()));
+    host->ensureUpToDate();
+    EXPECT_EQ(profile_elements(host.get(), "Press"), 1);
+    EXPECT_EQ(DC::assignedSpace(host.get()), assigned);
+    EXPECT_EQ(assigned->getProfile()->dumpData(), test_profile()->dumpData());
+    for (auto rect : flats(host.get())) {
+        SCOPED_TRACE(rect->getId());
+        expect_channels(rect->style->fill.getColor());
+        EXPECT_EQ(rect->style->fill.getColor().getSpace(), assigned);
+    }
+}
+
+// A different profile is added alongside, and the imported artwork keeps its own profile.
+TEST_F(CmykDocumentTest, ImportingDifferentProfileAddsItAlongside) {
+    auto gracol = Colors::CMS::Profile::create_from_uri("C:/Windows/System32/spool/drivers/color/CoatedGRACoL2006.icc");
+    if (!gracol) GTEST_SKIP() << "CoatedGRACoL2006.icc not installed";
+    auto host = color_document();
+    auto source = color_document();
+    ASSERT_TRUE(DC::assign(host.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    ASSERT_TRUE(DC::assign(source.get(), Type::CMYK, gracol, Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    std::string const source_name = source->getReprRoot()->attribute("proof:color-profile");
+    auto assigned = DC::assignedSpace(host.get());
+    ASSERT_NO_THROW(import_objects(host.get(), source.get()));
+    host->ensureUpToDate();
+    EXPECT_EQ(DC::assignedSpace(host.get()), assigned);
+    EXPECT_EQ(profile_elements(host.get(), source_name), 1);
+    auto imported = host->getDocumentCMS().getSpace(source_name);
+    ASSERT_TRUE(imported && imported->hasValidCmsProfile());
+    auto rects = flats(host.get());
+    ASSERT_EQ(rects.size(), 2u);
+    for (auto rect : rects) expect_channels(rect->style->fill.getColor());
+    EXPECT_EQ(host->getObjectById("flat")->style->fill.getColor().getSpace(), assigned);
+    EXPECT_TRUE(std::ranges::any_of(rects, [&](auto rect) { return rect->style->fill.getColor().getSpace() == imported; }));
+}
+
+// Two color-profile elements sharing a name used to throw out of document construction.
+TEST_F(CmykDocumentTest, DuplicateProfileNamesInOneFileDoNotAbort) {
+    auto path = std::string(INKSCAPE_TESTS_DIR "/data/colors/default_cmyk.icc");
+    auto svg = R"SVG(<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10">
+      <defs><color-profile id="a" name="Press" xlink:href="file:///)SVG" + path + R"SVG("/>
+      <color-profile id="b" name="Press" xlink:href="file:///)SVG" + path + R"SVG("/></defs>
+      <rect id="flat" width="10" height="10" style="fill:#cd2468 icc-color(Press, 0.05, 1, 0.45, 0.22)"/></svg>)SVG";
+    std::unique_ptr<SPDocument> document;
+    ASSERT_NO_THROW(document = SPDocument::createNewDocFromMem(svg));
+    ASSERT_TRUE(document);
+    auto space = document->getDocumentCMS().getSpace("Press");
+    ASSERT_TRUE(space && space->hasValidCmsProfile());
+    expect_channels(fill_color(document.get()));
+    EXPECT_EQ(fill_color(document.get()).getSpace(), space);
+}
+
+// Renaming a profile resource (XML editor, undo) used to throw from the modified signal.
+TEST_F(CmykDocumentTest, RenamingProfileResourceKeepsItUsable) {
+    auto document = color_document();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    std::string const old_name = document->getReprRoot()->attribute("proof:color-profile");
+    auto objects = document->getDocumentCMS().getObjects();
+    ASSERT_EQ(objects.size(), 1u);
+    ASSERT_NO_THROW(objects[0]->setAttribute("name", "Renamed"));
+    ASSERT_NO_THROW(document->ensureUpToDate());
+    EXPECT_FALSE(document->getDocumentCMS().getSpace(old_name) &&
+                 document->getDocumentCMS().getSpace(old_name)->hasValidCmsProfile());
+    auto renamed = document->getDocumentCMS().getSpace("Renamed");
+    ASSERT_TRUE(renamed && renamed->hasValidCmsProfile());
+}
+
+namespace {
+std::unique_ptr<SPDocument> rgb_document() {
+    return SPDocument::createNewDocFromMem(std::string(R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+        <rect id="flat" width="10" height="10" style="fill:#cd2468;stroke:#112233"/></svg>)SVG"));
+}
+std::string attribute(SPDocument *document, char const *id, char const *key) {
+    auto value = document->getObjectById(id)->getRepr()->attribute(key);
+    return value ? value : "";
+}
+}
+
+// Browsers and Illustrator drop "fill:#b51446 icc-color(...)" entirely, giving black. Saving adds the
+// RGB preview as a presentation attribute; PROOF ignores it on load so it can never go stale.
+TEST_F(CmykDocumentTest, SavedColorFallbacksAreRgbPreviewsAndDroppedOnLoad) {
+    auto document = color_document();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, test_profile(), Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    auto copy = document->copy();
+    copy->getActionGroup()->activate_action("insert-color-fallback");
+    auto preview = Colors::rgba_to_hex(fill_color(document.get()).toRGBA(), false);
+    EXPECT_EQ(attribute(copy.get(), "flat", "fill"), preview);
+    EXPECT_EQ(attribute(copy.get(), "stop", "stop-color"),
+              Colors::rgba_to_hex(cast<SPStop>(document->getObjectById("stop"))->getColor().toRGBA(), false));
+    EXPECT_EQ(attribute(document.get(), "flat", "fill"), "") << "only the saved copy gets fallbacks";
+    EXPECT_NE(attribute(copy.get(), "flat", "style").find("icc-color"), std::string::npos);
+
+    auto reloaded = SPDocument::createNewDocFromMem(sp_repr_save_buf(copy->getReprDoc()).raw());
+    ASSERT_TRUE(reloaded);
+    EXPECT_EQ(attribute(reloaded.get(), "flat", "fill"), "");
+    EXPECT_EQ(attribute(reloaded.get(), "stop", "stop-color"), "");
+    expect_channels(fill_color(reloaded.get()));
+    EXPECT_EQ(fill_color(reloaded.get()).getSpace(), DC::assignedSpace(reloaded.get()));
+
+    // Plain RGB paints need nothing.
+    auto rgb = rgb_document();
+    rgb->getActionGroup()->activate_action("insert-color-fallback");
+    EXPECT_EQ(attribute(rgb.get(), "flat", "fill"), "");
+    EXPECT_EQ(attribute(rgb.get(), "flat", "stroke"), "");
+
+    // The colon in names saved before 2026-10-03 also turned Illustrator's import black.
+    auto legacy = color_document();
+    Inkscape::ColorProfile::createFromProfile(legacy.get(), *test_profile(), "Press-ISO-2:2004",
+                                              ColorProfileStorage::HREF_DATA, Colors::RenderingIntent::PERCEPTUAL);
+    auto space = legacy->getDocumentCMS().getSpace("Press-ISO-2:2004");
+    ASSERT_TRUE(space);
+    legacy->getObjectById("flat")->setAttribute("style", "fill:" + Color(space, {0.05, 1, 0.45, 0.22}).toString(false));
+    legacy->getActionGroup()->activate_action("insert-color-fallback");
+    EXPECT_EQ(attribute(legacy.get(), "flat", "fill"), Colors::rgba_to_hex(fill_color(legacy.get()).toRGBA(), false));
+}
+
+// Every document window gets a mode: inferred from its paints, keeping an embedded profile.
+TEST_F(CmykDocumentTest, AdoptInfersModeKeepsEmbeddedProfileAndLeavesPaintsAlone) {
+    auto rgb = rgb_document();
+    auto style = attribute(rgb.get(), "flat", "style");
+    EXPECT_EQ(DC::inferMode(rgb.get()), Type::RGB);
+    rgb->setModifiedSinceSave(false);
+    {
+        DocumentUndo::ScopedInsensitive insensitive(rgb.get());
+        ASSERT_TRUE(DC::adopt(rgb.get(), Type::RGB));
+    }
+    EXPECT_EQ(DC::mode(rgb.get()), Type::RGB);
+    ASSERT_TRUE(DC::assignedSpace(rgb.get()));
+    EXPECT_EQ(attribute(rgb.get(), "flat", "style"), style) << "adopting is not a conversion";
+    EXPECT_FALSE(rgb->isModifiedSinceSave());
+    EXPECT_FALSE(DC::adopt(rgb.get(), Type::CMYK)) << "an existing mode is never replaced";
+
+    auto cmyk = color_document();
+    EXPECT_EQ(DC::inferMode(cmyk.get()), Type::CMYK);
+    Inkscape::ColorProfile::createFromProfile(cmyk.get(), *test_profile(), "Press", ColorProfileStorage::HREF_DATA,
+                                              Colors::RenderingIntent::PERCEPTUAL);
+    ASSERT_TRUE(DC::adopt(cmyk.get(), Type::CMYK));
+    EXPECT_EQ(DC::assignedSpace(cmyk.get()), cmyk->getDocumentCMS().getSpace("Press")) << "embedded profile kept";
+    expect_channels(fill_color(cmyk.get()));
+    EXPECT_EQ(fill_color(cmyk.get()).getSpace(), DC::assignedSpace(cmyk.get()));
+
+    // "Don't color manage this document" is a mode without a profile and stays that way.
+    auto unmanaged = color_document();
+    unmanaged->getReprRoot()->setAttribute("proof:color-mode", "CMYK");
+    EXPECT_FALSE(DC::adopt(unmanaged.get(), Type::CMYK));
+    EXPECT_FALSE(DC::assignedSpace(unmanaged.get()));
+
+    auto working = DC::workingProfile(Type::CMYK);
+    if (!working) GTEST_SKIP() << "no CMYK working profile installed";
+    auto plain = color_document();
+    ASSERT_TRUE(DC::adopt(plain.get(), Type::CMYK));
+    ASSERT_TRUE(DC::assignedSpace(plain.get()));
+    EXPECT_EQ(DC::assignedSpace(plain.get())->getProfile()->getName(), working->getName());
+    expect_channels(fill_color(plain.get()));
+}
+
+// File > Document Color Mode converts with the working profile, is undoable and is remembered.
+TEST_F(CmykDocumentTest, DocumentColorModeActionConvertsRemembersAndFollowsUndo) {
+    if (!DC::workingProfile(Type::CMYK)) GTEST_SKIP() << "no CMYK working profile installed";
+    auto prefs = Preferences::get();
+    auto document = rgb_document();
+    {
+        DocumentUndo::ScopedInsensitive insensitive(document.get());
+        DC::adopt(document.get(), Type::RGB);
+    }
+    DocumentUndo::setUndoSensitive(document.get(), true);
+    auto group = document->getActionGroup();
+    auto action = group->lookup_action("document-color-mode");
+    ASSERT_TRUE(action);
+    auto state = [&] {
+        Glib::ustring value;
+        action->get_state(value);
+        return value;
+    };
+    auto choose = [&](char const *mode) {
+        group->activate_action("document-color-mode", Glib::Variant<Glib::ustring>::create(mode));
+    };
+    EXPECT_EQ(state(), "RGB");
+
+    choose("CMYK");
+    EXPECT_EQ(DC::mode(document.get()), Type::CMYK);
+    ASSERT_TRUE(DC::assignedSpace(document.get()));
+    EXPECT_EQ(fill_color(document.get()).getSpace()->getComponentType(), Type::CMYK);
+    EXPECT_EQ(state(), "CMYK");
+    EXPECT_EQ(DC::newDocumentMode(), Type::CMYK);
+
+    ASSERT_TRUE(DocumentUndo::undo(document.get()));
+    document->ensureUpToDate();
+    EXPECT_EQ(DC::mode(document.get()), Type::RGB);
+    EXPECT_EQ(state(), "RGB");
+    EXPECT_EQ(fill_color(document.get()).getSpace()->getComponentType(), Type::RGB);
+
+    choose("RGB"); // already RGB: no undo step, so redo is still available
+    ASSERT_TRUE(DocumentUndo::redo(document.get()));
+    EXPECT_EQ(state(), "CMYK");
+    choose("RGB");
+    EXPECT_EQ(DC::mode(document.get()), Type::RGB);
+    EXPECT_EQ(DC::newDocumentMode(), Type::RGB);
+
+    // Without a usable CMYK working profile the document is left as it is.
+    auto saved = prefs->getString("/options/workingcolors/cmyk");
+    prefs->setString("/options/workingcolors/cmyk", "Z:/missing/profile.icc");
+    choose("CMYK");
+    EXPECT_EQ(DC::mode(document.get()), Type::RGB);
+    EXPECT_EQ(state(), "RGB");
+    prefs->setString("/options/workingcolors/cmyk", saved);
+    prefs->setString("/options/workingcolors/newmode", "");
+}
+
+// Manual check with a real file: PROOF_IMPORT_FILE is imported into itself as objects and as
+// pages. The original is only read; PROOF_IMPORT_RESULT optionally receives the combined SVG.
+TEST_F(CmykDocumentTest, DISABLED_ImportFileFromEnvironmentIntoItself)
+{
+    auto const path = g_getenv("PROOF_IMPORT_FILE");
+    ASSERT_TRUE(path) << "set PROOF_IMPORT_FILE";
+    auto host = SPDocument::createNewDoc(path);
+    ASSERT_TRUE(host);
+    auto count = [](SPDocument *document) {
+        std::map<std::string, int> names;
+        for (auto cp : document->getDocumentCMS().getObjects()) ++names[cp->getName()];
+        return names;
+    };
+    auto const before = count(host.get());
+    auto const assigned = DC::assignedSpace(host.get());
+    for (bool pages : {false, true}) {
+        SCOPED_TRACE(pages ? "import as pages" : "import as objects");
+        auto source = SPDocument::createNewDoc(path);
+        ASSERT_TRUE(source);
+        if (pages) {
+            ASSERT_NO_THROW(file_import_pages(host.get(), source.get()));
+        } else {
+            ASSERT_NO_THROW(import_objects(host.get(), source.get()));
+        }
+        host->ensureUpToDate();
+        EXPECT_EQ(count(host.get()), before);
+        EXPECT_EQ(DC::assignedSpace(host.get()), assigned);
+    }
+    for (auto const &[name, n] : before) std::printf("profile|%s|%d\n", name.c_str(), n);
+    for (auto rect : host->getObjectsByElement("rect")) {
+        std::printf("rect|%s|%s\n", rect->getId(), rect->style->fill.getColor().toString().c_str());
+    }
+    if (auto out = g_getenv("PROOF_IMPORT_RESULT")) {
+        sp_repr_save_file(host->getReprDoc(), out);
+    }
 }

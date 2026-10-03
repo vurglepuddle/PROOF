@@ -51,6 +51,7 @@
 #include "actions/actions-pages.h"
 #include "actions/actions-svg-processing.h"
 #include "actions/actions-undo-document.h"
+#include "actions/actions-document-colors.h"
 #include "colors/document-cms.h"
 #include "colors/document-colors.h"
 #include "debug/console-output-undo-observer.h"
@@ -68,6 +69,7 @@
 #include "io/resource.h"
 #include "layer-manager.h"
 #include "live_effects/lpeobject.h"
+#include "object/color-profile.h"
 #include "object/persp3d.h"
 #include "object/sp-defs.h"
 #include "object/sp-factory.h"
@@ -152,6 +154,7 @@ SPDocument::SPDocument()
 
     _page_manager = std::make_unique<Inkscape::PageManager>(this);
     _cms_manager = std::make_unique<Inkscape::Colors::DocumentCMS>(this);
+    add_actions_document_colors(this);
 }
 
 SPDocument::~SPDocument() {
@@ -386,6 +389,9 @@ std::unique_ptr<SPDocument> SPDocument::createDoc(
     	throw;
     }
 
+    // PROOF reads ICC/CMYK paints; their saved RGB fallbacks are only for other software.
+    Inkscape::Colors::DocumentColors::stripFallbacks(rroot);
+
     // Recursively build object tree
     document->root->invoke_build(document.get(), rroot, false);
 
@@ -393,6 +399,7 @@ std::unique_ptr<SPDocument> SPDocument::createDoc(
     if (Inkscape::Colors::DocumentColors::assignedSpace(document.get())) {
         Inkscape::Colors::DocumentColors::refresh(document.get());
     }
+    document->getDocumentCMS().emitAssignmentChanged();
 
     /* Eliminate obsolete sodipodi:docbase, for privacy reasons */
     rroot->removeAttribute("sodipodi:docbase");
@@ -2099,6 +2106,25 @@ void SPDocument::_importDefsNode(SPDocument *source, Inkscape::XML::Node *defs, 
                         // do NOT break here, there could be more than 1 duplicate!
                     }
                 }
+            }
+        }
+
+        // PROOF: paints name their profile in icc-color(), so a profile whose name this document
+        // already uses resolves to the existing one. A second copy cannot be registered.
+        if (auto s_cp = cast<Inkscape::ColorProfile>(src)) {
+            for (auto t_cp : getDocumentCMS().getObjects()) {
+                if (t_cp == s_cp || t_cp->getName() != s_cp->getName()) {
+                    continue;
+                }
+                if (t_cp->getProfileData() != s_cp->getProfileData()) {
+                    g_warning("Imported color profile '%s' differs from this document's; keeping the document's",
+                              s_cp->getName().c_str());
+                }
+                change_def_references(src, t_cp);
+                gchar *longid = g_strdup_printf("%s_%9.9d", DuplicateDefString.c_str(), stagger++);
+                def->setAttribute("id", longid);
+                g_free(longid);
+                break;
             }
         }
     }

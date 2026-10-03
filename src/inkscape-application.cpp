@@ -151,13 +151,10 @@ SPDocument *InkscapeApplication::document_new(std::string const &template_filena
 
     auto doc = document_add(std::move(doc_uniq));
 
-    // Working defaults apply to new documents, never silently to opened files.
-    if (!doc->getReprRoot()->attribute("proof:color-mode")) {
+    // New documents use the last chosen document color mode and its working profile.
+    {
         Inkscape::DocumentUndo::ScopedInsensitive insensitive(doc);
-        auto type = Inkscape::Colors::Space::Type::RGB;
-        if (auto profile = Inkscape::Colors::DocumentColors::workingProfile(type)) {
-            Inkscape::Colors::DocumentColors::assign(doc, type, profile, Inkscape::Colors::DocumentColors::workingIntent());
-        }
+        Inkscape::Colors::DocumentColors::adopt(doc, Inkscape::Colors::DocumentColors::newDocumentMode());
     }
 
     // Set viewBox if it doesn't exist.
@@ -388,6 +385,16 @@ std::vector<SPDocument *> InkscapeApplication::get_documents()
     return result;
 }
 
+// PROOF: every document window has a color mode. A file without one keeps its embedded
+// profile or gets the working profile for the mode its paints use. This is not an edit:
+// nothing is undoable or marked modified until the user saves for another reason.
+static void ensure_color_mode(SPDocument *document)
+{
+    Inkscape::DocumentUndo::ScopedInsensitive insensitive(document);
+    namespace DC = Inkscape::Colors::DocumentColors;
+    DC::adopt(document, DC::inferMode(document));
+}
+
 // Take an already open document and create a new window, adding window to document map.
 SPDesktop *InkscapeApplication::desktopOpen(SPDocument *document, bool new_window)
 {
@@ -405,6 +412,8 @@ SPDesktop *InkscapeApplication::desktopOpen(SPDocument *document, bool new_windo
         std::cerr << "InkscapeApplication::window_open: Document not in map!" << std::endl;
         return nullptr;
     }
+
+    ensure_color_mode(document);
 
     auto const desktop = doc_it->second.emplace_back(std::make_unique<SPDesktop>(document->getNamedView())).get();
     INKSCAPE.add_desktop(desktop);
@@ -762,6 +771,7 @@ SPDesktop *InkscapeApplication::createDesktop(SPDocument *document, bool replace
     auto desktop = _active_desktop;
 
     if (replace && old_document && desktop) {
+        ensure_color_mode(document);
         document_swap(desktop, document);
 
         // Delete old document if no longer attached to any window.

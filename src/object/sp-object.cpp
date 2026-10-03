@@ -1181,7 +1181,7 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
     readAttr(key);
     if (document && document->getReprRoot() == getRepr() &&
         (!std::strcmp(key, "proof:color-mode") || !std::strcmp(key, "proof:color-profile"))) {
-        Inkscape::Colors::DocumentColors::refresh(document);
+        Inkscape::Colors::DocumentColors::assignmentChanged(document);
     }
 }
 
