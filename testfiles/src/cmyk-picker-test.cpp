@@ -27,6 +27,7 @@
 #include "gradient-chemistry.h"
 #include "inkscape.h"
 #include "object/sp-gradient.h"
+#include "object/color-profile.h"
 #include "object/sp-item.h"
 #include "object/sp-stop.h"
 #include "spot-ink.h"
@@ -410,6 +411,72 @@ TEST_F(CmykDocumentTest, ModeConversionAndWrongProfileValidation) {
     ASSERT_TRUE(spot_after && spot_before);
     EXPECT_EQ(spot_after->alternate, spot_before->alternate);
     EXPECT_EQ(spot_after->tint, spot_before->tint);
+}
+
+TEST_F(CmykDocumentTest, ManualCmykStyleUpdatesAndDuplicatePreserveChannels) {
+    auto document = color_document();
+    auto profile = Colors::CMS::Profile::create_from_uri("C:/Windows/System32/spool/drivers/color/CoatedGRACoL2006.icc");
+    if (!profile) profile = test_profile();
+    ASSERT_TRUE(DC::assign(document.get(), Type::CMYK, profile, Colors::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+    auto item = cast<SPItem>(document->getObjectById("flat"));
+    item->style->fill.clear();
+    item->style->fill.setColor(Color(Type::CMYK, {0.05, 1, 0.45, 0.22}));
+    item->updateRepr();
+    document->ensureUpToDate();
+    for (int i = 0; i < 5; ++i) {
+        SCOPED_TRACE(i);
+        expect_channels(item->style->fill.getColor());
+        item->style->readFromObject(item);
+        expect_channels(item->style->fill.getColor());
+        auto repr = item->getRepr()->duplicate(document->getReprDoc());
+        item = cast<SPItem>(item->parent->appendChildRepr(repr));
+        item->updateRepr();
+        document->ensureUpToDate();
+        expect_channels(item->style->fill.getColor());
+    }
+}
+
+TEST_F(CmykDocumentTest, LegacyProfileNamesSurviveStyleClipboardAndReload) {
+    auto document = color_document();
+    char const *name = "Press-ISO-2:2004.v1";
+    Inkscape::ColorProfile::createFromProfile(document.get(), *test_profile(), name,
+        ColorProfileStorage::HREF_DATA, Colors::RenderingIntent::PERCEPTUAL);
+    document->getReprRoot()->setAttribute("proof:color-mode", "CMYK");
+    document->getReprRoot()->setAttribute("proof:color-profile", name);
+    auto space = document->getDocumentCMS().getSpace(name);
+    ASSERT_TRUE(space);
+    Color corporate(space, {0.05, 1, 0.45, 0.22});
+    auto item = document->getObjectById("flat");
+    item->setAttribute("style", "fill:" + corporate.toString(false));
+    for (int i = 0; i < 10; ++i) {
+        SCOPED_TRACE(i);
+        expect_channels(item->style->fill.getColor());
+        EXPECT_EQ(item->style->fill.getColor().getSpace(), space);
+        auto repr = item->getRepr()->duplicate(document->getReprDoc());
+        // This is the inherited style serialization used by Ctrl+C.
+        auto css = sp_repr_css_attr_inherited(item->getRepr(), "style");
+        sp_repr_css_set(repr, css, "style");
+        sp_repr_css_attr_unref(css);
+        item = item->parent->appendChildRepr(repr);
+        item->updateRepr();
+        document->ensureUpToDate();
+    }
+    expect_channels(item->style->fill.getColor());
+    auto saved = sp_repr_save_buf(document->getReprDoc()).raw();
+    auto reloaded = SPDocument::createNewDocFromMem(saved);
+    ASSERT_TRUE(reloaded);
+    expect_channels(reloaded->getObjectById(item->getId())->style->fill.getColor());
+
+    // Stylesheet paints must keep the same legacy name as inline/clipboard styles.
+    auto stylesheet = document->getReprDoc()->createElement("svg:style");
+    auto rule = "#flat { fill: " + corporate.toString(false) + "; }";
+    stylesheet->appendChild(document->getReprDoc()->createTextNode(rule.c_str()));
+    document->getReprRoot()->appendChild(stylesheet);
+    auto flat = document->getObjectById("flat");
+    flat->removeAttribute("style");
+    document->ensureUpToDate();
+    expect_channels(flat->style->fill.getColor());
+    EXPECT_EQ(flat->style->fill.getColor().getSpace(), space);
 }
 
 TEST_F(CmykPickerTest, ProfiledCmykSlidersEditInkWithoutRgbRoundTrip) {

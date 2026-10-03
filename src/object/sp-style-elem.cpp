@@ -15,6 +15,7 @@
 #include "3rdparty/libcroco/src/cr-parser.h"
 
 #include "attributes.h"
+#include "colors/parser.h"
 #include "document.h"
 #include "sp-root.h"
 #include "style.h"
@@ -476,8 +477,9 @@ void SPStyleElem::read_content() {
     if (!(text.find_first_not_of(" \t\r\n") != std::string::npos)) {
         return;
     }
+    auto const css = Inkscape::Colors::escape_legacy_icc_names(text.raw());
     CRStatus const parse_status =
-        cr_parser_parse_buf(parse_tmp.parser, reinterpret_cast<const guchar *>(text.c_str()), text.bytes(), CR_UTF_8);
+        cr_parser_parse_buf(parse_tmp.parser, reinterpret_cast<const guchar *>(css.c_str()), css.size(), CR_UTF_8);
 
     if (parse_status == CR_OK) {
         auto *cascade = document->getStyleCascade();

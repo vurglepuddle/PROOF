@@ -78,3 +78,27 @@ color. Unmanaged and merely linked versions both produce (189, 0, 109).
 Local evidence: `../../artifacts/working-colors-render/result.json`,
 `../../artifacts/working-colors-settings.png`, `working-colors-verified-*.out`
 and `../../artifacts/ai-interchange/working-colors/report.json`.
+
+### GRACoL selection and clipboard drift fix
+
+The generated GRACoL name previously included a colon (`ISO-12647-2:2004`).
+That is an XML name character but cannot appear unescaped in a CSS identifier.
+The CSS parser dropped the `icc-color(...)` suffix, leaving the RGB fallback;
+reading it into the assigned CMYK document converted it back to different ink
+values. Repeated style updates and copying compounded the error.
+
+New profile identifiers exclude colons and periods. Before CSS parsing, legacy
+ICC names are escaped without changing their profile lookup names or channels.
+This applies to inline styles, inherited clipboard styles and stylesheets.
+Previously saved files remain readable, but already corrupted channel values
+must be restored from known originals.
+
+The fix passes 80 focused color, picker, profile, parser, style, spot and PDF
+checks (one optional locale test skipped and one existing spot test disabled).
+Regression coverage includes manual CMYK assignment, repeated style reads,
+ten inherited-style copies, SVG reload and stylesheet colors with legacy names.
+An actual Windows Ctrl+C/Ctrl+V check with GRACoL 2006 and Perceptual intent
+produced four successive pasted copies; all six saved rectangles retained
+exactly 5/100/45/22. Local evidence: `../../artifacts/cmyk-final-*.out` and
+`../../artifacts/cmyk-clipboard-live-result.json`. The user's original test SVG
+was not modified.

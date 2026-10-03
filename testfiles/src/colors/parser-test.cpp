@@ -18,6 +18,22 @@ using namespace Inkscape::Colors;
 
 namespace {
 
+TEST(ColorsParser, legacy_icc_identifiers)
+{
+    EXPECT_EQ(escape_legacy_icc_names("fill:#ac2045 icc-color(Press-2:2004.v1, .05, 1, .45, .22)"),
+              "fill:#ac2045 icc-color(Press-2\\3a 2004\\2e v1, .05, 1, .45, .22)");
+    EXPECT_EQ(escape_legacy_icc_names("fill:icc-color(Press:2004, 0);stroke:icc-color(Press.v1, 1)"),
+              "fill:icc-color(Press\\3a 2004, 0);stroke:icc-color(Press\\2e v1, 1)");
+    for (auto text : {"fill:icc-color(Press-2004, 0)",
+                      "fill:icc-color(Press\\:2004, 0)",
+                      "content:'icc-color(Press:2004, 0)'",
+                      "/* icc-color(Press:2004, 0) */ fill:red",
+                      "fill:url(icc-color(Press:2004, 0))",
+                      "fill:other-icc-color(Press:2004, 0)"}) {
+        EXPECT_EQ(escape_legacy_icc_names(text), text);
+    }
+}
+
 TEST(ColorsParser, test_prefix_parsing)
 {
     std::istringstream tests("#rgb(hsl( color( srgb icc-color(profile");

@@ -12,6 +12,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <glib.h>
 
 #include "spaces/cms.h"
 #include "spaces/cmyk.h"
@@ -32,6 +33,62 @@
 #include "utils.h"
 
 namespace Inkscape::Colors {
+
+std::string escape_legacy_icc_names(std::string const &css)
+{
+    if (css.find("icc-color(") == std::string::npos) return css;
+    std::string result;
+    result.reserve(css.size());
+    int depth = 0;
+    auto name_char = [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c >= 128 || c == '_' || c == '-' || c == ':' || c == '.';
+    };
+    for (std::size_t i = 0; i < css.size();) {
+        auto begin = i;
+        if (css.compare(i, 2, "/*") == 0) {
+            auto end = css.find("*/", i + 2);
+            i = end == std::string::npos ? css.size() : end + 2;
+        } else if (css[i] == '\'' || css[i] == '"') {
+            auto quote = css[i++];
+            while (i < css.size()) {
+                if (css[i] == '\\') { i = std::min(i + 2, css.size()); continue; }
+                if (css[i++] == quote) break;
+            }
+        } else if (css[i] == '\\') {
+            i = std::min(i + 2, css.size());
+        } else if (!depth && css.compare(i, 10, "icc-color(") == 0 &&
+                   (i == 0 || !name_char(css[i - 1]) || css[i - 1] == ':')) {
+            i += 10;
+            while (i < css.size() && g_ascii_isspace(css[i])) ++i;
+            auto start = i;
+            while (i < css.size() && name_char(css[i])) ++i;
+            auto end = i;
+            while (i < css.size() && g_ascii_isspace(css[i])) ++i;
+            if (end > start && i < css.size() && css[i] == ',') {
+                result.append(css, begin, start - begin);
+                for (auto j = start; j < end; ++j) {
+                    // libcroco handles hexadecimal escapes, but rejects simple
+                    // punctuation escapes such as "\\:".
+                    if (css[j] == ':') result += "\\3a ";
+                    else if (css[j] == '.') result += "\\2e ";
+                    else result += css[j];
+                }
+                result.append(css, end, i - end);
+                depth = 1;
+                continue;
+            }
+            i = begin + 10;
+            depth = 1;
+        } else {
+            if (css[i] == '(') ++depth;
+            if (css[i] == ')' && depth) --depth;
+            ++i;
+        }
+        result.append(css, begin, i - begin);
+    }
+    return result;
+}
 
 Parsers::Parsers()
 {
