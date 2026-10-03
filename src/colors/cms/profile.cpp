@@ -179,8 +179,10 @@ bool Profile::isForDisplay() const
 /**
  * Cleans up name to remove disallowed characters.
  *
- * Allowed ASCII first characters:  ':', 'A'-'Z', '_', 'a'-'z'
- * Allowed ASCII remaining chars add: '-', '.', '0'-'9',
+ * These names are written unescaped into CSS icc-color(), so XML-name
+ * punctuation such as ':' and '.' must also be removed.
+ * Allowed ASCII first characters: 'A'-'Z', '_', 'a'-'z'.
+ * Allowed ASCII remaining chars add: '-', '0'-'9'.
  *
  * @param str the string to clean up.
  */
@@ -189,13 +191,13 @@ static void sanitize_name(std::string &str)
     if (str.empty())
         return;
     auto val = str[0];
-    if ((val < 'A' || val > 'Z') && (val < 'a' || val > 'z') && val != '_' && val != ':') {
+    if ((val < 'A' || val > 'Z') && (val < 'a' || val > 'z') && val != '_') {
         str.insert(0, "_");
     }
     for (std::size_t i = 1; i < str.size(); i++) {
         auto val = str[i];
         if ((val < 'A' || val > 'Z') && (val < 'a' || val > 'z') && (val < '0' || val > '9') && val != '_' &&
-            val != ':' && val != '-' && val != '.') {
+            val != '-') {
             if (str.at(i - 1) == '-') {
                 str.erase(i, 1);
                 i--;

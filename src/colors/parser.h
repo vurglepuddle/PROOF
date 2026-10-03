@@ -16,6 +16,10 @@
 
 namespace Inkscape::Colors {
 
+// Escape old XML-style ICC identifiers before feeding CSS to libcroco.
+// The CSS parser decodes the escapes, retaining the original profile lookup name.
+std::string escape_legacy_icc_names(std::string const &css);
+
 class Parser
 {
 public:

@@ -31,6 +31,18 @@ TEST(ColorCmsProfile, create)
     ASSERT_EQ(profile->getHandle(), rgb_profile);
 }
 
+TEST(ColorCmsProfile, generatedNameIsCssIdentifier)
+{
+    auto handle = cmsCreate_sRGBProfile();
+    auto description = cmsMLUalloc(nullptr, 1);
+    ASSERT_TRUE(cmsMLUsetASCII(description, "en", "US", "Coated GRACoL 2006 (ISO 12647-2:2004).v1"));
+    ASSERT_TRUE(cmsWriteTag(handle, cmsSigProfileDescriptionTag, description));
+    cmsMLUfree(description);
+    auto profile = CMS::Profile::create(handle, "", false);
+    ASSERT_TRUE(profile);
+    EXPECT_EQ(profile->getName(true), "Coated-GRACoL-2006-ISO-12647-2-2004-v1");
+}
+
 TEST(ColorCmsProfile, create_from_uri)
 {
     auto profile = CMS::Profile::create_from_uri(grb_profile);

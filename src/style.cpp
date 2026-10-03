@@ -33,6 +33,7 @@
 #include "attributes.h"
 #include "bad-uri-exception.h"
 #include "colors/manager.h"
+#include "colors/parser.h"
 #include "document.h"
 #include "preferences.h"
 
@@ -907,8 +908,9 @@ void
 SPStyle::_mergeString( gchar const *const p ) {
 
     // std::cout << "SPStyle::_mergeString: " << (p?p:"null") << std::endl;
+    auto const css = Inkscape::Colors::escape_legacy_icc_names(p ? p : "");
     CRDeclaration *const decl_list
-        = cr_declaration_parse_list_from_buf(reinterpret_cast<guchar const *>(p), CR_UTF_8);
+        = cr_declaration_parse_list_from_buf(reinterpret_cast<guchar const *>(css.c_str()), CR_UTF_8);
     if (decl_list) {
         _mergeDeclList( decl_list, SPStyleSrc::STYLE_PROP );
         cr_declaration_destroy(decl_list);

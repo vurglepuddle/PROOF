@@ -34,6 +34,7 @@
 #include <glibmm/ustring.h>
 
 #include "3rdparty/libcroco/src/cr-declaration.h"
+#include "colors/parser.h"
 
 #include "svg/css-ostringstream.h"
 
@@ -354,8 +355,9 @@ static void sp_repr_css_merge_from_decl_list(SPCSSAttr *css, CRDeclaration const
 void sp_repr_css_attr_add_from_string(SPCSSAttr *css, gchar const *p)
 {
     if (p != nullptr) {
+        auto const text = Inkscape::Colors::escape_legacy_icc_names(p);
         CRDeclaration *const decl_list
-            = cr_declaration_parse_list_from_buf(reinterpret_cast<guchar const *>(p), CR_UTF_8);
+            = cr_declaration_parse_list_from_buf(reinterpret_cast<guchar const *>(text.c_str()), CR_UTF_8);
         if (decl_list) {
             sp_repr_css_merge_from_decl_list(css, decl_list);
             cr_declaration_destroy(decl_list);
