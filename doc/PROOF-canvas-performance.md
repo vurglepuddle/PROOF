@@ -69,9 +69,15 @@ during the same drags. It timed visible movement of the rectangle:
 | Before | 12 | 16 and 21 | 350 ms |
 | After | 33 to 42 (limited by the sampler) | 0 | 42 ms |
 
-Illustrator was closed before it could be measured the same way.
-`visual-drag.py` in `artifacts/drag-smoothness/` runs unchanged against
-Illustrator; open a throwaway document with one rectangle first.
+Illustrator 29.2.1 with the same script and a throwaway one-rectangle document
+(`ai-drag-doc.ps1`): 47 visible updates/s, median gap 16.9 ms, p95 33 to 35 ms,
+max 67 to 84 ms, 1 to 2 gaps over 50 ms. PROOF is now in the same range.
+Illustrator's rectangle was larger on screen, so treat this as close parity,
+not a precise ranking.
+
+The dashed selection cue used to trail at the starting position during a drag
+(`mid-drag-before.png`). It is now hidden from grab to release
+(`mid-drag-after.png`, `after-release.png`), as in Illustrator.
 
 The user's own judgement after the fix: "silky smooth". The renderer is not
 the cause. `GSK_RENDERER` cairo, gl and vulkan all showed the same starvation.
