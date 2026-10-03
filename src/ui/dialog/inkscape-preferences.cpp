@@ -3005,7 +3005,7 @@ void InkscapePreferences::initPageRendering()
     {
         constexpr int values[] = { 1, 2, 3 };
         Glib::ustring const labels[] = { _("Responsive"), _("Full redraw"), _("Multiscale") };
-        _canvas_update_strategy.init("/options/rendering/update_strategy", labels, values, 3);
+        _canvas_update_strategy.init("/options/rendering/update_strategy", labels, values, 1); // PROOF: Responsive
         _page_rendering.add_line(false, _("Update strategy:"), _canvas_update_strategy, "", _("How to update continually changing content when it can't be redrawn fast enough"), false);
     }
 

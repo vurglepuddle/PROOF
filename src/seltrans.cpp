@@ -58,6 +58,7 @@
 #include "ui/knot/knot.h"
 #include "ui/tools/select-tool.h"
 #include "ui/widget/canvas.h"
+#include "ui/widget/canvas/framecheck.h"
 #include "ui/widget/events/canvas-event.h"
 
 using Inkscape::DocumentUndo;
@@ -275,6 +276,7 @@ void Inkscape::SelTrans::grab(Geom::Point const &p, gdouble x, gdouble y, bool s
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
 
     g_return_if_fail(!_grabbed);
+    auto framecheck = FrameCheck::maybe("seltrans_grab");
 
     _grabbed = true;
     _show_handles = show_handles;
@@ -405,6 +407,7 @@ void Inkscape::SelTrans::transform(Geom::Affine const &rel_affine, Geom::Point c
 {
     g_return_if_fail(_grabbed);
     g_return_if_fail(!_empty);
+    auto framecheck = FrameCheck::maybe("seltrans_transform");
 
     Geom::Affine const affine( Geom::Translate(-norm) * rel_affine * Geom::Translate(norm) );
 

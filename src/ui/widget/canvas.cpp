@@ -180,6 +180,7 @@ struct RedrawData
     std::mutex tiles_mutex;
     std::vector<Tile> tiles;
     bool timeoutflag;
+    std::atomic<bool> finished = false; ///< PROOF: the background process has stopped.
 
     // Return comparison object for sorting rectangles by distance from mouse point.
     auto getcmp() const
@@ -557,12 +558,24 @@ void Canvas::on_realize()
     // PROOF: on Windows GTK starts frames back to back while panels are repainting during a drag,
     // starving idle callbacks. The document update the canvas waits for then ran only every
     // ~90 ms. Run it before each frame instead: after input is flushed, before layout and paint.
+    // The redraw that shows a change is also started from an idle callback. Once a redraw runs,
+    // the next one follows on from it, but the first one of a drag waited for an idle gap: up to
+    // a third of a second before a handle or a move showed any change. Start it here too, as
+    // paint_widget() does when the canvas itself is repainted.
     d->before_paint_handler = g_signal_connect(gtk_widget_get_frame_clock(GTK_WIDGET(gobj())), "before-paint",
         G_CALLBACK(+[] (GdkFrameClock *, Canvas *canvas) {
             if (auto desktop = canvas->get_desktop(); desktop && desktop->getDocument()) {
                 auto framecheck = canvas->d->prefs.debug_framecheck ? FrameCheck::Event("frame_document_update")
                                                                      : FrameCheck::Event();
                 desktop->getDocument()->flushPendingUpdates();
+            }
+            auto d = canvas->d.get();
+            if (d->active && d->schedule_redraw_conn) {
+                if (canvas->get_opengl_enabled()) {
+                    canvas->make_current();
+                }
+                d->schedule_redraw_conn.disconnect();
+                d->launch_redraw();
             }
         }), this);
 }
@@ -772,6 +785,7 @@ void CanvasPrivate::launch_redraw()
     }
 
     abort_flags.store((int)AbortFlags::None, std::memory_order_relaxed);
+    rd.finished.store(false, std::memory_order_relaxed);
 
     boost::asio::post(*pool, [this] { init_tiler(); });
 }
@@ -2033,7 +2047,11 @@ void Canvas::paint_widget(Cairo::RefPtr<Cairo::Context> const &cr)
     }
 
     // Commit pending tiles in case GTK called on_draw even though after_redraw() is scheduled at higher priority.
-    d->commit_tiles();
+    // PROOF: only those of a finished redraw. Tiles of one still in progress would show some of
+    // a moving object at its new place and some at its old: torn into tile-shaped pieces.
+    if (!d->redraw_active || d->rd.finished.load(std::memory_order_acquire)) {
+        d->commit_tiles();
+    }
 
     if (get_opengl_enabled()) {
         bind_framebuffer();
@@ -2194,6 +2212,7 @@ void CanvasPrivate::init_tiler()
     rd.vis_store = (rd.visible & rd.store.rect).regularized();
 
     if (!init_redraw()) {
+        rd.finished.store(true, std::memory_order_release);
         sync.signalExit();
         return;
     }
@@ -2395,6 +2414,7 @@ void CanvasPrivate::render_tile(int debug_id)
 
     if (done) {
         rd.rects.clear();
+        rd.finished.store(true, std::memory_order_release);
         sync.signalExit();
     }
 }
