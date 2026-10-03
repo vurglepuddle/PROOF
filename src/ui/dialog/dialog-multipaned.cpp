@@ -1176,7 +1176,10 @@ Gtk::EventSequenceState DialogMultipaned::on_drag_update(double offset_x, double
     }
     // Hack: drag update sends some fractional garbage x, y right after first click, leading to handle movement;
     // ignore them. The only downside is that we won't be able to return to the exact original location, once we move.
-    if (abs(offset_y) < 1 || abs(offset_x) < 1) return Gtk::EventSequenceState::NONE;
+    // PROOF: test only the axis the handle moves along; requiring both made a perfectly
+    // straight drag (steady hand, tablet or script) do nothing.
+    auto const along = get_orientation() == Gtk::Orientation::HORIZONTAL ? offset_x : offset_y;
+    if (std::abs(along) < 1) return Gtk::EventSequenceState::NONE;
 
     auto child1 = _children[_handle - 1].get();
     auto child2 = _children[_handle + 1].get();
