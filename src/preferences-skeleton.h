@@ -74,7 +74,7 @@ static char const preferences_skeleton[] =
        pageshadow="2" />
   </group>
 
-  <group id="tools" bounding_box="0">
+  <group id="tools" bounding_box="1">
 
     <group id="shapes" style="fill-rule:evenodd;" selcue="1" gradientdrag="1">
       <eventcontext id="rect" style="fill:blue;" usecurrent="rect"/>
