@@ -97,6 +97,9 @@ protected:
 private:
     // transform the current selection (use x/y/width/height)
     void transform();
+    // PROOF: turn the selection to the angle in the Rotate field, or make its box upright
+    void rotate();
+    void reset_box();
     void update_label(SPObject* object, Inkscape::Selection* selection);
     void update_size_location();
     void update_filters(SPObject* object, bool update_menu = true);
@@ -119,6 +122,8 @@ private:
     Widget::InkSpinButton& _height;
     Gtk::Button& _round_loc;
     Gtk::Button& _round_size;
+    Widget::InkSpinButton& _angle;
+    Gtk::Button& _reset_box;
     bool _show_obj_label = false;
     bool _show_fill_stroke = false;
     bool _show_size_location = false;
@@ -186,7 +191,13 @@ private:
     std::unique_ptr<details::AttributesPanel> _multi_obj_panel;
     std::unique_ptr<details::AttributesPanel> _empty_panel;
     details::AttributesPanel* get_panel(Selection* selection);
+    details::AttributesPanel* prepare_panel(int tag);
     void cursor_moved(Tools::TextTool* tool);
+    // PROOF: build the sections of common objects ahead of time, while idle.
+    void schedule_prebuild();
+    bool prebuild_step();
+    sigc::scoped_connection _prebuild;
+    int _paint_prebuilt = 0; ///< Steps done towards the shared paint editors.
 
     details::AttributesPanel* _current_panel = nullptr;
     OperationBlocker _update;

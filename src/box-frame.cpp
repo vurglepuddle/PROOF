@@ -40,13 +40,22 @@ double quarter(double angle)
     return a <= -M_PI / 4 ? a + M_PI / 2 : a;
 }
 
+/// An angle in (-pi, pi].
+double half(double angle)
+{
+    double a = std::remainder(angle, 2 * M_PI);
+    return a <= -M_PI ? a + 2 * M_PI : a;
+}
+
 bool same_box(double a, double b)
 {
     return std::abs(std::remainder(a - b, M_PI / 2)) < SAME_ANGLE;
 }
 
-/// Where the x axis of a box at `angle` points after `affine`, or nothing when the affine shears
-/// the box so that it is no longer a rectangle.
+/// The angle of a box at `angle` after `affine`, or nothing when the affine shears the box so
+/// that it is no longer a rectangle. A mirrored box could be read as turned either way round;
+/// it is read as turned by less than a quarter turn either side, so flipping an upright object
+/// leaves it at 0 and flipping one at 30 degrees gives -30.
 std::optional<double> map_angle(double angle, Geom::Affine const &affine)
 {
     auto const linear = affine.withoutTranslation();
@@ -57,7 +66,12 @@ std::optional<double> map_angle(double angle, Geom::Affine const &affine)
     if (lu < 1e-12 || lv < 1e-12 || std::abs(Geom::dot(u, v)) > SHEARED * lu * lv) {
         return {};
     }
-    return std::atan2(u.y(), u.x());
+    double const result = std::atan2(u.y(), u.x());
+    if (linear.det() < 0) {
+        double const a = half(result);
+        return a > M_PI / 2 ? a - M_PI : a <= -M_PI / 2 ? a + M_PI : a;
+    }
+    return half(result);
 }
 
 void write_local_angle(SPItem &item, double angle)
@@ -66,7 +80,7 @@ void write_local_angle(SPItem &item, double angle)
     if (!repr) {
         return;
     }
-    angle = quarter(angle);
+    angle = half(angle);
     if (std::abs(angle) < SAME_ANGLE) {
         if (repr->attribute(BOX_ANGLE_ATTRIBUTE)) {
             repr->removeAttribute(BOX_ANGLE_ATTRIBUTE);
@@ -133,6 +147,36 @@ double box_angle(std::vector<SPItem *> const &items)
     return shared.value_or(0);
 }
 
+std::optional<double> box_rotation(std::vector<SPItem *> const &items)
+{
+    std::optional<double> first;
+    bool mixed = false;
+    for (auto item : items) {
+        visit_objects(*item, item->i2dt_affine(), true, [&](SPItem &object, Geom::Affine const &i2dt) {
+            double const angle = map_angle(local_angle(object), i2dt).value_or(0);
+            if (!first) {
+                first = angle;
+            } else if (!same_box(*first, angle)) {
+                mixed = true;
+            }
+            return !mixed;
+        });
+        if (mixed) {
+            return {};
+        }
+    }
+    return first;
+}
+
+std::optional<Geom::Point> box_middle(std::vector<SPItem *> const &items, SPItem::BBoxType type)
+{
+    double const angle = box_angle(items);
+    if (auto bounds = frame_bounds(items, angle, type)) {
+        return bounds->midpoint() * Geom::Rotate(angle);
+    }
+    return {};
+}
+
 Geom::OptRect frame_bounds(std::vector<SPItem *> const &items, double angle, SPItem::BBoxType type, bool stroked)
 {
     Geom::Affine const to_frame = Geom::Rotate(-angle);
@@ -160,7 +204,7 @@ void box_angle_embed(SPItem &item, Geom::Affine const &embedded)
     }
     double const before = local_angle(item);
     if (auto after = map_angle(before, linear)) {
-        if (!same_box(before, *after)) {
+        if (std::abs(half(*after - before)) >= SAME_ANGLE) {
             write_local_angle(item, *after);
         }
     } else if (repr->attribute(BOX_ANGLE_ATTRIBUTE)) {

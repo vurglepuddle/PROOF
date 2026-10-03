@@ -98,12 +98,43 @@ TEST_F(BoxFrameTest, PathsRememberTheirAngle)
     EXPECT_NEAR(bounds->width(), 100, 1e-4);
     EXPECT_NEAR(bounds->height(), 40, 1e-4);
 
-    // Turning again adds up; the box repeats every quarter turn.
+    // Turning again adds up. The box repeats every quarter turn, but the angle is kept in full,
+    // so a quarter turn reads 90 degrees, as in Illustrator.
     rotate(*path, 30, {250, 220});
     EXPECT_NEAR(degrees({path}), -30, EPSILON);
     rotate(*path, 30, {250, 220});
     EXPECT_NEAR(degrees({path}), 0, EPSILON);
+    EXPECT_NEAR(path->getRepr()->getAttributeDouble(BOX_ANGLE_ATTRIBUTE), 90, EPSILON);
+    EXPECT_NEAR(Geom::deg_from_rad(*box_rotation({path})), 90, EPSILON);
+    rotate(*path, -90, {250, 220});
     EXPECT_FALSE(path->getRepr()->attribute(BOX_ANGLE_ATTRIBUTE));
+}
+
+TEST_F(BoxFrameTest, TheAngleIsShownInFull)
+{
+    EXPECT_NEAR(Geom::deg_from_rad(*box_rotation({item("rect")})), 30, EPSILON);
+    EXPECT_NEAR(Geom::deg_from_rad(*box_rotation({item("rect2")})), 120, EPSILON);
+    EXPECT_NEAR(Geom::deg_from_rad(*box_rotation({item("ellipse")})), 0, EPSILON);
+    // Objects sharing a box show the first one's angle; different boxes show none.
+    EXPECT_NEAR(Geom::deg_from_rad(*box_rotation({item("rect2"), item("rect")})), 120, EPSILON);
+    EXPECT_FALSE(box_rotation({item("rect"), item("ellipse")}));
+
+    // Flipping mirrors the angle: an upright object stays upright, one at 30 degrees reads -30.
+    auto path = item("path");
+    apply(*path, Geom::Scale(-1, 1), {250, 220});
+    EXPECT_FALSE(path->getRepr()->attribute(BOX_ANGLE_ATTRIBUTE));
+    rotate(*path, 30, {250, 220});
+    apply(*path, Geom::Scale(-1, 1), {250, 220});
+    EXPECT_NEAR(Geom::deg_from_rad(*box_rotation({path})), -30, EPSILON);
+    EXPECT_NEAR(degrees({path}), -30, EPSILON);
+}
+
+TEST_F(BoxFrameTest, BoxMiddle)
+{
+    // The middle of a turned rectangle's box is the rectangle's own centre.
+    auto middle = box_middle({item("rect")}, SPItem::GEOMETRIC_BBOX);
+    ASSERT_TRUE(middle);
+    EXPECT_TRUE(Geom::are_near(*middle, Geom::Point(60, 35), 1e-6));
 }
 
 TEST_F(BoxFrameTest, MovesAndScalesAlongTheBoxKeepTheAngle)

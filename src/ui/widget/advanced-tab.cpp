@@ -94,8 +94,9 @@ void AdvancedTab::setDesktop(SPDesktop *desktop)
         );
     }
 
-    // Only load the recolor widget if it is actually visible.
-    if (_desktop && _recolor_widget && _expander && _expander->get_expanded()) {
+    // Only load the recolor widget if it is actually visible. PROOF: also on screen, not just
+    // expanded in a dialog that is hidden; the map handler loads it when it shows.
+    if (_desktop && _recolor_widget && _expander && _expander->get_expanded() && get_mapped()) {
         _recolor_widget->showForSelection(_desktop);
     }
 }

@@ -69,8 +69,9 @@ In PROOF:
 - **The angle.** Rectangles, ellipses, stars, polygons, text, images and
   clones keep rotation in their `transform`, so their box follows it. Paths,
   lines and spirals take transforms into their nodes; they keep the angle in
-  `proof:box-angle` (degrees, in the object's own coordinates), the
-  counterpart of `BBAccumRotation`. `SPItem::doWriteTransform` updates it
+  `proof:box-angle` (degrees from -180 to 180, in the object's own
+  coordinates), the counterpart of `BBAccumRotation`. The full angle is kept,
+  so a quarter turn reads 90 degrees even though the box looks upright. `SPItem::doWriteTransform` updates it
   whenever part of a transform goes into an object's coordinates, so the box
   never turns when a transform is embedded: moving, rotating, ungrouping and
   converting a rotated rectangle to a path all keep it. A transform that
@@ -101,10 +102,35 @@ In PROOF:
   drops it with the other editor data. The native `.ai` writer should map it
   to `BBAccumRotation` (radians) later.
 
-Not yet: the Properties panel shows no rotation angle (Illustrator shows the
-object's angle in its Transform section), and W/H stay upright bounds.
-Keyboard rotation (`[` `]`) turns about the upright bounds' centre, which
-differs slightly from the turned box's centre for lopsided shapes.
+## Rotate in Properties (2026-10-04)
+
+The user rotated an object and saw "0°". That was the canvas rotation field in
+the status bar, and nothing showed the object's angle. Properties > Transform
+now has a Rotate row, as Illustrator's Transform panel does:
+- **The angle** of the selection, counterclockwise on screen as in
+  Illustrator. SVG's `rotate(30)` turns clockwise, so it reads -30°. A
+  rectangle turned by 120 degrees reads 120, not 30. Objects that share a box
+  show the first one's angle. Objects turned differently show 0, as their box
+  is upright.
+- **Typing an angle** turns the selection to it, about the same point as the
+  transform box: a centre set on the object, or else the middle of the turned
+  box. It is one undo step.
+- **The button** at the end of the row is Reset Bounding Box. It is greyed
+  out while the box is upright.
+- **Mirroring:** a flipped object is read as turned by less than a quarter
+  turn either side. Flipping an upright object leaves it at 0, and flipping
+  one at 30 degrees gives -30.
+
+Enter in a docked panel's field now applies the value and returns to the
+canvas, so Ctrl+Z undoes the change straight away. Docked dialogs used to keep
+the focus, because `DialogBase::onDefocus()` only returned to the main window
+from a floating dialog. This applies to X, Y, W and H as well.
+
+Not yet: W and H are still the upright bounds, as Illustrator shows them for
+paths (Illustrator gives live shapes their own width and height in Shape
+properties). Keyboard rotation (`[` `]`) turns about the upright bounds'
+centre, which differs slightly from the turned box's centre for lopsided
+shapes.
 
 ## Moving keeps up with the pointer
 
@@ -154,7 +180,7 @@ cursor and measures results from screenshots by colour. 28 of 28 checks pass:
 Evidence is in `artifacts/transform-box/run-*`.
 
 `tools/turned-box-check.py` covers the turned box on
-`artifacts/turned-box/source.svg` (21 checks, `artifacts/turned-box/run-*`):
+`artifacts/turned-box/source.svg` (23 checks, `artifacts/turned-box/run-*`):
 - the box, corner squares and centre dot on a rectangle turned by 30 degrees,
   and no upright box
 - turned resize cursors and rotate cursors
@@ -164,11 +190,14 @@ Evidence is in `artifacts/transform-box/run-*`.
 - two objects at the same angle share a turned box
 - a group shows its shapes' centres; Reset Bounding Box makes its box
   upright, and undo turns it back
+- typing 45 in Properties > Rotate turns the rectangle to 45 degrees
+  counterclockwise (read from the file), and Ctrl+Z right after undoes it
 Reset Bounding Box has no shortcut, as in Illustrator, so the check binds one
 in its disposable profile copy (`proof_live.start(extra_keys=...)`). The
-Object menu entry is in `09-object-menu.png`. `test_box-frame` (7 cases)
-covers the angle rules: shapes, paths, moves and scales along the box,
-shearing, shared angles, groups and ungrouping, reset, and shape centres.
+Object menu entry is in `09-object-menu.png`. `test_box-frame` (9 cases)
+covers the angle rules: shapes, paths, full angles and mirroring, moves and
+scales along the box, shearing, shared angles, groups and ungrouping, reset,
+the box's middle, and shape centres.
 
 `tools/ui-fixes-check.py` covers the 2026-10-03 follow-ups on a rectangle with
 a 24 px stroke: the box runs through the middle of the stroke, and a corner

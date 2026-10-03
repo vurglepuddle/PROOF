@@ -21,6 +21,7 @@
 #include <string>
 #include <sstream>
 #include <tuple>
+#include <2geom/angle.h>
 #include <2geom/rect.h>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <gdk/gdkkeysyms.h>
@@ -95,7 +96,11 @@
 #include "ui/widget/image-properties.h"
 #include "ui/widget/ink-property-grid.h"
 #include "ui/widget/object-composite-settings.h"
+#include "box-frame.h"
 #include "ui/widget/paint-attribute.h"
+#include "ui/widget/paint-popover-manager.h"
+#include "ui/widget/paint-switch.h"
+#include "ui/widget/canvas/framecheck.h"
 #include "util/object-modified-tags.h"
 #include "widgets/sp-attribute-widget.h"
 
@@ -274,6 +279,10 @@ void ObjectAttributes::documentReplaced() {
     }
     if (_multi_obj_panel) _multi_obj_panel->set_document(doc);
     if (_empty_panel) _empty_panel->set_document(doc);
+    if (doc) {
+        _paint_prebuilt = std::min(_paint_prebuilt, 2);
+        schedule_prebuild();
+    }
     //todo: watch doc modified to update locked state of current obj
 }
 
@@ -360,6 +369,8 @@ details::AttributesPanel::AttributesPanel()
     , _height(get_widget<Widget::InkSpinButton>(_builder, "obj-height"))
     , _round_loc(get_widget<Gtk::Button>(_builder, "round-location"))
     , _round_size(get_widget<Gtk::Button>(_builder, "round-size"))
+    , _angle(get_widget<Widget::InkSpinButton>(_builder, "obj-angle"))
+    , _reset_box(get_widget<Gtk::Button>(_builder, "reset-box"))
     , _obj_label(get_widget<Gtk::Entry>(_builder, "obj-label"))
     , _locked(get_widget<Gtk::Button>(_builder, "obj-lock"))
     , _obj_title(get_widget<Gtk::Entry>(_builder, "obj-title"))
@@ -394,6 +405,59 @@ void details::AttributesPanel::add_fill_and_stroke(Parts parts) {
     _paint.reset(new Widget::PaintAttribute(parts, TAG));
     _paint->insert_widgets(_grid);
     _show_fill_stroke = true;
+}
+
+namespace {
+
+/// The angle the selection is turned by in the Rotate field: counterclockwise on screen, as in
+/// Illustrator, from -180 to 180 degrees; 0 when the selection's objects are turned differently.
+double shown_angle(SPDesktop *desktop)
+{
+    auto const rotation = box_rotation(desktop->getSelection()->items_vector());
+    double degrees = rotation ? -Geom::deg_from_rad(*rotation) * desktop->yaxisdir() : 0;
+    degrees = std::remainder(degrees, 360);
+    return std::abs(degrees) < 1e-9 ? 0 : degrees <= -180 ? degrees + 360 : degrees;
+}
+
+} // namespace
+
+void details::AttributesPanel::rotate() {
+    if (!_document || !_desktop || _update.pending()) return;
+
+    auto scoped(_update.block());
+    auto selection = _desktop->getSelection();
+    auto const items = selection->items_vector();
+    if (items.empty()) return;
+
+    double const turn = std::remainder(_angle.get_value() - shown_angle(_desktop), 360);
+    if (std::abs(turn) < 1e-9) return;
+
+    // Turn about the same point as the transform box: a centre set on the object, or else the
+    // middle of the box.
+    auto const use_visual_box = Preferences::get()->getInt("/tools/bounding_box") == 0;
+    std::optional<Geom::Point> pivot;
+    if (!items.back()->isCenterSet()) {
+        pivot = box_middle(items, use_visual_box ? SPItem::VISUAL_BBOX : SPItem::GEOMETRIC_BBOX);
+    }
+    if (!pivot) {
+        pivot = selection->center();
+    }
+    if (!pivot) return;
+
+    selection->rotateRelative(*pivot, -turn * _desktop->yaxisdir());
+    DocumentUndo::done(_document, RC_("Undo", "Rotate"), INKSCAPE_ICON("tool-pointer"));
+}
+
+void details::AttributesPanel::reset_box() {
+    if (!_document || !_desktop || _update.pending()) return;
+
+    bool changed = false;
+    for (auto item : _desktop->getSelection()->items_vector()) {
+        changed = reset_box_angle(*item) || changed;
+    }
+    if (changed) {
+        DocumentUndo::done(_document, RC_("Undo", "Reset Bounding Box"), INKSCAPE_ICON("tool-pointer"));
+    }
 }
 
 void details::AttributesPanel::transform() {
@@ -462,6 +526,10 @@ void details::AttributesPanel::add_size_properties() {
     _y.signal_value_changed().connect([this](auto){ transform(); });
     _width.signal_value_changed().connect([this](auto){ transform(); });
     _height.signal_value_changed().connect([this](auto){ transform(); });
+    _angle.set_suffix("\u00b0", false);
+    _angle.set_label("∠");
+    _angle.signal_value_changed().connect([this](auto){ rotate(); });
+    _reset_box.signal_clicked().connect([this]{ reset_box(); });
 
     Widget::reparent_properties(get_widget<Gtk::Grid>(_builder, "size-props"), _grid);
 }
@@ -838,6 +906,7 @@ void details::AttributesPanel::set_desktop(SPDesktop* desktop) {
 }
 
 void details::AttributesPanel::update_panel(SPObject* object, SPDesktop* desktop, bool tagged) {
+    auto framecheck = FrameCheck::maybe("props_update_panel");
     if (object && object->document) {
         auto scoped(_update.block());
         auto units = object->document->getNamedView() ? object->document->getNamedView()->display_units : nullptr;
@@ -921,6 +990,8 @@ void details::AttributesPanel::update_size_location() {
     _y.set_value(rect.min().y());
     _width.set_value(rect.width());
     _height.set_value(rect.height());
+    _angle.set_value(shown_angle(_desktop));
+    _reset_box.set_sensitive(box_angle(_desktop->getSelection()->items_vector()) != 0);
 }
 
 void details::AttributesPanel::update_filters(SPObject* object, bool update_menu) {
@@ -2423,19 +2494,7 @@ details::AttributesPanel* ObjectAttributes::get_panel(Selection* selection) {
         auto it = _panels.find(tag);
         auto panel = it == _panels.end() ? nullptr : it->second.get();
         if (!panel) {
-            // create a panel
-            auto obj_panel = create_panel(tag);
-            panel = obj_panel.get();
-            _panels[tag] = std::move(obj_panel);
-            if (panel) {
-                panel->set_document(getDocument());
-                for_each_descendant(panel->widget(), [this](auto& widget) {
-                    if (auto sb = dynamic_cast<UI::Widget::InkSpinButton*>(&widget)) {
-                        sb->setDefocusTarget(this);
-                    }
-                    return ForEachResult::_continue;
-                });
-            }
+            panel = prepare_panel(tag);
         }
         return panel;
     }
@@ -2458,7 +2517,73 @@ details::AttributesPanel* ObjectAttributes::get_panel(Selection* selection) {
     return nullptr;
 }
 
+// Create the panel for objects with this tag, ready to show.
+details::AttributesPanel* ObjectAttributes::prepare_panel(int tag) {
+    auto obj_panel = create_panel(tag);
+    auto panel = obj_panel.get();
+    _panels[tag] = std::move(obj_panel);
+    if (panel) {
+        panel->set_document(getDocument());
+        for_each_descendant(panel->widget(), [this](auto& widget) {
+            if (auto sb = dynamic_cast<UI::Widget::InkSpinButton*>(&widget)) {
+                sb->setDefocusTarget(this);
+            }
+            return ForEachResult::_continue;
+        });
+    }
+    return panel;
+}
+
+/**
+ * PROOF: build the sections of common objects ahead of time, one kind at a time while the
+ * application is idle, so that selecting the first object of a kind does not pause. Building
+ * one took 0.1 to 0.25 s, and the first also loaded the shared paint editors: 0.75 s in all for
+ * the first object selected after opening a file.
+ */
+void ObjectAttributes::schedule_prebuild() {
+    if (_prebuild) {
+        return;
+    }
+    // Let the window settle first.
+    _prebuild = Glib::signal_timeout().connect([this] {
+        _prebuild = Glib::signal_idle().connect([this] { return prebuild_step(); }, Glib::PRIORITY_LOW);
+        return false;
+    }, 500);
+}
+
+bool ObjectAttributes::prebuild_step() {
+    if (!getDocument()) {
+        return false;
+    }
+    static constexpr int kinds[] = {tag_of<SPRect>, tag_of<SPPath>, tag_of<SPGroup>, tag_of<SPGenericEllipse>,
+                                    tag_of<SPStar>, tag_of<SPText>, tag_of<SPImage>, tag_of<SPUse>};
+    auto framecheck = FrameCheck::maybe("props_prebuild");
+    // The shared fill and stroke editors are slow to make and to load a document into the
+    // first time (pattern previews): one step each, so no step holds things up for long.
+    auto &paint = UI::Widget::PaintPopoverManager::get();
+    switch (_paint_prebuilt++) {
+        case 0: paint.get_switch(true); return true;
+        case 1: paint.get_switch(false); return true;
+        case 2: paint.get_switch(true)->set_document(getDocument()); return true;
+        case 3: paint.get_switch(false)->set_document(getDocument()); return true;
+        default: break;
+    }
+    for (auto tag : kinds) {
+        if (!_panels.contains(tag)) {
+            prepare_panel(tag);
+            return true;
+        }
+    }
+    if (!_multi_obj_panel) {
+        _multi_obj_panel = std::make_unique<MultiObjPanel>(_builder);
+        _multi_obj_panel->set_document(getDocument());
+        return true;
+    }
+    return false; // All built.
+}
+
 std::unique_ptr<details::AttributesPanel> ObjectAttributes::create_panel(int key) {
+    auto framecheck = FrameCheck::maybe("props_create_panel");
     switch (key) {
         case tag_of<SPImage>:    return std::make_unique<ImagePanel>();
         case tag_of<SPRect>:     return std::make_unique<RectPanel>(_builder);

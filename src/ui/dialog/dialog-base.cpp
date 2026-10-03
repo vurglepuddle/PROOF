@@ -20,6 +20,7 @@
 
 #include "desktop.h"
 #include "inkscape.h"
+#include "inkscape-window.h"
 #include "selection.h"
 #include "ui/dialog-events.h"
 #include "ui/dialog/dialog-data.h"
@@ -153,6 +154,15 @@ void DialogBase::defocus_dialog() {
 }
 
 void DialogBase::onDefocus() {
+    // PROOF: a docked dialog has no window of its own to leave; give the canvas the focus, as
+    // a floating dialog does by returning to the main window. Enter in a field then applies the
+    // value and returns to the drawing, so Ctrl+Z and tool keys work again.
+    if (dynamic_cast<InkscapeWindow *>(get_root())) {
+        if (auto desktop = getDesktop(); desktop && desktop->getCanvas()) {
+            desktop->getCanvas()->grab_focus();
+            return;
+        }
+    }
     sp_dialog_defocus(dynamic_cast<Gtk::Window*>(get_root()));
 }
 

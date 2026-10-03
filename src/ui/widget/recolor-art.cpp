@@ -54,6 +54,13 @@ RecolorArt::RecolorArt(Glib::RefPtr<Gtk::Builder> const &builder)
     _solid_colors->set(Color(0x000000ff));
     // when recolor widget is closed it detaches from desktop, ending session
     signal_unmap().connect([this] { setDesktop(nullptr); });
+    // PROOF: hide the selection boxes only while the widget is on screen. Fill and Stroke attaches
+    // it to each new desktop even when the dialog is hidden, which left the boxes hidden for good.
+    signal_map().connect([this] {
+        if (_desktop) {
+            _desktop->setHideSelectionBoxes(true);
+        }
+    });
 
     _color_wheel->connect_color_changed(static_cast<sigc::slot<void()>>([this]() {
         if(_blocker.pending()) {
@@ -251,7 +258,9 @@ void RecolorArt::setDesktop(SPDesktop *desktop)
     _desktop = desktop;
 
     if (_desktop) {
-        _desktop->setHideSelectionBoxes(true);
+        if (get_mapped()) {
+            _desktop->setHideSelectionBoxes(true);
+        }
 
         _desktop_destroyed_conn = _desktop->connectDestroy([this] (auto) {
             setDesktop(nullptr);

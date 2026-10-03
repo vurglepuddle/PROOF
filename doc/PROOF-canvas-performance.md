@@ -86,11 +86,108 @@ One side effect: the Properties and toolbar X/Y fields still update during a
 drag, but less often. Their selection signal is also an idle callback; the
 fields are exact when the drag ends.
 
-## Open item: first selection after opening
+## Delay before a drag starts changing the shape (2026-10-04)
 
-The first time an object is selected after a file opens, the Properties
-panel's `selectionChanged` takes about 0.7 s while it builds that object's
-sections. Inside it, hundreds of small preview-document updates run,
-consistent with marker and paint previews being constructed. Later selections
-are instant. Building those previews lazily, or ahead of time while idle,
-should remove the pause.
+**Report:** with a handle, the shape started changing only after a short delay.
+Moving, rotating and corner scaling then felt smooth.
+
+**Measured** with `tools/redraw-bench.py`. It presses a handle, moves the pointer
+1 px every 8 ms, and samples the screen about 65 times a second with GDI (PIL's
+grab manages only about 23). Framecheck logs what the editor did in between.
+The handle grabbed and applied the first transform 28 to 44 ms after the press,
+which is the 4 px drag tolerance. The canvas then finished its first redraw
+anywhere from 10 to 330 ms later. In one slow case, `redraw_scheduled` came at
+31 ms and `redraw_launched` at 365 ms.
+
+**Cause:** the starvation described above, at another step. The canvas starts a
+redraw from an idle callback. Once one runs, the next ones follow on from it.
+The first one of a drag waited for an idle gap, though, and the panels
+repainting every frame left none. `paint_widget()` already launches a waiting
+redraw, but only when the canvas itself is repainted, and nothing had changed
+on it yet.
+
+**Fix:** the canvas's `before-paint` handler launches a waiting redraw too,
+right after it flushes document updates.
+
+| Start of a drag, ms from press to the first visible change | Before | After |
+|---|---|---|
+| Move, corner scale, edge stretch, rotate, corner radius (6 trials each) | 60 to 387 | 52 to 78 |
+
+About 32 ms of that is the 4 px drag tolerance at the test's 1 px per 8 ms. A
+faster flick passes the tolerance sooner.
+
+## Torn redraws while dragging fast (2026-10-04)
+
+**Report:** a turned rectangle dragged fast showed pieces of itself at several
+positions, cut along tile edges.
+
+**Measured** with the same script. The turned rectangle is dragged back and
+forth at up to about 1,900 px/s while the screen is sampled. A frame counts as
+torn when its pixels do not fill one turned rectangle. Saved torn frames
+(`torn-*.png`) show tile-shaped cuts both ways, as in the user's screenshot.
+
+**Causes:**
+1. `paint_widget()` committed the tiles of a redraw that was still in
+   progress. Every tile of one redraw comes from the same snapshot, so a
+   finished redraw is consistent. A part-finished one shows some of a moving
+   object at its new place and some at its old.
+2. Inkscape's default update strategy, Multiscale, deliberately holds back
+   regions it has just redrawn when new changes arrive mid-redraw. That
+   staggers the regions of a moving object.
+
+**Fixes:** `paint_widget()` commits tiles only once their redraw has finished
+(`RedrawData::finished`). After a timeout the redraw still commits what it
+has, so very heavy drawings keep updating. The default update strategy is now
+Responsive, which redraws everything changed together. Preferences >
+Rendering still offers all three.
+
+| Fast drag, torn frames | Multiscale | Responsive |
+|---|---|---|
+| Before the fixes (one run each) | 8 of 129 | 0 of 131 |
+| With the launch fix only | 1 to 52 of 125 (runs varied) | 0 to 43 of 125 |
+| With all fixes (three runs each) | 0 | 0 |
+| All fixes, 40,000-path page (two runs each) | 0 | 0 |
+
+The rate of visible updates was the same across strategies: about 30 to 45 a
+second on the two-object page, and 24 to 29 on the heavy page.
+
+## First selection after opening (2026-10-04)
+
+**Measured** with `tools/first-selection-bench.py`, using Framecheck. The
+Properties panel builds a set of sections for each kind of object the first
+time one is selected.
+
+| First selection of | Before | After |
+|---|---|---|
+| A rectangle (also loads the shared paint editors) | 753 ms | 8 to 10 ms |
+| A path | 158 ms | 8 ms |
+| A group | 131 ms | 8 to 10 ms |
+| Any of them again | 4 ms | 4 ms |
+
+The first selection's extra 0.5 s was the shared fill and stroke editors
+(`PaintPopoverManager`). They were created, then given the document, which
+loads the pattern library's previews (186 small document updates).
+
+**Fix:** after a document is attached, Properties builds its sections ahead
+of time (`ObjectAttributes::schedule_prebuild()`). Half a second later it
+starts doing one piece per low-priority idle call: the fill and stroke
+editors, giving each the document, then rectangle, path, group, ellipse,
+star, text, image, clone and multiple-selection sections. The pieces take
+about 50, 50, 470, 4 and then 110 to 160 ms each, while nothing else waits.
+The 470 ms step is the one-time pattern-library load. Splitting it further
+would mean reworking Inkscape's pattern editor.
+
+## Measuring
+
+Developer-only Framecheck timing points: `seltrans_grab` and
+`seltrans_transform` (transform box), `props_create_panel`,
+`props_update_panel` and `props_prebuild` (Properties). Turn on Framecheck
+under Preferences > Rendering in developer mode; it writes
+`%TEMP%\framecheck.txt`.
+
+```powershell
+python .\tools\redraw-bench.py [--strategy 1|2|3] [--trials N] [--framecheck] [--no-tearing] [--source file.svg]
+python .\tools\first-selection-bench.py
+```
+
+`artifacts/redraw-bench/heavy.svg` is the 40,000-path page.

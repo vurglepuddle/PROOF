@@ -187,6 +187,41 @@
         </layout>
       </object>
     </child>
+    <!-- PROOF: the angle of the selection's box, as in Illustrator's Transform panel -->
+    <child>
+      <object class="GtkLabel">
+        <property name="halign">start</property>
+        <property name="label" translatable="yes" context="Object&apos;s rotation">Rotate</property>
+        <layout>
+          <property name="column">0</property>
+          <property name="row">2</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="gtkmm__CustomObject_InkSpinButton" id="obj-angle">
+        <property name="max-value">360.000000</property>
+        <property name="min-value">-360.000000</property>
+        <property name="digits">2</property>
+        <property name="tooltip-text" translatable="yes">Angle the selection is turned by, counterclockwise</property>
+        <layout>
+          <property name="column">2</property>
+          <property name="row">2</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="GtkButton" id="reset-box">
+        <property name="tooltip-text" translatable="yes">Reset Bounding Box: make the box upright without moving anything</property>
+        <property name="icon-name">bounding-box</property>
+        <property name="has-frame">false</property>
+        <property name="valign">center</property>
+        <layout>
+          <property name="column">4</property>
+          <property name="row">2</property>
+        </layout>
+      </object>
+    </child>
   </object>
   <object class="GtkGrid" id="label-props">    <!--dim: 5, 1-->
 
