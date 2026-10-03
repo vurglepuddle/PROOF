@@ -17,7 +17,7 @@ There is also developer documentation that *does not* directly belong to specifi
 Such documentation is stored in Markdown files in `doc/`. Currently, we use a very simple approach with Markdown and "handcrafted" navigation links: Every directory therein contains an index file `readme.md` that introduces the topic, links to other `.md` files on the same level and to the `readme.md` files of the subdirectories. Every file has a header linking to the above `readme.md` files; see the existing files for an example.
 
 Exceptions:
-- README.md, CONTRIBUTING.md and INSTALL.md are stored in the main directory to match the standard conventions.
+- README.md and INSTALL.md are stored in the main directory to match the standard conventions.
 - Documentation belonging to a specific code *directory* can be stored therein with the filename `README.md`.
 
 ## Other locations

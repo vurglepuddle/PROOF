@@ -63,6 +63,6 @@ To compile again after making changes, you can re-run the `ninja install` comman
 ☎ _If you can't solve your issue with the information above, please [ask in the chat](https://chat.inkscape.org/channel/team_devel) or [report a bug](https://inkscape.org/report)_.
 
 ## See also
-- [Contributing and Developing](../../CONTRIBUTING.md)
-- [Advanced Information on Compiling Inkscape](doc/build/general_advanced.md)
+- [PROOF project overview](../../README.md)
+- [Advanced Information on Compiling Inkscape](general_advanced.md)
 - [Packaging for Ubuntu Snap](../../snap/README.md)

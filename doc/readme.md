@@ -6,7 +6,7 @@ For user-facing documentation, please refer to the [Inkscape website](https://in
 
  <!-- the first two are stored outside of docs/ -->
 - [Installing](../INSTALL.md)
-- [Contributing and Developing](../CONTRIBUTING.md)
+- [PROOF project overview](../README.md)
 <!-- docs/ -->
 - [Compiling Inkscape](./building/readme.md)
 - [Style guide for developer documentation](./documentation_style.md)
