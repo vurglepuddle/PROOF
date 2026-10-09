@@ -69,6 +69,7 @@ set(TEST_SOURCES
     boolop-attr-test
     spot-ink-test
     ai-native-reader-test
+    ai-native-import-test
     box-frame-test
     cmyk-picker-test
     colors/cms-system-test

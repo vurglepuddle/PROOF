@@ -194,10 +194,12 @@ std::string ensure(SPDocument *doc, Ink const &ink)
 std::string label_for(std::string const &name, double tint)
 {
     tint = clamp01(tint);
+    // PDF's registration ink, which prints on every plate, is Illustrator's [Registration].
+    auto const shown = name == "All" ? std::string("[Registration]") : name;
     if (tint < 1.0 - TINT_EPSILON) {
-        return name + " " + std::to_string(static_cast<int>(std::lround(tint * 100))) + "%";
+        return shown + " " + std::to_string(static_cast<int>(std::lround(tint * 100))) + "%";
     }
-    return name;
+    return shown;
 }
 
 Colors::Color alternate_for(Colors::Color const &shown, double tint)

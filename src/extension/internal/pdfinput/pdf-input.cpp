@@ -53,8 +53,10 @@
 #include <gtkmm/liststore.h>
 #include <gtkmm/notebook.h>
 #include <gtkmm/scale.h>
+#include <string_view>
 #include <utility>
 
+#include "ai-native-open.h"
 #include "async/async.h"
 #include "document-undo.h"
 #include "document.h"
@@ -63,6 +65,7 @@
 #include "inkscape.h"
 #include "object/sp-root.h"
 #include "pdf-parser.h"
+#include "preferences.h"
 #include "ui/builder-utils.h"
 #include "ui/dialog-events.h"
 #include "ui/dialog-run.h"
@@ -647,6 +650,24 @@ std::unique_ptr<SPDocument> PdfInput::open(Input *mod, char const *uri, bool)
     // Initialize the globalParams variable for poppler
     if (!globalParams) {
         globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
+    }
+
+    // PROOF: an .ai opens from Illustrator's own copy of its art when that reads fully and draws
+    // like its PDF page, as Illustrator opens it; otherwise from its page, as before.
+    if (mod && mod->get_id() && std::string_view(mod->get_id()) == "org.inkscape.input.ai" &&
+        Inkscape::Preferences::get()->getBool("/options/aiimport/native", true)) {
+        std::string reason;
+        try {
+            if (auto native = open_ai_native(uri, reason)) {
+                for (auto const &note : native->notes) {
+                    g_message("%s: %s", uri, note.c_str());
+                }
+                return std::move(native->document);
+            }
+        } catch (std::exception const &e) {
+            reason = e.what();
+        }
+        g_message("%s opens from its PDF page: %s", uri, reason.c_str());
     }
 
     // Open the file using poppler

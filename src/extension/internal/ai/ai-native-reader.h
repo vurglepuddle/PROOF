@@ -107,8 +107,11 @@ struct Paint
 
 struct GradientStop
 {
-    double offset = 0.0;   ///< 0-1.
-    double midpoint = 0.5; ///< 0.13-0.87, from the previous stop.
+    double offset = 0.0; ///< 0-1.
+    /// 0.13-0.87: where, between this stop and the next, the blend is half-way. Illustrator
+    /// blends along u^N with N = ln 0.5 / ln midpoint (u running 0-1 between the stops), as
+    /// its PDF pages write it (exponential functions).
+    double midpoint = 0.5;
     double opacity = 1.0;
     Color color;
     int ink = -1;
@@ -226,6 +229,8 @@ struct Document
     std::vector<Image> images;
     std::optional<Geom::Rect> bbox; ///< %%HiResBoundingBox, else %%BoundingBox (art space).
     std::string creator_version;    ///< %%AI8_CreatorVersion.
+    /// %AI5_RulerUnits: 0 inches, 1 millimetres, 2 points, 3 picas, 4 centimetres, 6 pixels.
+    std::optional<int> ruler_units;
     std::size_t drawn_looks = 0;
     std::size_t commented_kept = 0; ///< Objects from %_ lines kept (not replaced by a drawn look).
     std::vector<std::string> left_out; ///< What hidden layers had that wasn't read.

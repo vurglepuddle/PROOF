@@ -627,6 +627,9 @@ void Reader::comment(std::string_view c)
         auto v = value("AI9_ColorModel:");
         while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
         _color_model = v == "2";
+    } else if (starts("AI5_RulerUnits:")) {
+        auto n = numbers_in(value("AI5_RulerUnits:"));
+        if (!n.empty() && n[0] >= 0 && n[0] < 16 && n[0] == std::floor(n[0])) _doc.ruler_units = static_cast<int>(n[0]);
     } else if (starts("%AI8_CreatorVersion:")) {
         auto v = value("%AI8_CreatorVersion:");
         while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
@@ -1372,8 +1375,9 @@ void Reader::paint(std::string_view op, bool hidden, bool guide)
     node.evenodd = _gs.evenodd;
     node.clipping = clip;
     node.guide = guide;
-    if (do_fill && !clip) node.fill = fill_paint ? fill_paint : _gs.fill;
-    if (do_stroke && !clip) node.stroke = stroke_paint ? stroke_paint : _gs.stroke;
+    // W clips the following artwork; it doesn't cancel this path's own paint.
+    if (do_fill) node.fill = fill_paint ? fill_paint : _gs.fill;
+    if (do_stroke) node.stroke = stroke_paint ? stroke_paint : _gs.stroke;
     node.stroke_style = _gs.style;
     node.overprint_fill = _gs.overprint_fill && do_fill;
     node.overprint_stroke = _gs.overprint_stroke && do_stroke;

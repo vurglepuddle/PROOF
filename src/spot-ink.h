@@ -55,7 +55,8 @@ std::string ensure(SPDocument *doc, Ink const &ink);
 /// Lower-case, hyphenated id stem for an ink name ("PANTONE 185 C" -> "pantone-185-c").
 std::string id_stem(std::string const &name);
 
-/// Swatch label for an ink at a tint: "PANTONE 185 C" or "PANTONE 185 C 30%".
+/// Swatch label for an ink at a tint: "PANTONE 185 C" or "PANTONE 185 C 30%". PDF's
+/// registration ink "All" shows as Illustrator's "[Registration]".
 std::string label_for(std::string const &name, double tint);
 
 /// The full-strength alternate that shows `shown` at `tint` (inverse of display_color),

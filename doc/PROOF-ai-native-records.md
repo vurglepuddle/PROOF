@@ -190,13 +190,114 @@ case reads every file and prints which ones read natively.
   records silently. It now reads every frame, skips Illustrator's zero padding,
   and drains the decoder.
 
+## Native import (2026-10-10)
+
+Opening `.ai` now tries its native records first. `ai-native-import.{h,cpp}`
+builds the document and `pdfinput/ai-native-open.{h,cpp}` checks it against the
+PDF page. The preference `/options/aiimport/native` can disable this path.
+PDF files, including PDFs carrying Illustrator records, keep their existing
+import path.
+
+The document keeps process CMYK channels in its assigned working profile,
+Lab/RGB/CMYK spot definitions and tints, Registration as the ink `All` (labelled
+`[Registration]`), and global process colours as solid swatches. Unused named
+inks are retained too. Global process tints are separate swatches; they do not
+retain a live parent link. Grey in a CMYK document becomes black ink only.
+
+Artboards become named pages in points, with the first artboard's top-left at
+the origin; the root dimensions use the original ruler unit. Layer names,
+visibility, locking and highlight colours are kept. Print, preview and dim
+options are stored as `proof:layer-*`. Objects keep opacity, blend mode,
+isolation and turned-box angles. Drawn looks become groups, compounds become
+paths, and clip groups become SVG clip paths. Straight guides become guides;
+curved guide segments are omitted with a note.
+
+Embedded images display as PNG. CMYK samples additionally survive in
+`proof:samples`, as a Deflate CMYK TIFF (including unassociated alpha when
+present). The PNG is converted through the working profile. These original
+samples are preserved on SVG save/reopen, but exporters do not use them yet.
+
+### Corrections verified during import validation
+
+- **Painted clipping paths.** `W` schedules clipping; it does not cancel `f`
+  or `B`. The reader formerly discarded that paint, and the builder discarded
+  the clipping object. Both now preserve it. A hand-written PDF/native fixture
+  reproduces the missing background and checks the corrected render.
+- **Gradient midpoints.** Stops arrive in descending ramp order. A stop's
+  midpoint controls its segment to the next higher stop. Illustrator uses the
+  power curve `v = u^N`, with `N = ln(0.5) / ln(midpoint)`; its PDF uses Type 2
+  functions with that exponent. PROOF adds adaptive sample stops, within 0.5%
+  of the curve at subdivision midpoints. VectorCraft's piecewise linear
+  interpolation around the midpoint is different. Spot sample stops keep
+  ink/tint metadata.
+- **Every artboard is checked.** Artboard and PDF page counts must agree;
+  missing, rotated, invalid or differently sized pages refuse native import.
+  Each page's independent lightness and colour limits apply, including when
+  choosing a retry with non-printing layers hidden.
+- **Known omissions refuse import.** Missing gradient definitions, unreadable
+  images and images that cannot be placed use the PDF import. A small omitted
+  object must not slip through the visual tolerance merely because it covers
+  little of the page.
+
+### Visual check and its limits
+
+Poppler draws each PDF TrimBox and PROOF draws the matching artboard, on white,
+at a longest side of 600 pixels (at most four pixels per point). Each pixel
+can match a neighbour within one pixel, in both directions. Differences are
+counted separately by lightness (48/255) and by any RGB channel (80/255).
+Native import is refused if more than **1% by lightness** or **2% by colour**
+differs on any artboard. The initial guesses of 2% and 5% accepted visible
+fill changes in the corpus; the limits were tightened after inspecting those
+cases. They remain practical rendering tolerances, not proof of exact visual
+identity: small details, low-contrast changes and differences below the sampled
+resolution can escape them.
+
+Non-printing layers are retried hidden for comparison, then their visibility
+is restored. PDF optional-content screen and print views can differ; this
+check uses Poppler's screen view. Bleed comes from the PDF BleedBox relative
+to its TrimBox. Comparison pictures and the native SVG can be saved by the
+opt-in corpus test (`PROOF_AI_PICTURES` and `PROOF_AI_DUMP`), for diagnosis.
+
+Visible text still refuses native import. Hidden text and unsupported content
+on hidden layers may be omitted with notes. Knockout groups draw as ordinary
+groups; their state and overprint are stored as PROOF attributes. Export does
+not yet honour overprint, knockout, original CMYK image samples or non-printing
+layers. The source's embedded ICC profile is not decoded; the chosen working
+profile is used. This is an import feature, with print/export work still to do.
+
+`test_ai-native-import` covers mapping, exact channel/sample storage and SVG
+save/reopen, plus independently written PDF/native pairs. It verifies native
+acceptance, stale-art fallback, painted clipping paths, bleed, non-printing
+layers, page counts, page geometry and independent limits on multiple pages.
+Its opt-in `Corpus` case accepts `PROOF_AI_CORPUS` (approved folders separated
+by `;`) or `PROOF_AI_FILE` (one approved file) and prints the decision,
+maximum per-artboard lightness/colour difference and import time. Corpus paths,
+logs, diagnostic artwork and pictures stay outside Git.
+
+Validation on the approved corpus: **704 native / 222 page imports across 926
+files**, or **667 / 212 across 879 distinct SHA-256 hashes**. All 926 isolated
+test processes completed without a crash or timeout. The import step's median
+was 233 ms and maximum 9.1 s on this machine (excluding process startup).
+Of the 821 files reaching the drawing comparison, 117 exceeded a visual limit;
+the other 105 used the page for unsupported records/text, incomplete artwork,
+decode limits or page geometry/count checks. These counts describe this corpus,
+not arbitrary Illustrator files.
+
+All **19 native-import cases** pass, including the SVG save/reopen assertions.
+The six existing focused suites also pass (**173 cases**, with their two
+pre-existing disabled cases and the reader's opt-in corpus case excluded).
+The installed CLI native/fallback checks and all **19 AI interchange smoke
+checks** pass. A live open of a disposable spot-colour sample displayed its
+artwork in a CMYK document, without an import dialog, and closed normally.
+This does not establish extended editing or print/export acceptance.
+
 ## Plan
 
-1. **Native reader** (`src/extension/internal/ai/`), in progress. It covers the operator table
+1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
    above, is bounded, and fails closed. It produces a structure (layers, objects,
    inks, gradients, images, artboards) for both the importer and round-trip tests
    of the writer.
-2. **Native import.** It builds the PROOF document from that structure:
+2. **Native import**, delivered for the checked subset above. It builds the PROOF document from that structure:
    - CMYK colours and spot inks stay exact.
    - Lab alternates are kept.
    - CMYK images keep their samples.

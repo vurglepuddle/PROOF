@@ -21,6 +21,7 @@ target_sources(inkscape_base PRIVATE
 	implementation/xslt.cpp
 	implementation/script.cpp
 
+	internal/ai/ai-native-import.cpp
 	internal/ai/ai-native-lexer.cpp
 	internal/ai/ai-native-reader.cpp
 	internal/bluredge.cpp
@@ -99,6 +100,7 @@ target_sources(inkscape_base PRIVATE
 	implementation/script.h
 	implementation/xslt.h
 
+	internal/ai/ai-native-import.h
 	internal/ai/ai-native-lexer.h
 	internal/ai/ai-native-reader.h
 	internal/bluredge.h
@@ -199,6 +201,7 @@ if(WITH_POPPLER)
         internal/pdfinput/pdf-input.cpp
         internal/pdfinput/pdf-parser.cpp
         internal/pdfinput/svg-builder.cpp
+        internal/pdfinput/ai-native-open.cpp
         internal/pdfinput/ai-private-data.cpp
         internal/pdfinput/poppler-utils.cpp
         internal/pdfinput/poppler-cairo-font-engine.cpp
@@ -208,6 +211,7 @@ if(WITH_POPPLER)
         internal/pdfinput/pdf-input.h
         internal/pdfinput/pdf-parser.h
         internal/pdfinput/svg-builder.h
+        internal/pdfinput/ai-native-open.h
         internal/pdfinput/ai-private-data.h
         internal/pdfinput/poppler-utils.h
         internal/pdfinput/poppler-cairo-font-engine.h
