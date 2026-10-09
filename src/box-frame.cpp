@@ -177,6 +177,14 @@ std::optional<Geom::Point> box_middle(std::vector<SPItem *> const &items, SPItem
     return {};
 }
 
+std::optional<Geom::Point> box_rotation_center(std::vector<SPItem *> const &items, SPItem::BBoxType type)
+{
+    if (!items.empty() && items.back()->isCenterSet()) {
+        return items.back()->getCenter();
+    }
+    return box_middle(items, type);
+}
+
 Geom::OptRect frame_bounds(std::vector<SPItem *> const &items, double angle, SPItem::BBoxType type, bool stroked)
 {
     Geom::Affine const to_frame = Geom::Rotate(-angle);

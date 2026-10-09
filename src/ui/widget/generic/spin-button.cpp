@@ -906,8 +906,12 @@ bool InkSpinButton::on_key_pressed(guint keyval, Gdk::ModifierType state) {
         }
 #endif
         if (edit_pending() && state == Gdk::ModifierType::NO_MODIFIER_MASK) {
-            commit_entry();
-            defocus();
+            // The capture controller consumes Enter before Gtk::Entry can activate. Emit its
+            // activation signal after a valid commit so dialogs such as Transform apply the value.
+            if (commit_entry()) {
+                defocus();
+                _signal_activate.emit();
+            }
             return true;
         }
         break;

@@ -435,13 +435,7 @@ void details::AttributesPanel::rotate() {
     // Turn about the same point as the transform box: a centre set on the object, or else the
     // middle of the box.
     auto const use_visual_box = Preferences::get()->getInt("/tools/bounding_box") == 0;
-    std::optional<Geom::Point> pivot;
-    if (!items.back()->isCenterSet()) {
-        pivot = box_middle(items, use_visual_box ? SPItem::VISUAL_BBOX : SPItem::GEOMETRIC_BBOX);
-    }
-    if (!pivot) {
-        pivot = selection->center();
-    }
+    auto const pivot = box_rotation_center(items, use_visual_box ? SPItem::VISUAL_BBOX : SPItem::GEOMETRIC_BBOX);
     if (!pivot) return;
 
     selection->rotateRelative(*pivot, -turn * _desktop->yaxisdir());

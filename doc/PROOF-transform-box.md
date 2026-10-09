@@ -128,9 +128,25 @@ from a floating dialog. This applies to X, Y, W and H as well.
 
 Not yet: W and H are still the upright bounds, as Illustrator shows them for
 paths (Illustrator gives live shapes their own width and height in Shape
-properties). Keyboard rotation (`[` `]`) turns about the upright bounds'
-centre, which differs slightly from the turned box's centre for lopsided
-shapes.
+properties).
+
+## Keyboard and Transform rotation (2026-10-04)
+
+Keyboard rotation (`[` `]`, including Alt for small turns) and the Transform
+dialog now use the same pivot as Properties and the canvas box: an explicit
+centre set on the selection, or the middle of its turned box. A lopsided path
+keeps that centre through repeated turns. A selection with different box
+angles still uses an upright box. The chosen geometric or visual bounds apply
+to the pivot too.
+
+Transform's **Apply to each object separately** turns each object about its
+own turned box or explicit centre. Keyboard anchors and the grouping of
+repeated turns into one undo operation are preserved.
+
+The live check also found that Enter committed the Transform field's number
+without applying it. The numeric control consumed the key before its
+activation signal fired. A successful Enter commit now emits that signal and
+returns focus to the canvas; an invalid expression stays in the field.
 
 ## Moving keeps up with the pointer
 
@@ -194,10 +210,21 @@ Evidence is in `artifacts/transform-box/run-*`.
   counterclockwise (read from the file), and Ctrl+Z right after undoes it
 Reset Bounding Box has no shortcut, as in Illustrator, so the check binds one
 in its disposable profile copy (`proof_live.start(extra_keys=...)`). The
-Object menu entry is in `09-object-menu.png`. `test_box-frame` (9 cases)
+Object menu entry is in `09-object-menu.png`. `test_box-frame` (17 cases)
 covers the angle rules: shapes, paths, full angles and mirroring, moves and
 scales along the box, shearing, shared angles, groups and ungrouping, reset,
 the box's middle, and shape centres.
+
+The eight added unit cases cover keyboard and Transform pivots on lopsided
+paths, explicit centres, keyboard anchors, mixed angles, geometric/visual
+bounds, empty selections and repeated-turn undo/redo.
+`tools/rotation-centre-check.py` drives `tests/rotation-centre.svg` in a
+disposable copy of the installed editor. Its 17 native-input checks cover
+both brackets, Alt rotation, the actual Transform angle field and its
+separate-object option, and undo/redo. Saved vertices are compared with the
+expected rotation to within 0.01 px. Evidence:
+`artifacts/rotation-centre/run-225652/result.json` and
+`artifacts/rotation-centre-unit.xml`.
 
 `tools/ui-fixes-check.py` covers the 2026-10-03 follow-ups on a rectangle with
 a 24 px stroke: the box runs through the middle of the stroke, and a corner

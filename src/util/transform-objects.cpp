@@ -7,7 +7,9 @@
 #include <2geom/rect.h>
 #include <2geom/transforms.h>
 
+#include "box-frame.h"
 #include "desktop.h"
+#include "preferences.h"
 #include "selection.h"
 #include "object/algorithms/bboxsort.h"
 #include "object/sp-item-transform.h"
@@ -147,13 +149,26 @@ void transform_rotate(Inkscape::Selection* selection,
 {
     if (!selection || selection->isEmpty()) return;
 
+    auto const type = Preferences::get()->getInt("/tools/bounding_box") == 0
+                        ? SPItem::VISUAL_BBOX : SPItem::GEOMETRIC_BBOX;
     if (apply_separately) {
         auto tmp = selection->items();
         for (auto item : tmp) {
-            item->rotate_rel(Geom::Rotate(angle_degrees * M_PI / 180.0));
+            if (auto const center = box_rotation_center({item}, type)) {
+                // Keep SPItem::rotate_rel's per-item transform handling, using the turned box pivot.
+                bool const explicit_center = item->isCenterSet();
+                auto const affine = Geom::Translate(-*center) * Geom::Rotate::from_degrees(angle_degrees)
+                                  * Geom::Translate(*center);
+                item->set_i2d_affine(item->i2dt_affine() * affine);
+                item->doWriteTransform(item->transform);
+                if (explicit_center) {
+                    item->setCenter(*center);
+                    item->updateRepr();
+                }
+            }
         }
     } else {
-        std::optional<Geom::Point> center = selection->center();
+        auto const center = box_rotation_center(selection->items_vector(), type);
         if (center) {
             selection->rotateRelative(*center, angle_degrees);
         }

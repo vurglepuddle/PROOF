@@ -25,6 +25,7 @@
 #include <cmath>
 #include <glibmm/i18n.h>
 
+#include "box-frame.h"
 #include "desktop.h"
 #include "ui/widget/canvas/framecheck.h"
 #include "document-undo.h"
@@ -230,7 +231,9 @@ void Selection::rotateAnchored(double angle_degrees, double zoom)
     if (Geom::OptRect bbox = visualBounds()) {
         auto actionkey = document()->action_key();
 
-        auto mid = center() ? *center() : bbox->midpoint();
+        auto const type = Preferences::get()->getInt("/tools/bounding_box") == 0
+                            ? SPItem::VISUAL_BBOX : SPItem::GEOMETRIC_BBOX;
+        auto const mid = box_rotation_center(items_vector(), type).value_or(bbox->midpoint());
         auto center = has_anchor ? bbox->min() + bbox->dimensions() * Geom::Scale(anchor) : mid;
 
         // Remember the center for previous rotations with the same undo action

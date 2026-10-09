@@ -42,6 +42,9 @@ std::optional<double> box_rotation(std::vector<SPItem *> const &items);
 /// The middle of the box these objects share, in desktop coordinates.
 std::optional<Geom::Point> box_middle(std::vector<SPItem *> const &items, SPItem::BBoxType type);
 
+/// The rotation pivot: the selection's explicit centre, or the middle of the box.
+std::optional<Geom::Point> box_rotation_center(std::vector<SPItem *> const &items, SPItem::BBoxType type);
+
 /// The bounds of the objects in the frame of a box at `angle` (desktop coordinates turned by
 /// -angle), where that box is upright. `stroked` gives visual bounds without filters.
 Geom::OptRect frame_bounds(std::vector<SPItem *> const &items, double angle, SPItem::BBoxType type,
