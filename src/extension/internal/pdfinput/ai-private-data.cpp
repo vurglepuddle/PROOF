@@ -62,7 +62,9 @@ bool decode_zstd(std::string const &data, std::size_t start, AiNativeRecords &ou
     ZSTD_initDStream(stream.get());
     std::vector<char> buffer(ZSTD_DStreamOutSize());
     ZSTD_inBuffer in{data.data() + start, data.size() - start, 0};
-    while (in.pos < in.size) {
+    // A full output buffer means the decoder may still hold data, even with no input left.
+    bool full = false;
+    while (in.pos < in.size || full) {
         ZSTD_outBuffer chunk{buffer.data(), buffer.size(), 0};
         auto const result = ZSTD_decompressStream(stream.get(), &chunk, &in);
         if (ZSTD_isError(result)) {
@@ -77,8 +79,15 @@ bool decode_zstd(std::string const &data, std::size_t start, AiNativeRecords &ou
             out.stopped_early = true;
             return true;
         }
+        full = chunk.pos == chunk.size;
         if (result == 0) {
-            break; // Illustrator writes one frame; ignore any padding after it
+            // A frame ended. Illustrator pads with zeros; anything else is another frame.
+            while (in.pos < in.size && static_cast<char const *>(in.src)[in.pos] == 0) {
+                ++in.pos;
+            }
+            if (in.pos < in.size) {
+                ZSTD_initDStream(stream.get());
+            }
         }
     }
     return true;
@@ -227,14 +236,28 @@ std::optional<AiNativeRecords> read_ai_native_records(std::string const &path, s
     if (!data) {
         return {};
     }
-    if (data->compare(0, ZSTD_MARKER.size(), ZSTD_MARKER) == 0) {
+    // The compressed data may follow plain header comments and a thumbnail (CS-era files
+    // put the marker kilobytes in); the header is part of the records.
+    auto const zstd_at = data->find(ZSTD_MARKER);
+    auto const zlib_at = data->find(ZLIB_MARKER);
+    auto keep_header = [&](std::size_t at) {
+        if (at > limit) {
+            error = "Illustrator data exceeds the size limit";
+            return false;
+        }
+        out.text.assign(*data, 0, at);
+        return true;
+    };
+    if (zstd_at != std::string::npos && zstd_at <= zlib_at) {
         out.encoding = "AI24 Zstandard";
-        if (!decode_zstd(*data, payload_start(*data, ZSTD_MARKER.size()), out, stop_marker, limit, error)) {
+        if (!keep_header(zstd_at) ||
+            !decode_zstd(*data, payload_start(*data, zstd_at + ZSTD_MARKER.size()), out, stop_marker, limit, error)) {
             return {};
         }
-    } else if (data->compare(0, ZLIB_MARKER.size(), ZLIB_MARKER) == 0) {
+    } else if (zlib_at != std::string::npos) {
         out.encoding = "AI12 zlib";
-        if (!decode_zlib(*data, payload_start(*data, ZLIB_MARKER.size()), out, stop_marker, limit, error)) {
+        if (!keep_header(zlib_at) ||
+            !decode_zlib(*data, payload_start(*data, zlib_at + ZLIB_MARKER.size()), out, stop_marker, limit, error)) {
             return {};
         }
     } else {

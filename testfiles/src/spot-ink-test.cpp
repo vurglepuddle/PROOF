@@ -429,7 +429,11 @@ TEST(AiPaletteTest, ParsesIllustratorPaletteRecords)
 
 TEST(AiPaletteTest, LoadsZstandardAndZlibSwatchLibraries)
 {
-    for (auto name : {"proof-ai-swatches-zstd.ai", "proof-ai-swatches-zlib.ai"}) {
+    // cs-header: a plain header and thumbnail before %AI12_CompressedData, over three
+    // streams, as CS3 to CC 2017 write it. zstd-frames: two Zstandard frames (the palette is
+    // in the second) and zero padding.
+    for (auto name : {"proof-ai-swatches-zstd.ai", "proof-ai-swatches-zlib.ai", "proof-ai-swatches-cs-header.ai",
+                      "proof-ai-swatches-zstd-frames.ai"}) {
         SCOPED_TRACE(name);
         auto result = UI::Dialog::load_palette(std::string(INKSCAPE_TESTS_DIR) + "/data/" + name);
         ASSERT_TRUE(result.palette) << result.error_message;

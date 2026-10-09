@@ -21,6 +21,8 @@ target_sources(inkscape_base PRIVATE
 	implementation/xslt.cpp
 	implementation/script.cpp
 
+	internal/ai/ai-native-lexer.cpp
+	internal/ai/ai-native-reader.cpp
 	internal/bluredge.cpp
 	internal/cairo-ps-out.cpp
 	internal/cairo-render-context.cpp
@@ -97,6 +99,8 @@ target_sources(inkscape_base PRIVATE
 	implementation/script.h
 	implementation/xslt.h
 
+	internal/ai/ai-native-lexer.h
+	internal/ai/ai-native-reader.h
 	internal/bluredge.h
 	internal/cairo-ps-out.h
 	internal/cairo-render-context.h
