@@ -101,16 +101,16 @@ are under NDA.
 
 The corpus has **877 unique files** from Illustrator CS3 to 2025. They are mostly
 illustration and print work. The five `spike/files` test files are among them,
-and so is a released 2020–2023 hospital job.
+and so is a released 2020–2023 print job.
 
 | | Reads fully native |
 |---|---|
 | VectorCraft's table | 589 of 877 (67%); 2 of the 5 spike files |
 | PROOF's table | **839 of 877 (95.7%)**; all 5 spike files |
 
-`Xk` alone kept 2 of the 5 spike files and most of the 2020–2023 files from
-VectorCraft's table. Under that table, the hospital job read 15 of 44 files;
-under PROOF's, it reads 43.
+`Xk`/`XK` kept the other 3 spike files and most of the 2020–2023 files from
+VectorCraft's table (one spike file also had `Ar`). Under that table, the 2020–2023
+print job read 15 of 44 files; under PROOF's, it reads 43.
 
 | Version | Files | PROOF | VectorCraft |
 |---|---:|---:|---:|
