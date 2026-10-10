@@ -111,6 +111,10 @@ See [AI interchange](PROOF-ai-interchange.md) for supported interchange scope.
 
 ## Validation
 
+The [tools-sidebar fill/stroke controls](PROOF-fill-stroke-controls.md) preserve
+native CMYK paint when opening and editing the shared colour editor. Their
+2026-10-11 live checks include exact channels, CMYK defaults and new-shape paint.
+
 The CMYK regression harness drives real GTK controls and document objects. It
 covers channel preservation and opacity, profile embedding and SVG reload,
 undo/redo, disabling management, RGB/CMYK conversion, spot metadata retention,

@@ -119,6 +119,10 @@
     <!-- Edit -->
     <bind gaction="doc.undo"                               keys="&lt;Primary&gt;z" />
     <bind gaction="doc.redo"                               keys="&lt;Primary&gt;&lt;Shift&gt;z" />
+    <bind gaction="win.paint-toggle-target"                keys="x" />
+    <bind gaction="win.paint-swap"                         keys="&lt;Shift&gt;x" />
+    <bind gaction="win.paint-defaults"                     keys="d" />
+    <bind gaction="win.paint-none"                         keys="slash" />
     <bind gaction="app.cut"                                keys="&lt;Primary&gt;x, F2" />
     <bind gaction="app.copy"                               keys="&lt;Primary&gt;c, F3"/>
     <bind gaction="win.paste"                              keys="&lt;Primary&gt;v, F4"/>

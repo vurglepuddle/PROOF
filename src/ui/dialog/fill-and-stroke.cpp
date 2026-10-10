@@ -34,6 +34,7 @@
 #include "ui/widget/notebook-page.h"
 #include "ui/widget/recolor-art-manager.h"
 #include "ui/widget/stroke-style.h"
+#include "ui/widget/selection-paint.h"
 
 
 namespace Inkscape::UI::Dialog {
@@ -74,6 +75,7 @@ FillAndStroke::FillAndStroke()
 
 FillAndStroke::~FillAndStroke()
 {
+    for (auto &connection : _paint_connections) connection.disconnect();
     // Disconnect signals from composite settings
     _composite_settings.setSubject(nullptr);
 
@@ -97,237 +99,11 @@ void FillAndStroke::_setupRecolorBtn() {
     box->append(*label);
 }
 
-void remove_opacity(SPObject *item, bool is_fill)
+void FillAndStroke::_ConnectPaintSignals(UI::Widget::PaintSwitch *paint_switch, bool is_fill)
 {
-    SPCSSAttr *css = sp_repr_css_attr_new();
-    sp_repr_css_unset_property(css, is_fill ? "fill-opacity" : "stroke-opacity");
-    sp_repr_css_change_recursive(item->getRepr(), css, "style");
-    sp_repr_css_attr_unref(css);
-}
-
-// Connects signals from the PaintSwitch widget to the document/desktop.
-void FillAndStroke::_ConnectPaintSignals(UI::Widget::PaintSwitch *paint_switch, bool is_fill) {
-    paint_switch->get_pattern_changed().connect([this, is_fill](auto pattern, auto color, auto label, auto transform, auto offset, auto uniform, auto gap) {
-        if (_ignore_updates || !getDesktop()) return;
-        auto doc = getDesktop()->getDocument();
-        auto items = getDesktop()->getSelection()->items_vector();
-        if (items.empty() || !pattern) return;
-
-        auto kind = is_fill ? FILL : STROKE;
-        for (auto item : items) {
-            sp_item_apply_pattern(item, pattern, kind, color, label, transform, offset, uniform, gap);
-            remove_opacity(item, is_fill);
-        }
-
-        DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set pattern on fill") : RC_("Undo", "Set pattern on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-    
-    paint_switch->get_hatch_changed().connect([this, is_fill](auto hatch, auto color, auto label, auto transform, auto offset, auto pitch, auto rotation, auto stroke) {
-        if (_ignore_updates || !getDesktop()) return;
-        auto doc = getDesktop()->getDocument();
-        auto items = getDesktop()->getSelection()->items_vector();
-        if (items.empty() || !hatch) return;
-
-        auto kind = is_fill ? FILL : STROKE;
-        for (auto item : items) {
-            sp_item_apply_hatch(item, hatch, kind, color, label, transform, offset, pitch, rotation, stroke);
-            remove_opacity(item, is_fill);
-        }
-
-        DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set hatch on fill") : RC_("Undo", "Set hatch on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-    
-    paint_switch->get_gradient_changed().connect([this, is_fill, paint_switch](auto vector, auto gradient_type) {
-        if (_ignore_updates || !getDesktop()) return;
-
-        auto doc = getDesktop()->getDocument();
-        auto items = getDesktop()->getSelection()->items_vector();
-        auto kind = is_fill ? FILL : STROKE;
-
-        for (auto item : items) {
-            sp_item_apply_gradient(item, vector, getDesktop(), gradient_type, false, kind);
-            remove_opacity(item, is_fill);
-        }
-
-        DocumentUndo::done(doc, 
-            is_fill ? RC_("Undo", "Set gradient on fill") : RC_("Undo", "Set gradient on stroke"), 
-            INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-
-    paint_switch->get_mesh_changed().connect([this, is_fill](auto mesh) {
-        if (_ignore_updates || !getDesktop()) return;
-        auto doc = getDesktop()->getDocument();
-        auto items = getDesktop()->getSelection()->items_vector();
-        if (items.empty()) return;
-        FillOrStroke kind = is_fill ? FILL : STROKE;
-
-        for (auto item : items) {
-            sp_item_apply_mesh(item, mesh, doc, kind);
-            remove_opacity(item, is_fill);
-        }
-
-        DocumentUndo::done(doc, 
-            (is_fill) ? RC_("Undo", "Set mesh on fill") : RC_("Undo", "Set mesh on stroke"), 
-            INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-
-    paint_switch->get_swatch_changed().connect([this, is_fill](auto vector, auto operation, auto replacement, std::optional<Color> color, auto label) {
-        if (_ignore_updates || !getDesktop()) return;
-        auto doc = getDesktop()->getDocument();
-        auto selection = getDesktop()->getSelection();
-        auto items = selection->items_vector();
-
-        if (items.empty() && operation == EditOperation::New){
-            return;
-        }
-
-        auto kind = is_fill ? FILL : STROKE;
-        switch (operation) {
-            case EditOperation::New: {
-                for (auto item : items) {
-                    if (!item || !item->style) continue;
-
-                    auto paint = item->style->getFillOrStroke(is_fill);
-                    auto clr = paint && paint->isColor() ? std::optional(paint->getColor()) : std::nullopt;
-                    vector = clr ? sp_find_matching_swatch(doc, *clr) : nullptr;
-
-                    sp_item_apply_gradient(item, vector, getDesktop(), SP_GRADIENT_TYPE_LINEAR, true, kind);
-                    remove_opacity(item, is_fill);
-                }
-                DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set swatch on fill") : RC_("Undo", "Set swatch on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"));
-                break;
-            }
-            case EditOperation::Change: {
-                if (vector && color) {
-                    sp_change_swatch_color(vector, color.value());
-                    DocumentUndo::maybeDone(doc, "swatch-color", RC_("Undo", "Change swatch color"), INKSCAPE_ICON("dialog-fill-and-stroke"));
-                } else if (vector) {
-                    for (auto item : items) {
-                        sp_item_apply_gradient(item, vector, getDesktop(), SP_GRADIENT_TYPE_LINEAR, true, kind);
-                        remove_opacity(item, is_fill);
-                    }
-                    DocumentUndo::maybeDone(doc, "swatch-assign", 
-                        is_fill ? RC_("Undo", "Set swatch on fill") : RC_("Undo", "Set swatch on stroke"), 
-                        INKSCAPE_ICON("dialog-fill-and-stroke"));
-                }
-                break;
-            }
-            case EditOperation::Delete: {
-                if (!vector || !replacement) return;
-    
-                auto kind = is_fill ? FILL : STROKE;
-                for (auto item : items) {
-                    sp_delete_item_swatch(item, kind, vector, replacement);
-                }
-
-                DocumentUndo::done(doc, RC_("Undo", "Delete swatch"),  INKSCAPE_ICON("dialog-fill-and-stroke"));
-                break;
-            }
-            case EditOperation::Rename: {
-                if (vector && !label.empty()) {
-                    sp_rename_swatch(vector, label);
-                    DocumentUndo::maybeDone(doc, "swatch-rename", RC_("Undo", "Rename swatch"), INKSCAPE_ICON("dialog-fill-and-stroke"));
-                }
-                break;
-            }
-            default:
-                break;
-        }
-    });
-
-    paint_switch->get_flat_color_changed().connect([this, is_fill](auto& color) {
-        if (_ignore_updates || !getDesktop()) return;
-
-        sp_desktop_set_color(getDesktop(), color, false, is_fill);
-
-        DocumentUndo::maybeDone(getDesktop()->getDocument(), 
-                                is_fill ? "fill:flatcolor" : "stroke:flatcolor", 
-                                is_fill ? RC_("Undo", "Set fill color") : RC_("Undo", "Set stroke color"),
-                                INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-
-    paint_switch->get_fill_rule_changed().connect([this, is_fill](auto fill_rule) {
-        if (_ignore_updates || !getDesktop()) return;
-
-        SPCSSAttr *css = sp_repr_css_attr_new();
-        sp_repr_css_set_property(css, "fill-rule", 
-            (fill_rule == UI::Widget::FillRule::EvenOdd) ? "evenodd" : "nonzero");
-        sp_desktop_set_style(getDesktop(), css, true);  
-        sp_repr_css_attr_unref(css);
-
-        DocumentUndo::maybeDone(getDesktop()->getDocument(), 
-            "change-fill-rule", 
-            RC_("Undo", "Change fill rule"), 
-            INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-
-    paint_switch->get_inherit_mode_changed().connect([this, is_fill](auto mode) {
-        if (_ignore_updates || !getDesktop()) return;
-        auto doc = getDesktop()->getDocument();
-        auto items = getDesktop()->getSelection()->items_vector();
-        if (items.empty()) return;
-
-        auto property = is_fill ? "fill" : "stroke";
-        SPCSSAttr *css = sp_repr_css_attr_new();
-
-        switch (mode) {
-        case UI::Widget::PaintDerivedMode::Unset:
-            sp_repr_css_unset_property(css, property);
-            break;
-        case UI::Widget::PaintDerivedMode::Inherit:
-            sp_repr_css_set_property(css, property, "inherit");
-            break;
-        case UI::Widget::PaintDerivedMode::ContextFill:
-            sp_repr_css_set_property(css, property, "context-fill");
-            break;
-        case UI::Widget::PaintDerivedMode::ContextStroke:
-            sp_repr_css_set_property(css, property, "context-stroke");
-            break;
-        case UI::Widget::PaintDerivedMode::CurrentColor:
-            sp_repr_css_set_property(css, property, "currentColor");
-            break;
-        default:
-            g_warning("file %s: line %d: Unknown inherited paint mode", __FILE__, __LINE__);
-            sp_repr_css_attr_unref(css);
-            return;
-        }
-
-        sp_desktop_set_style(getDesktop(), css, true);
-        sp_repr_css_attr_unref(css);
-
-        DocumentUndo::done(doc,
-            (is_fill) ? RC_("Undo", "Inherit fill") : RC_("Undo", "Inherit stroke"),
-            INKSCAPE_ICON("dialog-fill-and-stroke"));
-    });
-
-    paint_switch->get_signal_mode_changed().connect([this, is_fill](auto mode) {
-        if (_ignore_updates || !getDesktop()) return;
-        auto doc = getDesktop()->getDocument();
-        auto items = getDesktop()->getSelection()->items_vector();
-        if (items.empty()) return;
-
-        if (mode == UI::Widget::PaintMode::None) {
-            SPCSSAttr *css = sp_repr_css_attr_new();
-
-            sp_repr_css_set_property(css, (is_fill) ? "fill" : "stroke", "none");
-            sp_desktop_set_style(getDesktop(), css, true);
-            sp_repr_css_attr_unref(css);
-
-            DocumentUndo::done(doc, 
-                (is_fill) ? RC_("Undo", "Remove fill") : RC_("Undo", "Remove stroke"), 
-                INKSCAPE_ICON("dialog-fill-and-stroke"));
-        } else if (mode == UI::Widget::PaintMode::Derived) {
-            
-            SPCSSAttr *css = sp_repr_css_attr_new();
-            sp_repr_css_unset_property(css, is_fill ? "fill" : "stroke");
-            sp_desktop_set_style(getDesktop(), css, true); 
-            sp_repr_css_attr_unref(css);
-
-            DocumentUndo::done(doc, 
-                (is_fill) ? RC_("Undo", "Unset fill") : RC_("Undo", "Unset stroke"), 
-                INKSCAPE_ICON("dialog-fill-and-stroke"));
-        }
-    });
+    auto connections = UI::Widget::connect_selection_paint(*paint_switch, is_fill,
+        [this] { return getDesktop(); }, [this] { return _ignore_updates; });
+    _paint_connections.insert(_paint_connections.end(), connections.begin(), connections.end());
 }
 
 // Updates the Dialog UI to reflect the currently selected object(s)
