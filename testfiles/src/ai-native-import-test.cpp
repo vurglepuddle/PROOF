@@ -24,6 +24,8 @@
 #include "doc-per-case-test.h"
 #include "document.h"
 #include "extension/internal/ai/ai-native-import.h"
+#include "extension/internal/ai/ai-native-text.h"
+#include "libnrtype/font-factory.h"
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
 #include "extension/internal/pdfinput/ai-native-open.h"
 #endif
@@ -71,6 +73,67 @@ std::string boards(int count)
     return out + "%_; (ArtboardArray) ,\n%_; /Recorded ,\n%_;\n%AI9_EndDocumentData\n";
 }
 
+std::string ascii85(std::string const &bytes)
+{
+    std::string out;
+    for (std::size_t at = 0; at < bytes.size(); at += 4) {
+        auto const n = std::min<std::size_t>(4, bytes.size() - at);
+        std::uint32_t value = 0;
+        for (std::size_t j = 0; j < 4; ++j) value = (value << 8) | (j < n ? std::uint8_t(bytes[at + j]) : 0);
+        char group[5];
+        for (int j = 4; j >= 0; --j) { group[j] = char('!' + value % 85); value /= 85; }
+        out.append(group, n + 1);
+    }
+    return out;
+}
+
+// Minimal text dictionaries written independently of the donor and production files.
+std::string text_document(std::string const &characters = "(Hello\\r)", int units = 6,
+                          std::string const &font = "ArialMT", std::string const &style = {},
+                          std::string const &carries = "/2 [1 0 0 1 -90 -10]",
+                          std::string const &extra_runs = {})
+{
+    return "/0 << /1 << /0 [ << /0 << /0 << /0 (" + font + ") >> >> >> ] >> "
+           "/8 << /0 [ << /0 << /2 << " + carries + " >> >> >> ] >> >> "
+           "/1 << /1 [ << /0 << /0 " + characters +
+           " /6 << /0 [ << /1 " + std::to_string(units) + " /0 << /0 << /6 << " + style +
+           " >> >> >> >> " + extra_runs + " ] >> >> /1 << /0 [ << /0 0 >> ] "
+           "/2 << /99 /F /0 << /0 [8191.5 8191.5] >> "
+           "/6 [ << /99 /L /6 [ << /99 /S >> ] >> ] >> >> >> ] "
+           "/2 << /0 0 /1 12 /56 true /57 false /53 << /0 << /0 2 /1 [1 0.25 0.5 0.75 0.1] >> >> >> >>";
+}
+
+std::string text_setup(std::string const &document)
+{
+    auto packed = ascii85(document);
+    std::string lines;
+    for (std::size_t at = 0; at < packed.size(); at += 71) lines += "%" + packed.substr(at, 71) + "\n";
+    return "%AI3_TemplateBox: 100 50\n%AI11_BeginTextDocument\n%_/Binary :\n%_/ASCII85Decode ,\n" +
+           lines + "%~>\n%_;\n%AI11_EndTextDocument\n";
+}
+
+std::string aligned_text_document(unsigned alignment, std::string const &font = "ArialMT")
+{
+    auto data = text_document("(HHH\\r)", 4, font,
+                             "/1 32 /53 << /0 << /0 0 /1 [1 0] >> >>", "/2 [1 0 0 1 -20 -10]");
+    auto at = data.find(" /6 << /0 [");
+    data.insert(at, " /5 << /0 [ << /1 4 /0 << /0 << /5 << /0 " + std::to_string(alignment) + " >> >> >> >> ] >>");
+    at = data.find("/99 /S >>");
+    data.replace(at, std::string("/99 /S >>").size(), "/99 /S /0 << /0 [" +
+                 std::string(alignment == 2 ? "-28.8" : "-57.6") + " 0] >> >>");
+    return data;
+}
+
+std::string available_text_font()
+{
+    for (auto const *name : {"ArialMT", "DejaVuSans", "LiberationSans"}) {
+        if (auto *desc = FontFactory::get().parsePostscriptName(name, false)) {
+            pango_font_description_free(desc); return name;
+        }
+    }
+    return {};
+}
+
 std::vector<XML::Node *> elements(XML::Node *root, char const *name)
 {
     std::vector<XML::Node *> out;
@@ -106,7 +169,8 @@ protected:
 // A minimal PDF carrying independent page content and native artwork. Each page has
 // its own box; changing either half exercises the safety net rather than the parser.
 std::string fixture(std::string const &native, std::vector<std::string> const &contents,
-                    std::string const &boxes = "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]")
+                    std::string const &boxes = "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]",
+                    std::string const &font = {})
 {
     std::map<int, std::string> objects;
     objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -114,10 +178,16 @@ std::string fixture(std::string const &native, std::vector<std::string> const &c
     auto stream = [](std::string const &s) { return "<< /Length " + std::to_string(s.size()) + " >>\nstream\n" + s + "\nendstream"; };
     objects[3] = "<< /AIPrivateData1 4 0 R /NumBlock 1 /ContainerVersion 11 /CreatorVersion 16 /RoundtripVersion 16 >>";
     objects[4] = stream(native);
+    std::string resources = "<< >>";
+    if (!font.empty()) {
+        int const id = 5 + int(contents.size()) * 2;
+        objects[id] = "<< /Type /Font /Subtype /Type1 /BaseFont /" + font + " /Encoding /WinAnsiEncoding >>";
+        resources = "<< /Font << /F1 " + std::to_string(id) + " 0 R >> >>";
+    }
     for (std::size_t i = 0; i < contents.size(); ++i) {
         int const p = 5 + int(i) * 2;
         kids += std::to_string(p) + " 0 R ";
-        objects[p] = "<< /Type /Page /Parent 2 0 R " + boxes + " /Resources << >> /Contents " + std::to_string(p + 1) +
+        objects[p] = "<< /Type /Page /Parent 2 0 R " + boxes + " /Resources " + resources + " /Contents " + std::to_string(p + 1) +
                      " 0 R /PieceInfo << /Illustrator << /Private 3 0 R >> >> >>";
         objects[p + 1] = stream(contents[i]);
     }
@@ -342,12 +412,155 @@ TEST_F(AiNativeImportTest, VisibleTextRefusedHiddenTextNoted)
     auto ai = AN::read(source, error);
     ASSERT_TRUE(ai) << error;
     EXPECT_FALSE(AN::build(*ai, error));
-    EXPECT_NE(error.find("type that shows"), std::string::npos);
+    EXPECT_NE(error.find("visible text"), std::string::npos);
     ai->layers[0].visible = false;
     auto b = AN::build(*ai, error);
     ASSERT_TRUE(b) << error;
     ASSERT_EQ(b->notes.size(), 1u);
     EXPECT_NE(b->notes[0].find("text object"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, PointTextReadsUnicodeRunLengthsAndCanvasPlacement)
+{
+    auto data = text_setup(text_document("(\\376\\377\\000A\\330\\075\\336\\000\\000\\015)", 4));
+    auto texts = AN::read_text_document(data, Geom::Point(100, 50));
+    ASSERT_TRUE(texts->error.empty()) << texts->error;
+    ASSERT_EQ(texts->stories.size(), 1u);
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    auto const &story = *texts->stories[0];
+    ASSERT_EQ(story.lines.size(), 1u);
+    ASSERT_EQ(story.lines[0].runs.size(), 1u);
+    EXPECT_EQ(story.lines[0].runs[0].text, "A\xf0\x9f\x98\x80");
+    auto point = story.lines[0].origin * story.to_art;
+    EXPECT_NEAR(point.x(), 10, 1e-6);
+    EXPECT_NEAR(point.y(), 60, 1e-6);
+    auto const &s = story.lines[0].runs[0].style;
+    ASSERT_TRUE(s.fill);
+    EXPECT_EQ(s.fill->model, AN::Color::Model::Cmyk);
+    EXPECT_EQ(s.fill->v, (std::array<double, 4>{0.25, 0.5, 0.75, 0.1}));
+}
+
+TEST_F(AiNativeImportTest, PointTextRefusesBrokenUnicodeFramesStylesAndEncodings)
+{
+    for (auto const &doc : {
+             text_document("(\\376\\377\\000A\\330\\075\\336\\000\\000\\015)", 2),
+             text_document("(Hi\\r)", 3, "ArialMT", "/6 0"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/9 2"),
+             text_document("(Hi\\r)", 1, "ArialMT", {}, "/2 [1 0 0 1 -90 -10]",
+                           "<< /1 2 /0 << /0 << /6 << /6 1.2 >> >> >> >>"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/2 true"),
+             text_document("(Hi\\r)", 3, "ArialMT", {}, "/1 [1 2]"),
+             text_document("(Hi\\r)", 3, "ArialMT", {}, "/2 [1 0 0 0 0 0]")}) {
+        auto texts = AN::read_text_document(text_setup(doc), Geom::Point(100, 50));
+        ASSERT_EQ(texts->stories.size(), 1u);
+        EXPECT_FALSE(texts->stories[0]); EXPECT_FALSE(texts->errors[0].empty());
+    }
+    EXPECT_FALSE(AN::read_text_document(text_setup(text_document()), {})->error.empty());
+    EXPECT_FALSE(AN::read_text_document("%AI11_BeginTextDocument\n/ASCII85Decode , z~>\n%AI11_EndTextDocument", Geom::Point(0, 0))->error.empty());
+    EXPECT_FALSE(AN::read_text_document(text_setup("/0 " + std::string(100, '[')), Geom::Point(0, 0))->error.empty());
+    auto bad = text_setup(text_document());
+    bad.replace(bad.find("~>"), 2, "~!");
+    EXPECT_FALSE(AN::read_text_document(bad, Geom::Point(0, 0))->error.empty());
+}
+
+TEST_F(AiNativeImportTest, PointTextBuildsEditableSvgAndSurvivesReopen)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(text_document("(Hello\\r)", 6, font, "/8 100")));
+    auto b = make(source); ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:ai-story"), "0");
+    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 2u);
+    EXPECT_NE(attr(spans[1], "style").find("letter-spacing:1.2"), std::string::npos);
+    EXPECT_NE(attr(spans[1], "style").find("icc-color"), std::string::npos);
+    ASSERT_TRUE(spans[1]->firstChild());
+    EXPECT_STREQ(spans[1]->firstChild()->content(), "Hello");
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto again = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(again.size(), 1u);
+    auto again_spans = elements(again[0], "svg:tspan"); ASSERT_EQ(again_spans.size(), 2u);
+    ASSERT_TRUE(again_spans[1]->firstChild());
+    EXPECT_STREQ(again_spans[1]->firstChild()->content(), "Hello");
+    EXPECT_EQ(attr(again[0], "transform"), attr(texts[0], "transform"));
+    EXPECT_EQ(reopened->getObjectByRepr(again_spans[1])->style->fill.getColor().getValues(),
+              (std::vector<double>{0.25, 0.5, 0.75, 0.1}));
+    again_spans[1]->firstChild()->setContent("Edited!");
+    reopened->ensureUpToDate();
+    auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(edited);
+    auto edited_spans = elements(elements(edited->getReprRoot(), "svg:text")[0], "svg:tspan");
+    ASSERT_EQ(edited_spans.size(), 2u);
+    EXPECT_STREQ(edited_spans[1]->firstChild()->content(), "Edited!");
+}
+
+TEST_F(AiNativeImportTest, PointTextMissingExactFontUsesFallback)
+{
+    auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(text_document("(Hello\\r)", 6, "PROOF-Missing-Unique-Font-734")));
+    std::string error; auto ai = AN::read(source, error); ASSERT_TRUE(ai);
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("exact font"), std::string::npos) << error;
+}
+
+TEST_F(AiNativeImportTest, PointTextMissingGlyphRefusesImplicitFontSubstitution)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+        text_setup(text_document("(\\376\\377\\333\\377\\337\\375\\000\\015)", 3, font)));
+    std::string error; auto ai = AN::read(source, error); ASSERT_TRUE(ai);
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("doesn't contain every text character"), std::string::npos) << error;
+    ai->layers[0].visible = false;
+    auto hidden = AN::build(*ai, error); ASSERT_TRUE(hidden) << error;
+    EXPECT_TRUE(elements(hidden->document->getReprRoot(), "svg:text").empty());
+    ASSERT_EQ(hidden->notes.size(), 1u);
+    EXPECT_NE(hidden->notes[0].find("left out"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, PointTextPreservesStyledLinesAndAffinePlacement)
+{
+    auto data = text_document("(Hi\\rBye\\r)", 3, "ArialMT", {}, "/2 [0 1 -1 0 -90 -10]",
+                             "<< /1 4 /0 << /0 << /6 << /1 24 /8 50 >> >> >> >>");
+    auto const at = data.find("/6 [ << /99 /L /6 [ << /99 /S >> ] >> ]");
+    ASSERT_NE(at, std::string::npos);
+    data.replace(at, std::string("/6 [ << /99 /L /6 [ << /99 /S >> ] >> ]").size(),
+                 "/6 [ << /99 /L /6 [ << /99 /S >> ] >> "
+                 "<< /99 /L /0 << /0 [2 18] >> /6 [ << /99 /S /0 << /0 [3 0] >> >> ] >> ]");
+    auto texts = AN::read_text_document(text_setup(data), Geom::Point(100, 50));
+    ASSERT_EQ(texts->stories.size(), 1u);
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    auto const &s = *texts->stories[0];
+    ASSERT_EQ(s.lines.size(), 2u);
+    ASSERT_EQ(s.lines[0].runs.size(), 1u); ASSERT_EQ(s.lines[1].runs.size(), 1u);
+    EXPECT_EQ(s.lines[0].runs[0].text, "Hi"); EXPECT_EQ(s.lines[1].runs[0].text, "Bye");
+    EXPECT_EQ(s.lines[0].runs[0].style.size, 12); EXPECT_EQ(s.lines[1].runs[0].style.size, 24);
+    EXPECT_EQ(s.lines[1].runs[0].style.tracking, 50);
+    auto p0 = s.lines[0].origin * s.to_art;
+    auto p1 = s.lines[1].origin * s.to_art;
+    EXPECT_EQ(p1 - p0, Geom::Point(-18, -5));
+}
+
+TEST_F(AiNativeImportTest, PointTextAlignedParagraphsKeepEditableAnchors)
+{
+    for (unsigned align : {1u, 2u}) {
+        auto texts = AN::read_text_document(text_setup(aligned_text_document(align)), Geom::Point(100, 50));
+        ASSERT_EQ(texts->stories.size(), 1u);
+        ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+        auto const &s = *texts->stories[0];
+        ASSERT_EQ(s.lines.size(), 1u); EXPECT_EQ(s.lines[0].alignment, align);
+        EXPECT_EQ(s.lines[0].origin * s.to_art, Geom::Point(80, 60));
+    }
+    auto bad = AN::read_text_document(text_setup(aligned_text_document(3)), Geom::Point(100, 50));
+    ASSERT_EQ(bad->stories.size(), 1u); EXPECT_FALSE(bad->stories[0]);
+    auto data = aligned_text_document(2);
+    auto const at = data.find("/1 4 /0"); ASSERT_NE(at, std::string::npos);
+    data.replace(at, 4, "/1 3");
+    bad = AN::read_text_document(text_setup(data), Geom::Point(100, 50));
+    ASSERT_EQ(bad->stories.size(), 1u); EXPECT_FALSE(bad->stories[0]);
 }
 
 TEST_F(AiNativeImportTest, UnusedPaletteInksSurvive)
@@ -397,6 +610,67 @@ TEST_F(AiNativeImportTest, GuidesAndDrawnLooks)
 }
 
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
+TEST_F(AiNativeImportTest, PointTextRightAndCentreMatchIndependentPdfAndReopen)
+{
+    // Courier New's advance is 0.6 em: these independent PDF starts are exact.
+    auto *font = FontFactory::get().parsePostscriptName("CourierNewPSMT", false);
+    if (!font) GTEST_SKIP() << "CourierNewPSMT isn't installed";
+    pango_font_description_free(font);
+    for (unsigned align : {1u, 2u}) {
+        auto src = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                           text_setup(aligned_text_document(align, "CourierNewPSMT")));
+        auto pdf = "0 g BT /F1 32 Tf " + std::string(align == 2 ? "51.2" : "22.4") + " 60 Td (HHH) Tj ET";
+        std::string reason;
+        auto good = Extension::Internal::open_ai_native(fixture(src, {pdf}, "/MediaBox [0 0 200 100]", "CourierNewPSMT"), reason);
+        ASSERT_TRUE(good) << reason;
+        auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(good->document->getReprDoc()).raw());
+        ASSERT_TRUE(reopened);
+        auto texts = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+        auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 2u);
+        EXPECT_EQ(attr(spans[0], "style"), align == 2 ? "text-anchor:middle;" : "text-anchor:end;");
+    }
+}
+
+TEST_F(AiNativeImportTest, PointTextVisiblePdfGlyphsAndDisplacedTextRefused)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // The PDF uses its own text operator/font lookup, independent of ATE and SVG.
+    // Both baselines are at (10, 60) in the 200 x 100 point artboard.
+    auto src = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                       text_setup(text_document("(Hello\\r)", 6, font,
+                                                "/1 32 /53 << /0 << /0 0 /1 [1 0] >> >>")));
+    auto built = make(src); ASSERT_TRUE(built);
+    auto const *diagnostics = g_getenv("PROOF_AI_TEXT_DIAG");
+    if (diagnostics) {
+        g_mkdir_with_parents(diagnostics, 0700);
+        auto svg = sp_repr_save_buf(built->document->getReprDoc());
+        g_file_set_contents((std::string(diagnostics) + "/native.svg").c_str(), svg.c_str(), svg.bytes(), nullptr);
+    }
+    std::string reason;
+    auto good = Extension::Internal::open_ai_native(
+        fixture(src, {"0 g BT /F1 32 Tf 10 60 Td (Hello) Tj ET"},
+                "/MediaBox [0 0 200 100]", font), reason, false, diagnostics ? diagnostics : "");
+    ASSERT_TRUE(good) << reason << " (font " << font << ")";
+    auto texts = elements(good->document->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto *item = dynamic_cast<SPItem *>(good->document->getObjectByRepr(texts[0])); ASSERT_TRUE(item);
+    auto bounds = item->documentVisualBounds(); ASSERT_TRUE(bounds);
+    EXPECT_GT(bounds->width(), 50); EXPECT_GT(bounds->height(), 20);
+    EXPECT_GT(bounds->left(), 10); EXPECT_LT(bounds->top(), 40);
+    auto wrong = Extension::Internal::open_ai_native(
+        fixture(src, {"0 g BT /F1 32 Tf 100 30 Td (Hello) Tj ET"},
+                "/MediaBox [0 0 200 100]", font), reason);
+    EXPECT_FALSE(wrong);
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+    auto scaled_src = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+        text_setup(text_document("(Hello\\r)", 6, font,
+                   "/1 32 /6 0.8 /7 1.2 /53 << /0 << /0 0 /1 [1 0] >> >>")));
+    auto scaled = Extension::Internal::open_ai_native(
+        fixture(scaled_src, {"q 0.8 0 0 1.2 10 60 cm 0 g BT /F1 32 Tf 0 0 Td (Hello) Tj ET Q"},
+                "/MediaBox [0 0 200 100]", font), reason);
+    ASSERT_TRUE(scaled) << reason;
+}
+
 TEST_F(AiNativeImportTest, MatchingPdfAcceptedAndStaleRecordsRefused)
 {
     std::string reason;
@@ -490,6 +764,42 @@ TEST_F(AiNativeImportTest, IndependentThresholdsCheckedOnEveryPage)
     EXPECT_NE(reason.find("artboard 2"), std::string::npos);
 }
 
+TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)
+{
+    auto const path = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f"});
+    auto const folder = path.substr(0, path.find_last_of("/\\"));
+    Extension::Internal::AiNativeCache cache;
+    cache.records_directory = folder + "/records";
+    cache.reference_directory = folder + "/references";
+    std::string reason;
+    auto first = Extension::Internal::open_ai_native(path, reason, false, {}, &cache);
+    ASSERT_TRUE(first) << reason;
+    EXPECT_EQ(cache.records_reused, 0u);
+    EXPECT_EQ(cache.references_reused, 0u);
+    auto second = Extension::Internal::open_ai_native(path, reason, false, {}, &cache);
+    ASSERT_TRUE(second) << reason;
+    EXPECT_EQ(cache.records_reused, 1u);
+    EXPECT_EQ(cache.references_reused, 1u);
+    ASSERT_EQ(first->differences.size(), second->differences.size());
+    EXPECT_DOUBLE_EQ(first->differences[0].lightness, second->differences[0].lightness);
+    EXPECT_DOUBLE_EQ(first->differences[0].colour, second->differences[0].colour);
+
+    // A damaged reference is redrawn; a damaged record cache is decoded again.
+    auto const png = cache.reference_directory + "/page-1.png";
+    ASSERT_TRUE(g_file_set_contents(png.c_str(), "damaged", 7, nullptr));
+    ASSERT_TRUE(Extension::Internal::open_ai_native(path, reason, false, {}, &cache)) << reason;
+    EXPECT_EQ(cache.records_reused, 1u);
+    EXPECT_EQ(cache.references_reused, 0u);
+    auto const text = cache.records_directory + "/records.txt";
+    ASSERT_TRUE(g_file_set_contents(text.c_str(), "damaged", 7, nullptr));
+    ASSERT_TRUE(Extension::Internal::open_ai_native(path, reason, false, {}, &cache)) << reason;
+    EXPECT_EQ(cache.records_reused, 0u);
+    EXPECT_EQ(cache.references_reused, 1u);
+
+    // Default imports still decode and render independently of all test caches.
+    EXPECT_TRUE(Extension::Internal::open_ai_native(path, reason)) << reason;
+}
+
 TEST_F(AiNativeImportTest, Corpus)
 {
     auto const *roots = g_getenv("PROOF_AI_CORPUS");
@@ -515,7 +825,10 @@ TEST_F(AiNativeImportTest, Corpus)
         std::string reason;
         auto const start = std::chrono::steady_clock::now();
         auto const *pictures = g_getenv("PROOF_AI_PICTURES");
-        auto result = Extension::Internal::open_ai_native(utf8(path), reason, true, pictures ? pictures : "");
+        Extension::Internal::AiNativeCache cache;
+        if (auto const *dir = g_getenv("PROOF_AI_RECORDS_CACHE")) cache.records_directory = dir;
+        if (auto const *dir = g_getenv("PROOF_AI_REFERENCE_CACHE")) cache.reference_directory = dir;
+        auto result = Extension::Internal::open_ai_native(utf8(path), reason, true, pictures ? pictures : "", &cache);
         if (result) {
             if (auto const *dump = g_getenv("PROOF_AI_DUMP")) {
                 sp_repr_save_file(result->document->getReprDoc(), dump, SP_SVG_NS_URI);
@@ -531,6 +844,8 @@ TEST_F(AiNativeImportTest, Corpus)
                                       colour <= Extension::Internal::AI_NATIVE_MAX_COLOUR;
         std::printf("AI_RESULT\t%s\t%.6f\t%.6f\t%lld\t%s\t%s\n", accepted ? "NATIVE" : "PAGE", light, colour,
                     static_cast<long long>(ms), utf8(path).c_str(), reason.c_str());
+        std::printf("AI_CACHE\t%u\t%u\n", cache.records_reused, cache.references_reused);
+        if (result) for (auto const &note : result->notes) std::printf("AI_NOTE\t%s\n", note.c_str());
         std::fflush(stdout);
     }
 }

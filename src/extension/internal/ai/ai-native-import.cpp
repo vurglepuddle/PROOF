@@ -3,6 +3,7 @@
  * PROOF: make a document from Illustrator's native records. See ai-native-import.h.
  */
 #include "ai-native-import.h"
+#include "ai-native-text.h"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -32,10 +34,13 @@
 #include "colors/spaces/lab.h"
 #include "document-undo.h"
 #include "document.h"
+#include "libnrtype/font-factory.h"
+#include "libnrtype/font-instance.h"
 #include "object/sp-defs.h"
 #include "object/sp-guide.h"
 #include "object/sp-namedview.h"
 #include "spot-ink.h"
+#include "style.h"
 #include "svg/css-ostringstream.h"
 #include "svg/svg.h"
 #include "util/units.h"
@@ -137,15 +142,63 @@ Colors::Color definition(Color const &c)
     return Colors::Color(Type::RGB, {0.0, 0.0, 0.0});
 }
 
-/// How many text objects show (on a layer that shows, not hidden).
-std::size_t shown_text(std::vector<Node> const &nodes, bool shown)
+std::string font_style(std::string const &name, std::shared_ptr<FontInstance> &face)
 {
-    std::size_t n = 0;
-    for (auto const &k : nodes) {
-        bool const s = shown && k.visible;
-        n += k.kind == Node::Kind::Text ? (s ? 1 : 0) : shown_text(k.children, s);
+    auto *desc = FontFactory::get().parsePostscriptName(name, false);
+    if (!desc) return {};
+    Glib::ustring family = sp_font_description_get_family(desc);
+    css_font_family_quote(family);
+    auto *spec = pango_font_description_to_string(desc);
+    Glib::ustring specification = spec ? spec : "";
+    g_free(spec); css_quote(specification);
+    auto css = sp_repr_css_attr_new();
+    sp_repr_css_set_property(css, "font-family", family.c_str());
+    sp_repr_css_set_property(css, "-inkscape-font-specification", specification.c_str());
+    sp_repr_css_set_property(css, "font-weight", std::to_string(pango_font_description_get_weight(desc)).c_str());
+    auto const slant = pango_font_description_get_style(desc);
+    sp_repr_css_set_property(css, "font-style", slant == PANGO_STYLE_ITALIC ? "italic" : slant == PANGO_STYLE_OBLIQUE ? "oblique" : "normal");
+    constexpr char const *stretch[] = {"ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal",
+                                      "semi-expanded", "expanded", "extra-expanded", "ultra-expanded"};
+    sp_repr_css_set_property(css, "font-stretch", stretch[std::clamp(int(pango_font_description_get_stretch(desc)), 0, 8)]);
+    Glib::ustring result;
+    sp_repr_css_write_string(css, result);
+    sp_repr_css_attr_unref(css);
+    try { face = FontFactory::get().Face(desc, false); }
+    catch (std::runtime_error const &) { result.clear(); }
+    pango_font_description_free(desc);
+    return result.empty() ? std::string{} : result.raw() + ";";
+}
+
+std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool shown,
+                       std::map<std::string, std::string> &fonts,
+                       std::map<std::string, std::shared_ptr<FontInstance>> &faces,
+                       std::set<std::size_t> &unsupported_hidden)
+{
+    for (auto const &n : nodes) {
+        bool const visible = shown && n.visible;
+        if (n.kind == Node::Kind::Text) {
+            std::string error;
+            if (!ai.texts) error = "the text document is missing";
+            else if (!ai.texts->error.empty()) error = ai.texts->error;
+            else if (!n.story || *n.story >= ai.texts->stories.size()) error = "a text object has no matching story";
+            else if (!ai.texts->stories[*n.story]) error = ai.texts->errors[*n.story];
+            else for (auto const &line : ai.texts->stories[*n.story]->lines) for (auto const &run : line.runs) {
+                auto const &name = run.style.font;
+                if (!fonts.count(name)) fonts[name] = font_style(name, faces[name]);
+                if (fonts[name].empty() || !faces[name]) error = "the exact font '" + name + "' isn't installed or couldn't be loaded";
+                else for (auto const *at = run.text.data(); at < run.text.data() + run.text.size(); at = g_utf8_next_char(at)) {
+                    auto const cp = g_utf8_get_char(at);
+                    if (g_unichar_type(cp) != G_UNICODE_FORMAT && !faces[name]->MapUnicodeChar(cp)) {
+                        error = "the exact font '" + name + "' doesn't contain every text character";
+                        break;
+                    }
+                }
+            }
+            if (visible && !error.empty()) return "its visible text can't be reconstructed: " + error;
+            if (!visible && !error.empty() && n.story) unsupported_hidden.insert(*n.story);
+        } else if (auto error = check_text(ai, n.children, visible, fonts, faces, unsupported_hidden); !error.empty()) return error;
     }
-    return n;
+    return {};
 }
 
 /// Every path of an object and its children, in art space.
@@ -294,7 +347,8 @@ struct StopPaint
 class Builder
 {
 public:
-    Builder(Document const &ai, SPDocument *doc);
+    Builder(Document const &ai, SPDocument *doc, std::map<std::string, std::string> fonts,
+            std::set<std::size_t> unsupported_hidden);
     ~Builder();
     Builder(Builder const &) = delete;
     Builder &operator=(Builder const &) = delete;
@@ -321,6 +375,7 @@ private:
     XML::Node *group(Node const &n);
     XML::Node *shape(Node const &n, Geom::PathVector const &pv);
     XML::Node *image(Node const &n);
+    XML::Node *text(Node const &n);
     void children(XML::Node *parent, std::vector<Node> const &kids, bool clipped);
     std::string clip_path(Node const &clip);
     void common(XML::Node *e, Node const &n, std::string &style);
@@ -348,14 +403,19 @@ private:
     std::map<std::pair<int, double>, std::string> _inks; ///< (ink, tint) to its paint.
     std::map<int, std::string> _vectors;               ///< Gradient to its vector's id.
     std::map<std::string, int> _counters;
+    std::map<std::string, std::string> _text_fonts;
+    std::set<std::size_t> _unsupported_hidden_text;
 };
 
-Builder::Builder(Document const &ai, SPDocument *doc)
+Builder::Builder(Document const &ai, SPDocument *doc, std::map<std::string, std::string> fonts,
+                 std::set<std::size_t> unsupported_hidden)
     : _ai(ai)
     , _doc(doc)
     , _xml(doc->getReprDoc())
     , _defs(doc->getDefs()->getRepr())
     , _to_doc(ai.to_doc)
+    , _text_fonts(std::move(fonts))
+    , _unsupported_hidden_text(std::move(unsupported_hidden))
 {
     auto space = Colors::DocumentColors::assignedSpace(doc);
     if (space && space->getComponentType() == Type::CMYK) {
@@ -415,11 +475,48 @@ XML::Node *Builder::node(Node const &n)
         case Node::Kind::Image:
             return image(n);
         case Node::Kind::Text:
-            // Only type that doesn't show gets here (build() refuses the rest).
-            ++hidden_text;
-            return nullptr;
+            return text(n);
     }
     return nullptr;
+}
+
+XML::Node *Builder::text(Node const &n)
+{
+    if (!_ai.texts || !n.story || *n.story >= _ai.texts->stories.size() || !_ai.texts->stories[*n.story] ||
+        _unsupported_hidden_text.count(*n.story)) {
+        ++hidden_text; return nullptr;
+    }
+    auto const &story = *_ai.texts->stories[*n.story];
+    for (auto const &line : story.lines) for (auto const &run : line.runs) {
+        auto it = _text_fonts.find(run.style.font);
+        if (it == _text_fonts.end() || it->second.empty()) { ++hidden_text; return nullptr; }
+    }
+    auto e = create("svg:text");
+    e->setAttribute("xml:space", "preserve");
+    e->setAttribute("proof:ai-story", std::to_string(*n.story));
+    e->setAttribute("transform", sp_svg_transform_write(story.to_art * _to_doc));
+    std::string common_style = "text-anchor:start;";
+    common(e, n, common_style); e->setAttribute("style", common_style);
+    for (auto const &line : story.lines) {
+        auto span = create("svg:tspan");
+        // Explicit ATE line positions must remain SVG positions. role="line"
+        // asks Inkscape to reflow the line and discard a single x/y pair.
+        span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
+        span->setAttribute("style", std::string("text-anchor:") +
+                                   (line.alignment == 1 ? "end" : line.alignment == 2 ? "middle" : "start") + ";");
+        for (auto const &run : line.runs) {
+            auto piece = create("svg:tspan"); auto const &s = run.style;
+            auto color = [&](std::optional<Color> const &c) { Paint p; if (c) p.color = *c; return c ? paint(p) : std::string("none"); };
+            std::string style = _text_fonts.at(s.font) + "font-size:" + num(s.size) + ";fill:" + color(s.fill) +
+                                ";fill-opacity:" + num(s.fill_opacity) + ";stroke:" + color(s.stroke) +
+                                ";stroke-opacity:" + num(s.stroke_opacity) + ";stroke-width:" + num(s.stroke_width) +
+                                ";letter-spacing:" + num(s.size * s.tracking / 1000.0) + ";";
+            piece->setAttribute("style", style);
+            append(piece, _xml->createTextNode(run.text.c_str())); append(span, piece);
+        }
+        append(e, span);
+    }
+    return e;
 }
 
 void Builder::common(XML::Node *e, Node const &n, std::string &style)
@@ -866,11 +963,11 @@ std::optional<Built> build(Document const &ai, std::string &error)
         error = ai.warnings.front();
         return {};
     }
-    if (auto const text = shown_text(ai.layers, true)) {
-        error = "it has type that shows (" + std::to_string(text) + (text == 1 ? " text object" : " text objects") +
-                "), which PROOF doesn't set from its own data yet";
-        return {};
-    }
+    std::map<std::string, std::string> fonts;
+    std::map<std::string, std::shared_ptr<FontInstance>> faces;
+    std::set<std::size_t> unsupported_hidden;
+    error = check_text(ai, ai.layers, true, fonts, faces, unsupported_hidden);
+    if (!error.empty()) return {};
     auto doc = SPDocument::createNewDoc(nullptr, true);
     if (!doc || !doc->getRoot()) {
         error = "a document couldn't be made";
@@ -904,7 +1001,7 @@ std::optional<Built> build(Document const &ai, std::string &error)
     // The document's colour mode and profile come first: process colours are written in it.
     Colors::DocumentColors::adopt(doc.get(), ai.cmyk ? Type::CMYK : Type::RGB);
 
-    Builder b(ai, doc.get());
+    Builder b(ai, doc.get(), std::move(fonts), std::move(unsupported_hidden));
     b.run();
     if (b.images_left_out) {
         error = "an embedded image couldn't be placed";
@@ -934,7 +1031,7 @@ std::optional<Built> build(Document const &ai, std::string &error)
     }
     if (b.hidden_text) {
         notes.push_back(count(b.hidden_text, "text object", "text objects") +
-                        " that don't show were left out: PROOF doesn't set type from the file's own data yet");
+                        " that don't show were left out: their story, style or exact font isn't supported");
     }
     if (b.knockouts) notes.push_back(count(b.knockouts, "knockout group", "knockout groups") + " draw as ordinary groups");
     if (curved) notes.push_back(count(curved, "curved guide segment was", "curved guide segments were") + " left out");

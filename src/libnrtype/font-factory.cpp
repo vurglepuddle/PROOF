@@ -690,7 +690,7 @@ PangoFontDescription *FontFactory::parsePostscriptName(std::string const &name, 
     FcPattern *match = FcFontMatch(conf, pat, &result);
     if (match) {
         // To block mis-matching we check the postscript name matches itself
-        FcChar8 *output;
+        FcChar8 *output = nullptr;
         FcPatternGetString(match, FC_POSTSCRIPT_NAME, 0, &output);
         if (substitute || (output && name == (char *)output)) {
             ret = pango_fc_font_description_from_pattern(match, false);

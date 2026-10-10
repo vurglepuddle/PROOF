@@ -82,6 +82,43 @@ struct Picture
     std::vector<std::uint8_t> rgb;
 };
 
+std::string checksum(std::string_view data)
+{
+    auto *sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                            reinterpret_cast<guchar const *>(data.data()), data.size());
+    std::string out = sum ? sum : "";
+    g_free(sum);
+    return out;
+}
+
+// Cache files are disposable local test artifacts. Check their size and digest before
+// reading them as records or pictures; a truncated/corrupt entry must cause a fresh run.
+std::optional<std::string> read_cached(std::string const &path, std::size_t limit)
+{
+    GStatBuf stat;
+    if (g_stat(path.c_str(), &stat) || stat.st_size <= 0 || std::uint64_t(stat.st_size) > limit) return {};
+    if (g_stat((path + ".sha256").c_str(), &stat) || stat.st_size != 64) return {};
+    gchar *data = nullptr, *digest = nullptr;
+    gsize size = 0, digest_size = 0;
+    bool const ok = g_file_get_contents(path.c_str(), &data, &size, nullptr) &&
+                    g_file_get_contents((path + ".sha256").c_str(), &digest, &digest_size, nullptr);
+    std::optional<std::string> out;
+    if (ok && digest_size == 64 && checksum({data, size}) == std::string_view(digest, digest_size)) {
+        out.emplace(data, size);
+    }
+    g_free(data);
+    g_free(digest);
+    return out;
+}
+
+void write_cached(std::string const &path, std::string_view data)
+{
+    if (g_file_set_contents(path.c_str(), data.data(), data.size(), nullptr)) {
+        auto const digest = checksum(data);
+        g_file_set_contents((path + ".sha256").c_str(), digest.data(), digest.size(), nullptr);
+    }
+}
+
 void write_picture(Picture const &p, std::string const &path)
 {
     auto *surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, p.w, p.h);
@@ -108,12 +145,13 @@ Picture seen_on_white(cairo_surface_t *s)
     p.h = cairo_image_surface_get_height(s);
     int const stride = cairo_image_surface_get_stride(s);
     auto const *data = cairo_image_surface_get_data(s);
+    bool const opaque = cairo_image_surface_get_format(s) == CAIRO_FORMAT_RGB24;
     p.rgb.resize(std::size_t(p.w) * p.h * 3);
     for (int y = 0; y < p.h && data; ++y) {
         auto const *row = reinterpret_cast<std::uint32_t const *>(data + std::size_t(y) * stride);
         for (int x = 0; x < p.w; ++x) {
             std::uint32_t const px = row[x];
-            int const paper = 255 - int(px >> 24);
+            int const paper = opaque ? 0 : 255 - int(px >> 24);
             auto *out = &p.rgb[(std::size_t(y) * p.w + x) * 3];
             for (int c = 0; c < 3; ++c) {
                 out[c] = std::uint8_t(std::min(255, int((px >> (16 - 8 * c)) & 0xff) + paper));
@@ -122,6 +160,50 @@ Picture seen_on_white(cairo_surface_t *s)
     }
     cairo_surface_destroy(s);
     return p;
+}
+
+std::optional<Picture> read_reference(std::string const &path, int w, int h)
+{
+    // An RGB picture is tiny at the comparison resolution. Bound compressed input too.
+    auto bytes = read_cached(path, 8u << 20);
+    if (!bytes) return {};
+    // Inspect the PNG IHDR before Cairo allocates the decoded image.
+    if (bytes->size() < 24 || bytes->compare(0, 8, "\x89PNG\r\n\x1a\n", 8) != 0) return {};
+    auto dimension = [&](std::size_t at) {
+        std::uint32_t value = 0;
+        for (std::size_t i = at; i < at + 4; ++i) value = (value << 8) | std::uint8_t((*bytes)[i]);
+        return value;
+    };
+    if (dimension(16) != std::uint32_t(w) || dimension(20) != std::uint32_t(h)) return {};
+    struct Input { std::string_view bytes; std::size_t at = 0; } input{*bytes};
+    auto reader = [](void *closure, unsigned char *data, unsigned length) -> cairo_status_t {
+        auto &in = *static_cast<Input *>(closure);
+        if (length > in.bytes.size() - in.at) return CAIRO_STATUS_READ_ERROR;
+        std::copy_n(in.bytes.data() + in.at, length, data);
+        in.at += length;
+        return CAIRO_STATUS_SUCCESS;
+    };
+    auto *surface = cairo_image_surface_create_from_png_stream(reader, &input);
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS ||
+        cairo_image_surface_get_width(surface) != w || cairo_image_surface_get_height(surface) != h ||
+        (cairo_image_surface_get_format(surface) != CAIRO_FORMAT_RGB24 &&
+         cairo_image_surface_get_format(surface) != CAIRO_FORMAT_ARGB32)) {
+        cairo_surface_destroy(surface);
+        return {};
+    }
+    return seen_on_white(surface);
+}
+
+void cache_reference(Picture const &picture, std::string const &path)
+{
+    write_picture(picture, path);
+    gchar *bytes = nullptr;
+    gsize size = 0;
+    if (g_file_get_contents(path.c_str(), &bytes, &size, nullptr)) {
+        auto const digest = checksum({bytes, size});
+        g_file_set_contents((path + ".sha256").c_str(), digest.data(), digest.size(), nullptr);
+    }
+    g_free(bytes);
 }
 
 int lightness(std::uint8_t const *p)
@@ -275,15 +357,30 @@ struct Unref
 } // namespace
 
 std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, bool keep_differing,
-                                         std::string const &diagnostic_directory)
+                                         std::string const &diagnostic_directory, AiNativeCache *cache)
 {
     reason.clear();
+    if (cache) cache->records_reused = cache->references_reused = 0;
 #ifndef HAVE_POPPLER_CAIRO
     reason = "this build can't draw the PDF page to check the art against";
     return {};
 #else
     std::string error;
-    auto records = read_ai_native_records(path, "", RECORDS_LIMIT, error);
+    std::optional<AiNativeRecords> records;
+    if (cache && !cache->records_directory.empty()) {
+        if (auto text = read_cached(cache->records_directory + "/records.txt", RECORDS_LIMIT)) {
+            records.emplace();
+            records->text = std::move(*text);
+            ++cache->records_reused;
+        }
+    }
+    if (!records) {
+        records = read_ai_native_records(path, "", RECORDS_LIMIT, error);
+        if (records && cache && !cache->records_directory.empty()) {
+            g_mkdir_with_parents(cache->records_directory.c_str(), 0700);
+            write_cached(cache->records_directory + "/records.txt", records->text);
+        }
+    }
     if (!records) {
         reason = error.empty() ? "it has no data of Illustrator's own" : error;
         return {};
@@ -384,7 +481,19 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
             reason = "its page " + std::to_string(i + 1) + " can't be drawn";
             return {};
         }
-        auto const page_picture = draw_page(drawn.get(), crop, trim, scale, w, h);
+        std::optional<Picture> reference;
+        std::string reference_path;
+        if (cache && !cache->reference_directory.empty()) {
+            g_mkdir_with_parents(cache->reference_directory.c_str(), 0700);
+            reference_path = cache->reference_directory + "/page-" + std::to_string(i + 1) + ".png";
+            reference = read_reference(reference_path, w, h);
+            if (reference) ++cache->references_reused;
+        }
+        if (!reference) {
+            reference = draw_page(drawn.get(), crop, trim, scale, w, h);
+            if (!reference_path.empty()) cache_reference(*reference, reference_path);
+        }
+        auto const &page_picture = *reference;
         auto native_picture = view->draw(board, scale, w, h);
         auto d = weigh(page_picture, native_picture);
         if ((d.lightness > AI_NATIVE_MAX_LIGHTNESS || d.colour > AI_NATIVE_MAX_COLOUR) && non_printing) {

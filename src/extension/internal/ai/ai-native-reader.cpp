@@ -9,6 +9,7 @@
  * LICENSES/MIT-VectorCraft.txt.
  */
 #include "ai-native-reader.h"
+#include "ai-native-text.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1528,6 +1529,7 @@ Document Reader::finish()
         if (auto r = _cropmarks ? _cropmarks : sized_board()) _doc.artboards.push_back({"Artboard 1", *r});
     }
     _doc.bbox = _hires ? _hires : _bbox;
+    if (_template_center) _doc.template_center = Geom::Point(_template_center->first, _template_center->second);
     _doc.cmyk = _color_model.value_or(_cmyk_colors > _rgb_colors);
     for (auto const &h : _hidden_unread) _doc.left_out.push_back(h);
     return std::move(_doc);
@@ -1614,7 +1616,15 @@ std::string xml_name(std::string_view id)
 std::optional<Document> read(std::string_view records, std::string &error, Limits const &limits)
 {
     Reader r(records, limits);
-    return r.run(error);
+    auto doc = r.run(error);
+    if (doc) {
+        auto has_text = [&](auto &&self, std::vector<Node> const &nodes) -> bool {
+            for (auto const &n : nodes) if (n.kind == Node::Kind::Text || self(self, n.children)) return true;
+            return false;
+        };
+        if (has_text(has_text, doc->layers)) doc->texts = read_text_document(records, doc->template_center);
+    }
+    return doc;
 }
 
 } // namespace Inkscape::Extension::Internal::AiNative

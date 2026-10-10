@@ -31,6 +31,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,6 +43,8 @@
 #include <2geom/rect.h>
 
 namespace Inkscape::Extension::Internal::AiNative {
+
+struct TextDocument;
 
 /// A colour in the model the file defines it in.
 struct Color
@@ -227,6 +230,8 @@ struct Document
     std::vector<Ink> inks;
     std::vector<Gradient> gradients;
     std::vector<Image> images;
+    std::shared_ptr<TextDocument const> texts; ///< Bounded point-type stories, when text slots occur.
+    std::optional<Geom::Point> template_center; ///< Centre used by the text document's canvas.
     std::optional<Geom::Rect> bbox; ///< %%HiResBoundingBox, else %%BoundingBox (art space).
     std::string creator_version;    ///< %%AI8_CreatorVersion.
     /// %AI5_RulerUnits: 0 inches, 1 millimetres, 2 points, 3 picas, 4 centimetres, 6 pixels.

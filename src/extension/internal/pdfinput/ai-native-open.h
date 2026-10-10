@@ -44,6 +44,17 @@ struct AiNativeOpen
     std::vector<AiPageDifference> differences; ///< Each artboard compared, in order.
 };
 
+/// Optional local test caches. The caller supplies trusted directories keyed by source
+/// content and the relevant decoder/PDF renderer dependencies. Ordinary imports do not
+/// use them. Damaged entries are ignored. Counters describe this call only.
+struct AiNativeCache
+{
+    std::string records_directory;
+    std::string reference_directory;
+    unsigned records_reused = 0;
+    unsigned references_reused = 0;
+};
+
 /**
  * Open the .ai at `path` (a file name in UTF-8) from its native records.
  *
@@ -51,9 +62,10 @@ struct AiNativeOpen
  *         read fully or don't draw like the page. With `keep_differing`, a document that
  *         draws differently is still returned (with its differences), for tests.
  *         A nonempty diagnostic_directory also writes the compared pictures there.
+ *         cache is for the content-addressed development runner; it is off by default.
  */
 std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, bool keep_differing = false,
-                                         std::string const &diagnostic_directory = {});
+                                         std::string const &diagnostic_directory = {}, AiNativeCache *cache = nullptr);
 
 } // namespace Inkscape::Extension::Internal
 

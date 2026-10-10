@@ -258,8 +258,19 @@ check uses Poppler's screen view. Bleed comes from the PDF BleedBox relative
 to its TrimBox. Comparison pictures and the native SVG can be saved by the
 opt-in corpus test (`PROOF_AI_PICTURES` and `PROOF_AI_DUMP`), for diagnosis.
 
-Visible text still refuses native import. Hidden text and unsupported content
-on hidden layers may be omitted with notes. Knockout groups draw as ordinary
+Point text now reads the bounded ASCII85 text document: UTF-16 character-run
+lengths, Unicode content, editable font/style runs, explicit line positions,
+full frame affines, tracking, common horizontal/vertical character scaling,
+left/centre/right paragraph anchors, and process RGB/CMYK/grey fill and stroke.
+The exact PostScript font must be installed and contain the characters; missing
+fonts or glyphs refuse native import rather than silently substituting. The
+source font names and character styles are resolved before building the SVG.
+Area/path/linked text, varying character scales within a story, baseline shifts,
+justification and unsupported character features still refuse visible text.
+The parser bounds decoded bytes, nesting, value count, story size and run lengths;
+malformed text or a run splitting a surrogate pair also refuses the native path.
+Hidden text is retained when supported; unsupported hidden text/content may be
+omitted with notes. Knockout groups draw as ordinary
 groups; their state and overprint are stored as PROOF attributes. Export does
 not yet honour overprint, knockout, original CMYK image samples or non-printing
 layers. The source's embedded ICC profile is not decoded; the chosen working
@@ -274,7 +285,7 @@ by `;`) or `PROOF_AI_FILE` (one approved file) and prints the decision,
 maximum per-artboard lightness/colour difference and import time. Corpus paths,
 logs, diagnostic artwork and pictures stay outside Git.
 
-Validation on the approved corpus: **704 native / 222 page imports across 926
+The pre-point-text baseline on the approved corpus was **704 native / 222 page imports across 926
 files**, or **667 / 212 across 879 distinct SHA-256 hashes**. All 926 isolated
 test processes completed without a crash or timeout. The import step's median
 was 233 ms and maximum 9.1 s on this machine (excluding process startup).
@@ -283,13 +294,56 @@ the other 105 used the page for unsupported records/text, incomplete artwork,
 decode limits or page geometry/count checks. These counts describe this corpus,
 not arbitrary Illustrator files.
 
-All **19 native-import cases** pass, including the SVG save/reopen assertions.
+At that baseline, all **19 native-import cases** passed, including the SVG save/reopen assertions.
 The six existing focused suites also pass (**173 cases**, with their two
 pre-existing disabled cases and the reader's opt-in corpus case excluded).
 The installed CLI native/fallback checks and all **19 AI interchange smoke
 checks** pass. A live open of a disposable spot-colour sample displayed its
 artwork in a CMYK document, without an import dialog, and closed normally.
 This does not establish extended editing or print/export acceptance.
+
+### Point-text continuation and low-load validation (2026-10-10)
+
+Development uses one process/worker, 1-2 real representatives per issue and small
+independent fixtures. The 52 distinct files previously refused first for visible
+text were checked once in chunks of at most eight, then only the 12 affected
+alignment cases were checked after that feature. Twenty distinct former fallbacks
+(21 original paths) reached the native visual gate: ten with no reported structural
+loss, and ten partial imports because appearances came in as drawn groups. A visual
+pass is not a complete editable-reconstruction certificate. No new overall-corpus
+percentage is claimed, and neither the 222 fallback set nor the 926-file corpus
+was rerun. Remaining text blockers include exact fonts, unsupported frames/styles,
+invalid/incomplete stories and unresolved visual differences.
+
+Independent PDF text operators verify visible glyphs, baseline placement, common
+character scaling and centre/right anchors. Displaced text is rejected. Unicode
+runs, missing fonts/glyphs, editable styles, a text-content edit and SVG save/reopen
+are tested separately. Explicit SVG line positions deliberately omit
+`sodipodi:role="line"`: Inkscape's reflow would discard their single x/y pairs.
+The continuation passes 29 active native-import cases, 30 active reader cases,
+10 cache/selection checks and all 19 installed AI interchange smoke checks.
+The two opt-in corpus tests are excluded from those active counts. Installed
+CLI checks preserve two editable sign stories and use PDF fallback for a missing
+exact font. Extended live editing, Illustrator round trips and print acceptance
+have not been repeated for this continuation.
+
+The optional `AiNativeCache` is for the local development runner, off for ordinary
+imports. The caller supplies trusted source/dependency-keyed directories for
+decoded records and PDF reference PNGs. Size/dimension/digest checks turn damaged
+entries into cache misses. The test reports `AI_CACHE` reuse counters and `AI_NOTE`
+capability-loss notes. A warm test verifies identical comparison results and
+recovery from damaged records/PNG entries.
+
+Workspace-local `tools/ai-native-workbench.py` builds its SHA-deduplicated manifest
+from existing reports, keeps reviewed root-cause groups/representatives/fixtures,
+supports `--affected --offset N --limit 8`, and stores all private data under
+`artifacts/ai-native-workbench/`. Decoded records, PDF references and comparisons
+have separate keys. An unchanged comparison skips its process entirely; changing
+only the importer preserves decoded/PDF stages. Reports distinguish
+`NATIVE_UNVERIFIED`, `PARTIAL_NATIVE`, `PDF_FALLBACK`, errors and timeouts. No file
+is labelled complete from visual acceptance alone. The gallery reuses actual
+comparison PNGs. `--all` requires an explicit milestone reason. Existing corpus
+files are already seen; an independent holdout awaits newly approved files.
 
 ## Plan
 
@@ -303,9 +357,11 @@ This does not establish extended editing or print/export acceptance.
    - CMYK images keep their samples.
    - Hidden objects and layers come in hidden.
 
-   Drawn looks come in as groups. Text slots get point type (next step). The
+   Drawn looks come in as groups. Supported text slots get editable point type. The
    render is compared with the PDF page, and the page is used whenever they
    differ or anything is unread.
-3. **Point type** from the text document, with VectorCraft's `ate.rs` as reference.
+3. **Point type**, delivered for the bounded subset above, with VectorCraft's
+   `ate.rs` as the numeric-key reference. Expand from confirmed root causes;
+   source ICC profiles and remaining rendering families are still future work.
 4. **Writer** extensions, in this order: gradients, images, text. They use the
    same tables, and the reader checks the writer's output alongside Illustrator.
