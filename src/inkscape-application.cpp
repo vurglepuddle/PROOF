@@ -125,11 +125,12 @@ using EffectDict = std::map<Glib::ustring, Glib::ustring>;
 #ifdef _WIN32
 // PROOF: GTK's Windows input method (gtkimcontextime.c, 4.24) adds a display-wide message
 // filter when a text field takes the keyboard focus, and removes it only in a focus-out that
-// still finds the field's surface. A window destroyed with the focus in one of its fields is
-// unrealized first, so that focus-out finds no surface: the filter stays and later runs on
-// the freed input context, crashing at some unrelated message. Giving the focus up while
-// the surface still exists lets GTK remove its filter. GTK drops the focus of a destroyed
-// window anyway, a moment later; this only does it early enough.
+// still finds the field's surface. A filter left behind runs on the freed input context and
+// crashes at some unrelated message; the Text tool did leave one each time (see its
+// destructor). A precaution for windows: one unrealized with the focus still in a field
+// would get its focus-out too late, with no surface left. The PDF import dialog was measured
+// not to (accepted or cancelled, GTK gives the focus up in time), so this is not known to be
+// needed; it only makes sure, by doing early what GTK does to a destroyed window anyway.
 static void release_focus_before_unrealize(GtkWidget *window, gpointer)
 {
     gtk_window_set_focus(GTK_WINDOW(window), nullptr);
