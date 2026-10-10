@@ -60,7 +60,7 @@ ToolToolbar::ToolToolbar(InkscapeWindow *window)
     constexpr std::array commands{Command::ToggleTarget, Command::Swap, Command::Defaults, Command::None};
     for (std::size_t i = 0; i < names.size(); ++i) {
         _paint_actions[i] = Gio::SimpleAction::create(names[i]);
-        _paint_actions[i]->signal_activate().connect([this, command = commands[i]](auto const &) {
+        _paint_activated[i] = _paint_actions[i]->signal_activate().connect([this, command = commands[i]](auto const &) {
             _paint_controls->execute(command);
         });
         _paint_actions[i]->set_enabled(false);
@@ -85,6 +85,10 @@ ToolToolbar::~ToolToolbar()
     _focus_changed.disconnect();
     _tool_changed.disconnect();
     _desktop_destroyed.disconnect();
+    // GtkApplicationWindow disposes its action map before destroying its children.
+    // The window owns the actions; only disconnect our callbacks here, without
+    // accessing that already disposed parent. Our RefPtrs keep the actions alive.
+    for (auto &connection : _paint_activated) connection.disconnect();
     for (auto const &action : _paint_actions) action->set_enabled(false);
     _paint_controls->setDesktop(nullptr);
 }

@@ -61,6 +61,7 @@ private:
     std::unique_ptr<UI::Widget::FillStrokeControls> _paint_controls;
     SPDesktop *_desktop = nullptr;
     std::array<Glib::RefPtr<Gio::SimpleAction>, 4> _paint_actions;
+    std::array<sigc::scoped_connection, 4> _paint_activated;
     sigc::scoped_connection _focus_changed, _tool_changed, _desktop_destroyed;
 
     Inkscape::PrefObserver buttons_pref_observer;

@@ -41,6 +41,12 @@ callbacks and disable retained actions without accessing the parent action map:
 GTK disposes that map before destroying the toolbar. Shared paint popup
 registrations detach callbacks and desktop/document bindings on teardown.
 
+The user's crash when closing without saving was reproduced during this round.
+Executable offsets e93b22/e93e4e resolved to ToolToolbar's destructor removing
+actions through the disposed parent. Explicit activation-connection ownership
+and popup unregister cleanup cover this teardown path. Ordinary WM_CLOSE,
+unsaved discard and open-editor close now finish with exit code zero.
+
 ## Validation, 2026-10-11
 
 The installed Windows 11 build passes the real mouse/keyboard checks:
