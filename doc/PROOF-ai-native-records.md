@@ -741,9 +741,11 @@ The text gets the font's family and every axis in `font-variation-settings`,
 default or not: Pango picks a face of the family by weight, width and slant,
 that face can be a named instance, and it starts from the instance's own
 values. `font-weight` and `font-stretch` follow the weight and width axes. The
-face Pango then loads is checked to be that font at those values, and the font
-counts as not installed when it isn't (a family with ordinary fonts beside its
-variable one can give one of those).
+face Pango then loads is checked to be that font at those values. A family
+with ordinary fonts beside its variable one can give one of those instead.
+When the name is one the system knows a face by, that ordinary font is taken,
+as it was before instances were told apart; when the font was only found by
+its prefix, it counts as not installed.
 
 A count over the corpus's records: 15 files set type in a font with key 4; one
 of them names an instance by its values; no font name has an underscore
