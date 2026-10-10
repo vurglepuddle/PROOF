@@ -210,8 +210,10 @@ std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool 
                     } else if (font->missing) {
                         substituted = true;
                     } else for (auto const *at = run.text.data(); at < run.text.data() + run.text.size(); at = g_utf8_next_char(at)) {
-                        // The character that is set: its capital under All Caps.
-                        auto const cp = run.style.all_caps ? g_unichar_toupper(g_utf8_get_char(at)) : g_utf8_get_char(at);
+                        // The character that is set: its capital under All Caps, and for small
+                        // caps made of capitals.
+                        auto const cp = run.style.all_caps || run.style.small_caps ? g_unichar_toupper(g_utf8_get_char(at))
+                                                                                  : g_utf8_get_char(at);
                         if (g_unichar_type(cp) != G_UNICODE_FORMAT && !font->font.face->MapUnicodeChar(cp)) {
                             check.glyphs_missing.insert({n.text_proxy, *n.story});
                             substituted = true;
@@ -751,12 +753,13 @@ XML::Node *Builder::text(Node const &n)
     // Nor about a variable font's axes, unless one of its fonts is an instance of one: an
     // ordinary font beside it then says it has none, where it would inherit the instance's.
     // All Caps is the same: said for every run of a story that has any, and not otherwise.
-    bool features = false, optical = false, instances = false, capitals = false, stand_in = false;
+    bool features = false, optical = false, instances = false, capitals = false, small_capitals = false, stand_in = false;
     for (auto const &line : story.lines) for (auto const &run : line.runs) {
         features = features || run.style.kerning == 0 || !run.style.ligatures || !run.style.contextual;
         optical = optical || run.style.kerning == 2;
         instances = instances || _text_fonts.at(run.style.font)->font.variable;
         capitals = capitals || run.style.all_caps;
+        small_capitals = small_capitals || run.style.small_caps;
         stand_in = stand_in || _text_fonts.at(run.style.font)->missing;
     }
     if (optical) ++optical_kerning;
@@ -769,7 +772,7 @@ XML::Node *Builder::text(Node const &n)
     // A run's style, and the font it stands in for when its own isn't installed.
     struct Parts
     {
-        std::array<std::string, 11> css;
+        std::array<std::string, 12> css;
         std::string missing, axes;
         bool same_font(Parts const &o) const { return css[0] == o.css[0] && missing == o.missing && axes == o.axes; }
         void name(XML::Node *element) const
@@ -797,7 +800,8 @@ XML::Node *Builder::text(Node const &n)
             "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke) + ";",
             "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
             "letter-spacing:" + num(s.set_size() * s.tracking / 1000.0) + ";", ligatures, kerning,
-            capitals ? std::string("text-transform:") + (s.all_caps ? "uppercase" : "none") + ";" : std::string()};
+            capitals ? std::string("text-transform:") + (s.all_caps ? "uppercase" : "none") + ";" : std::string(),
+            small_capitals ? std::string("font-variant-caps:") + (s.small_caps ? "small-caps" : "normal") + ";" : std::string()};
         if (text_font.missing) {
             out.missing = s.font;
             for (auto const v : s.design) out.axes += (out.axes.empty() ? "" : " ") + num(v);
@@ -809,6 +813,7 @@ XML::Node *Builder::text(Node const &n)
         if (!base && !line.runs.empty()) base = parts(line.runs.front().style);
     }
     std::string common_style = "text-anchor:start;";
+    if (story.rtl) common_style += "direction:rtl;";
     common(e, n, common_style);
     if (base) {
         for (auto const &part : base->css) common_style += part;
@@ -820,8 +825,10 @@ XML::Node *Builder::text(Node const &n)
         // Explicit ATE line positions must remain SVG positions. role="line"
         // asks Inkscape to reflow the line and discard a single x/y pair.
         span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
-        span->setAttribute("style", std::string("text-anchor:") +
-                                   (line.alignment == 1 ? "end" : line.alignment == 2 ? "middle" : "start") + ";");
+        // The line's origin is its left end, its right end or its middle. Which of those a
+        // line starts at depends on the way it reads.
+        char const *const anchor = line.alignment == 2 ? "middle" : (line.alignment == 1) != story.rtl ? "end" : "start";
+        span->setAttribute("style", std::string("text-anchor:") + anchor + ";");
         std::string plain; // Text in the object's own style, not yet written.
         auto write_plain = [&] {
             if (!plain.empty()) append(span, _xml->createTextNode(plain.c_str()));
@@ -840,6 +847,12 @@ XML::Node *Builder::text(Node const &n)
             // one's own: only the span the characters are in carries it. Superscript and
             // subscript are a shift too, and a size.
             if (run.style.set_shift() != 0) style += "baseline-shift:" + num(run.style.set_shift()) + ";";
+            // So are the lines drawn under and through a run: they are the span's own.
+            if (run.style.underline || run.style.strikethrough) {
+                style += std::string("text-decoration-line:") + (run.style.underline ? "underline" : "") +
+                         (run.style.underline && run.style.strikethrough ? " " : "") +
+                         (run.style.strikethrough ? "line-through" : "") + ";";
+            }
             if (style.empty()) {
                 plain += run.text;
                 continue;

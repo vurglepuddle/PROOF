@@ -23,6 +23,8 @@
 #include <2geom/pathvector.h>
 
 #include "colors/color.h"
+#include "display/drawing-item.h"
+#include "display/drawing.h"
 #include "colors/document-colors.h"
 #include "colors/spaces/cms.h"
 #include "doc-per-case-test.h"
@@ -32,6 +34,7 @@
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
 #include "libnrtype/font-factory.h"
+#include "libnrtype/font-instance.h"
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
 #include "extension/internal/pdfinput/ai-native-open.h"
 #endif
@@ -684,10 +687,12 @@ TEST_F(AiNativeImportTest, PointTextRefusesBrokenUnicodeFramesStylesAndEncodings
              text_document("(Hi\\r)", 1, "ArialMT", {}, "/2 [1 0 0 1 -90 -10]",
                            "<< /1 2 /0 << /0 << /6 << /6 1.2 >> >> >> >>"),
              text_document("(Hi\\r)", 3, "ArialMT", "/2 true"),
-             // Small caps, and a capitals setting and a position that aren't known.
-             text_document("(Hi\\r)", 3, "ArialMT", "/12 1"),
+             // A capitals setting and a position that aren't known, and lines under or
+             // through type other than the plain ones.
              text_document("(Hi\\r)", 3, "ArialMT", "/12 3"),
              text_document("(Hi\\r)", 3, "ArialMT", "/13 3"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/15 2"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/16 2"),
              text_document("(Hi\\r)", 3, "ArialMT", {}, "/1 [1 2]"),
              text_document("(Hi\\r)", 3, "ArialMT", {}, "/2 [1 0 0 0 0 0]")}) {
         auto texts = AN::read_text_document(text_setup(doc), Geom::Point(100, 50));
@@ -1779,6 +1784,190 @@ TEST_F(AiNativeImportTest, SuperscriptAndSubscriptTakeTheDocumentsSizes)
     auto data = text_document("(x2\\r)", 3, font, "/1 20 /13 1");
     data.insert(data.find("/1 << /1 [ << /0 << /0 (x2") + 6, "/0 << /3 7 >> ");
     EXPECT_FALSE(AN::read_text_document(text_setup(data), Geom::Point(100, 50))->error.empty());
+}
+
+TEST_F(AiNativeImportTest, SmallCapitalsAreMadeOfCapitalsForAFontWithoutThem)
+{
+    // A font without small capitals of its own, of those Windows comes with.
+    std::optional<AN::FontMatch> font;
+    for (auto const *name : {"Verdana", "Tahoma", "CourierNewPSMT", "Impact", "ArialMT", "Bahnschrift"}) {
+        auto found = AN::find_font(name);
+        if (!font && found && found->face && !found->face->get_opentype_tables().contains("smcp")) font = found;
+    }
+    if (!font) GTEST_SKIP() << "every test font that is installed has small capitals of its own";
+    auto document = [&](std::string const &style, std::string const &content) {
+        return SPDocument::createNewDocFromMem(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='100'><text xml:space='preserve' "
+            "style=\"font-size:40px;" + font->css + style + "\"><tspan x='10' y='60'>" + content + "</tspan></text></svg>");
+    };
+    auto bounds = [&](SPDocument *doc) {
+        auto texts = elements(doc->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        return texts.empty() ? Geom::OptRect() : drawn(doc, texts[0]);
+    };
+    auto same = [&](std::string const &style, std::string const &typed, std::string const &set) {
+        auto a = document(style, typed), b = document({}, set);
+        auto const ra = bounds(a.get()), rb = bounds(b.get());
+        EXPECT_TRUE(ra && rb);
+        if (!ra || !rb) return;
+        EXPECT_NEAR(ra->left(), rb->left(), 1e-6) << typed;
+        EXPECT_NEAR(ra->width(), rb->width(), 1e-6) << typed;
+        EXPECT_NEAR(ra->top(), rb->top(), 1e-6) << typed;
+        EXPECT_NEAR(ra->bottom(), rb->bottom(), 1e-6) << typed;
+    };
+    // Small letters are capitals at seven tenths of the size; capitals and figures are as typed.
+    same("font-variant-caps:small-caps;", "Test", "T<tspan style='font-size:28px'>EST</tspan>");
+    same("font-variant-caps:small-caps;", "a B2c \xc3\xa9",
+         "<tspan style='font-size:28px'>A</tspan> B2<tspan style='font-size:28px'>C</tspan> <tspan style='font-size:28px'>\xc3\x89</tspan>");
+    // All caps over it: nothing is a small letter any more.
+    same("font-variant-caps:small-caps;text-transform:uppercase;", "Test", "TEST");
+    // Type without small letters is untouched.
+    same("font-variant-caps:small-caps;", "TEST 12", "TEST 12");
+    // The text is what was typed, a place in the layout a place in it.
+    auto doc = document("font-variant-caps:small-caps;", "Test");
+    doc->ensureUpToDate();
+    auto *text = cast<SPText>(doc->getObjectByRepr(elements(doc->getReprRoot(), "svg:text").at(0)));
+    ASSERT_TRUE(text);
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 4);
+    auto it = text->layout.begin();
+    it.nextCharacter();
+    SPObject *source = nullptr;
+    Glib::ustring::iterator at;
+    text->layout.getSourceOfCharacter(it, &source, &at);
+    ASSERT_TRUE(source);
+    EXPECT_EQ(*at, gunichar('e'));
+}
+
+TEST_F(AiNativeImportTest, SmallCapsUnderlineAndStrikethroughFollowTheRun)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto build = [&](std::string const &style, std::string *text_style, std::string *span_style) {
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(text_document("(Hello\\r)", 6, font, "/1 40 " + style))));
+        EXPECT_TRUE(b);
+        if (!b) return 0.0;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        if (text_style) *text_style = attr(texts[0], "style");
+        auto spans = elements(texts[0], "svg:tspan");
+        if (span_style) *span_style = spans.size() == 2 ? attr(spans[1], "style") : std::string("(no span)");
+        auto bounds = drawn(b->document.get(), texts[0]);
+        EXPECT_TRUE(bounds);
+        return bounds ? bounds->width() : 0.0;
+    };
+    std::string text_style, span_style;
+    double const plain = build({}, &text_style, &span_style);
+    EXPECT_EQ(text_style.find("font-variant-caps"), std::string::npos) << text_style;
+    EXPECT_EQ(text_style.find("text-decoration"), std::string::npos) << text_style;
+    EXPECT_EQ(span_style, "(no span)");
+    // Small caps: the story keeps what was typed; the layout sets it.
+    double const small = build("/12 1", &text_style, &span_style);
+    EXPECT_NE(text_style.find("font-variant-caps:small-caps;"), std::string::npos) << text_style;
+    double const capitals = build("/12 2", nullptr, nullptr);
+    EXPECT_GT(small, plain + 5);
+    EXPECT_LT(small, capitals - 5);
+    // Lines through and under a run are its span's own.
+    build("/15 1", &text_style, &span_style);
+    EXPECT_EQ(text_style.find("text-decoration"), std::string::npos) << text_style;
+    EXPECT_EQ(span_style, "text-decoration-line:line-through;");
+    build("/16 1", nullptr, &span_style);
+    EXPECT_EQ(span_style, "text-decoration-line:underline;");
+    build("/15 1 /16 1", nullptr, &span_style);
+    EXPECT_EQ(span_style, "text-decoration-line:underline line-through;");
+    // A document whose small caps are another size than Illustrator's own isn't set yet.
+    auto data = text_document("(Hello\\r)", 6, font, "/12 1");
+    data.insert(data.find("/1 << /1 [ << /0 << /0 (Hello") + 6, "/0 << /7 0.5 >> ");
+    auto texts = AN::read_text_document(text_setup(data), Geom::Point(100, 50));
+    ASSERT_EQ(texts->stories.size(), 1u);
+    EXPECT_FALSE(texts->stories[0]);
+    EXPECT_NE(texts->errors.at(0).find("small caps"), std::string::npos) << texts->errors.at(0);
+}
+
+TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial, which has Hebrew, isn't installed";
+    // Four Hebrew letters at 32 points whose line starts, as Illustrator has it, at its left
+    // end: 10 points in, 40 from the top.
+    auto hebrew = [](std::string const &direction, int alignment = 0, bool ordered = true) {
+        auto data = text_document("(\\376\\377\\005\\342\\005\\321\\005\\350\\005\\331\\000\\015)", 5, "ArialMT", "/1 32");
+        auto at = data.find(" /6 << /0 [");
+        data.insert(at, " /5 << /0 [ << /1 5 /0 << /0 << /5 << /0 " + std::to_string(alignment) + direction + " >> >> >> >> ] >>");
+        // What Illustrator's composer for these scripts leaves with the segment.
+        std::string const segment = "<< /99 /S >>";
+        at = data.find(segment);
+        if (ordered) data.replace(at, segment.size(), "<< /99 /S /15 << /0 5 /2 5 /5 true /7 << /0 5 >> >> >>");
+        return data;
+    };
+    auto read = AN::read_text_document(text_setup(hebrew(" /35 1")), Geom::Point(100, 50));
+    ASSERT_TRUE(read->stories.at(0)) << read->errors.at(0);
+    EXPECT_TRUE(read->stories[0]->rtl);
+    EXPECT_EQ(read->stories[0]->lines.at(0).alignment, 0u);
+    auto build = [&](std::string const &direction, std::string *text_style, std::string *span_style) {
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(hebrew(direction))));
+        EXPECT_TRUE(b);
+        if (!b) return Geom::OptRect();
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        auto spans = elements(texts.at(0), "svg:tspan");
+        EXPECT_EQ(spans.size(), 1u);
+        if (text_style) *text_style = attr(texts[0], "style");
+        if (span_style && !spans.empty()) *span_style = attr(spans[0], "style");
+        return drawn(b->document.get(), texts[0]);
+    };
+    std::string text_style, span_style;
+    auto rtl = build(" /35 1", &text_style, &span_style);
+    EXPECT_NE(text_style.find("direction:rtl;"), std::string::npos) << text_style;
+    EXPECT_EQ(span_style, "text-anchor:end;");
+    auto ltr = build(" /35 0", &text_style, &span_style);
+    EXPECT_EQ(text_style.find("direction"), std::string::npos) << text_style;
+    EXPECT_EQ(span_style, "text-anchor:start;");
+    // Either way the line lies to the right of where it starts, in the same place: these
+    // letters read from the right whatever their paragraph says.
+    ASSERT_TRUE(rtl && ltr);
+    EXPECT_GT(rtl->left(), 9.0);
+    EXPECT_LT(rtl->left(), 14.0);
+    EXPECT_NEAR(rtl->left(), ltr->left(), 0.01);
+    EXPECT_NEAR(rtl->width(), ltr->width(), 0.01);
+    // A direction that isn't known refuses the story.
+    auto bad = AN::read_text_document(text_setup(hebrew(" /35 2")), Geom::Point(100, 50));
+    ASSERT_EQ(bad->stories.size(), 1u);
+    EXPECT_FALSE(bad->stories[0]);
+    // So do such letters where Illustrator didn't put them in order: it shows them
+    // backwards, set from the left as typed, and here they would come out the right way.
+    auto backwards = AN::read_text_document(text_setup(hebrew(" /35 0", 0, false)), Geom::Point(100, 50));
+    ASSERT_EQ(backwards->stories.size(), 1u);
+    EXPECT_FALSE(backwards->stories[0]);
+    EXPECT_NE(backwards->errors.at(0).find("read from the right"), std::string::npos) << backwards->errors.at(0);
+}
+
+TEST_F(AiNativeImportTest, LinesUnderAndThroughTypeStopAtTheLastLetter)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial isn't installed";
+    // How long the line through "HHHH" is drawn, with this spacing between its letters.
+    auto length = [&](std::string const &spacing) {
+        auto doc = SPDocument::createNewDocFromMem(std::string(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='100'><text xml:space='preserve' "
+            "style='font-family:Arial;font-size:40px;text-decoration-line:line-through;") + spacing +
+            "'><tspan x='10' y='60'>HHHH</tspan></text></svg>");
+        doc->ensureUpToDate();
+        auto texts = elements(doc->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        // The layout says where the lines go when the text is shown.
+        Inkscape::Drawing drawing;
+        auto const key = SPItem::display_key_new(1);
+        drawing.setRoot(doc->getRoot()->invoke_show(drawing, key, SP_ITEM_SHOW_DISPLAY));
+        auto *span = doc->getObjectByRepr(elements(texts.at(0), "svg:tspan").at(0));
+        double const out = span->style->text_decoration_data.tspan_width;
+        doc->getRoot()->invoke_hide(key);
+        return out;
+    };
+    // From the first letter's start to the last one's end: three spaces between four
+    // letters, and not the fourth that follows the last.
+    double const plain = length("");
+    EXPECT_GT(plain, 80);
+    EXPECT_NEAR(length("letter-spacing:20px;"), plain + 60, 1e-6);
+    EXPECT_NEAR(length("letter-spacing:-4px;"), plain - 12, 1e-6);
 }
 
 // ---- patterns -----------------------------------------------------------------------------

@@ -1334,8 +1334,10 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                     if (iter_text.base() - new_span.input_stream_first_character.base() >= (int)new_span.text_bytes) break;
                     if (   i >= text_source->x.size() && i >= text_source->y.size()
                         && i >= text_source->dx.size() && i >= text_source->dy.size()
-                        && i >= text_source->rotate.size()) break;
-                    if (   (text_source->x.size()  > i && text_source->x[i]._set)
+                        && i >= text_source->rotate.size() && i >= text_source->reduced.size()) break;
+                    // PROOF: and where made-up small capitals begin or end, which are another size.
+                    if (   text_source->sizeScale(i) != text_source->sizeScale(char_index_in_source)
+                        || (text_source->x.size()  > i && text_source->x[i]._set)
                         || (text_source->y.size()  > i && text_source->y[i]._set)
                         || (text_source->dx.size() > i && text_source->dx[i]._set && text_source->dx[i].computed != 0.0)
                         || (text_source->dy.size() > i && text_source->dy[i]._set && text_source->dy[i].computed != 0.0)
@@ -1347,7 +1349,8 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                 }
 
                 // now we know the length, do some final calculations and add the UnbrokenSpan to the list
-                new_span.font_size = text_source->style->font_size.computed * _flow.getTextLengthMultiplierDue();
+                new_span.font_size = text_source->style->font_size.computed * text_source->sizeScale(char_index_in_source)
+                                     * _flow.getTextLengthMultiplierDue();
                 if (new_span.text_bytes) {
                     new_span.glyph_string = pango_glyph_string_new();
                     /* Some assertions intended to help diagnose bug #1277746. */

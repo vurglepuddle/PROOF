@@ -4,7 +4,8 @@
  * meanings follow VectorCraft's ate.rs at 4cf912f (MIT; LICENSES/MIT-VectorCraft.txt),
  * Copyright (c) 2026 ArtCraft Team and the VectorCraft contributors.
  * PROOF keeps explicit line origins and UTF-16 run lengths, reads area type's frames,
- * recorded lines, baseline shifts, all caps, superscript and subscript, and the axis values
+ * recorded lines, baseline shifts, all caps and small caps, superscript and subscript,
+ * underline and strikethrough, paragraphs that read from right to left, and the axis values
  * of a variable font's instance (worked out from real files, 2026-10-10), and refuses
  * unsupported frames and styles rather than guessing at them.
  */
@@ -32,6 +33,11 @@ struct TextStyle
     bool ligatures = true;  ///< Standard ligatures.
     bool contextual = true; ///< Contextual alternates.
     bool all_caps = false;  ///< Set in capitals, whatever was typed.
+    /// Small letters set as small capitals: the font's own where it has them, else its
+    /// capitals at 70% of the size.
+    bool small_caps = false;
+    bool underline = false;
+    bool strikethrough = false;
     /// Where the characters stand: 0 on the line, 1 superscript, 2 subscript. Illustrator
     /// makes those of the same font, smaller and moved, by what the document says:
     int position = 0;
@@ -53,7 +59,9 @@ struct TextLine
 {
     Geom::Point origin; ///< Explicit line anchor in text layout space (y down).
     std::vector<TextRun> runs;
-    unsigned alignment = 0; ///< 0 left, 1 right, 2 centre; preserves the editable anchor.
+    /// Which end of the line `origin` is: 0 left, 1 right, 2 the middle, whichever way the
+    /// paragraph reads. It preserves the editable anchor.
+    unsigned alignment = 0;
 };
 
 /**
@@ -68,6 +76,7 @@ struct PointText
     Geom::Affine to_art; ///< Text layout (y down) to art space (y up).
     std::vector<TextLine> lines;
     bool area = false;      ///< Area type.
+    bool rtl = false;       ///< Its paragraphs read from right to left (Hebrew, Arabic).
     Geom::PathVector frame; ///< Area type: the frame's outline, in the layout's space.
     /// Area type: the text its frame is too small to show, a line feed for each line end.
     /// Illustrator doesn't draw it either.

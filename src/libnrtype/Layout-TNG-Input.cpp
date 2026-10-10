@@ -19,6 +19,7 @@
 #endif
 
 #include "Layout-TNG.h"
+#include "font-instance.h"
 #include "style-text.h"
 #include "svg/svg-length.h"
 #include "font-factory.h"
@@ -97,15 +98,29 @@ void Layout::appendText(Glib::ustring const &text,
             word_start = !g_unichar_isalnum(*last) && *last != '\'' && *last != 0x2019;
         }
     }
+    // PROOF: small capitals. A font that has them sets its own (the feature string asks for
+    // them). For one that hasn't, the small letters are set as capitals, smaller.
+    bool made_small_caps = false;
+    if (style->font_variant_caps.computed == SP_CSS_FONT_VARIANT_CAPS_SMALL) {
+        auto font = new_source->styleGetFontInstance();
+        made_small_caps = font && !font->get_opentype_tables().contains("smcp");
+    }
+    bool const copied = transform != SP_CSS_TEXT_TRANSFORM_NONE || made_small_caps;
     for ( ; text_begin != text_end && text_begin != text.end() ; ++text_begin) {
         new_source->text_length++;        // save this because calculating the length of a UTF-8 string is expensive
-        if (transform != SP_CSS_TEXT_TRANSFORM_NONE) {
-            new_source->transformed.push_back(transformCharacter(*text_begin, transform, word_start));
+        if (copied) {
+            auto c = transformCharacter(*text_begin, transform, word_start);
+            if (made_small_caps) {
+                auto const capital = g_unichar_toupper(c);
+                new_source->reduced.push_back(capital != c);
+                c = capital;
+            }
+            new_source->transformed.push_back(c);
             // An apostrophe is inside its word.
             word_start = !g_unichar_isalnum(*text_begin) && *text_begin != '\'' && *text_begin != 0x2019;
         }
     }
-    if (transform != SP_CSS_TEXT_TRANSFORM_NONE) {
+    if (copied) {
         new_source->laid_begin = new_source->transformed.begin();
         new_source->laid_end = new_source->transformed.end();
     }

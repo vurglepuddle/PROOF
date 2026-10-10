@@ -259,6 +259,9 @@ struct Setup
     // when a document says nothing).
     double superscript_size = 0.583, superscript_shift = 0.333;
     double subscript_size = 0.583, subscript_shift = 0.333;
+    /// Small capitals a font doesn't have: the size of the capitals that stand for them
+    /// (setting 7), a share of the type's size.
+    double small_caps_size = 0.7;
 };
 
 TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
@@ -300,9 +303,21 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
     if (std::abs(out.tracking) > 1e6) throw Bad("invalid text tracking");
     // Capitals (12): 0 as typed, 1 small caps, 2 all caps. The story keeps what was typed.
     auto const caps = number("12", 0);
-    if (caps == 1) throw Bad("text is set in small caps, which isn't supported yet");
-    if (caps != 0 && caps != 2) throw Bad("text has an unsupported character style feature");
+    if (caps != 0 && caps != 1 && caps != 2) throw Bad("text has an unsupported character style feature");
     out.all_caps = caps == 2;
+    out.small_caps = caps == 1;
+    // PROOF's text layout makes small capitals at Illustrator's own size, and no other.
+    if (out.small_caps && std::abs(setup.small_caps_size - 0.7) > 1e-6) {
+        throw Bad("small caps at a size of the document's own aren't supported yet");
+    }
+    // Strikethrough (15) and underline (16): 0 none, 1 drawn. An underline has other
+    // places in vertical type (2), which nothing here sets.
+    auto const strikethrough = number("15", 0), underline = number("16", 0);
+    if ((strikethrough != 0 && strikethrough != 1) || (underline != 0 && underline != 1)) {
+        throw Bad("text has an unsupported character style feature");
+    }
+    out.strikethrough = strikethrough == 1;
+    out.underline = underline == 1;
     // Position (13): 0 on the line, 1 superscript, 2 subscript.
     auto const position = number("13", 0);
     if (position != 0 && position != 1 && position != 2) throw Bad("text has an unsupported character style feature");
@@ -325,7 +340,7 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
     out.stroke_width = number("63", 1);
     if (out.stroke_width < 0 || out.stroke_width > 1e6) throw Bad("invalid text stroke width");
     // Features beyond the supported style subset must not be silently normalised.
-    for (auto const *k : {"2", "3", "10", "14", "15", "16", "17", "19", "21", "22", "23", "24", "25", "26", "28", "29", "30", "31", "32", "33", "34"}) {
+    for (auto const *k : {"2", "3", "10", "14", "17", "19", "21", "22", "23", "24", "25", "26", "28", "29", "30", "31", "32", "33", "34"}) {
         if (own.dict.count(k) || defaults.dict.count(k)) {
             auto const &v = pick(k);
             if ((v.kind == Value::Boolean && v.boolean) || (v.kind == Value::Number && v.num() != 0))
@@ -333,6 +348,13 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
         }
     }
     return out;
+}
+
+/// Whether the character is of a script read from right to left.
+bool reads_from_the_right(gunichar c)
+{
+    return (c >= 0x590 && c <= 0x8ff) || (c >= 0xfb1d && c <= 0xfdff) || (c >= 0xfe70 && c <= 0xfeff) ||
+           (c >= 0x10800 && c <= 0x10fff) || (c >= 0x1e800 && c <= 0x1efff);
 }
 
 /// A line of area type as Illustrator laid it out.
@@ -472,7 +494,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
-    struct Paragraph { std::size_t end; unsigned alignment; };
+    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0;
     if (s.get("0").dict.count("5")) {
@@ -480,12 +502,20 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             auto const &p = paragraph.get("0").get("0").get("5");
             auto const align = p.dict.count("0") ? p.get("0").index() : 0;
             if (align > 2) throw Bad("justified paragraph alignment isn't supported yet");
+            // The way it reads (35): 0 from the left, 1 from the right.
+            auto const direction = p.dict.count("35") ? p.get("35").index() : 0;
+            if (direction > 1) throw Bad("text has an unsupported paragraph direction");
             auto const count = paragraph.get("1").index();
             if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
             paragraph_units += count;
-            paragraphs.push_back({paragraph_units, unsigned(align)});
+            paragraphs.push_back({paragraph_units, unsigned(align), direction == 1});
         }
         if (paragraphs.empty()) throw Bad("text has no paragraph runs");
+        // A text object reads one way: its paragraphs are one to what sets them.
+        out.rtl = paragraphs.front().rtl;
+        for (auto const &p : paragraphs) {
+            if (p.rtl != out.rtl) throw Bad("paragraphs that read both ways in one story aren't supported yet");
+        }
     }
     // Area type: how many characters Illustrator put in each line, their ends included.
     std::vector<std::size_t> line_units;
@@ -495,9 +525,15 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             throw Bad("text line has multiple layout segments not supported yet");
         return *std::find_if(segments.list.begin(), segments.list.end(), [](Value const &v) { return v.node("S"); });
     };
+    // Whether Illustrator put a line's letters in order for scripts that read from the right:
+    // its composer for those leaves what it worked out with the segment's character count
+    // (15, key 7). Its other composer sets such letters from the left as typed, backwards.
+    std::vector<bool> ordered;
     for (std::size_t i = 0; i < lines.size(); ++i) {
         auto const *line = lines[i];
         auto const &found = segment_of(*line);
+        auto const count = found.dict.find("15");
+        ordered.push_back(count != found.dict.end() && count->second.kind == Value::Dictionary && count->second.dict.count("7"));
         if (area) {
             out.lines.push_back({laid[i].at + offset_of(found), {}});
             line_units.push_back(found.get("15").get("0").index());
@@ -563,6 +599,11 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             if (!area) ++line;
         } else {
             if (line >= out.lines.size() || cp < 32) throw Bad("text line count or control character isn't supported");
+            // Hebrew, Arabic and the other scripts read from the right are put in order here
+            // whatever the document says, so they are only taken where Illustrator did too.
+            if (reads_from_the_right(cp) && !ordered[line]) {
+                throw Bad("letters read from the right that Illustrator set from the left, as typed, aren't supported yet");
+            }
             auto &pieces = out.lines[line].runs;
             if (pieces.empty() && !paragraphs.empty()) out.lines[line].alignment = paragraphs[paragraph].alignment;
             // Keeping source run boundaries preserves editable character styles.
@@ -656,7 +697,7 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
                     if (it == settings->second.dict.end()) return;
                     auto const &v = it->second;
                     if (v.kind != Value::Number || !(v.number >= 0) || v.number > 4 || (size && v.number == 0)) {
-                        throw Bad("invalid superscript or subscript setting");
+                        throw Bad("invalid superscript, subscript or small caps setting");
                     }
                     value = v.number;
                 };
@@ -664,6 +705,7 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
                 share("4", setup.superscript_shift, false);
                 share("5", setup.subscript_size, true);
                 share("6", setup.subscript_shift, false);
+                share("7", setup.small_caps_size, true);
             }
             auto const &stories = main.get("1");
             if (stories.kind != Value::Array || stories.list.size() > 65536) throw Bad("invalid or oversized story list");
@@ -694,14 +736,15 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
 
 bool same_drawing(PointText const &a, PointText const &b)
 {
-    if (a.empty != b.empty || a.lines.size() != b.lines.size()) return false;
+    if (a.empty != b.empty || a.rtl != b.rtl || a.lines.size() != b.lines.size()) return false;
     auto same_style = [](TextStyle const &s, TextStyle const &t) {
         return s.font == t.font && s.design == t.design && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&
                s.fill_opacity == t.fill_opacity && s.stroke_opacity == t.stroke_opacity &&
                (!s.stroke || s.stroke_width == t.stroke_width) && s.tracking == t.tracking &&
                s.horizontal_scale == t.horizontal_scale && s.vertical_scale == t.vertical_scale &&
                s.baseline_shift == t.baseline_shift && s.kerning == t.kerning && s.ligatures == t.ligatures &&
-               s.contextual == t.contextual && s.all_caps == t.all_caps && s.position == t.position &&
+               s.contextual == t.contextual && s.all_caps == t.all_caps && s.small_caps == t.small_caps &&
+               s.underline == t.underline && s.strikethrough == t.strikethrough && s.position == t.position &&
                s.position_size == t.position_size && s.position_shift == t.position_shift;
     };
     // Scaled and turned alike, and (below) each line in the same place on the art.

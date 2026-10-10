@@ -34,6 +34,10 @@
  *                                  type keeps its frame in proof:text-frame
  *   an instance of a variable font its family, with every axis in font-variation-settings
  *   All Caps                       text-transform:uppercase on what was typed
+ *   small caps                     font-variant-caps:small-caps, which the text layout sets
+ *                                  with the font's own or makes of its capitals
+ *   underline, strikethrough       text-decoration-line on the span of the run
+ *   a paragraph read from the right direction:rtl, each line anchored at the same end
  *   superscript, subscript         a span at the size and baseline shift the document's
  *                                  settings give them, marked proof:position
  *   a font that isn't installed    the font that stands in for it (ai-native-fonts.h), and

@@ -852,6 +852,67 @@ artboard and page counts that differ, an image that can't be read, a justified
 paragraph, type on a path, character scales that differ within a story, linked
 text frames, symbols, a file that can't be opened.
 
+### A gauntlet of character options (2026-10-10, late)
+
+The user made a file with one text object for each option of the Character
+panel, changed one at a time, in an instance of Acumin Variable Concept:
+plain, all caps, small caps, superscript, subscript, no break, Hebrew in
+three paragraphs read from the right, strikethrough, strikethrough with
+underline, tracking tight and wide, and four character scales with optical
+kerning. It was refused at the first strikethrough. It opens natively now,
+0.02% from its page at the check's size.
+
+**Small caps** (character feature 12 is 1). Acumin has no small capitals of
+its own, and Illustrator makes them: the layout tree has the capital in one
+run of glyphs and the small letters in the next, whose box is 0.7 of the
+first's (`[0 -7.148 8.139 1.972]` against `[0 -10.212 3.636 2.817]`), the
+document's setting 7. The story keeps what was typed. The run gets
+`font-variant-caps:small-caps`, and the text layout now sets it either way: a
+font that has small capitals uses its own, as before; for one that hasn't, a
+small letter is laid out as its capital at 0.7 of the size
+(`InputStreamTextSource::reduced`), in the same one-character-for-one copy
+that all caps uses. A document whose setting isn't 0.7 refuses the story.
+
+**Strikethrough and underline** (features 15 and 16, each 0 or 1) become
+`text-decoration-line` on the span of the run. An underline's box is in the
+line's segment (`S`, key 18: left, top, right, bottom); for 12 point type it
+is 0.6 thick and 0.9 below the baseline, which is the font's own underline.
+Nothing says where a strikethrough goes. A line under or through type stops at
+the line's last letter in Illustrator; the layout drew it on through the
+letter-spacing that follows that letter (or stopped short of the letter when
+the spacing was negative), and now stops where Illustrator does.
+
+**Paragraphs read from the right** (paragraph feature 35 is 1) get
+`direction:rtl`. Their lines start at the same end as before: a line's origin
+is its left end, its right end or its middle whichever way it reads, and only
+the name of that end changes (left is the end of a line read from the right).
+Illustrator has two composers. The one for these scripts puts the letters in
+order and leaves what it worked out in the segment's character count (key 15
+of `S`, its key 7). The other sets Hebrew from the left as it was typed, which
+shows it backwards. PROOF's layout always puts such letters in order, so they
+are taken only where Illustrator did too, and refuse the story otherwise. No
+sample of the backwards case has been seen: the rule comes from the three
+samples that are in order and from one corpus file without the data, which
+was on its page already.
+
+No break (feature 52) changes nothing that is drawn and is not read.
+
+**Looked at closer than the check does.** The check draws a letter page at
+about 0.76 pixels a point, where 12 point type is nine pixels high. The built
+document and the page were also drawn at 300 dpi and laid over each other.
+Every object lies where the page has it, small caps, superscript and
+subscript included; the lines under and through type end where the page's do;
+what differs is the Hebrew, drawn by another font, and the edges of letters by
+a fraction of a pixel.
+
+**Results.** Both new files open natively: the gauntlet, and the earlier
+trial file in Minion Variable Concept, with Myriad Pro standing in for its
+three instances (306 text objects). The fifteen trial files opened with the
+installed console build all take the native route. One corpus file holds
+anything these changes read (letters read from the right, not put in order);
+it used its page before and does now, so the corpus was not run again and
+stays at 802 of 879.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
@@ -869,9 +930,10 @@ text frames, symbols, a file that can't be opened.
    differ or anything is unread.
 3. **Point type**, delivered for the bounded subset above, with VectorCraft's
    `ate.rs` as the numeric-key reference, and **area type** as Illustrator
-   composed it. Instances of variable fonts, all caps, superscript and
-   subscript are read, and a font that isn't installed is stood in for.
-   Expand from confirmed root causes. Still to come: small caps, area type
+   composed it. Instances of variable fonts, all caps and small caps,
+   superscript and subscript, underline and strikethrough, and paragraphs read
+   from the right are read, and a font that isn't installed is stood in for.
+   Expand from confirmed root causes. Still to come: area type
    that flows again when edited (the frame and the overflow are kept for it),
    type on a path, justified paragraphs, linked frames, source ICC profiles
    and the remaining rendering families.

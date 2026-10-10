@@ -165,6 +165,13 @@ void Layout::show(DrawingGroup *parent, StyleAttachments &style_attachments, Geo
         auto line_of_span = [this] (int i) { return _chunks[_spans[i].in_chunk].in_line; };
         style->text_decoration_data.tspan_line_start = i == 0                 || line_of_span(i) != line_of_span(i - 1);
         style->text_decoration_data.tspan_line_end   = i == _spans.size() - 1 || line_of_span(i) != line_of_span(i + 1);
+        // PROOF: letter-spacing follows every letter, the last one too. A line drawn under or
+        // through type stops at the line's last letter, as Illustrator draws it, not after
+        // the spacing that follows it (or short of the letter when the spacing is negative).
+        if (style->text_decoration_data.tspan_line_end && _spans[i].width() > 0) {
+            style->text_decoration_data.tspan_width =
+                std::max(0.0, _spans[i].width() - style->letter_spacing.computed * getTextLengthMultiplierDue());
+        }
 
         if (_spans[i].font) {
             double underline_thickness, underline_position, line_through_thickness, line_through_position;
