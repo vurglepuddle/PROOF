@@ -13,6 +13,7 @@
 #define INKSCAPE_UI_TOOL_PATH_MANIPULATOR_H
 
 #include <memory>
+#include <optional>
 #include <2geom/path-sink.h>
 #include "manipulator.h"
 #include "node.h"
@@ -122,6 +123,7 @@ public:
     SubpathList &subpathList() { return _subpaths; }
 
     static bool is_item_type(void *item);
+    static bool canEditShape(SPObject const *item);
 
 private:
     using Subpath = NodeList;
@@ -138,11 +140,14 @@ private:
     void _createGeometryFromControlPoints(bool alert_LPE = false);
     void _normalizeBsplineHandles(Node *n);
     unsigned _deleteStretch(NodeList::iterator first, NodeList::iterator last, NodeDeleteMode mode);
-    std::string _createTypeString();
+    std::string _createTypeString() const;
     void _updateOutline();
     //void _setOutline(Geom::PathVector const &);
     void _getGeometry();
     void _setGeometry();
+    bool _shapeChanged() const;
+    void _convertShape();
+    void _restoreShapePreview();
     Glib::ustring _nodetypesKey();
     Inkscape::XML::Node *_getXMLNode();
     Geom::Affine _getTransform() const;
@@ -167,6 +172,8 @@ private:
     MultiPathManipulator &_multi_path_manipulator;
     SPObject *_path; ///< can be an SPPath or an Inkscape::LivePathEffect::Effect  !!!
     Geom::PathVector _spcurve; // in item coordinates
+    std::optional<Geom::PathVector> _shape_geometry;
+    std::string _shape_types;
     CanvasItemPtr<Inkscape::CanvasItemBpath> _outline;
     CurveDragPoint *_dragpoint; // an invisible control point hovering over curve
     PathManipulatorObserver *_observer;
