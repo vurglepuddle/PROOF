@@ -22,8 +22,10 @@
 #include "object/sp-gradient.h"
 #include "object/sp-hatch.h"
 #include "object/sp-radial-gradient.h"
+#include "object/sp-flowtext.h"
 #include "object/sp-paint-server.h"
 #include "object/sp-pattern.h"
+#include "object/sp-text.h"
 #include "style.h"
 #include "actions/actions-tools.h"
 #include "colors/spaces/base.h"
@@ -39,6 +41,7 @@
 #include "ui/widget/paint-switch.h"
 #include "ui/widget/popover-utils.h"
 #include "util/expression-evaluator.h"
+#include "xml/attribute-record.h"
 #include "xml/sp-css-attr.h"
 
 namespace Inkscape::UI::Widget {
@@ -120,12 +123,78 @@ boost::intrusive_ptr<SPCSSAttr> new_css_attr() {
     return boost::intrusive_ptr(sp_repr_css_attr_new(), false);
 }
 
+bool is_text(const SPObject* object) {
+    return is<SPText>(object) || is<SPFlowtext>(object);
+}
+
+// PROOF: the style a text object's fill or stroke shows with. Type whose own paint is unset
+// draws with what its spans carry (imported type, or text styled in part); the first span
+// that sets the paint then stands for the object, in place of "unset".
+const SPStyle* shown_style(const SPObject* object, bool fill) {
+    if (!object || !object->style) return nullptr;
+    if (!is_text(object) || object->style->getFillOrStroke(fill)->set) return object->style;
+
+    const SPStyle* found = nullptr;
+    auto search = [&](auto& self, const SPObject* parent) -> void {
+        for (auto& child : parent->children) {
+            if (found) return;
+            if (child.style && child.style->getFillOrStroke(fill)->set) {
+                found = child.style;
+            }
+            else {
+                self(self, &child);
+            }
+        }
+    };
+    search(search, object);
+    return found ? found : object->style;
+}
+
+// PROOF: spans of a text object may set paint of their own (imported type, or text styled
+// in part), and then a style set on the object changes nothing that shows. What is set on
+// the object is the whole object's: its spans stop setting those properties themselves.
+void spans_inherit(SPItem* item, SPCSSAttr* properties) {
+    if (!is_text(item)) return;
+
+    auto unset = new_css_attr();
+    for (auto const& property : properties->attributeList()) {
+        sp_repr_css_unset_property(unset.get(), g_quark_to_string(property.key));
+    }
+    auto visit = [&](auto& self, SPObject* parent) -> void {
+        for (auto& child : parent->children) {
+            if (child.getRepr() && child.getRepr()->attribute("style")) {
+                child.changeCSS(unset.get(), "style");
+            }
+            self(self, &child);
+        }
+    };
+    visit(visit, item);
+}
+
+void spans_inherit(SPItem* item, std::initializer_list<const char*> properties) {
+    auto css = new_css_attr();
+    for (auto property : properties) {
+        sp_repr_css_set_property(css.get(), property, "");
+    }
+    spans_inherit(item, css.get());
+}
+
+void spans_inherit_paint(SPItem* item, bool fill) {
+    if (fill) {
+        spans_inherit(item, {"fill", "fill-opacity"});
+    }
+    else {
+        spans_inherit(item, {"stroke", "stroke-opacity"});
+    }
+}
+
 void set_item_style(SPItem* item, SPCSSAttr* css) {
     double scale = item->i2doc_affine().descrim();
     if (scale != 0 && scale != 1) {
         sp_css_attr_scale(css, 1 / scale);
     }
     item->changeCSS(css, "style");
+    spans_inherit(item, css);
 }
 
 void set_item_style_str(SPItem* item, const char* attr, const char* value) {
@@ -205,6 +274,7 @@ void swatch_operation(SPItem* item, SPGradient* vector, SPDesktop* desktop, bool
             vector = nullptr;
         }
         sp_item_apply_gradient(item, vector, desktop, SP_GRADIENT_TYPE_LINEAR, true, kind);
+        spans_inherit_paint(item, fill);
         DocumentUndo::done(item->document, fill ? RC_("Undo", "Set swatch on fill") : RC_("Undo", "Set swatch on stroke"), "dialog-fill-and-stroke", tag);
         break;
     case EditOperation::Change:
@@ -214,6 +284,7 @@ void swatch_operation(SPItem* item, SPGradient* vector, SPDesktop* desktop, bool
         }
         else {
             sp_item_apply_gradient(item, vector, desktop, SP_GRADIENT_TYPE_LINEAR, true, kind);
+            spans_inherit_paint(item, fill);
             DocumentUndo::maybeDone(
                 item->document,
                 fill ? "fill-swatch-change" : "stroke-swatch-change",
@@ -318,6 +389,7 @@ PaintAttribute::PaintStrip::PaintStrip(Glib::RefPtr<Gtk::Builder> builder, const
         else {
             _current_item->style->stroke_opacity.set_double(alpha);
         }
+        spans_inherit(_current_item, {fill ? "fill-opacity" : "stroke-opacity"});
         request_update(true);
         //todo: alternative approach to updating fill/stroke opacity:
         /*
@@ -362,6 +434,7 @@ void PaintAttribute::PaintStrip::set_flat_color(const Color& color) {
         _current_item->style->stroke.setColor(c);
         _current_item->style->stroke_opacity.set_double(color.getOpacity());
     }
+    spans_inherit_paint(_current_item, _is_fill);
     request_update(true);
 
     //todo: this is alternative approach to changing style:
@@ -390,6 +463,7 @@ std::vector<sigc::connection> PaintAttribute::PaintStrip::connect_signals() {
         if (auto item = cast<SPItem>(_current_item)) {
             auto kind = fill ? FILL : STROKE;
             sp_item_apply_pattern(item, pattern, kind, color, label, transform, offset, uniform, gap);
+            spans_inherit_paint(item, fill);
             DocumentUndo::maybeDone(item->document, fill ? "fill-pattern-change" : "stroke-pattern-change", fill ? RC_("Undo", "Set pattern on fill") : RC_("Undo", "Set pattern on stroke"), "dialog-fill-and-stroke", tag);
             update_preview_indicators(_current_item);
             set_paint(_current_item);
@@ -402,6 +476,7 @@ std::vector<sigc::connection> PaintAttribute::PaintStrip::connect_signals() {
         if (auto item = cast<SPItem>(_current_item)) {
             auto kind = fill ? FILL : STROKE;
             sp_item_apply_hatch(item, hatch, kind, color, label, transform, offset, pitch, rotation, stroke);
+            spans_inherit_paint(item, fill);
             DocumentUndo::maybeDone(item->document, fill ? "fill-pattern-change" : "stroke-pattern-change", fill ? RC_("Undo", "Set pattern on fill") : RC_("Undo", "Set pattern on stroke"), "dialog-fill-and-stroke", tag);
             update_preview_indicators(_current_item);
             set_paint(_current_item);
@@ -414,6 +489,7 @@ std::vector<sigc::connection> PaintAttribute::PaintStrip::connect_signals() {
         if (auto item = cast<SPItem>(_current_item)) {
             auto kind = fill ? FILL : STROKE;
             sp_item_apply_gradient(item, vector, _desktop, gradient_type, false, kind);
+            spans_inherit_paint(item, fill);
             DocumentUndo::maybeDone(item->document, fill ? "fill-gradient-change" : "stroke-gradient-change", fill ? RC_("Undo", "Set gradient on fill") : RC_("Undo", "Set gradient on stroke"), "dialog-fill-and-stroke", tag);
             update_preview_indicators(_current_item);
             set_paint(_current_item);
@@ -426,6 +502,7 @@ std::vector<sigc::connection> PaintAttribute::PaintStrip::connect_signals() {
         if (auto item = cast<SPItem>(_current_item)) {
             auto kind = fill ? FILL : STROKE;
             sp_item_apply_mesh(item, mesh, _current_item->document, kind);
+            spans_inherit_paint(item, fill);
             DocumentUndo::maybeDone(item->document, fill ? "fill-mesh-change" : "stroke-mesh-change", fill ? RC_("Undo", "Set mesh on fill") : RC_("Undo", "Set mesh on stroke"), "dialog-fill-and-stroke", tag);
             update_preview_indicators(_current_item);
             set_paint(_current_item);
@@ -593,7 +670,7 @@ void PaintAttribute::PaintStrip::set_preview(const SPIPaint& paint, double paint
 PaintMode PaintAttribute::PaintStrip::update_preview_indicators(const SPObject* object) {
     if (!object || !object->style) return PaintMode::None;
 
-    auto& style = object->style;
+    auto style = shown_style(object, _is_fill);
     auto& paint = *style->getFillOrStroke(_is_fill);
     auto mode = get_mode_from_paint(paint);
     auto opacity = _is_fill ? style->fill_opacity.as_double() : style->stroke_opacity.as_double();
@@ -604,15 +681,16 @@ PaintMode PaintAttribute::PaintStrip::update_preview_indicators(const SPObject* 
 void PaintAttribute::PaintStrip::set_paint(const SPObject* object) {
     if (!object || !object->style) return;
 
+    auto style = shown_style(object, _is_fill);
     if (_is_fill) {
-        if (auto fill = object->style->getFillOrStroke(true)) {
-            auto fill_rule = object->style->fill_rule.computed == SP_WIND_RULE_NONZERO ? FillRule::NonZero : FillRule::EvenOdd;
-            set_paint(*fill, object->style->fill_opacity.as_double(), fill_rule);
+        if (auto fill = style->getFillOrStroke(true)) {
+            auto fill_rule = style->fill_rule.computed == SP_WIND_RULE_NONZERO ? FillRule::NonZero : FillRule::EvenOdd;
+            set_paint(*fill, style->fill_opacity.as_double(), fill_rule);
         }
     }
     else {
-        if (auto stroke = object->style->getFillOrStroke(false)) {
-            set_paint(*stroke, object->style->stroke_opacity.as_double(), FillRule::NonZero);
+        if (auto stroke = style->getFillOrStroke(false)) {
+            set_paint(*stroke, style->stroke_opacity.as_double(), FillRule::NonZero);
         }
     }
 }

@@ -122,6 +122,37 @@ using EffectDict = std::map<Glib::ustring, Glib::ustring>;
 // flags are set. If the open flag is set and the command line not, the all the remainng arguments
 // after calling on_handle_local_options() are assumed to be filenames.
 
+#ifdef _WIN32
+// PROOF: GTK's Windows input method (gtkimcontextime.c, 4.24) adds a display-wide message
+// filter when a text field takes the keyboard focus, and removes it only in a focus-out that
+// still finds the field's surface. A window destroyed with the focus in one of its fields is
+// unrealized first, so that focus-out finds no surface: the filter stays and later runs on
+// the freed input context, crashing at some unrelated message. Giving the focus up while
+// the surface still exists lets GTK remove its filter. GTK drops the focus of a destroyed
+// window anyway, a moment later; this only does it early enough.
+static void release_focus_before_unrealize(GtkWidget *window, gpointer)
+{
+    gtk_window_set_focus(GTK_WINDOW(window), nullptr);
+}
+
+static void guard_new_windows(GListModel *windows, guint position, guint /*removed*/, guint added, gpointer)
+{
+    for (auto i = position; i < position + added; ++i) {
+        auto window = g_list_model_get_item(windows, i);
+        // Handlers of "unrealize" run before the class closure that destroys the surface.
+        g_signal_connect(window, "unrealize", G_CALLBACK(release_focus_before_unrealize), nullptr);
+        g_object_unref(window);
+    }
+}
+
+static void guard_input_method_filters()
+{
+    auto windows = gtk_window_get_toplevels();
+    g_signal_connect(windows, "items-changed", G_CALLBACK(guard_new_windows), nullptr);
+    guard_new_windows(windows, 0, 0, g_list_model_get_n_items(windows), nullptr);
+}
+#endif
+
 // Add document to app.
 SPDocument *InkscapeApplication::document_add(std::unique_ptr<SPDocument> document)
 {
@@ -993,6 +1024,9 @@ void InkscapeApplication::on_startup()
 
     // ========================= GUI Init =========================
     Gtk::Window::set_default_icon_name("org.inkscape.Inkscape");
+#ifdef _WIN32
+    guard_input_method_filters();
+#endif
 
     // build_menu(); // Builds and adds menu to app. Used by all Inkscape windows. This can be done
                      // before all actions defined. * For the moment done by each window so we can add

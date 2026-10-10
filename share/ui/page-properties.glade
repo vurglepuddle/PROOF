@@ -757,7 +757,9 @@ SVG element positions are expressed in user units.</property>
               </object>
             </child>
             <child>
+              <!-- PROOF: the desk colour is the workspace's (/options/workspace/deskcolor), not the document's. -->
               <object class="GtkMenuButton" id="desk-color">
+                <property name="visible">False</property>
                 <property name="focusable">True</property>
                 <property name="receives-default">True</property>
                 <property name="tooltip-text" translatable="yes">Desk background color surrounding pages</property>
@@ -790,6 +792,7 @@ SVG element positions are expressed in user units.</property>
             </child>
             <child>
               <object class="GtkLabel">
+                <property name="visible">False</property>
                 <property name="halign">center</property>
                 <property name="label" translatable="yes">Desk</property>
                 <layout>

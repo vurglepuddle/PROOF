@@ -406,6 +406,53 @@ TEST_F(AiNativeImportTest, GradientMidpointUsesPowerCurve)
     }
 }
 
+TEST_F(AiNativeImportTest, GradientMatricesPlaceTheWholeRamp)
+{
+    // As Illustrator writes them since CS4: Bg's values relative to the object's bounds, and
+    // matrices from the gradient's unit space onto the art. Xm spans the whole ramp; Bm, for a
+    // linear gradient, only the first two stops (10% to 60% here).
+    std::string setup = "%AI5_BeginGradient: (L)\n(L) 0 3 Bd\n[\n0 0 50 100 Bs\n0.5 0 50 60 Bs\n1 0 50 10 Bs\nBD\n"
+                        "%AI5_EndGradient\n%AI5_BeginGradient: (R)\n(R) 1 2 Bd\n[\n0 0 50 100 Bs\n1 0 50 0 Bs\nBD\n"
+                        "%AI5_EndGradient\n";
+    auto const path = std::string("10 20 m 90 20 L 90 60 L 10 60 L h\n");
+    auto const turned = "Bb\n1 (L) -0.02 0 -90 1.5 1 0 0 1 0 0 1 Bg\n0 -60 -80 0 90 60 Xm\n0 -30 -80 0 90 54 Bm\nf\n0 BB\n";
+    auto const older = "Bb\n1 (L) 0 0 0 1 1 0 0 1 0 0 Bg\n40 0 0 -40 18 60 Bm\nf\n0 BB\n";
+    auto const round = "Bb\n3 -4 -30 0.5 Bh\n1 (R) -0.2 -0.7 0 0.9 0.6 0.8 -0.8 0.6 5000 -1400 1 Bg\n"
+                       "20 0 0 -40 50 40 Bm\nf\n0 BB\n";
+    auto b = make(records(layer("0 g\n" + path + turned + path + older + path + round), setup, false));
+    ASSERT_TRUE(b);
+    auto const to_doc = Geom::Affine(1, 0, 0, -1, 0, 100); // The 200 x 100 artboard, y turned down.
+    auto matrix = [](XML::Node *n) {
+        Geom::Affine m;
+        EXPECT_TRUE(sp_svg_transform_read(n->attribute("gradientTransform"), &m));
+        return m;
+    };
+    auto number = [](XML::Node *n, char const *key) { return g_ascii_strtod(attr(n, key).c_str(), nullptr); };
+    std::vector<XML::Node *> placed;
+    for (auto *g : elements(b->document->getDefs()->getRepr(), "svg:linearGradient")) {
+        if (g->attribute("gradientTransform")) placed.push_back(g);
+    }
+    ASSERT_EQ(placed.size(), 2u);
+    // Xm alone places it: the ramp is the unit of x, whatever Bg's angle and length say.
+    EXPECT_TRUE(Geom::are_near(matrix(placed[0]), Geom::Affine(0, -60, -80, 0, 90, 60) * to_doc, 1e-6));
+    EXPECT_NEAR(number(placed[0], "x1"), 0.0, 1e-9);
+    EXPECT_NEAR(number(placed[0], "x2"), 1.0, 1e-9);
+    EXPECT_NEAR(number(placed[0], "y2"), 0.0, 1e-9);
+    // Bm alone: its unit is 10% to 60% of the ramp, so the ramp runs from -0.2 to 1.8.
+    EXPECT_TRUE(Geom::are_near(matrix(placed[1]), Geom::Affine(40, 0, 0, -40, 18, 60) * to_doc, 1e-6));
+    EXPECT_NEAR(number(placed[1], "x1"), -0.2, 1e-9);
+    EXPECT_NEAR(number(placed[1], "x2"), 1.8, 1e-9);
+    // Radial: the unit circle through Bm, and Bh's angle and length for the highlight.
+    auto radial = elements(b->document->getDefs()->getRepr(), "svg:radialGradient");
+    ASSERT_EQ(radial.size(), 1u);
+    EXPECT_TRUE(Geom::are_near(matrix(radial[0]), Geom::Affine(20, 0, 0, -40, 50, 40) * to_doc, 1e-6));
+    EXPECT_NEAR(number(radial[0], "cx"), 0.0, 1e-9);
+    EXPECT_NEAR(number(radial[0], "cy"), 0.0, 1e-9);
+    EXPECT_NEAR(number(radial[0], "r"), 1.0, 1e-9);
+    EXPECT_NEAR(number(radial[0], "fx"), 0.5 * std::cos(-M_PI / 6), 1e-6);
+    EXPECT_NEAR(number(radial[0], "fy"), -0.5 * std::sin(-M_PI / 6), 1e-6);
+}
+
 TEST_F(AiNativeImportTest, CmykImageKeepsPngAndExactTiffSamples)
 {
     std::string art = "%AI5_BeginRaster\n() 1 XG\n/DeviceCMYK XN\n[1 0 0 1 10 20] 0 0 2 1 2 1 8 4 0 0 1 0 0\n"
@@ -548,27 +595,73 @@ TEST_F(AiNativeImportTest, PointTextBuildsEditableSvgAndSurvivesReopen)
     auto texts = elements(b->document->getReprRoot(), "svg:text");
     ASSERT_EQ(texts.size(), 1u);
     EXPECT_EQ(attr(texts[0], "proof:ai-story"), "0");
-    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 2u);
-    EXPECT_NE(attr(spans[1], "style").find("letter-spacing:1.2"), std::string::npos);
-    EXPECT_NE(attr(spans[1], "style").find("icc-color"), std::string::npos);
-    ASSERT_TRUE(spans[1]->firstChild());
-    EXPECT_STREQ(spans[1]->firstChild()->content(), "Hello");
+    // One style throughout: it is the text object's own, and the line's span adds nothing.
+    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 1u);
+    EXPECT_NE(attr(texts[0], "style").find("letter-spacing:1.2"), std::string::npos);
+    EXPECT_NE(attr(texts[0], "style").find("icc-color"), std::string::npos);
+    EXPECT_EQ(attr(spans[0], "style"), "text-anchor:start;");
+    ASSERT_TRUE(spans[0]->firstChild());
+    EXPECT_STREQ(spans[0]->firstChild()->content(), "Hello");
     auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
     ASSERT_TRUE(reopened);
     auto again = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(again.size(), 1u);
-    auto again_spans = elements(again[0], "svg:tspan"); ASSERT_EQ(again_spans.size(), 2u);
-    ASSERT_TRUE(again_spans[1]->firstChild());
-    EXPECT_STREQ(again_spans[1]->firstChild()->content(), "Hello");
+    auto again_spans = elements(again[0], "svg:tspan"); ASSERT_EQ(again_spans.size(), 1u);
+    ASSERT_TRUE(again_spans[0]->firstChild());
+    EXPECT_STREQ(again_spans[0]->firstChild()->content(), "Hello");
     EXPECT_EQ(attr(again[0], "transform"), attr(texts[0], "transform"));
-    EXPECT_EQ(reopened->getObjectByRepr(again_spans[1])->style->fill.getColor().getValues(),
+    // The object's own fill is set, and its text draws with it.
+    auto *text = reopened->getObjectByRepr(again[0]);
+    EXPECT_TRUE(text->style->fill.set);
+    EXPECT_EQ(text->style->fill.getColor().getValues(), (std::vector<double>{0.25, 0.5, 0.75, 0.1}));
+    EXPECT_EQ(reopened->getObjectByRepr(again_spans[0])->style->fill.getColor().getValues(),
               (std::vector<double>{0.25, 0.5, 0.75, 0.1}));
-    again_spans[1]->firstChild()->setContent("Edited!");
+    again_spans[0]->firstChild()->setContent("Edited!");
     reopened->ensureUpToDate();
     auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
     ASSERT_TRUE(edited);
     auto edited_spans = elements(elements(edited->getReprRoot(), "svg:text")[0], "svg:tspan");
-    ASSERT_EQ(edited_spans.size(), 2u);
-    EXPECT_STREQ(edited_spans[1]->firstChild()->content(), "Edited!");
+    ASSERT_EQ(edited_spans.size(), 1u);
+    EXPECT_STREQ(edited_spans[0]->firstChild()->content(), "Edited!");
+}
+
+TEST_F(AiNativeImportTest, PointTextRunsCarryOnlyWhatDiffersFromTheObject)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    std::string error;
+    auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                               text_setup(text_document("(Hello\\r)", 6, font))), error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_TRUE(ai->texts && ai->texts->stories.size() == 1 && ai->texts->stories[0]);
+    auto styled = std::make_shared<AN::TextDocument>(*ai->texts);
+    auto &line = styled->stories[0]->lines.at(0);
+    ASSERT_EQ(line.runs.size(), 1u);
+    // "He" as it is, "llo" larger and red, then "!" as the first again.
+    auto first = line.runs[0];
+    auto second = first, third = first;
+    first.text = "He";
+    second.text = "llo";
+    second.style.size = first.style.size * 2;
+    second.style.fill = AN::Color::rgb(1, 0, 0);
+    third.text = "!";
+    line.runs = {first, second, third};
+    ai->texts = styled;
+    auto b = AN::build(*ai, error); ASSERT_TRUE(b) << error;
+    auto texts = elements(b->document->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 2u);
+    auto const style = attr(spans[1], "style");
+    EXPECT_NE(style.find("font-size:"), std::string::npos) << style;
+    EXPECT_NE(style.find("fill:"), std::string::npos) << style;
+    EXPECT_EQ(style.find("font-family"), std::string::npos) << style;
+    EXPECT_EQ(style.find("stroke"), std::string::npos) << style;
+    EXPECT_STREQ(spans[1]->firstChild()->content(), "llo");
+    EXPECT_STREQ(spans[0]->firstChild()->content(), "He");
+    EXPECT_STREQ(spans[0]->lastChild()->content(), "!");
+    b->document->ensureUpToDate();
+    auto *text = b->document->getObjectByRepr(texts[0]);
+    EXPECT_TRUE(text->style->fill.set);
+    EXPECT_NE(b->document->getObjectByRepr(spans[1])->style->fill.getColor().toString(),
+              text->style->fill.getColor().toString());
 }
 
 TEST_F(AiNativeImportTest, PointTextMissingExactFontUsesFallback)
@@ -650,6 +743,51 @@ TEST_F(AiNativeImportTest, UnusedPaletteInksSurvive)
     EXPECT_EQ(ink->name, "Unused Spot");
 }
 
+TEST_F(AiNativeImportTest, TilesAreDrawnWithoutSeams)
+{
+    auto box = [](double x0, double y0, double x1, double y1, char const *paint = "f") {
+        auto s = [](double v) { return std::to_string(v); };
+        return s(x0) + " " + s(y0) + " m " + s(x0) + " " + s(y1) + " L " + s(x1) + " " + s(y1) + " L " + s(x1) + " " +
+               s(y0) + " L " + s(x0) + " " + s(y0) + " L\n" + paint + "\n";
+    };
+    auto crisp = [](XML::Node *n) { return attr(n, "style").find("shape-rendering:crispEdges") != std::string::npos; };
+    // An expanded gradient: strips that meet along whole edges. A box apart from them and
+    // a stroked one are no tiles, and a strip of no width isn't one either.
+    auto strips = make(records(layer("u\n0 0 0 1 k\n" + box(10, 20, 10, 60) + box(10, 20, 30, 60) +
+                                     "0 0 0 0.8 k\n" + box(30, 20, 50, 60) + "0 0 0 0.6 k\n" + box(50, 20, 70, 60) +
+                                     box(100, 20, 120, 60) + "0 0 0 1 K 1 w\n" + box(70, 20, 90, 60, "b") + "U\n")));
+    ASSERT_TRUE(strips);
+    auto paths = elements(strips->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 6u);
+    EXPECT_FALSE(crisp(paths[0]));
+    EXPECT_TRUE(crisp(paths[1]));
+    EXPECT_TRUE(crisp(paths[2]));
+    EXPECT_TRUE(crisp(paths[3]));
+    EXPECT_FALSE(crisp(paths[4]));
+    EXPECT_FALSE(crisp(paths[5]));
+
+    // Slanted strips would show ragged ends, unless a clipping path cuts those ends away.
+    auto slanted = [](double x, double lift) {
+        auto s = [](double v) { return std::to_string(v); };
+        return s(x) + " " + s(0 + lift) + " m " + s(x) + " " + s(90 + lift) + " L " + s(x + 30) + " " + s(95 + lift) +
+               " L " + s(x + 30) + " " + s(5 + lift) + " L " + s(x) + " " + s(0 + lift) + " L\nf\n";
+    };
+    auto const pair = "0 0 0 1 k\n" + slanted(40, 0) + "0 0 0 0.5 k\n" + slanted(70, 5);
+    auto open = make(records(layer("u\n" + pair + "U\n")));
+    ASSERT_TRUE(open);
+    for (auto *p : elements(open->document->getReprRoot(), "svg:path")) EXPECT_FALSE(crisp(p));
+    auto clipped = make(records(layer("q\n" + box(50, 30, 90, 70, "h W n") + pair + "Q\n")));
+    ASSERT_TRUE(clipped);
+    auto inside = elements(clipped->document->getReprRoot()->lastChild(), "svg:path");
+    ASSERT_EQ(inside.size(), 2u);
+    EXPECT_TRUE(crisp(inside[0]));
+    EXPECT_TRUE(crisp(inside[1]));
+    // The same strips reaching into view under a larger clipping path stay antialiased.
+    auto showing = make(records(layer("q\n" + box(20, 0, 120, 100, "h W n") + pair + "Q\n")));
+    ASSERT_TRUE(showing);
+    for (auto *p : elements(showing->document->getReprRoot()->lastChild(), "svg:path")) EXPECT_FALSE(crisp(p));
+}
+
 TEST_F(AiNativeImportTest, UnplaceableImagesRefused)
 {
     std::string error;
@@ -701,7 +839,7 @@ TEST_F(AiNativeImportTest, PointTextRightAndCentreMatchIndependentPdfAndReopen)
         auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(good->document->getReprDoc()).raw());
         ASSERT_TRUE(reopened);
         auto texts = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
-        auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 2u);
+        auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 1u);
         EXPECT_EQ(attr(spans[0], "style"), align == 2 ? "text-anchor:middle;" : "text-anchor:end;");
     }
 }

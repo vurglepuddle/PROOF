@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <Catalog.h>
@@ -54,6 +55,9 @@ namespace {
 constexpr std::size_t RECORDS_LIMIT = std::size_t(256) << 20;
 /// The longest side, in pixels, of an artboard as it is weighed.
 constexpr double LONGEST_SIDE = 600.0;
+/// An artboard that differs is weighed again from pictures drawn this many times larger and
+/// averaged back down.
+constexpr int FINER = 4;
 /// Pixels this far apart (of 255) in lightness, or in any channel, look different.
 constexpr int LIGHTNESS_STEP = 48;
 constexpr int COLOUR_STEP = 80;
@@ -160,6 +164,28 @@ Picture seen_on_white(cairo_surface_t *s)
     }
     cairo_surface_destroy(s);
     return p;
+}
+
+/// `p` made `factor` times smaller: each pixel the mean of a factor x factor block.
+Picture averaged(Picture const &p, int factor)
+{
+    Picture out;
+    out.w = p.w / factor;
+    out.h = p.h / factor;
+    out.rgb.resize(std::size_t(out.w) * out.h * 3);
+    int const n = factor * factor;
+    for (int y = 0; y < out.h; ++y) {
+        for (int x = 0; x < out.w; ++x) {
+            int sum[3] = {0, 0, 0};
+            for (int dy = 0; dy < factor; ++dy) {
+                auto const *block = &p.rgb[(std::size_t(y * factor + dy) * p.w + std::size_t(x) * factor) * 3];
+                for (int i = 0; i < factor * 3; ++i) sum[i % 3] += block[i];
+            }
+            auto *pixel = &out.rgb[(std::size_t(y) * out.w + x) * 3];
+            for (int c = 0; c < 3; ++c) pixel[c] = std::uint8_t((sum[c] + n / 2) / n);
+        }
+    }
+    return out;
 }
 
 std::optional<Picture> read_reference(std::string const &path, int w, int h)
@@ -272,8 +298,10 @@ public:
     NativeView(NativeView const &) = delete;
     NativeView &operator=(NativeView const &) = delete;
 
-    /// `board` (user units) at `scale` pixels a point, into a w x h picture.
-    Picture draw(Geom::Rect const &board, double scale, int w, int h)
+    /// `board` (user units) at `scale` pixels a point, into a w x h picture. With
+    /// `thin_lines_shown`, a line thinner than a pixel is drawn a pixel wide, as Poppler
+    /// draws it on a screen.
+    Picture draw(Geom::Rect const &board, double scale, int w, int h, bool thin_lines_shown = false)
     {
         _doc->ensureUpToDate();
         // User units are points; the drawing is in the document's pixels.
@@ -285,7 +313,8 @@ public:
         auto *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
         {
             Inkscape::DrawingContext dc(surface, Geom::Point(0, 0));
-            _drawing.render(dc, box, Inkscape::DrawingItem::RENDER_BYPASS_CACHE);
+            _drawing.render(dc, box, Inkscape::DrawingItem::RENDER_BYPASS_CACHE |
+                                         (thin_lines_shown ? Inkscape::DrawingItem::RENDER_VISIBLE_HAIRLINES : 0));
         }
         return seen_on_white(surface);
     }
@@ -493,17 +522,40 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
             reference = draw_page(drawn.get(), crop, trim, scale, w, h);
             if (!reference_path.empty()) cache_reference(*reference, reference_path);
         }
-        auto const &page_picture = *reference;
-        auto native_picture = view->draw(board, scale, w, h);
-        auto d = weigh(page_picture, native_picture);
-        if ((d.lightness > AI_NATIVE_MAX_LIGHTNESS || d.colour > AI_NATIVE_MAX_COLOUR) && non_printing) {
-            // A page may leave out the layers that don't print.
-            NonPrintingHidden hidden(doc);
-            auto hidden_picture = view->draw(board, scale, w, h);
-            auto e = weigh(page_picture, hidden_picture);
+        auto page_picture = std::move(*reference);
+        Picture native_picture;
+        AiPageDifference d;
+        // The art against `page`, each drawn by `draw`; also without the layers that don't
+        // print, which a page may leave out.
+        auto weigh_art = [&](Picture const &page, auto const &draw) {
+            auto picture = draw();
+            auto difference = weigh(page, picture);
+            if (difference_score(difference) > 1.0 && non_printing) {
+                NonPrintingHidden hidden(doc);
+                auto hidden_picture = draw();
+                auto e = weigh(page, hidden_picture);
+                if (difference_score(e) < difference_score(difference)) {
+                    difference = e;
+                    picture = std::move(hidden_picture);
+                }
+            }
+            return std::pair(difference, std::move(picture));
+        };
+        std::tie(d, native_picture) = weigh_art(page_picture, [&] { return view->draw(board, scale, w, h); });
+        if (difference_score(d) > 1.0) {
+            // Lines thinner than a pixel are where the two renderers part: Poppler draws them
+            // a whole pixel wide and on the pixel grid, the drawing as thin as they are. A
+            // page of hairlines then seems to differ everywhere. Drawn FINER times larger and
+            // averaged down, with the drawing keeping thin lines a pixel wide as well, both
+            // show the same ink for the same line; art that really differs still does.
+            auto fine_page = averaged(draw_page(drawn.get(), crop, trim, scale * FINER, w * FINER, h * FINER), FINER);
+            auto [e, fine_native] = weigh_art(fine_page, [&] {
+                return averaged(view->draw(board, scale * FINER, w * FINER, h * FINER, true), FINER);
+            });
             if (difference_score(e) < difference_score(d)) {
                 d = e;
-                native_picture = std::move(hidden_picture);
+                page_picture = std::move(fine_page);
+                native_picture = std::move(fine_native);
             }
         }
         if (!diagnostic_directory.empty()) {
@@ -513,6 +565,8 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
         }
         result.differences.push_back(d);
         if (difference_score(d) > difference_score(result.differences[worst])) worst = i;
+        // A differing artboard settles it: the remaining ones needn't be drawn.
+        if (difference_score(d) > 1.0 && !keep_differing) break;
     }
     view.reset();
 

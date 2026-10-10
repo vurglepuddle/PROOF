@@ -9,7 +9,8 @@
  * - A line starting with "%_" holds tokens like any other line; they are marked
  *   hidden (readers of the printed format skip them as comments).
  * - Any other line starting with "%" is a comment token (the section markers).
- *   A "%" later in a line starts a comment that is skipped.
+ *   A "%" later in a line starts a comment that is skipped, except a gradient
+ *   definition's "%_BS", "%_Bs" and "%_Br" ending a line: a hidden operator.
  * - The binary image data after "%%BeginData:" and "XI" is one data token, and
  *   placed-object previews are skipped whole.
  *

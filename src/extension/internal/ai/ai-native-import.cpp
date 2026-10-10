@@ -208,6 +208,119 @@ void outline(Node const &n, Geom::PathVector &out)
     for (auto const &k : n.children) outline(k, out);
 }
 
+/**
+ * The kids that tile: flat-coloured, unstroked shapes of straight edges that meet a
+ * neighbour along a whole edge. Illustrator leaves them when a gradient is expanded
+ * into strips; mosaics are made of them.
+ *
+ * Each shape is antialiased on its own, so a pixel on a shared edge is covered in part
+ * by each tile and the background shows through: a hairline along every joint. Drawn
+ * without antialiasing, tiles share their pixels out exactly. That is only right where
+ * a tile's other edges can't turn ragged for it: they must run along the pixel rows and
+ * columns, or lie where the group's clipping path cuts them away. The clipping path
+ * itself is still drawn smooth.
+ */
+std::set<std::size_t> tiles(std::vector<Node> const &kids, std::size_t start, Node const *clip, Geom::Affine const &to_doc)
+{
+    using Edge = std::array<std::int64_t, 4>; // Both ends in thousandths of a point, the lesser first.
+    struct Side
+    {
+        Edge edge;
+        Geom::Point a, b;
+    };
+    constexpr std::size_t MOST_SIDES = 64;
+    auto thousandths = [](double v) { return static_cast<std::int64_t>(std::llround(v * 1000.0)); };
+
+    std::map<std::size_t, std::vector<Side>> shapes;
+    std::map<Edge, std::vector<std::size_t>> users;
+    for (std::size_t i = start; i < kids.size(); ++i) {
+        auto const &n = kids[i];
+        if (n.kind != Node::Kind::Path || n.guide || !n.visible || n.stroke || !n.fill ||
+            n.fill->kind != Paint::Kind::Solid || n.transparency.opacity < 1.0 || n.transparency.blend != 0) {
+            continue;
+        }
+        auto const pv = n.path * to_doc;
+        auto const box = pv.boundsFast();
+        if (!box || box->width() < 1e-3 || box->height() < 1e-3) continue;
+        std::vector<Side> sides;
+        bool straight = true;
+        auto add = [&](Geom::Point const &a, Geom::Point const &b) {
+            Edge edge{thousandths(a.x()), thousandths(a.y()), thousandths(b.x()), thousandths(b.y())};
+            if (edge[0] == edge[2] && edge[1] == edge[3]) return;
+            if (std::pair(edge[0], edge[1]) > std::pair(edge[2], edge[3])) {
+                std::swap(edge[0], edge[2]);
+                std::swap(edge[1], edge[3]);
+            }
+            sides.push_back({edge, a, b});
+        };
+        for (auto const &path : pv) {
+            for (std::size_t c = 0; c < path.size_default() && straight; ++c) {
+                straight = path[c].isLineSegment() && sides.size() < MOST_SIDES;
+                if (straight) add(path[c].initialPoint(), path[c].finalPoint());
+            }
+            // A fill closes an open path.
+            if (straight && !path.closed() && !path.empty()) add(path.finalPoint(), path.initialPoint());
+        }
+        if (!straight || sides.empty()) continue;
+        for (auto const &s : sides) {
+            auto &list = users[s.edge];
+            if (list.empty() || list.back() != i) list.push_back(i);
+        }
+        shapes.emplace(i, std::move(sides));
+    }
+    if (shapes.size() < 2) return {};
+
+    std::optional<Geom::PathVector> mask;
+    if (clip) {
+        Geom::PathVector pv;
+        outline(*clip, pv);
+        mask = pv * to_doc;
+    }
+    // Whether the clipping path leaves `p` showing.
+    auto shows = [&](Geom::Point const &p) {
+        try {
+            int const turns = mask->winding(p);
+            return clip->evenodd ? turns % 2 != 0 : turns != 0;
+        } catch (...) {
+            return true;
+        }
+    };
+    // A shape whose every unshared edge is safe to draw without antialiasing.
+    std::set<std::size_t> safe;
+    for (auto const &[i, sides] : shapes) {
+        Geom::Point centre;
+        for (auto const &s : sides) centre += s.a;
+        centre /= double(sides.size());
+        bool ok = true;
+        for (auto const &s : sides) {
+            if (users[s.edge].size() > 1) continue;
+            auto const d = s.b - s.a;
+            if (std::abs(d.x()) < 1e-3 || std::abs(d.y()) < 1e-3) continue;
+            ok = false;
+            if (!mask) break;
+            // Slanted: fine only where the clipping path hides it, just inside the shape too.
+            ok = true;
+            for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+                auto p = Geom::lerp(t, s.a, s.b);
+                auto const inward = centre - p;
+                if (inward.length() > 1e-6) p += inward * (0.05 / inward.length());
+                ok = ok && !shows(p);
+            }
+            if (!ok) break;
+        }
+        if (ok) safe.insert(i);
+    }
+    std::set<std::size_t> found;
+    for (auto const i : safe) {
+        bool joined = false;
+        for (auto const &s : shapes[i]) {
+            for (auto const other : users[s.edge]) joined = joined || (other != i && safe.count(other));
+        }
+        if (joined) found.insert(i);
+    }
+    return found;
+}
+
 std::string base64(std::string_view bytes)
 {
     gchar *b = g_base64_encode(reinterpret_cast<guchar const *>(bytes.data()), bytes.size());
@@ -495,8 +608,25 @@ XML::Node *Builder::text(Node const &n)
     e->setAttribute("xml:space", "preserve");
     e->setAttribute("proof:ai-story", std::to_string(*n.story));
     e->setAttribute("transform", sp_svg_transform_write(story.to_art * _to_doc));
+    // A run's style in parts, each inherited by spans. The text object carries the first
+    // run's, so its fill, stroke and font are the object's own, as the Appearance controls
+    // read and set them; a span carries only what its run has different.
+    auto parts = [&](auto const &s) {
+        auto color = [&](std::optional<Color> const &c) { Paint p; if (c) p.color = *c; return c ? paint(p) : std::string("none"); };
+        return std::array<std::string, 8>{
+            _text_fonts.at(s.font), "font-size:" + num(s.size) + ";", "fill:" + color(s.fill) + ";",
+            "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke) + ";",
+            "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
+            "letter-spacing:" + num(s.size * s.tracking / 1000.0) + ";"};
+    };
+    std::optional<std::array<std::string, 8>> base;
+    for (auto const &line : story.lines) {
+        if (!base && !line.runs.empty()) base = parts(line.runs.front().style);
+    }
     std::string common_style = "text-anchor:start;";
-    common(e, n, common_style); e->setAttribute("style", common_style);
+    common(e, n, common_style);
+    if (base) for (auto const &part : *base) common_style += part;
+    e->setAttribute("style", common_style);
     for (auto const &line : story.lines) {
         auto span = create("svg:tspan");
         // Explicit ATE line positions must remain SVG positions. role="line"
@@ -504,16 +634,27 @@ XML::Node *Builder::text(Node const &n)
         span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
         span->setAttribute("style", std::string("text-anchor:") +
                                    (line.alignment == 1 ? "end" : line.alignment == 2 ? "middle" : "start") + ";");
+        std::string plain; // Text in the object's own style, not yet written.
+        auto write_plain = [&] {
+            if (!plain.empty()) append(span, _xml->createTextNode(plain.c_str()));
+            plain.clear();
+        };
         for (auto const &run : line.runs) {
-            auto piece = create("svg:tspan"); auto const &s = run.style;
-            auto color = [&](std::optional<Color> const &c) { Paint p; if (c) p.color = *c; return c ? paint(p) : std::string("none"); };
-            std::string style = _text_fonts.at(s.font) + "font-size:" + num(s.size) + ";fill:" + color(s.fill) +
-                                ";fill-opacity:" + num(s.fill_opacity) + ";stroke:" + color(s.stroke) +
-                                ";stroke-opacity:" + num(s.stroke_opacity) + ";stroke-width:" + num(s.stroke_width) +
-                                ";letter-spacing:" + num(s.size * s.tracking / 1000.0) + ";";
+            auto const own = parts(run.style);
+            std::string style;
+            for (std::size_t i = 0; i < own.size(); ++i) {
+                if (own[i] != (*base)[i]) style += own[i];
+            }
+            if (style.empty()) {
+                plain += run.text;
+                continue;
+            }
+            write_plain();
+            auto piece = create("svg:tspan");
             piece->setAttribute("style", style);
             append(piece, _xml->createTextNode(run.text.c_str())); append(span, piece);
         }
+        write_plain();
         append(e, span);
     }
     return e;
@@ -588,8 +729,15 @@ void Builder::children(XML::Node *parent, std::vector<Node> const &kids, bool cl
         // A clipping path can also be a painted background (W f / W B).
         if (!kids.front().fill && !kids.front().stroke) start = 1;
     }
+    auto const seamless = tiles(kids, start, clipped && !kids.empty() ? &kids.front() : nullptr, _to_doc);
     for (std::size_t i = start; i < kids.size(); ++i) {
-        if (auto e = node(kids[i])) append(parent, e);
+        if (auto e = node(kids[i])) {
+            if (seamless.count(i)) {
+                auto const style = e->attribute("style");
+                e->setAttribute("style", std::string(style ? style : "") + "shape-rendering:crispEdges;");
+            }
+            append(parent, e);
+        }
     }
 }
 
@@ -798,8 +946,35 @@ std::string Builder::gradient(Paint const &p)
         return "none";
     }
     auto const &g = _ai.gradients[pl.gradient];
-    // Gradient space -> Bg's matrix -> the gradient matrix (Bm) -> the document.
-    Geom::Affine const m = pl.bg * pl.bm * _to_doc;
+    // The gradient in its own space, and the matrix from there to the document. See
+    // GradientPlacement: with Xm or Bm the space is the unit one and that matrix is all
+    // of the placement; Bg's own values are then not to be applied as well.
+    Geom::Affine m;
+    Geom::Point start = pl.origin, end, focus = pl.origin + pl.hilight;
+    double radius = std::abs(pl.length);
+    if (pl.xm || pl.bm_given) {
+        m = (pl.xm ? *pl.xm : pl.bm) * _to_doc;
+        start = focus = {0.0, 0.0};
+        end = {1.0, 0.0};
+        radius = 1.0;
+        if (g.radial) {
+            if (std::abs(pl.hilight_length) > 1e-9) {
+                double const a = pl.hilight_angle * M_PI / 180.0;
+                focus = Geom::Point(std::cos(a), -std::sin(a)) * pl.hilight_length;
+            } else if (Geom::L2(pl.hilight) > 1e-9) {
+                focus = pl.hilight * (pl.xm ? *pl.xm : pl.bm).withoutTranslation().inverse();
+            }
+        } else if (!pl.xm && g.stops.size() > 1 && g.stops[1].offset - g.stops[0].offset > 1e-6) {
+            // Bm alone, for a linear gradient: 0 to 1 is from the first stop to the second.
+            double const lo = g.stops[0].offset, span = g.stops[1].offset - lo;
+            start = {-lo / span, 0.0};
+            end = {(1.0 - lo) / span, 0.0};
+        }
+    } else {
+        m = pl.bg * _to_doc;
+        double const a = pl.angle * M_PI / 180.0;
+        end = pl.origin + Geom::Point(std::cos(a), std::sin(a)) * pl.length;
+    }
     if (!finite(m) || m.isSingular()) {
         auto const &s = g.stops.front();
         return shown(StopPaint{s.color, s.ink, s.tint}).toString(false);
@@ -812,20 +987,17 @@ std::string Builder::gradient(Paint const &p)
     e->setAttribute("xlink:href", "#" + vector);
     e->setAttribute("gradientUnits", "userSpaceOnUse");
     e->setAttribute("gradientTransform", sp_svg_transform_write(m));
-    auto const o = pl.origin;
     if (g.radial) {
-        e->setAttributeSvgDouble("cx", o.x());
-        e->setAttributeSvgDouble("cy", o.y());
-        e->setAttributeSvgDouble("r", std::abs(pl.length));
-        if (Geom::L2(pl.hilight) > 1e-9) {
-            e->setAttributeSvgDouble("fx", o.x() + pl.hilight.x());
-            e->setAttributeSvgDouble("fy", o.y() + pl.hilight.y());
+        e->setAttributeSvgDouble("cx", start.x());
+        e->setAttributeSvgDouble("cy", start.y());
+        e->setAttributeSvgDouble("r", radius);
+        if (Geom::L2(focus - start) > 1e-9) {
+            e->setAttributeSvgDouble("fx", focus.x());
+            e->setAttributeSvgDouble("fy", focus.y());
         }
     } else {
-        double const a = pl.angle * M_PI / 180.0;
-        auto const end = o + Geom::Point(std::cos(a), std::sin(a)) * pl.length;
-        e->setAttributeSvgDouble("x1", o.x());
-        e->setAttributeSvgDouble("y1", o.y());
+        e->setAttributeSvgDouble("x1", start.x());
+        e->setAttributeSvgDouble("y1", start.y());
         e->setAttributeSvgDouble("x2", end.x());
         e->setAttributeSvgDouble("y2", end.y());
     }

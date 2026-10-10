@@ -259,7 +259,7 @@ std::optional<Named> parse_named(Values const &vals, Ink::Kind kind, std::option
 }
 
 /// The colour of a gradient stop's colour values and style (0 grey, 1 CMYK, 2 RGB with its
-/// CMYK, 3 named CMYK, 4 named RGB).
+/// CMYK, 3 named CMYK, 4 named RGB, 5 named with its type, as Xx and Xk write a colour).
 std::optional<std::pair<Color, std::optional<Named>>> stop_color(double style, Values const &comps)
 {
     auto const nums = nums_of(comps);
@@ -276,12 +276,14 @@ std::optional<std::pair<Color, std::optional<Named>>> stop_color(double style, V
         case 2:
             if (auto t = tail(3)) return std::pair{Color::rgb(unit(t[0]), unit(t[1]), unit(t[2])), std::nullopt};
             return {};
-        default:
-            if (auto n = parse_named(comps, Ink::Kind::Spot, static_cast<int>(style) == 4)) {
+        default: {
+            auto const force = static_cast<int>(style) == 5 ? std::nullopt : std::optional(static_cast<int>(style) == 4);
+            if (auto n = parse_named(comps, Ink::Kind::Spot, force)) {
                 if (n->name == "[Registration]") n->kind = Ink::Kind::Registration;
                 return std::pair{n->color, std::optional<Named>(*n)};
             }
             return {};
+        }
     }
 }
 
@@ -355,7 +357,7 @@ std::optional<Geom::Rect> four(std::string_view text)
 constexpr std::string_view IGNORED[] = {
     "Ae", "AE", "Ap", "As", "Xd", "Xr", "XG", "Xh", "XH", "XF", "D", "X=", "X+", "Bc", "Xm", "XP", "Np", "TE",
     "TZ", "Xt", "Xi", "XI", "`", "LB2", "Lc", "Xv", "XV", "Xq", "XQ", "Xg", "Xn", "Bn", "gsave", "grestore",
-    "showpage", "annotatepage", "Ar", "An", "XD",
+    "showpage", "annotatepage", "Ar", "An", "XD", "Br", "BS",
 };
 
 bool ignored(std::string_view w)
@@ -404,6 +406,8 @@ struct Frame
 struct GradientDef
 {
     Gradient gradient;
+    /// A "%_BS" stop: the process stand-in for the exact stop ("%_… Bs") that follows it.
+    std::optional<Values> stand_in;
 };
 
 struct Instance
@@ -525,12 +529,16 @@ private:
     std::optional<std::pair<double, double>> _art_size, _template_center;
     std::map<std::string, int> _gradient_index;
     std::optional<GradientDef> _gradient_def;
+    std::set<std::size_t> _stop_inks; ///< Inks known only from a gradient stop so far.
     std::optional<Instance> _instance;
     std::optional<Paint> _pending_fill, _pending_stroke;
     bool _raster = false;
     std::string _raster_space;
 
     bool _after_object = false;
+    /// A style marker (XW) has come since the last object. Its name can still follow, but
+    /// transparency from here on is the next object's, not a just-closed group's.
+    bool _marked = false;
     std::size_t _nodes = 0;
     std::set<std::string> _unsupported, _unknown, _hidden_unread;
     std::size_t _cmyk_colors = 0, _rgb_colors = 0;
@@ -688,6 +696,7 @@ void Reader::add(Node node, bool commented)
     if (_frames.empty()) fail("it has art outside its layers");
     _frames.back().children.push_back(std::move(node));
     _after_object = true;
+    _marked = false;
 }
 
 Node *Reader::last_object()
@@ -780,6 +789,7 @@ void Reader::end_layer()
     if (!_frames.empty()) {
         _frames.back().children.push_back(std::move(layer));
         _after_object = true;
+        _marked = false;
     } else {
         _doc.layers.push_back(std::move(layer));
         _after_object = false;
@@ -853,9 +863,17 @@ void Reader::op(std::string_view w, bool hidden)
         return;
     }
     if (_gradient_def) {
+        // A stop is written twice: "c m y k 1 1 6 50 100 %_BS", in process colour for readers
+        // that know no named colours, then "%_… Bs", exact. The stand-in counts only when no
+        // exact stop follows it.
+        auto stand_in = std::exchange(_gradient_def->stand_in, std::nullopt);
         if (w == "Bs") {
             gradient_stop(vals);
+        } else if (w == "BS") {
+            if (stand_in) gradient_stop(*stand_in);
+            _gradient_def->stand_in = std::move(vals);
         } else if (w == "BD") {
+            if (stand_in) gradient_stop(*stand_in);
             auto def = std::move(*_gradient_def);
             _gradient_def.reset();
             if (!def.gradient.stops.empty()) {
@@ -983,16 +1001,29 @@ void Reader::op(std::string_view w, bool hidden)
                 }
             }
         }
-    } else if (w == "Bm") {
+    } else if (w == "Bm" || w == "Xm") {
         if (_instance && nums.size() >= 6) {
             auto const *n = nums.data() + nums.size() - 6;
             Geom::Affine m(n[0], n[1], n[2], n[3], n[4], n[5]);
             bool finite = true;
             for (int i = 0; i < 6; ++i) finite = finite && std::isfinite(m[i]);
-            if (finite && std::abs(m.det()) > 1e-12) _instance->placement.bm = m;
+            if (finite && std::abs(m.det()) > 1e-12) {
+                if (w == "Xm") {
+                    _instance->placement.xm = m;
+                } else if (!_instance->placement.bm_given) {
+                    // A gradient of several ramps has a Bm for each; the first is the
+                    // one between the first two stops.
+                    _instance->placement.bm = m;
+                    _instance->placement.bm_given = true;
+                }
+            }
         }
     } else if (w == "Bh") {
         if (_instance && nums.size() >= 2) _instance->placement.hilight = {nums[0], nums[1]};
+        if (_instance && nums.size() >= 4 && std::isfinite(nums[2]) && std::isfinite(nums[3])) {
+            _instance->placement.hilight_angle = nums[2];
+            _instance->placement.hilight_length = nums[3];
+        }
     } else if (w == "BB") {
         if (_instance) {
             auto i = std::move(*_instance);
@@ -1135,6 +1166,17 @@ void Reader::layer_attrs(Values const &vals)
 
 int Reader::ink_index(Named const &n, bool by_name)
 {
+    if (!by_name) {
+        // Gradients are defined before the Swatches panel is listed, so a stop may have met
+        // the name first. Its guess becomes the swatch: the stop keeps pointing at it.
+        for (auto const i : _stop_inks) {
+            if (_doc.inks[i].name == n.name) {
+                _doc.inks[i] = {n.name, n.kind, n.color, n.cmyk};
+                _stop_inks.erase(i);
+                return static_cast<int>(i);
+            }
+        }
+    }
     for (std::size_t i = 0; i < _doc.inks.size(); ++i) {
         auto const &ink = _doc.inks[i];
         if (ink.name == n.name && ink.kind == n.kind && ink.color == n.color) return static_cast<int>(i);
@@ -1151,6 +1193,7 @@ int Reader::ink_index(Named const &n, bool by_name)
     }
     if (_doc.inks.size() >= _limits.max_inks) fail("it has too many named colours");
     _doc.inks.push_back({n.name, n.kind, n.color, n.cmyk});
+    if (by_name) _stop_inks.insert(_doc.inks.size() - 1);
     return static_cast<int>(_doc.inks.size() - 1);
 }
 
@@ -1255,8 +1298,9 @@ void Reader::transparency(Values const &vals)
     int const ko = n.size() > 3 ? static_cast<int>(n[3]) : 0;
     t.knockout = (ko == 1 || ko == 2) ? ko : 0;
     t.knockout_shape = n.size() > 4 && n[4] != 0.0;
-    // After a group or compound path closes, it is the group's.
-    if (auto *obj = last_object(); obj && (obj->kind == Node::Kind::Group || obj->kind == Node::Kind::Compound)) {
+    // Straight after a group or compound path closes, it is the group's.
+    if (auto *obj = last_object();
+        obj && !_marked && (obj->kind == Node::Kind::Group || obj->kind == Node::Kind::Compound)) {
         obj->transparency = t;
     }
 }
@@ -1275,6 +1319,7 @@ void Reader::style_marker(Values const &vals, bool hidden)
     double const code = nums.empty() ? 0.0 : nums.back();
     auto const style = last_text(vals).value_or("");
     bool const after = _after_object;
+    _marked = true;
     // `1 (style) XW` after the object written on %_ lines; its drawn look comes before it.
     if (hidden || code != 1.0 || style.empty() || !after || _frames.empty()) return;
     auto &kids = _frames.back().children;

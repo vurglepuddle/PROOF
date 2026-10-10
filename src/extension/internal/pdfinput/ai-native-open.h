@@ -8,7 +8,10 @@
  * the page that every other application shows. Pixels are compared as seen on white,
  * by lightness and by colour, each allowed to match any pixel next to it, so that
  * edges drawn a pixel apart and the two colour conversions don't count; art that is
- * missing, extra, out of place or in the wrong colour does.
+ * missing, extra, out of place or in the wrong colour does. An artboard that differs is
+ * weighed once more from larger pictures averaged down, with lines thinner than a pixel
+ * kept a pixel wide in both: the two renderers draw such lines differently, and a page
+ * of hairlines isn't different art.
  *
  * When the records hold anything that isn't read, or the art draws differently from
  * the page, nothing is returned and the caller imports the page as before.

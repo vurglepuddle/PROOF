@@ -132,15 +132,23 @@ InkscapeWindow::InkscapeWindow(SPDesktop *desktop)
     header->set_decoration_layout(":minimize,maximize,close");
     auto menu = Gtk::make_managed<Gtk::PopoverMenuBar>(_app->gtk_app()->get_menubar());
     header->pack_start(*menu);
-    auto title = Gtk::make_managed<Gtk::Label>();
-    title->set_ellipsize(Pango::EllipsizeMode::END);
-    title->set_max_width_chars(38);
+    // The document name takes the room the row has and gives way when there isn't enough;
+    // the note after it (the color mode, then any view mode) always shows in full.
+    auto title = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     title->add_css_class("workspace-window-title");
+    auto name = Gtk::make_managed<Gtk::Label>();
+    name->set_ellipsize(Pango::EllipsizeMode::END);
+    auto note = Gtk::make_managed<Gtk::Label>();
+    title->append(*name);
+    title->append(*note);
     header->set_title_widget(*title);
-    property_title().signal_changed().connect([this, title] {
+    property_title().signal_changed().connect([this, title, name, note] {
         auto full = get_title();
-        auto end = full.find(" - Inkscape");
-        title->set_text(end == Glib::ustring::npos ? full : full.substr(0, end));
+        auto shown = full.substr(0, full.find(" - Inkscape"));
+        // "name (CMYK)", "name (RGB, outline)": the note is the last bracket.
+        auto at = shown.rfind(" (");
+        name->set_text(at == Glib::ustring::npos ? shown : shown.substr(0, at));
+        note->set_text(at == Glib::ustring::npos ? Glib::ustring() : shown.substr(at));
         title->set_tooltip_text(full);
     });
     set_titlebar(*header);

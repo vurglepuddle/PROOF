@@ -155,6 +155,14 @@ TextTool::~TextTool()
     _forgetText();
 
     if (imc) {
+        // PROOF: give the input focus up before dropping the context. GTK's Windows input
+        // method keeps a display-wide message filter from focus-in until a focus-out that
+        // still finds the canvas's surface; a context dropped while focused left that filter
+        // on freed memory, and a later key or pointer message crashed. An unfinished
+        // composition is dropped, not committed into a tool that is going away.
+        g_signal_handlers_disconnect_by_data(imc, this);
+        gtk_im_context_focus_out(imc);
+        gtk_im_context_set_client_widget(imc, nullptr);
         // Note: We rely on this being the last reference, so we don't need to disconnect from signals.
         g_object_unref(G_OBJECT(imc));
     }

@@ -66,14 +66,15 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `Xk`/`XK` | **Global process colour**, in the same layout as `Xx`. Type 0 is CMYK with 6 numbers; type 1 is RGB with 9. | **census** (blocked about 200 of 877 files under VectorCraft's table) |
 | `Xs`/`XS` | Registration: `c m y k ([Registration]) tint`. | **census**. VectorCraft ignores `Xs`, so Registration fills keep the previous fill. |
 | `Xz`/`XZ` | Registration, in the `Xx` layout. | **census** |
-| `(name) type n Bd` … `Bs` … `BD` | Gradient definition. Each stop is `colour style [opacity 6] midpoint ramp Bs`. The styles are 0 grey, 1 CMYK, 2 RGB with CMYK, 3 and 4 named. | VectorCraft |
-| `[flag] Bb`, `Bg`, `Bm`, `Bh`, `BB` | Gradient on an object: name, origin, angle, length, matrix and focal point. | VectorCraft |
+| `(name) type n Bd` … `Bs` … `BD` | Gradient definition. Each stop is `colour style [opacity 6] midpoint ramp Bs`. The styles are 0 grey, 1 CMYK, 2 RGB with CMYK, 3 and 4 named, and **5 named with its type, in the `Xx`/`Xk` layout** (`c m y k [v1 v2 v3] (name) tint type`). | VectorCraft; style 5 from the 2026-10-10 trial |
+| `… %_BS`, `… %_Bs`, `n %_Br` | **Operators ending a line after `%_`.** Each stop is written twice: `c m y k 1 opacity 6 midpoint ramp %_BS`, a process stand-in, then the exact stop on its own `%_… Bs` line. Old files end the one line `%_Bs`. `%_Br` is the ramp count. Read as comments, their operands pile up in front of the next operator. | **2026-10-10 trial**. VectorCraft skips them, and then misreads every named stop. |
+| `[flag] Bb`, `Bg`, `Xm`, `Bm`, `Bc`, `Bh`, `BB` | Gradient on an object. See "Gradient placement" below: with `Xm` or `Bm` present that matrix is the whole placement, and `Bg`'s origin, angle, length and matrix are not applied as well. | VectorCraft read `Bg` × `Bm`; corrected in the **2026-10-10 trial** |
 | `%AI5_BeginRaster`, `/Space XN`, `[m] … w h bits type alpha … XI` | Embedded image. The samples stay in their colour space; CMYK is common. | VectorCraft |
 | `/AI11Text : /StoryIndex …` | Text object. Its text lives in `%AI11_BeginTextDocument`. | VectorCraft |
 | `n Ar` | The old Attributes panel's output resolution (300, 800). No visual effect. | **census** |
 | `1 An` | CS5 only, after every object. Almost certainly *Align to Pixel Grid*. No visual effect. | **census** |
 | `(hex) Xt n XD` | Brush metadata inside drawn looks, with n running 0–4. No geometry or paint. | **census** |
-| `Ae AE Ap As Xd Xr XG Xh XH XF D X= X+ Bc Xm XP Np TE TZ Xt Xi XI ` LB2 Lc Xv XV Xq XQ Xg Xn Bn` | Ignored by VectorCraft. | VectorCraft |
+| `Ae AE Ap As Xd Xr XG Xh XH XF D X= X+ Bc XP Np TE TZ Xt Xi XI ` LB2 Lc Xv XV Xq XQ Xg Xn Bn` | Ignored by VectorCraft. (It ignores `Xm` too; PROOF reads it.) | VectorCraft |
 
 ### Not read yet (the file opens from its PDF page)
 
@@ -250,7 +251,8 @@ differs on any artboard. The initial guesses of 2% and 5% accepted visible
 fill changes in the corpus; the limits were tightened after inspecting those
 cases. They remain practical rendering tolerances, not proof of exact visual
 identity: small details, low-contrast changes and differences below the sampled
-resolution can escape them.
+resolution can escape them. An artboard over a limit is weighed once more from
+larger pictures, for lines thinner than a pixel; see the 2026-10-10 trial below.
 
 Non-printing layers are retried hidden for comparison, then their visibility
 is restored. PDF optional-content screen and print views can differ; this
@@ -385,6 +387,96 @@ final wrapper guard. Installed CLI open and SVG save/reopen of Dallas retain RGB
 six artboards, 58 editable text objects and the correct tree/label stories. The
 installed interchange smoke passes 19/19; none of these is a live drag-gesture
 or hidden-layer fidelity certificate.
+
+### Designer trial of 2026-10-10: gradients, hairlines, swatch stops, tiles
+
+A first hand trial of current work files sent about three in four to the PDF
+import. Seven of them were handed over; six open natively now. The causes were
+few and general, and the full corpus was rerun afterwards (see the end).
+
+**Gradient placement.** The reader applied `Bg`'s origin, angle and length and
+then `Bg`'s matrix and `Bm`, as VectorCraft does. That is right only for old
+files, and for the trivial `0 0 0 1` that newer files usually write. Counted
+over the gradient instances drawn in 66 decoded files:
+
+- *Linear.* Every instance that has a matrix has two: `Xm`, then `Bm` (one per
+  ramp, with `Bc` caps around them). `Xm` carries the unit ramp (0 to 1 along x)
+  onto the art, whole. In all 221 instances with their own `Bg` values and an
+  identity `Bg` matrix, `Xm`'s x axis points exactly along `Bg`'s angle: the
+  angle, length and origin are already in it. `Bg`'s own values are the same
+  placement relative to the object's bounds (`-0.026 0 -90 1.54`), and its
+  matrix the accumulated transformation (`CAIGradientTformMatrix`, with
+  translations in the thousands); neither is to be applied again.
+- `Bm` is the matrix for PostScript, which draws ramp by ramp. In all 1,092
+  linear instances `Bm` equals `Xm` cut down to the span between the first two
+  stops (`Bm.x = (s1 − s0)·Xm.x`, `Bm.origin = Xm.origin + s0·Xm.x`). Read as
+  the whole ramp it squeezed every gradient whose second stop isn't at 100%,
+  and the last `Bm` of a three-stop gradient is its *last* ramp. Without `Xm`
+  (older files) the first `Bm` is used and the ramp runs from
+  `−s0/(s1−s0)` to `(1−s0)/(s1−s0)` in its space.
+- *Radial.* Only `Bm`, and it is whole: the unit circle about the origin is the
+  full ramp. The file's own PDF page paints the same matrix with
+  `Coords [fx fy 0 0 0 1]`. `Bh` is `hx hy angle length`: the highlight's offset
+  in art space, and again in the unit space as an angle and a share of the
+  radius, `(length·cos a, −length·sin a)`; through `Bm` that is `hx hy` in all
+  78 instances that have one.
+
+**Stops written twice.** See the operator table: `… %_BS` then `%_… Bs`. As
+comments, the stand-in's nine numbers stayed in front of the exact stop's
+operands. Plain stops survived that (their colour is read from the end);
+named ones (styles 3 to 5) took their CMYK from the wrong numbers, which is
+how a logo's red-to-dark-red swatch gradient came in black. Gradients are
+also defined *before* the Swatches panel is listed, so a stop meets a
+swatch's name first: that first sight is now replaced by the swatch's own
+definition (kind and colour) when it comes, in place of a second ink of the
+same name.
+
+**Transparency after a style marker.** The previous round let a name
+dictionary after `n () XW` still reach the object before it, by no longer
+ending the "after an object" state there. `Xy` uses the same state to decide
+whether it belongs to a group that has just closed, so `U`, `6 () XW`,
+`1 0.15 0 0 0 Xy` gave the whole closed group the next path's 15% multiply.
+A marker now ends that for transparency only. Real files also leave such a
+state standing across text objects without resetting it (12 texts in 6 of the
+66 files): type does not take its transparency from `Xy`.
+
+**Hairlines in the visual check.** Poppler, drawing for a screen, widens any
+stroke thinner than a device pixel to one pixel and snaps it to the pixel
+grid (`CairoOutputDev::updateLineWidth`, when not printing). PROOF draws
+strokes as thin as they are. At the check's size a page of 1 pt outlines, or
+a 0.1 pt cut line down a 59 inch banner, then differs in "3%" of its pixels
+although nothing is missing. An artboard that fails is now weighed a second
+time from pictures drawn four times larger and averaged down, with PROOF's
+side keeping lines thinner than a pixel one pixel wide (the renderer's
+"visible hairlines"): both sides then show the same ink for the same line,
+and the limits stay 1% and 2%. Poppler's printing mode would also stop the
+widening but draws images unfiltered, so it isn't used. When the art still
+differs and the caller won't keep it, the remaining artboards aren't drawn.
+
+**Tiles.** An expanded gradient is a clip group of strips that meet along
+whole edges. Each strip is antialiased on its own, so a pixel on a joint is
+partly covered by each and the background shows through: a light hairline at
+every joint, at most zooms. Illustrator's page and print show none. Shapes
+that tile (flat colour, no stroke, straight edges, a whole edge shared with a
+sibling) are imported with `shape-rendering:crispEdges`, which shares the
+pixels out exactly, but only when their other edges can't turn ragged for it:
+those must be horizontal or vertical, or lie where the group's clipping path
+cuts them away. Slanted strips that show their ends keep the joints.
+
+**Text style.** A story's style is now on the `<text>` element, and a run's
+span carries only what differs from it. With everything on the spans, the
+object's own fill and stroke were unset: the Appearance controls showed "?"
+and what they set was overridden by the spans.
+
+**Results.** The opt-in corpus case over all 879 distinct approved files, one
+worker: **768 pass the visual check natively (385 with no reported loss, 383
+with appearances as drawn groups) and 111 use the page**, with no error or
+timeout. Against the 667 of the first baseline that is 101 gained (78 that
+drew differently, 23 from point type) and none lost. Of the 111, 38 still
+draw differently (20 of them within 1.0 to 1.8% by lightness), 15 have
+pattern fills, 15 unknown operators (meshes among them), 7 opacity masks, and
+about 30 text the reader refuses (exact fonts not installed, mostly). The
+same limits of a sampled comparison apply as before.
 
 ## Plan
 

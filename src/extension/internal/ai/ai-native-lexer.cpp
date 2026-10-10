@@ -24,6 +24,9 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 2> SKIPPED{{
 constexpr std::string_view BEGIN_DATA = "%%BeginData:";
 constexpr std::string_view END_DATA = "%%EndData";
 
+/// Operators written as a line's last word after "%_": a gradient's ramp count and its stops.
+constexpr std::array<std::string_view, 3> HIDDEN_OPERATORS{"BS", "Bs", "Br"};
+
 bool is_space(char c)
 {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\x0c' || c == '\0';
@@ -286,7 +289,26 @@ std::optional<Token> Lexer::next()
                 t.view = l.substr(1);
                 return t;
             }
-            line(); // a comment later in a line
+            auto const rest = line(); // a comment later in a line
+            // A gradient definition ends its lines with an operator kept out of the printed
+            // format's sight ("c m y k 1 1 6 50 100 %_BS"). It takes that line's operands;
+            // skipped, they piled up in front of the next operator's.
+            for (auto const op : HIDDEN_OPERATORS) {
+                if (rest.size() < op.size() + 2 || rest.substr(0, 2) != "%_" || rest.substr(2, op.size()) != op) {
+                    continue;
+                }
+                auto tail = rest.substr(op.size() + 2);
+                while (!tail.empty() && is_space(tail.back())) {
+                    tail.remove_suffix(1);
+                }
+                if (tail.empty()) {
+                    Token t;
+                    t.kind = Token::Kind::Word;
+                    t.view = rest.substr(2, op.size());
+                    t.hidden = true;
+                    return t;
+                }
+            }
             continue;
         }
         Token t;

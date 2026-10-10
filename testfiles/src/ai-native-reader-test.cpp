@@ -96,7 +96,7 @@ std::string read_error(std::string const &recs)
 
 TEST(AiNativeLexer, HiddenLinesAndComments)
 {
-    auto toks = all_tokens("%AI5_BeginLayer\r\n1 (a\\)b) Ln\r%_/X : ;\n0 %_BS\n<4142>\n");
+    auto toks = all_tokens("%AI5_BeginLayer\r\n1 (a\\)b) Ln\r%_/X : ;\n0 %_note 7\n<4142>\n");
     ASSERT_EQ(toks.size(), 9u);
     EXPECT_EQ(toks[0].kind, Token::Kind::Comment);
     EXPECT_EQ(toks[0].view, "AI5_BeginLayer");
@@ -109,6 +109,23 @@ TEST(AiNativeLexer, HiddenLinesAndComments)
     EXPECT_TRUE(toks[6].hidden);
     EXPECT_FALSE(toks[7].hidden); // a %_ later in a line is a comment
     EXPECT_EQ(toks[8].string, "AB");
+}
+
+TEST(AiNativeLexer, GradientOperatorsEndingALineAreRead)
+{
+    // A gradient's ramp count and stops end their lines with an operator after "%_".
+    auto toks = all_tokens("1 %_Br\n0 0 0 1 1 1 6 50 100 %_BS \r\n0 0 50 100 %_Bs\n3 %_Bsx\n4 %_BS 5\n");
+    ASSERT_EQ(toks.size(), 19u);
+    EXPECT_EQ(toks[1].kind, Token::Kind::Word);
+    EXPECT_EQ(toks[1].view, "Br");
+    EXPECT_TRUE(toks[1].hidden);
+    EXPECT_FALSE(toks[2].hidden);
+    EXPECT_EQ(toks[11].view, "BS");
+    EXPECT_TRUE(toks[11].hidden);
+    EXPECT_EQ(toks[16].view, "Bs");
+    // Anything else after "%_" in a line stays a comment.
+    EXPECT_EQ(toks[17].number, 3.0);
+    EXPECT_EQ(toks[18].number, 4.0);
 }
 
 TEST(AiNativeLexer, ImageDataIsOneToken)
@@ -366,6 +383,58 @@ TEST(AiNativeReader, PaletteSettlesInks)
     EXPECT_EQ(fill.kind, Paint::Kind::Gradient);
 }
 
+TEST(AiNativeReader, StopsOfGlobalSwatchesAsIllustratorWritesThem)
+{
+    // Each stop twice: a process stand-in ending "%_BS", then the exact stop on a "%_" line.
+    // Gradients come before the Swatches panel, so a stop meets a swatch's name first.
+    std::string setup =
+        "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n<\n000102\n>\n<\n030405\n>\n1 %_Br\n[\n"
+        "0.25 1 1 0.45 1 1 6 50 75.4601 %_BS\n%_0.25 1 1 0.45 (Logo Red) 0 0 5 1 6 50 75.4601 Bs\n"
+        "0 1 1 0 1 1 6 68 0 %_BS\n%_0 1 1 0 1 1 6 68 0 Bs\n"
+        "0.02 0.1 0.86 0 1 1 6 50 100 %_BS\n%_0.02 0.1 0.86 0 89 0 76 (PANTONE 114 C) 0.5 2 5 1 6 50 100 Bs\n"
+        "BD\n%AI5_EndGradient\n"
+        "%AI5_BeginPalette\n0 0 Pb\n0.25 1 1 0.45 (Logo Red) 0 0 Xk\n(Logo Red) Pc\n"
+        "0.02 0.1 0.86 0 89 0 76 (PANTONE 114 C) 0 2 Xx\n(PANTONE 114 C) Pc\nPB\n%AI5_EndPalette\n";
+    std::string art = "0 g\n" + rect(0, 0, 100, 10) + "Bb\n0 (G) 0 5 0 100 1 0 0 1 0 0 Bg\nf\n0 BB\n";
+    auto doc = read_ok(records(layer("L", art), setup));
+    ASSERT_EQ(doc.gradients.size(), 1u);
+    auto const &g = doc.gradients[0];
+    ASSERT_EQ(g.stops.size(), 3u);
+    // Ramp order: the plain red at 0, the swatch at 75.46, the spot at 100.
+    EXPECT_EQ(g.stops[0].ink, -1);
+    EXPECT_EQ(g.stops[0].color, Color::cmyk(0, 1, 1, 0));
+    EXPECT_NEAR(g.stops[0].midpoint, 0.68, 1e-9);
+    ASSERT_GE(g.stops[1].ink, 0);
+    EXPECT_EQ(g.stops[1].color, Color::cmyk(0.25, 1, 1, 0.45));
+    EXPECT_EQ(doc.inks[g.stops[1].ink].name, "Logo Red");
+    EXPECT_EQ(doc.inks[g.stops[1].ink].kind, Ink::Kind::Process);
+    EXPECT_EQ(doc.inks[g.stops[1].ink].color, Color::cmyk(0.25, 1, 1, 0.45));
+    ASSERT_GE(g.stops[2].ink, 0);
+    EXPECT_EQ(doc.inks[g.stops[2].ink].kind, Ink::Kind::Spot);
+    EXPECT_EQ(doc.inks[g.stops[2].ink].color, Color::lab(89, 0, 76));
+    EXPECT_NEAR(g.stops[2].tint, 0.5, 1e-9);
+    // One ink a name: the stop's first sight of it became the swatch.
+    EXPECT_EQ(doc.inks.size(), 2u);
+}
+
+TEST(AiNativeReader, StopStandInsCountOnlyWithoutTheExactStop)
+{
+    // A stand-in with no exact stop after it is the stop; the old form ends its line "%_Bs".
+    std::string setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 %_Br\n[\n"
+                        "0 0 0 1 1 1 6 50 100 %_BS\n1 0 0 0 1 1 6 50 0 %_BS\nBD\n%AI5_EndGradient\n"
+                        "%AI5_BeginGradient: (Old)\n(Old) 0 2 Bd\n[\n0 %_Br\n[\n"
+                        "0 0 50 100 %_Bs\n0.3 0.02 0.07 0 1 50 0 %_Bs\nBD\n%AI5_EndGradient\n";
+    std::string art = "0 g\n" + rect(0, 0, 100, 10) + "Bb\n0 (G) 0 5 0 100 1 0 0 1 0 0 Bg\nf\n0 BB\n";
+    auto doc = read_ok(records(layer("L", art), setup));
+    ASSERT_EQ(doc.gradients.size(), 2u);
+    ASSERT_EQ(doc.gradients[0].stops.size(), 2u);
+    EXPECT_EQ(doc.gradients[0].stops[0].color, Color::cmyk(1, 0, 0, 0));
+    EXPECT_EQ(doc.gradients[0].stops[1].color, Color::cmyk(0, 0, 0, 1));
+    ASSERT_EQ(doc.gradients[1].stops.size(), 2u);
+    EXPECT_EQ(doc.gradients[1].stops[0].color, Color::cmyk(0.3, 0.02, 0.07, 0));
+    EXPECT_EQ(doc.gradients[1].stops[1].color, Color::gray(0));
+}
+
 TEST(AiNativeReader, Gradients)
 {
     std::string setup = "%AI5_BeginGradient: (G)\n(G) 1 2 Bd\n[\n0 0 0 0 1 0 0 2 0.5 6 30 100 Bs\n0.81 0 1 6 50 0 Bs\nBD\n%AI5_EndGradient\n";
@@ -385,6 +454,26 @@ TEST(AiNativeReader, Gradients)
     EXPECT_EQ(p.gradient.gradient, 0);
     EXPECT_EQ(p.gradient.bm, Geom::Affine(50, 0, 0, -50, 100, 100));
     EXPECT_EQ(p.gradient.hilight, Geom::Point(2, 3));
+    EXPECT_TRUE(p.gradient.bm_given);
+    EXPECT_FALSE(p.gradient.xm);
+}
+
+TEST(AiNativeReader, GradientMatricesOfSeveralRamps)
+{
+    // Xm for the whole ramp, then a Bm for each ramp between two stops, with Bc caps.
+    std::string setup = "%AI5_BeginGradient: (G)\n(G) 0 3 Bd\n[\n0 0 50 100 Bs\n0.5 0 50 40 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    std::string art = "0 g\n" + rect(0, 0, 100, 100) +
+                      "Bb\n3 -4 -30 0.5 Bh\n1 (G) 0.1 0 -54 0.5 1 0 0 1 0 0 1 Bg\n100 0 0 -100 0 100 Xm\n"
+                      "900 0 0 -100 -900 100 Bc\n40 0 0 -100 0 100 Bm\n60 0 0 -100 40 100 Bm\n900 0 0 -100 100 100 Bc\nf\n0 BB\n";
+    auto doc = read_ok(records(layer("L", art), setup));
+    auto const &p = doc.layers[0].children.at(0).fill->gradient;
+    ASSERT_TRUE(p.xm);
+    EXPECT_EQ(*p.xm, Geom::Affine(100, 0, 0, -100, 0, 100));
+    EXPECT_TRUE(p.bm_given);
+    EXPECT_EQ(p.bm, Geom::Affine(40, 0, 0, -100, 0, 100));
+    EXPECT_EQ(p.hilight, Geom::Point(3, -4));
+    EXPECT_EQ(p.hilight_angle, -30.0);
+    EXPECT_EQ(p.hilight_length, 0.5);
 }
 
 // ---- the reader: images, drawn looks, text -----------------------------------------------
@@ -460,20 +549,53 @@ TEST(AiNativeReader, GroupNamesAfterAppearanceMarkers)
 
 TEST(AiNativeReader, TextAppearanceKeepsNamedGroupsAndAppliesOpacityOnce)
 {
-    for (auto const &state : {std::string("0 0.5 0 0 0 Xy\n"),
-                              std::string("%_/ArtDictionary :\n%_(Named text group) /UnicodeString (AIArtName) ,\n%_;\n")}) {
-        auto art = "u\n/AI11Text :\n1 /FreeUndo ,\n4 /StoryIndex ,\n;\nU\n6 () XW\n" + state +
-                   "%_/AI11Text :\n%_0 /FreeUndo ,\n%_56 /StoryIndex ,\n%_;\n1 (Text appearance) XW\n";
-        auto doc = read_ok(records(layer("L", art)));
-        ASSERT_EQ(doc.layers[0].children.size(), 1u);
-        auto const &group = doc.layers[0].children[0];
-        EXPECT_EQ(group.kind, Node::Kind::Group);
-        ASSERT_EQ(group.children.size(), 1u);
-        EXPECT_EQ(group.children[0].story, 56u);
-        EXPECT_EQ(group.children[0].transparency.opacity, 1.0);
-        if (state.front() == '0') EXPECT_EQ(group.transparency.opacity, 0.5);
-        else EXPECT_EQ(group.name, "Named text group");
-    }
+    auto const proxy = std::string("u\n/AI11Text :\n1 /FreeUndo ,\n4 /StoryIndex ,\n;\nU\n");
+    auto const canonical = std::string("%_/AI11Text :\n%_0 /FreeUndo ,\n%_56 /StoryIndex ,\n%_;\n1 (Text appearance) XW\n");
+    // A name after the marker is the wrapper's: it stays, around the canonical story.
+    auto named = read_ok(records(layer("L", proxy + "6 () XW\n%_/ArtDictionary :\n%_(Named text group) /UnicodeString "
+                                                    "(AIArtName) ,\n%_;\n" + canonical)));
+    ASSERT_EQ(named.layers[0].children.size(), 1u);
+    auto const &group = named.layers[0].children[0];
+    EXPECT_EQ(group.kind, Node::Kind::Group);
+    EXPECT_EQ(group.name, "Named text group");
+    ASSERT_EQ(group.children.size(), 1u);
+    EXPECT_EQ(group.children[0].story, 56u);
+    EXPECT_EQ(group.children[0].transparency.opacity, 1.0);
+    // Transparency straight after the wrapper closes is the wrapper's, once.
+    auto faded = read_ok(records(layer("L", proxy + "0 0.5 0 0 0 Xy\n6 () XW\n" + canonical)));
+    ASSERT_EQ(faded.layers[0].children.size(), 1u);
+    EXPECT_EQ(faded.layers[0].children[0].kind, Node::Kind::Group);
+    EXPECT_EQ(faded.layers[0].children[0].transparency.opacity, 0.5);
+    ASSERT_EQ(faded.layers[0].children[0].children.size(), 1u);
+    EXPECT_EQ(faded.layers[0].children[0].children[0].story, 56u);
+    EXPECT_EQ(faded.layers[0].children[0].children[0].transparency.opacity, 1.0);
+    // After the marker it is neither's: a state left for the paths that follow. (Real files
+    // leave such states standing across text objects without resetting them: type doesn't
+    // take its transparency from Xy.) The plain wrapper gives way to the canonical story.
+    auto later = read_ok(records(layer("L", proxy + "6 () XW\n1 0.2 0 0 0 Xy\n" + canonical)));
+    ASSERT_EQ(later.layers[0].children.size(), 1u);
+    EXPECT_EQ(later.layers[0].children[0].kind, Node::Kind::Text);
+    EXPECT_EQ(later.layers[0].children[0].story, 56u);
+    EXPECT_EQ(later.layers[0].children[0].transparency.opacity, 1.0);
+}
+
+TEST(AiNativeReader, TransparencyAfterAStyleMarkerIsTheNextObjects)
+{
+    // As real files write it: a group closes, its style marker follows, and then the state
+    // of the next object. That 15% multiply is the small path's, not the whole group's.
+    std::string art = "0 g\nu\n" + rect(0, 0, 50, 50) + "f\nU\n0 0 Xd\n6 () XW\n1 0.15 0 0 0 Xy\n" + rect(0, 0, 5, 5) + "f\n";
+    auto doc = read_ok(records(layer("L", art)));
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 2u);
+    EXPECT_EQ(kids[0].kind, Node::Kind::Group);
+    EXPECT_EQ(kids[0].transparency.opacity, 1.0);
+    EXPECT_EQ(kids[0].transparency.blend, 0);
+    EXPECT_EQ(kids[1].transparency.opacity, 0.15);
+    EXPECT_EQ(kids[1].transparency.blend, 1);
+    // Without a marker in between it is the group's, as before.
+    art = "0 g\nu\n" + rect(0, 0, 50, 50) + "f\nU\n1 0.15 0 0 0 Xy\n";
+    doc = read_ok(records(layer("L", art)));
+    EXPECT_EQ(doc.layers[0].children.at(0).transparency.opacity, 0.15);
 }
 
 TEST(AiNativeReader, IgnoredCensusOperators)

@@ -82,7 +82,18 @@ struct Ink
     std::array<double, 4> cmyk{};    ///< Illustrator's CMYK equivalent.
 };
 
-/// Where a gradient sits on an object, in art space (Bg, Bm, Bh).
+/**
+ * Where a gradient sits on an object (Bg, Xm, Bm, Bh).
+ *
+ * Old files give Bg's origin, angle and length in art space, with Bg's own matrix for the
+ * transformations since. Later ones also write a matrix that carries the gradient's own
+ * unit space onto the art, and then Bg's values only describe the same placement
+ * relative to the object's bounds:
+ *  - Xm (linear): the whole ramp runs from 0 to 1 along x.
+ *  - Bm, radial: the whole ramp is the unit circle about the origin.
+ *  - Bm, linear: the matrix for PostScript, which draws a gradient ramp by ramp. 0 to 1
+ *    is the span between the first two stops only; Xm is the same matrix for all of it.
+ */
 struct GradientPlacement
 {
     int gradient = -1; ///< Index into Document::gradients.
@@ -90,8 +101,14 @@ struct GradientPlacement
     double angle = 0.0; ///< Degrees.
     double length = 1.0;
     Geom::Affine bg;    ///< Bg's own matrix.
-    Geom::Affine bm;    ///< The gradient matrix (Bm), identity without one.
-    Geom::Point hilight; ///< The focal point's offset from the origin.
+    Geom::Affine bm;    ///< Bm, identity without one.
+    bool bm_given = false;
+    std::optional<Geom::Affine> xm; ///< Xm.
+    Geom::Point hilight; ///< The focal point's offset from the origin, in art space.
+    /// The same offset in the gradient's unit space, as Bh also gives it: the angle in
+    /// degrees (clockwise in that space) and the length as a share of the radius.
+    double hilight_angle = 0.0;
+    double hilight_length = 0.0;
 };
 
 struct Paint

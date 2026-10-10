@@ -144,13 +144,22 @@ void SPNamedView::set_clip_to_page(SPDesktop* desktop, bool enable) {
     }
 }
 
-static auto const default_desk_color = Inkscape::Colors::Color{0xd1d1d1, false};
+static auto const default_desk_color = Inkscape::Colors::Color{0x606060ff, false}; // 0xRRGGBBAA
 static auto const default_guide_color = Inkscape::Colors::Color{0x0086e5, false};
 static auto const default_guide_hi_color = Inkscape::Colors::Color{0xff0000, false};
 
+// PROOF: the desk around the artboards belongs to the workspace, as Illustrator's canvas
+// does: one colour for every document, whatever the file was saved with. The file's own
+// inkscape:deskcolor is still read and written back unchanged.
 Inkscape::Colors::Color SPNamedView::getDeskColor() const
 {
-    return _desk_color.value_or(default_desk_color);
+    auto const chosen = Inkscape::Preferences::get()->getString("/options/workspace/deskcolor");
+    if (!chosen.empty()) {
+        if (auto color = Inkscape::Colors::Color::parse(chosen.raw())) {
+            return *color;
+        }
+    }
+    return default_desk_color;
 }
 
 Inkscape::Colors::Color SPNamedView::getGuideColor() const
