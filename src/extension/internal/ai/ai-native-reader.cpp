@@ -365,6 +365,8 @@ bool ignored(std::string_view w)
     return std::find(std::begin(IGNORED), std::end(IGNORED), w) != std::end(IGNORED);
 }
 
+std::string join_and(std::set<std::string> const &items);
+
 // ---- the reader (read.rs) ---------------------------------------------------------------
 
 struct GState
@@ -388,7 +390,7 @@ struct LayerAttrs
     LayerOptions options;
 };
 
-enum class FrameKind { Layer, Group, Compound, Clip, Obj };
+enum class FrameKind { Layer, Group, Compound, Clip, Obj, Pattern };
 
 struct Frame
 {
@@ -416,6 +418,22 @@ struct Instance
     std::optional<std::string> name;
     GradientPlacement placement;
 };
+
+/// A placed file being read, between %AI5_BeginPlace and %AI5_EndPlace.
+struct Placing
+{
+    bool hidden = false; ///< Written on %_ lines.
+    int file_type = -1;
+    std::optional<Placed> placed; ///< Once its placement (`) has been read.
+};
+
+bool finite(Geom::Affine const &m)
+{
+    for (int i = 0; i < 6; ++i) {
+        if (!std::isfinite(m[i])) return false;
+    }
+    return true;
+}
 
 class Reader
 {
@@ -460,6 +478,11 @@ private:
 
     void unreadable(std::string const &what)
     {
+        // In a pattern's tile it only matters to what is painted with that pattern.
+        if (_pattern_unread) {
+            _pattern_unread->insert(what);
+            return;
+        }
         (shown() ? _unsupported : _hidden_unread).insert(what);
     }
 
@@ -471,8 +494,17 @@ private:
     }
 
     // comments
-    void comment(std::string_view c);
+    void comment(std::string_view c, bool hidden);
     void skip_to(std::string_view end);
+    void token(Token &t, bool hidden);
+
+    // patterns
+    void pattern_section();
+    void pattern_paint(bool fill, Values const &vals);
+
+    // placed files
+    void place_file(Values const &vals);
+    void end_place();
 
     // frames
     void open(Frame f);
@@ -506,7 +538,7 @@ private:
     void paint(std::string_view op, bool hidden, bool guide);
 
     // images
-    void image(std::string_view data);
+    void image(std::string_view data, bool hidden);
 
     Document finish();
     std::optional<Geom::Rect> sized_board() const;
@@ -534,6 +566,10 @@ private:
     std::optional<Paint> _pending_fill, _pending_stroke;
     bool _raster = false;
     std::string _raster_space;
+    std::optional<Placing> _place;
+    std::map<std::string, int> _pattern_index;
+    /// While a pattern's tile is read: what it holds that isn't.
+    std::optional<std::set<std::string>> _pattern_unread;
 
     bool _after_object = false;
     /// A style marker (XW) has come since the last object. Its name can still follow, but
@@ -553,14 +589,7 @@ std::optional<Document> Reader::run(std::string &error)
     try {
         while (auto t = _lex.next()) {
             if (_done) break;
-            switch (t->kind) {
-                case Token::Kind::Number: push(Value::number(t->number)); break;
-                case Token::Kind::String: push(Value::string(std::move(t->string))); break;
-                case Token::Kind::Name: push(Value::name(text_of(t->view))); break;
-                case Token::Kind::Word: op(t->view, t->hidden); break;
-                case Token::Kind::Comment: comment(t->view); break;
-                case Token::Kind::Data: image(t->view); break;
-            }
+            token(*t, t->hidden);
         }
         for (auto const &f : _frames) {
             if (f.kind == FrameKind::Layer) fail("it ends inside a layer");
@@ -572,14 +601,68 @@ std::optional<Document> Reader::run(std::string &error)
     }
 }
 
+/// Act on a token; `hidden` says whether what it makes counts as written on %_ lines.
+void Reader::token(Token &t, bool hidden)
+{
+    switch (t.kind) {
+        case Token::Kind::Number: push(Value::number(t.number)); break;
+        case Token::Kind::String: push(Value::string(std::move(t.string))); break;
+        case Token::Kind::Name: push(Value::name(text_of(t.view))); break;
+        case Token::Kind::Word: op(t.view, hidden); break;
+        case Token::Kind::Comment: comment(t.view, t.hidden); break;
+        case Token::Kind::Data: image(t.view, hidden); break;
+    }
+}
+
 // ---- comments --------------------------------------------------------------------------
 
-void Reader::comment(std::string_view c)
+void Reader::comment(std::string_view c, bool hidden)
 {
     while (!c.empty() && (c.back() == '\r' || c.back() == '\n' || c.back() == ' ' || c.back() == '\t')) {
         c.remove_suffix(1);
     }
     auto const m = marker(c);
+    // An image or a placed file is written with its markers wherever it is, on %_ lines too.
+    if (m == "BeginRaster") {
+        _raster = true;
+        _raster_space.clear();
+        return;
+    }
+    if (m == "EndRaster") {
+        _raster = false;
+        return;
+    }
+    if (m == "BeginPlace") {
+        _place = Placing{hidden};
+        return;
+    }
+    if (m == "EndPlace") {
+        end_place();
+        return;
+    }
+    if (_place) {
+        if (c.substr(0, 10) == "%FileType:") {
+            auto const n = numbers_in(c.substr(10));
+            if (!n.empty() && n[0] >= 0 && n[0] < 1000) _place->file_type = static_cast<int>(n[0]);
+            return;
+        }
+        if (m == "EndPlacedRelativePath") {
+            // The folder is the string between the two markers.
+            auto const vals = operands();
+            if (_place->placed) {
+                for (auto const &v : vals) {
+                    if (v.kind == Value::Kind::Str && v.str.size() <= 4096) _place->placed->folder = v.str;
+                }
+            }
+            return;
+        }
+    }
+    // Nothing else on a %_ line is a section of the document.
+    if (hidden) return;
+    if (m == "BeginPattern") {
+        pattern_section();
+        return;
+    }
     for (auto const &[begin, end] : SKIPPED) {
         if (m == begin) {
             skip_to(end);
@@ -612,13 +695,6 @@ void Reader::comment(std::string_view c)
         Frame f;
         f.kind = FrameKind::Layer;
         open(std::move(f));
-    } else if (starts("AI5_BeginRaster")) {
-        _raster = true;
-        _raster_space.clear();
-    } else if (starts("AI5_EndRaster")) {
-        _raster = false;
-    } else if (starts("AI5_BeginPlace")) {
-        unreadable("placed files");
     } else if (_frames.empty() && starts("%HiResBoundingBox:")) {
         if (auto r = four(value("%HiResBoundingBox:"))) _hires = r;
     } else if (_frames.empty() && starts("%BoundingBox:")) {
@@ -655,7 +731,7 @@ void Reader::skip_to(std::string_view end)
     if (end == "End_Versioned_Content") begin = "Begin_Content_if_version_gt";
     std::size_t depth = 0;
     while (auto t = _lex.next()) {
-        if (t->kind != Token::Kind::Comment) continue;
+        if (t->kind != Token::Kind::Comment || t->hidden) continue;
         auto const m = marker(t->view);
         if (!begin.empty() && m == begin) {
             ++depth;
@@ -835,8 +911,11 @@ void Reader::op(std::string_view w, bool hidden)
         if (!_frames.empty() && _frames.back().kind == FrameKind::Obj) {
             auto &f = _frames.back();
             add_entry(*f.obj, _stack, f.base);
-            // Binary data in ASCII85 follows, up to its ~>.
-            if (f.obj->type == "Binary" && !f.obj->entries.empty() && f.obj->entries.back().first == "ASCII85Decode") {
+            // Binary data in ASCII85 follows, up to its ~>: lines that start with a percent
+            // sign, some of them by chance with "%_". A foreign object's data is written
+            // the same way after its /Data.
+            auto const &key = f.obj->entries.empty() ? std::optional<std::string>() : f.obj->entries.back().first;
+            if ((f.obj->type == "Binary" && key == "ASCII85Decode") || (f.obj->type == "ForeignObject" && key == "Data")) {
                 _lex.skip_past("~>");
             }
         }
@@ -847,7 +926,14 @@ void Reader::op(std::string_view w, bool hidden)
         return;
     }
     // What follows an object (its name, transparency and style) ends with anything else.
-    if (w != "Xy" && w != "Xd" && w != "XW" && w != "BB") _after_object = false;
+    // An image is an object once its samples are read, and is written with an `XH` and an
+    // `N` that paints no path after them: its name and style still follow those.
+    bool follows = w == "Xy" || w == "Xd" || w == "XW" || w == "BB";
+    if (!follows && (w == "XH" || ((w == "N" || w == "n") && !_current && _path.empty()))) {
+        auto const *last = last_object();
+        follows = last && (last->kind == Node::Kind::Image || last->kind == Node::Kind::Placed);
+    }
+    if (!follows) _after_object = false;
     Values vals = operands();
     if (_palette) {
         // The Swatches panel: spot inks (Xx), global process colours (Xk) and named
@@ -926,7 +1012,7 @@ void Reader::op(std::string_view w, bool hidden)
              w == "Xx" || w == "XX" || w == "Xk" || w == "XK" || w == "Xs" || w == "XS" || w == "Xz" || w == "XZ") {
         color(w, vals);
     } else if (w == "p" || w == "P") {
-        unreadable("pattern fills");
+        pattern_paint(w == "p", vals);
     } else if (w == "O") {
         _gs.overprint_fill = last_is_one();
     } else if (w == "R") {
@@ -1038,17 +1124,238 @@ void Reader::op(std::string_view w, bool hidden)
     // Type in the legacy format.
     else if (w == "To" || w == "TO" || w == "Tp" || w == "TP" || w == "Tx" || w == "TX" || w == "Tj" || w == "Tk") {
         unreadable("type in the legacy format");
+    }
+    // Placed files: ` places the file, ~ ends it.
+    else if (w == "`" && _place) {
+        place_file(vals);
+    } else if (w == "~" && _place) {
     } else if (ignored(w)) {
     } else if (_frames.empty()) {
         // Before the art, the setup runs procedures of the printing format.
     } else {
         std::string const op(w.substr(0, 24));
-        if (!shown()) {
+        if (_pattern_unread) {
+            if (_pattern_unread->size() < 16) _pattern_unread->insert("the operator `" + op + "`");
+        } else if (!shown()) {
             if (_hidden_unread.size() < 16) _hidden_unread.insert("`" + op + "`");
         } else if (_unknown.size() < 16) {
             _unknown.insert(op);
         }
     }
+}
+
+// ---- patterns ----------------------------------------------------------------------------
+
+/**
+ * A pattern's definition, after its %AI3_BeginPattern:
+ *
+ *     (name) llx lly urx ury
+ *     %_... the tile's art, every line of it hidden ...
+ *     E
+ *     %AI3_EndPattern
+ *
+ * Illustrator 8 and older write the art as procedures of the printing format instead
+ * (`[ %AI3_Tile (...) @ ... ] E`); those aren't read, and only what is painted with such a
+ * pattern is refused for it.
+ */
+void Reader::pattern_section()
+{
+    Pattern pattern;
+    std::array<double, 4> box{};
+    bool headed = false, ended = false;
+    auto t = _lex.next();
+    if (t && t->kind == Token::Kind::String && !t->hidden) {
+        pattern.name = text_of(t->string);
+        headed = true;
+        for (auto &v : box) {
+            t = _lex.next();
+            if (!t || t->kind != Token::Kind::Number || t->hidden) {
+                headed = false;
+                break;
+            }
+            v = t->number;
+        }
+    }
+    ended = t && t->kind == Token::Kind::Comment && !t->hidden && marker(t->view) == "EndPattern";
+    if (headed) {
+        pattern.tile = Geom::Rect(Geom::Point(box[0], box[1]), Geom::Point(box[2], box[3]));
+        headed = sane(pattern.tile) && pattern.tile.width() > 1e-6 && pattern.tile.height() > 1e-6;
+    }
+    if (!headed) {
+        if (!ended) skip_to("EndPattern");
+        return;
+    }
+
+    // The tile's art is read like a layer's, into a frame of its own and with a state of
+    // its own. Whatever goes wrong in it is the pattern's problem, not the document's.
+    auto const depth = _frames.size();
+    auto const stack = _stack.size();
+    auto const gs = _gs;
+    end_path_quietly();
+    Frame frame;
+    frame.kind = FrameKind::Pattern;
+    open(std::move(frame));
+    _gs = GState();
+    _pattern_unread.emplace();
+    std::string problem;
+    bool closed = false;
+    try {
+        while ((t = _lex.next())) {
+            if (!t->hidden) {
+                if (t->kind == Token::Kind::Comment) {
+                    if (marker(t->view) == "EndPattern") {
+                        ended = true;
+                        break;
+                    }
+                    continue;
+                }
+                if (t->kind == Token::Kind::Word && t->view == "E") {
+                    closed = true;
+                    continue;
+                }
+                problem = "art in the format of Illustrator 8 and older";
+                break;
+            }
+            // Its lines are all hidden; what they make isn't a second copy of anything.
+            if (!closed) token(*t, false);
+        }
+    } catch (Stop const &e) {
+        problem = e.what();
+    }
+    if (problem.empty() && (_frames.size() != depth + 1 || _frames.back().kind != FrameKind::Pattern)) {
+        problem = "art that doesn't end";
+    }
+    if (problem.empty()) {
+        pattern.art = std::move(_frames.back().children);
+        auto has_text = [](auto &&self, std::vector<Node> const &nodes) -> bool {
+            for (auto const &n : nodes) {
+                if (n.kind == Node::Kind::Text || self(self, n.children)) return true;
+            }
+            return false;
+        };
+        if (has_text(has_text, pattern.art)) _pattern_unread->insert("type");
+        if (!_pattern_unread->empty()) problem = join_and(*_pattern_unread);
+    }
+    _frames.erase(_frames.begin() + depth, _frames.end());
+    _stack.resize(std::min(stack, _stack.size()));
+    _pattern_unread.reset();
+    _gs = gs;
+    end_path_quietly();
+    _instance.reset();
+    _pending_fill.reset();
+    _pending_stroke.reset();
+    _gradient_def.reset();
+    _place.reset();
+    _raster = false;
+    _after_object = false;
+    _marked = false;
+    if (!problem.empty()) {
+        pattern.art.clear();
+        pattern.unread = problem;
+    }
+    if (!ended) skip_to("EndPattern");
+    _pattern_index[pattern.name] = static_cast<int>(_doc.patterns.size());
+    _doc.patterns.push_back(std::move(pattern));
+}
+
+/// `(name) px py sx sy angle rf r k ka [a b c d tx ty] p`: paint with a pattern. The matrix
+/// carries the pattern's space onto the art. The numbers before it are how Illustrator 8
+/// and older moved, scaled, turned, mirrored and slanted a pattern; later versions put all
+/// of that in the matrix and leave them at rest (0 0 1 1 0 0 0 0 0).
+void Reader::pattern_paint(bool fill, Values const &vals)
+{
+    int at = -1;
+    for (int i = static_cast<int>(vals.size()) - 1; i >= 0; --i) {
+        if (vals[i].kind == Value::Kind::Str) {
+            at = i;
+            break;
+        }
+    }
+    std::vector<double> n, m;
+    for (std::size_t i = at + 1; at >= 0 && i < vals.size(); ++i) {
+        if (auto v = vals[i].as_num()) n.push_back(*v);
+        if (vals[i].kind == Value::Kind::Arr) m = nums_of(*vals[i].arr);
+    }
+    auto &paint = fill ? _gs.fill : _gs.stroke;
+    // Whatever happens, the colour before it no longer applies: unread, it paints nothing.
+    paint.reset();
+    if (at < 0 || m.size() != 6) {
+        unreadable("pattern fills written in a way PROOF doesn't know");
+        return;
+    }
+    auto const it = _pattern_index.find(*vals[at].text());
+    if (it == _pattern_index.end()) {
+        unreadable("pattern fills whose pattern isn't in the file");
+        return;
+    }
+    auto const &pattern = _doc.patterns[it->second];
+    if (!pattern.unread.empty()) {
+        unreadable("pattern fills with " + pattern.unread);
+        return;
+    }
+    constexpr double AT_REST[] = {0, 0, 1, 1, 0, 0, 0, 0, 0};
+    bool rest = n.size() >= 9;
+    for (std::size_t i = 0; rest && i < 9; ++i) rest = std::abs(n[i] - AT_REST[i]) < 1e-9;
+    Geom::Affine const matrix(m[0], m[1], m[2], m[3], m[4], m[5]);
+    if (!rest || !finite(matrix) || std::abs(matrix.det()) < 1e-12) {
+        unreadable("pattern fills placed the way Illustrator 8 and older placed them");
+        return;
+    }
+    Paint p;
+    p.kind = Paint::Kind::Pattern;
+    p.pattern = it->second;
+    p.pattern_matrix = matrix;
+    paint = p;
+}
+
+// ---- placed files ------------------------------------------------------------------------
+
+/// `[a b c d tx ty] llx lly urx ury … (path)` then the operator: where a placed file lies.
+void Reader::place_file(Values const &vals)
+{
+    std::vector<double> m, box;
+    std::string path;
+    bool after = false;
+    for (auto const &v : vals) {
+        if (v.kind == Value::Kind::Arr) {
+            m = nums_of(*v.arr);
+            after = true;
+            box.clear();
+        } else if (after && v.kind == Value::Kind::Num) {
+            box.push_back(v.num);
+        } else if (v.kind == Value::Kind::Str) {
+            path = v.str;
+        }
+    }
+    if (m.size() != 6 || box.size() < 4 || path.empty() || path.size() > 4096) return;
+    Placed p;
+    p.matrix = Geom::Affine(m[0], m[1], m[2], m[3], m[4], m[5]);
+    p.box = Geom::Rect(Geom::Point(box[0], box[1]), Geom::Point(box[2], box[3]));
+    if (!finite(p.matrix) || std::abs(p.matrix.det()) < 1e-12 || !sane(p.box * p.matrix) || p.box.width() < 1e-6 ||
+        p.box.height() < 1e-6) {
+        return;
+    }
+    p.path = std::move(path);
+    p.file_type = _place->file_type;
+    _place->placed = std::move(p);
+}
+
+void Reader::end_place()
+{
+    if (!_place) return;
+    auto placing = std::move(*_place);
+    _place.reset();
+    if (!placing.placed) {
+        // An embedded EPS, or a placement written some other way.
+        unreadable("placed files of a kind PROOF doesn't read");
+        return;
+    }
+    if (_frames.empty()) return;
+    auto node = new_node(Node::Kind::Placed, _gs);
+    node.transparency = _gs.transparency;
+    node.placed = static_cast<int>(_doc.placed.size());
+    _doc.placed.push_back(std::move(*placing.placed));
+    add(std::move(node), placing.hidden);
 }
 
 void Reader::begin_obj(bool hidden)
@@ -1083,6 +1390,11 @@ void Reader::end_obj()
         auto const disabled = f.obj->nums("Disabled");
         if (disabled.empty() || disabled.back() != 1.0) unreadable("opacity masks");
     }
+    if (type == "ForeignObject") {
+        // Art of another format that Illustrator keeps as it came (from a placed or pasted
+        // PDF, mostly) and can't edit either: a blob with where it goes.
+        unreadable("art kept in another format (foreign objects)");
+    }
     if (!_frames.empty() && _frames.back().kind == FrameKind::Obj) {
         Value v;
         v.kind = Value::Kind::Dict;
@@ -1106,6 +1418,8 @@ void Reader::text_slot(Obj const &o)
     auto n = new_node(Node::Kind::Text, _gs);
     auto const story = o.nums("StoryIndex");
     if (!story.empty() && story.front() >= 0 && story.front() < 4294967295.0) n.story = static_cast<unsigned>(story.front());
+    auto const drawn = o.nums("FreeUndo");
+    n.text_proxy = !drawn.empty() && drawn.front() == 1.0;
     add(std::move(n), _obj_hidden);
 }
 
@@ -1313,6 +1627,108 @@ void strip_commented(Node &n)
     for (auto &k : c) strip_commented(k);
 }
 
+/// The type an appearance drew, in `n` and what it holds, in order.
+void proxies_in(Node &n, std::vector<Node *> &out)
+{
+    if (n.kind == Node::Kind::Text && n.text_proxy) out.push_back(&n);
+    for (auto &k : n.children) proxies_in(k, out);
+}
+
+/// The stories of the type that was typed, in `n` and what it holds, in order.
+void stories_in(Node const &n, std::vector<unsigned> &out)
+{
+    if (n.kind == Node::Kind::Text && n.story && !n.text_proxy) out.push_back(*n.story);
+    for (auto const &k : n.children) stories_in(k, out);
+}
+
+/// Whether `n` is type and nothing else; with `plain`, in groups that add nothing of their
+/// own either (no name, no transparency, not hidden, locked or clipped).
+bool only_type(Node const &n, bool plain)
+{
+    if (n.kind == Node::Kind::Text) return true;
+    if (n.kind != Node::Kind::Group || n.children.empty()) return false;
+    if (plain && (!n.transparency.is_default() || !n.visible || n.locked || !n.name.empty() || n.clipped)) return false;
+    return std::all_of(n.children.begin(), n.children.end(), [&](Node const &k) { return only_type(k, plain); });
+}
+
+void uncomment(Node &n)
+{
+    n.commented = false;
+    for (auto &k : n.children) uncomment(k);
+}
+
+/// The type in `n` and what it holds, in order.
+void type_in(Node const &n, std::vector<Node const *> &out)
+{
+    if (n.kind == Node::Kind::Text) out.push_back(&n);
+    for (auto const &k : n.children) type_in(k, out);
+}
+
+/**
+ * Settle the looks that hold type, now that the stories are read (`texts`, or none).
+ *
+ * A look holding type was kept with the object it stands for. When the look is nothing but
+ * type in groups that add nothing, and each piece sets what the object's own type sets
+ * (the same characters, styles and places; a drawn story that isn't there or can't be read
+ * counts as the same), the object stands in the look's place, as it was typed. Otherwise
+ * the look stands, drawing its own stories. Drawn type whose story isn't in the records
+ * takes the object's typed story instead, when there is one a piece or one for all: files
+ * without the second text document, and the fixtures of the tests, are read that way.
+ */
+void settle_type(Node &n, TextDocument const *texts)
+{
+    for (auto &k : n.children) settle_type(k, texts);
+    if (n.typed.empty()) return;
+    Node object = std::move(n.typed.front());
+    n.typed.clear();
+    settle_type(object, texts);
+
+    auto drawn_story = [&](Node const &p) -> std::optional<PointText> const * {
+        return (texts && p.story && *p.story < texts->drawn.size()) ? &texts->drawn[*p.story] : nullptr;
+    };
+    auto typed_story = [&](Node const &t) -> std::optional<PointText> const * {
+        return (texts && t.story && *t.story < texts->stories.size()) ? &texts->stories[*t.story] : nullptr;
+    };
+    std::vector<Node *> drawn;
+    proxies_in(n, drawn);
+    std::vector<Node const *> typed;
+    type_in(object, typed);
+    bool stands = only_type(n, true) && only_type(object, false) && drawn.size() == typed.size();
+    for (std::size_t i = 0; stands && i < drawn.size(); ++i) {
+        if (typed[i]->text_proxy) {
+            stands = false;
+            break;
+        }
+        auto const *d = drawn_story(*drawn[i]);
+        auto const *t = typed_story(*typed[i]);
+        if (!d || !*d) continue; // Nothing to tell them apart by.
+        stands = t && *t && same_drawing(**d, **t);
+    }
+    if (stands) {
+        bool const commented = n.commented;
+        if (!commented) uncomment(object);
+        n = std::move(object);
+        n.commented = commented;
+        return;
+    }
+    std::vector<unsigned> stories;
+    stories_in(object, stories);
+    bool every = true;
+    for (std::size_t i = 0; i < drawn.size(); ++i) {
+        if (drawn_story(*drawn[i])) {
+            every = false;
+        } else if (stories.size() == 1 || stories.size() == drawn.size()) {
+            drawn[i]->story = stories[stories.size() == 1 ? 0 : i];
+            drawn[i]->text_proxy = false;
+        } else {
+            every = false;
+        }
+    }
+    // A group around the object's own type and nothing else isn't a look: it draws nothing
+    // the type doesn't.
+    if (every && only_type(n, false)) n.drawn_look = false;
+}
+
 void Reader::style_marker(Values const &vals, bool hidden)
 {
     auto const nums = nums_of(vals);
@@ -1321,40 +1737,37 @@ void Reader::style_marker(Values const &vals, bool hidden)
     bool const after = _after_object;
     _marked = true;
     // `1 (style) XW` after the object written on %_ lines; its drawn look comes before it.
-    if (hidden || code != 1.0 || style.empty() || !after || _frames.empty()) return;
+    // The style's name can be empty. An object with an appearance inside one that has an
+    // appearance too is all on %_ lines: its look, itself and this marker (`nested`). It is
+    // settled the same way, and stays part of the object it is in.
+    if (code != 1.0 || !after || _frames.empty()) return;
     auto &kids = _frames.back().children;
     if (kids.size() < 2) return;
     auto &object = kids[kids.size() - 1];
     auto &look = kids[kids.size() - 2];
-    if (!object.commented || look.commented || look.kind != Node::Kind::Group || look.clipped) return;
+    bool const nested = hidden;
+    if (!object.commented || look.commented != nested || look.kind != Node::Kind::Group || look.clipped) return;
     Node obj = std::move(object);
     kids.pop_back();
     auto &l = kids.back();
-    // A text-only appearance is a proxy, not the editable object. Its
-    // FreeUndo=1 StoryIndex can refer to a different story (Dallas maps).
-    // Keep the following canonical story in this layer instead. There is no
-    // drawn effect to flatten when the wrapper has no appearance of its own.
-    if (obj.kind == Node::Kind::Text && l.children.size() == 1 &&
-        l.children.front().kind == Node::Kind::Text) {
-        obj.commented = false;
-        if (l.transparency.is_default() && l.visible && !l.locked && l.name.empty()) {
-            l = std::move(obj);
-        } else {
-            // The drawn wrapper already carries the appearance. Keep its
-            // child's paint/opacity rather than applying the canonical
-            // object's appearance a second time.
-            l.children.front().story = obj.story;
-            if (!obj.name.empty()) l.name = std::move(obj.name);
-        }
-        return;
-    }
-    strip_commented(l);
+    if (!nested) strip_commented(l);
     if (!obj.name.empty()) l.name = obj.name;
-    l.visible = obj.visible;
-    l.locked = obj.locked;
     l.box_rotation = obj.box_rotation;
     l.drawn_look = true;
-    ++_doc.drawn_looks;
+    // Type among what the appearance drew has stories of its own, in the text document's
+    // second part. Whether the look is anything more than the object's own type can only be
+    // told from those, once they are read: the object is kept until then (settle_type). A
+    // look that holds type keeps the state it was written with; the object's is on the
+    // object.
+    std::vector<Node *> drawn;
+    proxies_in(l, drawn);
+    if (!drawn.empty()) {
+        l.typed.clear();
+        l.typed.push_back(std::move(obj));
+        return;
+    }
+    l.visible = obj.visible;
+    l.locked = obj.locked;
 }
 
 void Reader::set_instance(Instance const &i)
@@ -1451,7 +1864,7 @@ void Reader::paint(std::string_view op, bool hidden, bool guide)
 
 // ---- images ------------------------------------------------------------------------------
 
-void Reader::image(std::string_view data)
+void Reader::image(std::string_view data, bool hidden)
 {
     Values vals = operands();
     std::vector<double> m;
@@ -1507,7 +1920,7 @@ void Reader::image(std::string_view data)
     node.transparency = _gs.transparency;
     node.image = static_cast<int>(_doc.images.size());
     _doc.images.push_back(std::move(img));
-    add(std::move(node), false);
+    add(std::move(node), hidden);
 }
 
 // ---- the document ------------------------------------------------------------------------
@@ -1527,10 +1940,11 @@ std::optional<Geom::Rect> Reader::sized_board() const
 void drop_commented_copies(std::vector<Node> &layers)
 {
     std::set<unsigned> plain;
+    // Type an appearance drew counts its stories apart: it is no copy of typed text.
     auto collect = [&](auto &&self, std::vector<Node> const &nodes) -> void {
         for (auto const &n : nodes) {
             if (n.kind == Node::Kind::Text) {
-                if (n.story && !n.commented) plain.insert(*n.story);
+                if (n.story && !n.commented && !n.text_proxy) plain.insert(*n.story);
             } else {
                 self(self, n.children);
             }
@@ -1541,7 +1955,7 @@ void drop_commented_copies(std::vector<Node> &layers)
     auto drop = [&](auto &&self, std::vector<Node> &nodes) -> void {
         nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
                                    [&](Node const &n) {
-                                       return n.kind == Node::Kind::Text && n.commented && n.story &&
+                                       return n.kind == Node::Kind::Text && n.commented && !n.text_proxy && n.story &&
                                               plain.count(*n.story);
                                    }),
                     nodes.end());
@@ -1578,8 +1992,6 @@ Document Reader::finish()
     }
     if (!_unsupported.empty()) fail("it has " + join_and(_unsupported) + ", which PROOF doesn't read from it yet");
     if (_doc.layers.empty()) fail("it has no layers");
-    drop_commented_copies(_doc.layers);
-    _doc.commented_kept = count_commented(_doc.layers);
 
     std::optional<Geom::Rect> first;
     if (!_doc.artboards.empty()) first = _doc.artboards.front().rect;
@@ -1679,13 +2091,46 @@ std::optional<Document> read(std::string_view records, std::string &error, Limit
 {
     Reader r(records, limits);
     auto doc = r.run(error);
-    if (doc) {
-        auto has_text = [&](auto &&self, std::vector<Node> const &nodes) -> bool {
-            for (auto const &n : nodes) if (n.kind == Node::Kind::Text || self(self, n.children)) return true;
-            return false;
-        };
-        if (has_text(has_text, doc->layers)) doc->texts = read_text_document(records, doc->template_center);
+    if (!doc) return doc;
+    // Type can also be in the objects that looks holding type were kept with.
+    auto has_text = [&](auto &&self, std::vector<Node> const &nodes) -> bool {
+        for (auto const &n : nodes) {
+            if (n.kind == Node::Kind::Text || self(self, n.children) || self(self, n.typed)) return true;
+        }
+        return false;
+    };
+    if (has_text(has_text, doc->layers)) doc->texts = read_text_document(records, doc->template_center);
+    for (auto &layer : doc->layers) settle_type(layer, doc->texts.get());
+    for (auto &pattern : doc->patterns) {
+        for (auto &n : pattern.art) settle_type(n, nullptr);
     }
+    // Type an appearance drew whose story isn't in the records, and that no typed story
+    // could stand in for: there is nothing to say what it sets.
+    bool lost = false;
+    auto unmatched = [&](auto &&self, std::vector<Node> &nodes, bool shown) -> void {
+        for (auto &n : nodes) {
+            bool const shows = shown && n.visible;
+            if (n.kind == Node::Kind::Text && n.text_proxy &&
+                (!n.story || !doc->texts || *n.story >= doc->texts->drawn.size())) {
+                lost = lost || shows;
+                n.story.reset();
+            }
+            self(self, n.children, shows);
+        }
+    };
+    unmatched(unmatched, doc->layers, true);
+    if (lost) {
+        error = "it has type drawn by an appearance whose text isn't in the file, which PROOF doesn't read from it yet";
+        return {};
+    }
+    drop_commented_copies(doc->layers);
+    doc->commented_kept = count_commented(doc->layers);
+    auto looks = [](auto &&self, std::vector<Node> const &nodes) -> std::size_t {
+        std::size_t n = 0;
+        for (auto const &k : nodes) n += (k.drawn_look ? 1 : 0) + self(self, k.children);
+        return n;
+    };
+    doc->drawn_looks = looks(looks, doc->layers);
     return doc;
 }
 

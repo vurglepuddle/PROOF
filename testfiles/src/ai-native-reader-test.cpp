@@ -142,6 +142,31 @@ TEST(AiNativeLexer, ImageDataIsOneToken)
     EXPECT_EQ(toks.back().number, 1.0);
 }
 
+TEST(AiNativeLexer, MarkersAndImageDataOnHiddenLines)
+{
+    // An object written on %_ lines has its markers there, and its samples after a hidden
+    // %%BeginData; the samples themselves are never prefixed.
+    auto toks = all_tokens("%_%AI5_BeginRaster\n%_[1 0 0 1 0 0] 0 0 1 1\r\n%_%%BeginData: 7\r\nXI\n{(}A%%EndData\r\n"
+                           "%_XH\r\n%_%AI5_EndRaster\n0 %_%AI5_NotAMarker\nXz\n");
+    ASSERT_GE(toks.size(), 4u);
+    EXPECT_EQ(toks[0].kind, Token::Kind::Comment);
+    EXPECT_EQ(toks[0].view, "AI5_BeginRaster");
+    EXPECT_TRUE(toks[0].hidden);
+    auto it = std::find_if(toks.begin(), toks.end(), [](auto const &t) { return t.kind == Token::Kind::Data; });
+    ASSERT_NE(it, toks.end());
+    EXPECT_EQ(it->view, "{(}A");
+    EXPECT_TRUE(it->hidden);
+    ASSERT_NE(it + 2, toks.end());
+    EXPECT_EQ((it + 1)->view, "XH");
+    EXPECT_EQ((it + 2)->view, "AI5_EndRaster");
+    EXPECT_TRUE((it + 2)->hidden);
+    // Later in a line it is still a comment that says nothing.
+    EXPECT_EQ(toks.back().view, "Xz");
+    EXPECT_EQ((toks.end() - 2)->number, 0.0);
+    // A comment of a plain line isn't hidden.
+    EXPECT_FALSE(all_tokens("%AI5_BeginLayer\n")[0].hidden);
+}
+
 TEST(AiNativeLexer, PlacedPreviewsAreSkipped)
 {
     auto toks = all_tokens("%AI26_BeginPlacedObjectPreview\r\n2 1 (\x01\xff\r\n%AI26_EndPlacedObjectPreview\r\nN\r\n"s);
@@ -492,6 +517,199 @@ TEST(AiNativeReader, CmykImageKeepsItsSamples)
     EXPECT_EQ(img.matrix, Geom::Affine(1, 0, 0, 1, 10, 20));
 }
 
+TEST(AiNativeReader, ImageOnHiddenLinesIsTheObjectBehindItsLook)
+{
+    // A picture with an effect: what it draws, then the picture itself on %_ lines. Its
+    // samples used to be read as operators.
+    auto raster = [](std::string const &p) {
+        return p + "%AI5_BeginRaster\n" + p + "() 1 XG\n" + p + "/DeviceRGB XN\n" + p + "[ 1 0 0 1 10 20 ] 0 0 1 1 1 1 8 3 0 0 1 0 0\n" +
+               p + "%%BeginData: 7\nXI\n{(}\n%%EndData\n" + p + "XH\n" + p + "%AI5_EndRaster\n" + p + "N\n";
+    };
+    std::string art = "u\n" + raster("") + "U\n" + raster("%_") + "%_/ArtDictionary :\n%_(Photo) /UnicodeString (AIArtName) ,\n%_;\n"
+                      "1 (Shadow) XW\n";
+    auto doc = read_ok(records(layer("L", art)));
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 1u);
+    EXPECT_TRUE(kids[0].drawn_look);
+    EXPECT_EQ(kids[0].name, "Photo");
+    ASSERT_EQ(kids[0].children.size(), 1u);
+    EXPECT_EQ(kids[0].children[0].kind, Node::Kind::Image);
+    ASSERT_EQ(doc.images.size(), 2u);
+    EXPECT_EQ(doc.images[1].samples, "{(}"s);
+
+    // Without a look that replaces it, the hidden picture is the object.
+    auto alone = read_ok(records(layer("L", raster("%_") + "0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    ASSERT_EQ(alone.layers[0].children.size(), 2u);
+    EXPECT_EQ(alone.layers[0].children[0].kind, Node::Kind::Image);
+    EXPECT_TRUE(alone.layers[0].children[0].commented);
+    EXPECT_EQ(alone.commented_kept, 1u);
+}
+
+// ---- the reader: placed files ------------------------------------------------------------
+
+namespace {
+
+/// A linked picture as Illustrator 2025 writes it; `p` prefixes every line.
+std::string placed(std::string const &path, std::string const &folder = {}, std::string const &p = {})
+{
+    return p + "%AI5_BeginPlace\n" + p + "%%FileType: 1\n" + p + "[2 0 0 -2 -100 300] 50 60 90 80 4 4 0\n" + p + "(" + path + ")`\n" +
+           p + "%%IncludeFile:" + path + "\n" + p + "%AI17_Begin_Content_if_version_gt:24 12\n\n" +
+           p + "%AI28_BeginPlacedRelativePath\n" + p + "(" + folder + ")\n" + p + "%AI28_EndPlacedRelativePath\n" +
+           p + "%AI17_Alternate_Content\n" + p + "%AI17_End_Versioned_Content\n\n" + p + "~\n" + p + "%AI5_EndPlace\n";
+}
+
+} // namespace
+
+TEST(AiNativeReader, PlacedPictureKeepsItsLinkAndPlace)
+{
+    std::string art = "1 A\n0 0.5 0 0 0 Xy\n" + placed("C:\\\\Work\\\\Caf\\351 logo.png", "..\\\\Links\\\\") +
+                      "%_/ArtDictionary :\n%_(Logo) /UnicodeString (AIArtName) ,\n%_;\n9 () XW\n0 A\n0 g\n" + rect(0, 0, 1, 1) + "f\n";
+    auto doc = read_ok(records(layer("L", art)));
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 2u);
+    auto const &n = kids[0];
+    EXPECT_EQ(n.kind, Node::Kind::Placed);
+    EXPECT_EQ(n.name, "Logo");
+    EXPECT_TRUE(n.locked);
+    EXPECT_EQ(n.transparency.opacity, 0.5);
+    EXPECT_FALSE(n.commented);
+    ASSERT_EQ(doc.placed.size(), 1u);
+    ASSERT_EQ(n.placed, 0);
+    auto const &p = doc.placed[0];
+    EXPECT_EQ(p.matrix, Geom::Affine(2, 0, 0, -2, -100, 300));
+    EXPECT_EQ(p.box, Geom::Rect(Geom::Point(50, 60), Geom::Point(90, 80)));
+    // The name's bytes as the file has them: here one of Windows' own.
+    EXPECT_EQ(p.path, "C:\\Work\\Caf\xe9 logo.png"s);
+    EXPECT_EQ(p.folder, "..\\Links\\"s);
+    EXPECT_EQ(p.file_type, 1);
+    EXPECT_EQ(kids[1].kind, Node::Kind::Path);
+    // The folder's string is not left for the path that follows.
+    EXPECT_EQ(kids[1].path.size(), 1u);
+}
+
+TEST(AiNativeReader, PlacedPictureBehindALookAndOnHiddenLayers)
+{
+    // What an effect draws, then the picture on %_ lines: the look replaces it.
+    std::string art = "u\n0 g\n" + rect(0, 0, 9, 9) + "f\nU\n" + placed("a.png", {}, "%_") + "1 (Glow) XW\n";
+    auto doc = read_ok(records(layer("L", art)));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    EXPECT_TRUE(doc.layers[0].children[0].drawn_look);
+    EXPECT_EQ(doc.placed.size(), 1u);
+
+    // A placement this doesn't know refuses the file where it shows, and only there.
+    std::string old = "%AI5_BeginPlace\n(a.eps) 0 0 10 10 Unknown\n%AI5_EndPlace\n";
+    EXPECT_NE(read_error(records(layer("L", old))).find("placed files"), std::string::npos);
+    auto hidden = read_ok(records(layer("Old", old, "0 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb") +
+                                  layer("New", "0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    EXPECT_TRUE(hidden.placed.empty());
+    EXPECT_FALSE(hidden.left_out.empty());
+    // The operators mean nothing outside a placed file.
+    EXPECT_NE(read_error(records(layer("L", "0 g\n" + rect(0, 0, 1, 1) + "f\n~\n"))).find("`~`"), std::string::npos);
+}
+
+// ---- the reader: patterns ----------------------------------------------------------------
+
+namespace {
+
+/// A pattern as Illustrator CS and later write it: every line of the tile's art hidden.
+std::string pattern(std::string const &name, std::string const &art, std::string const &box = "0 0 20 10")
+{
+    std::string hidden;
+    for (std::size_t at = 0; at < art.size();) {
+        auto const end = art.find('\n', at);
+        hidden += "%_" + art.substr(at, end - at) + "\n";
+        if (end == std::string::npos) break;
+        at = end + 1;
+    }
+    return "%AI3_BeginPattern: (" + name + ")\n(" + name + ") " + box + "\n" + hidden + "E\n%AI3_EndPattern\n";
+}
+
+} // namespace
+
+TEST(AiNativeReader, PatternsAndWhatIsPaintedWithThem)
+{
+    std::string tile = "0 A\nu\n" + rect(0, 0, 20, 10) + "n\n/ArtDictionary :\n1 /Bool (AIPattern_Editor_Backing_Tile_Rect) ,\n;\n"
+                       "0 1 1 0 k\n" + rect(0, 0, 10, 5) + "f\nU\n9 () XW\n";
+    std::string art = "(Dots) 0 0 1 1 0 0 0 0 0 [2 0 0 2 30 40] p\n" + rect(0, 0, 100, 50) + "f\n"
+                      "(Dots) 0 0 1 1 0 0 0 0 0 [1 0 0 1 0 0] P\n" + rect(0, 0, 100, 50) + "B\n";
+    auto doc = read_ok(records(layer("L", art), pattern("Dots", tile) + pattern("Unused", "0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    ASSERT_EQ(doc.patterns.size(), 2u);
+    auto const &p = doc.patterns[0];
+    EXPECT_EQ(p.name, "Dots");
+    EXPECT_EQ(p.tile, Geom::Rect(Geom::Point(0, 0), Geom::Point(20, 10)));
+    EXPECT_TRUE(p.unread.empty());
+    ASSERT_EQ(p.art.size(), 1u);
+    EXPECT_EQ(p.art[0].kind, Node::Kind::Group);
+    // The tile's art isn't a second copy of anything: none of it counts as commented.
+    EXPECT_FALSE(p.art[0].commented);
+    ASSERT_EQ(p.art[0].children.size(), 2u);
+    EXPECT_FALSE(p.art[0].children[0].fill);
+    EXPECT_EQ(p.art[0].children[1].fill->color, Color::cmyk(0, 1, 1, 0));
+    EXPECT_FALSE(p.art[0].children[1].commented);
+    EXPECT_EQ(doc.commented_kept, 0u);
+
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 2u);
+    ASSERT_TRUE(kids[0].fill);
+    EXPECT_EQ(kids[0].fill->kind, Paint::Kind::Pattern);
+    EXPECT_EQ(kids[0].fill->pattern, 0);
+    EXPECT_EQ(kids[0].fill->pattern_matrix, Geom::Affine(2, 0, 0, 2, 30, 40));
+    // The pattern stays the fill until another colour is set; the stroke has its own.
+    ASSERT_TRUE(kids[1].fill);
+    EXPECT_EQ(kids[1].fill->kind, Paint::Kind::Pattern);
+    ASSERT_TRUE(kids[1].stroke);
+    EXPECT_EQ(kids[1].stroke->kind, Paint::Kind::Pattern);
+    EXPECT_EQ(kids[1].stroke->pattern_matrix, Geom::identity());
+    // The state the tile's art set (its red) isn't the document's.
+    auto after = read_ok(records(layer("L", rect(0, 0, 1, 1) + "f\n"), pattern("Dots", tile)));
+    EXPECT_EQ(after.layers[0].children[0].fill->color, Color::gray(0));
+    EXPECT_FALSE(after.layers[0].children[0].locked);
+}
+
+TEST(AiNativeReader, PatternsThatArentReadOnlyCostWhatUsesThem)
+{
+    auto const use = [](std::string const &name, std::string const &place = "0 0 1 1 0 0 0 0 0 [1 0 0 1 0 0]") {
+        return "(" + name + ") " + place + " p\n" + rect(0, 0, 10, 10) + "f\n";
+    };
+    std::string plain = "0 g\n" + rect(0, 0, 10, 10) + "f\n";
+    // Illustrator 8 and older: the tile is procedures of the printing format.
+    std::string old = "%AI3_BeginPattern: (Old)\n(Old) 0 0 10 10 [\n%AI3_Tile\n(0 O 0 R 0.5 g) @\n(\n%AI6_BeginPatternLayer\n"
+                      "800 Ar\n0 J 0 j 1 w 4 M []0 d\n0 0 m 5 5 L f\n%AI6_EndPatternLayer\n) &\n] E\n%AI3_EndPattern\n";
+    // A tile holding what isn't read, and one whose art doesn't close.
+    std::string odd = pattern("Odd", "0 g\n" + rect(0, 0, 1, 1) + "f\n7 Qz\n");
+    std::string open = pattern("Open", "u\n0 g\n" + rect(0, 0, 1, 1) + "f\n");
+    std::string broken = pattern("Broken", "0 g\n" + rect(0, 0, 1, 1) + "f\nU\n");
+    std::string type = pattern("Type", "/AI11Text :\n0 /StoryIndex ,\n;\n");
+    auto const setup = old + odd + open + broken + type + pattern("Good", plain);
+
+    // Nothing painted with them: the document reads, and its own state is untouched.
+    auto doc = read_ok(records(layer("L", plain + use("Good")), setup));
+    ASSERT_EQ(doc.patterns.size(), 6u);
+    for (std::size_t i = 0; i < 5; ++i) {
+        EXPECT_FALSE(doc.patterns[i].unread.empty()) << doc.patterns[i].name;
+        EXPECT_TRUE(doc.patterns[i].art.empty());
+    }
+    EXPECT_NE(doc.patterns[1].unread.find("`Qz`"), std::string::npos) << doc.patterns[1].unread;
+    EXPECT_TRUE(doc.patterns[5].unread.empty());
+    ASSERT_EQ(doc.layers[0].children.size(), 2u);
+    EXPECT_EQ(doc.layers[0].children[1].fill->pattern, 5);
+
+    for (auto const *name : {"Old", "Odd", "Open", "Broken", "Type", "Missing"}) {
+        auto const e = read_error(records(layer("L", use(name)), setup));
+        EXPECT_NE(e.find("pattern fills"), std::string::npos) << name << ": " << e;
+    }
+    // Moved, scaled or turned the way Illustrator 8 and older wrote it; a matrix that flattens.
+    EXPECT_NE(read_error(records(layer("L", use("Good", "5 0 1 1 0 0 0 0 0 [1 0 0 1 0 0]")), setup)).find("pattern fills"), std::string::npos);
+    EXPECT_NE(read_error(records(layer("L", use("Good", "0 0 1 1 30 0 0 0 0 [1 0 0 1 0 0]")), setup)).find("pattern fills"), std::string::npos);
+    EXPECT_NE(read_error(records(layer("L", use("Good", "0 0 1 1 0 0 0 0 0 [1 0 2 0 0 0]")), setup)).find("pattern fills"), std::string::npos);
+    // On a hidden layer it is left out: the object paints nothing.
+    auto hidden = read_ok(records(layer("Old", use("Odd"), "0 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb") + layer("New", plain), setup));
+    EXPECT_FALSE(hidden.left_out.empty());
+    EXPECT_FALSE(hidden.layers[0].children[0].fill);
+    // The Swatches panel lists patterns with the same operator: nothing is painted there.
+    read_ok(records(layer("L", plain), setup + "%AI5_BeginPalette\n0 0 Pb\n(Old) 0 0 1 1 0 0 0 0 0 [1 0 0 1 0 0] p\n(Old) Pc\nPB\n%AI5_EndPalette\n"));
+}
+
 TEST(AiNativeReader, DrawnLookReplacesItsObject)
 {
     // The drawn look (a group) comes first; the object itself follows on %_ lines.
@@ -535,6 +753,87 @@ TEST(AiNativeReader, TextAppearanceUsesItsCanonicalStoryInItsOriginalLayer)
     EXPECT_EQ(doc.layers[0].children[0].story, 56u);
     EXPECT_EQ(doc.layers[1].children[0].kind, Node::Kind::Text);
     EXPECT_EQ(doc.layers[1].children[0].story, 0u);
+}
+
+TEST(AiNativeReader, TypeAnAppearanceDrewTakesItsObjectsStories)
+{
+    auto text = [](int story, bool drawn, std::string const &p = {}) {
+        return p + "/AI11Text :\n" + p + (drawn ? "1" : "0") + " /FreeUndo ,\n" + p + std::to_string(story) + " /StoryIndex ,\n" + p + ";\n";
+    };
+    // A group with an appearance: what it draws is groups of drawn type, whose story
+    // numbers count among the drawn stories, then the group itself on %_ lines. Nothing
+    // but its type is drawn, so the group stands as it is. A marker without a style name
+    // says the same.
+    for (auto const *name : {"Anon", ""}) {
+        auto same = read_ok(records(layer("L", "u\nu\n" + text(36, true) + "U\nU\n%_u\n" + text(83, false, "%_") + "%_U\n1 (" +
+                                                   std::string(name) + ") XW\n")));
+        ASSERT_EQ(same.layers[0].children.size(), 1u) << name;
+        EXPECT_EQ(same.layers[0].children[0].children.at(0).story, 83u) << name;
+    }
+    auto doc = read_ok(records(layer("L", "u\nu\n" + text(36, true) + "U\nU\n%_u\n" + text(83, false, "%_") + "%_U\n1 (Anon) XW\n")));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    auto const *group = &doc.layers[0].children[0];
+    EXPECT_EQ(group->kind, Node::Kind::Group);
+    EXPECT_FALSE(group->drawn_look);
+    EXPECT_FALSE(group->commented);
+    ASSERT_EQ(group->children.size(), 1u);
+    EXPECT_EQ(group->children[0].kind, Node::Kind::Text);
+    EXPECT_EQ(group->children[0].story, 83u);
+    EXPECT_FALSE(group->children[0].text_proxy);
+    EXPECT_FALSE(group->children[0].commented);
+    EXPECT_EQ(doc.drawn_looks, 0u);
+    EXPECT_EQ(doc.commented_kept, 0u);
+
+    // Several, in order.
+    doc = read_ok(records(layer("L", "u\n" + text(5, true) + text(9, true) + "U\n%_u\n" + text(82, false, "%_") +
+                                         text(83, false, "%_") + "%_U\n1 (Anon) XW\n")));
+    group = &doc.layers[0].children.at(0);
+    ASSERT_EQ(group->children.size(), 2u);
+    EXPECT_EQ(group->children[0].story, 82u);
+    EXPECT_EQ(group->children[1].story, 83u);
+
+    // A look that adds something of its own (here half the opacity) is kept. These records
+    // have no stories of drawn type, so its type takes the object's story: the groups
+    // around it then draw nothing that type doesn't, and aren't a look.
+    doc = read_ok(records(layer("L", "u\nu\n" + text(36, true) + "U\n0 0.5 0 0 0 Xy\nU\n%_u\n" + text(83, false, "%_") +
+                                         "%_U\n1 (Anon) XW\n")));
+    group = &doc.layers[0].children.at(0);
+    EXPECT_FALSE(group->drawn_look);
+    ASSERT_EQ(group->children.size(), 1u);
+    EXPECT_EQ(group->children[0].transparency.opacity, 0.5);
+    ASSERT_EQ(group->children[0].children.size(), 1u);
+    EXPECT_EQ(group->children[0].children[0].story, 83u);
+    EXPECT_FALSE(group->children[0].children[0].text_proxy);
+
+    // Type with an appearance inside a group with one: the inner look, the type and the
+    // marker between them are all on %_ lines, and are settled there first.
+    auto inner = [&](int stand_in, int story) {
+        return "%_u\n" + text(stand_in, true, "%_") + "%_U\n" + text(story, false, "%_") + "%_1 (Inner) XW\n";
+    };
+    doc = read_ok(records(layer("L", "u\nu\n" + text(1, true) + "U\nu\n" + text(2, true) + "U\nU\n%_u\n" + inner(9, 5) +
+                                         inner(8, 6) + "%_U\n1 (Outer) XW\n")));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    group = &doc.layers[0].children[0];
+    ASSERT_EQ(group->children.size(), 2u);
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(group->children[i].kind, Node::Kind::Text);
+        EXPECT_EQ(group->children[i].story, 5u + i);
+        EXPECT_FALSE(group->children[i].text_proxy);
+        EXPECT_FALSE(group->children[i].commented);
+    }
+    EXPECT_EQ(doc.drawn_looks, 0u);
+    EXPECT_EQ(doc.commented_kept, 0u);
+
+    // Stand-ins that can't be told apart, or with no object behind them, refuse the file
+    // where they show; where they don't, they are left without a story.
+    auto const unmatched = "u\n" + text(5, true) + text(9, true) + "U\n%_u\n" + text(81, false, "%_") + text(82, false, "%_") +
+                           text(83, false, "%_") + "%_U\n1 (Anon) XW\n";
+    EXPECT_NE(read_error(records(layer("L", unmatched))).find("type drawn by an appearance"), std::string::npos);
+    EXPECT_NE(read_error(records(layer("L", text(4, true)))).find("type drawn by an appearance"), std::string::npos);
+    doc = read_ok(records(layer("Old", text(4, true), "0 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb") +
+                          layer("New", "0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    EXPECT_FALSE(doc.layers[0].children[0].story);
 }
 
 TEST(AiNativeReader, GroupNamesAfterAppearanceMarkers)
@@ -637,6 +936,24 @@ TEST(AiNativeReader, UnsupportedFeaturesFailClosed)
     auto disabled = mask;
     disabled.replace(disabled.find("%_0 /Bool (Disabled)"), 20, "%_1 /Bool (Disabled)");
     read_ok(records(layer("L", disabled)));
+}
+
+TEST(AiNativeReader, ForeignObjectsAreRefusedNotDropped)
+{
+    // Art Illustrator keeps in the format it came in: a blob after /Data, in lines that start
+    // with a percent sign. One of them starts "%_(" by chance, which read as a hidden line
+    // opened a string that swallowed the rest of the layer.
+    std::string const foreign = "/ForeignObject :\n1 /Version ,\n1 0 0 -1 0 0  /RTransform ,\n0 0  /Origin ,\n0 0 10 10  /Bounds ,\n"
+                                "/Data ,\n%,u@!!/MSk8%41#ocdN=10d\n%_(29#!0n[=#e7]Vg0n\n%68^JT77&[t2Ddlh~>\n;\n";
+    auto const after = "0 g\n" + rect(0, 0, 1, 1) + "f\n";
+    auto const e = read_error(records(layer("L", foreign + after)));
+    EXPECT_NE(e.find("foreign objects"), std::string::npos) << e;
+    // Where it doesn't show it is left out, and what follows it is read.
+    auto doc = read_ok(records(layer("Old", foreign + after, "0 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb") + layer("New", after)));
+    ASSERT_EQ(doc.layers.size(), 2u);
+    EXPECT_EQ(doc.layers[0].children.size(), 1u);
+    ASSERT_EQ(doc.left_out.size(), 1u);
+    EXPECT_NE(doc.left_out[0].find("foreign objects"), std::string::npos);
 }
 
 TEST(AiNativeReader, BrokenStructure)

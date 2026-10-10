@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 class SPDocument;
@@ -45,6 +46,9 @@ struct AiNativeOpen
     std::unique_ptr<SPDocument> document;
     std::vector<std::string> notes;
     std::vector<AiPageDifference> differences; ///< Each artboard compared, in order.
+    /// How long each part of opening took, in seconds: "records" (decoding them), "read",
+    /// "build" (the document), "compare" (drawing it and the pages).
+    std::vector<std::pair<std::string, double>> timings;
 };
 
 /// Optional local test caches. The caller supplies trusted directories keyed by source

@@ -4,6 +4,7 @@
 #include "config.h"
 #endif
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -14,9 +15,12 @@
 #include <string>
 #include <vector>
 
+#include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib.h>
 #include <gtest/gtest.h>
 #include <zlib.h>
+#include <2geom/affine.h>
+#include <2geom/pathvector.h>
 
 #include "colors/color.h"
 #include "colors/document-colors.h"
@@ -31,6 +35,7 @@
 #include "extension/internal/pdfinput/ai-native-open.h"
 #endif
 #include "object/sp-defs.h"
+#include "object/sp-image.h"
 #include "object/sp-item.h"
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
@@ -113,6 +118,20 @@ std::string text_setup(std::string const &document)
            lines + "%~>\n%_;\n%AI11_EndTextDocument\n";
 }
 
+// The two text documents as Illustrator 2025 writes them: what was typed, then the type
+// that appearances drew.
+std::string text_setup(std::string const &typed, std::string const &drawn)
+{
+    auto block = [](std::string const &name, std::string const &document) {
+        auto packed = ascii85(document);
+        std::string lines;
+        for (std::size_t at = 0; at < packed.size(); at += 71) lines += "%" + packed.substr(at, 71) + "\n";
+        return "/" + name + " : /ASCII85Decode ,\n" + lines + "%~>\n;\n";
+    };
+    return "%AI3_TemplateBox: 100 50\n%AI11_BeginTextDocument\n" + block("AI11TextDocument", typed) +
+           block("AI11UndoFreeTextDocument", drawn) + "%AI11_EndTextDocument\n";
+}
+
 std::string aligned_text_document(unsigned alignment, std::string const &font = "ArialMT")
 {
     auto data = text_document("(HHH\\r)", 4, font,
@@ -123,6 +142,47 @@ std::string aligned_text_document(unsigned alignment, std::string const &font = 
     data.replace(at, std::string("/99 /S >>").size(), "/99 /S /0 << /0 [" +
                  std::string(alignment == 2 ? "-28.8" : "-57.6") + " 0] >> >>");
     return data;
+}
+
+/// A line of area type: where it starts from the frame's top-left corner, how many
+/// characters it holds, and how far its glyphs reach from its segment's start.
+struct AreaLine
+{
+    double x, y;
+    int units;
+    double start = 0; ///< The segment's offset in the line.
+    double width = 0;
+};
+
+// Area type as Illustrator 2025 writes it, in a 100 x 40 frame whose top-left corner is the
+// layout's 8191.5, 8191.5: the frame's outline (four segments of four points), its kind
+// and gutters, and under F the rows holding each line with its box, its segment's
+// character count and its glyph run's extent.
+std::string area_text_document(std::string const &characters, int units, std::vector<AreaLine> const &lines,
+                               std::string const &font = "ArialMT", std::string const &style = {},
+                               std::string const &paragraphs = {}, std::string const &layout = {})
+{
+    auto n = [](double v) { std::ostringstream s; s << v; return s.str(); };
+    double const l = 8191.5, t = 8191.5, r = l + 100, b = t + 40;
+    std::string outline;
+    for (auto const &[x0, y0, x1, y1] : std::vector<std::array<double, 4>>{{r, b, l, b}, {l, b, l, t}, {l, t, r, t}, {r, t, r, b}}) {
+        outline += n(x0) + " " + n(y0) + " " + n(x0) + " " + n(y0) + " " + n(x1) + " " + n(y1) + " " + n(x1) + " " + n(y1) + " ";
+    }
+    std::string laid;
+    for (auto const &line : lines) {
+        laid += "<< /99 /L /0 << /0 [" + n(line.x) + " " + n(line.y) + "] >> /1 [0 -10 100 3] /6 [ << /99 /S /0 << /0 [" +
+                n(line.start) + " 0] >> /15 << /0 " + std::to_string(line.units) + " /2 0 /5 false >> /6 [ << /99 /G /1 [0 -10 " +
+                n(line.width) + " 3] >> ] >> ] >> ";
+    }
+    auto const tree = layout.empty() ? "/2 [ << /99 /PC /6 [ << /99 /F /0 << /0 [8191.5 8191.5] >> /1 [0 0 100 40] /6 [ << /99 /R /6 [ "
+                                       "<< /99 /R /6 [ " + laid + "] >> ] >> ] >> ] >> ]"
+                                     : layout;
+    return "/0 << /1 << /0 [ << /0 << /0 << /0 (" + font + ") >> >> >> ] >> "
+           "/8 << /0 [ << /0 << /97 (id) /1 << /0 [ " + outline + "] >> /2 << /0 1 /2 [1 0 0 1 -90 -10] /7 18 /8 18 /10 << /0 5 /1 0 >> >> >> >> ] >> >> "
+           "/1 << /1 [ << /0 << /0 " + characters + " " + paragraphs +
+           " /6 << /0 [ << /1 " + std::to_string(units) + " /0 << /0 << /6 << " + style + " >> >> >> >> ] >> >> "
+           "/1 << /0 [ << /0 0 >> ] " + tree + " >> >> ] "
+           "/2 << /0 0 /1 12 /56 true /57 false /53 << /0 << /0 2 /1 [1 0.25 0.5 0.75 0.1] >> >> >> >>";
 }
 
 std::string available_text_font()
@@ -149,6 +209,16 @@ std::string attr(XML::Node *n, char const *key)
 {
     auto const *v = n->attribute(key);
     return v ? v : "";
+}
+
+/// Where an object draws, in the document's user units (points here; bounds are in pixels).
+Geom::OptRect drawn(SPDocument *doc, XML::Node *repr)
+{
+    doc->ensureUpToDate();
+    auto *item = dynamic_cast<SPItem *>(doc->getObjectByRepr(repr));
+    auto bounds = item ? item->documentVisualBounds() : Geom::OptRect();
+    if (bounds) *bounds *= doc->getDocumentScale().inverse();
+    return bounds;
 }
 
 class AiNativeImportTest : public DocPerCaseTest
@@ -567,7 +637,10 @@ TEST_F(AiNativeImportTest, PointTextRefusesBrokenUnicodeFramesStylesAndEncodings
     for (auto const &doc : {
              text_document("(\\376\\377\\000A\\330\\075\\336\\000\\000\\015)", 2),
              text_document("(Hi\\r)", 3, "ArialMT", "/6 0"),
-             text_document("(Hi\\r)", 3, "ArialMT", "/9 2"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/9 1e9"),
+             // Type on a path, and a frame carrying what isn't known.
+             text_document("(Hi\\r)", 3, "ArialMT", {}, "/0 2 /2 [1 0 0 1 -90 -10]"),
+             text_document("(Hi\\r)", 3, "ArialMT", {}, "/7 18 /2 [1 0 0 1 -90 -10]"),
              text_document("(Hi\\r)", 1, "ArialMT", {}, "/2 [1 0 0 1 -90 -10]",
                            "<< /1 2 /0 << /0 << /6 << /6 1.2 >> >> >> >>"),
              text_document("(Hi\\r)", 3, "ArialMT", "/2 true"),
@@ -722,6 +795,14 @@ TEST_F(AiNativeImportTest, PointTextAlignedParagraphsKeepEditableAnchors)
         ASSERT_EQ(s.lines.size(), 1u); EXPECT_EQ(s.lines[0].alignment, align);
         EXPECT_EQ(s.lines[0].origin * s.to_art, Geom::Point(80, 60));
     }
+    // A space at the line's end is part of what Illustrator centred, and isn't of what is
+    // centred here: the line is set from where its glyphs start instead.
+    auto spaced = aligned_text_document(2);
+    spaced.replace(spaced.find("(HHH\\r)"), 7, "(HH \\r)");
+    auto texts = AN::read_text_document(text_setup(spaced), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_EQ(texts->stories[0]->lines.at(0).alignment, 0u);
+    EXPECT_TRUE(Geom::are_near(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(51.2, 60), 1e-9));
     auto bad = AN::read_text_document(text_setup(aligned_text_document(3)), Geom::Point(100, 50));
     ASSERT_EQ(bad->stories.size(), 1u); EXPECT_FALSE(bad->stories[0]);
     auto data = aligned_text_document(2);
@@ -822,7 +903,557 @@ TEST_F(AiNativeImportTest, GuidesAndDrawnLooks)
     EXPECT_EQ(attr(groups[1], "proof:drawn-look"), "true");
 }
 
+// ---- area type, baseline shifts -----------------------------------------------------------
+
+TEST_F(AiNativeImportTest, AreaTypeKeepsTheLinesIllustratorLaidOut)
+{
+    // One paragraph that wrapped: the story has no line end where the frame broke it.
+    auto texts = AN::read_text_document(text_setup(area_text_document("(Hello world\\r)", 12, {{0, 12, 6}, {0, 26, 6}})),
+                                        Geom::Point(100, 50));
+    ASSERT_TRUE(texts->error.empty()) << texts->error;
+    ASSERT_EQ(texts->stories.size(), 1u);
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    auto const &s = *texts->stories[0];
+    EXPECT_TRUE(s.area);
+    EXPECT_FALSE(s.empty);
+    EXPECT_TRUE(s.overflow.empty());
+    ASSERT_EQ(s.lines.size(), 2u);
+    ASSERT_EQ(s.lines[0].runs.size(), 1u);
+    ASSERT_EQ(s.lines[1].runs.size(), 1u);
+    EXPECT_EQ(s.lines[0].runs[0].text, "Hello ");
+    EXPECT_EQ(s.lines[1].runs[0].text, "world");
+    // The frame's top-left corner is at 10, 60 of the art (y up); baselines 12 and 26 below it.
+    EXPECT_EQ(s.lines[0].origin * s.to_art, Geom::Point(10, 48));
+    EXPECT_EQ(s.lines[1].origin * s.to_art, Geom::Point(10, 34));
+    auto const frame = (s.frame * s.to_art).boundsExact();
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(*frame, Geom::Rect(Geom::Point(10, 20), Geom::Point(110, 60)));
+    ASSERT_EQ(s.frame.size(), 1u);
+    EXPECT_TRUE(s.frame[0].closed());
+    EXPECT_EQ(s.frame[0].size(), 4u);
+
+    // Rows and columns hold their lines at their own offsets.
+    auto columns = area_text_document("(ab\\rcd\\r)", 6, {}, "ArialMT", {}, {},
+        "/2 [ << /99 /F /0 << /0 [8191.5 8191.5] >> /6 [ "
+        "<< /99 /R /6 [ << /99 /L /0 << /0 [0 12] >> /6 [ << /99 /S /15 << /0 3 >> >> ] >> ] >> "
+        "<< /99 /R /0 << /0 [50 2] >> /6 [ << /99 /L /0 << /0 [1 12] >> /6 [ << /99 /S /0 << /0 [3 0] >> /15 << /0 3 >> >> ] >> ] >> ] >> ]");
+    texts = AN::read_text_document(text_setup(columns), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    ASSERT_EQ(texts->stories[0]->lines.size(), 2u);
+    EXPECT_EQ(texts->stories[0]->lines[1].runs.at(0).text, "cd");
+    EXPECT_EQ(texts->stories[0]->lines[1].origin * texts->stories[0]->to_art, Geom::Point(10 + 54, 60 - 14));
+}
+
+TEST_F(AiNativeImportTest, AreaTypeAnchorsOverflowAndEmptyFrames)
+{
+    auto const centred = " /5 << /0 [ << /1 6 /0 << /0 << /5 << /0 2 >> >> >> >> ] >>";
+    // Centred, and its glyphs sit about the middle of the line's box: anchored there.
+    auto texts = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 6, 30, 40}}, "ArialMT", {}, centred)),
+                                        Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_EQ(texts->stories[0]->lines[0].alignment, 2u);
+    EXPECT_EQ(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(60, 48));
+    // Glyphs that sit elsewhere (an indent, a space left hanging): the line stays where it starts.
+    texts = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 6, 20, 40}}, "ArialMT", {}, centred)),
+                                   Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_EQ(texts->stories[0]->lines[0].alignment, 0u);
+    EXPECT_EQ(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(30, 48));
+    // Justified lines aren't set the way Illustrator spaces them.
+    auto const justified = " /5 << /0 [ << /1 6 /0 << /0 << /5 << /0 3 >> >> >> >> ] >>";
+    texts = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 6}}, "ArialMT", {}, justified)),
+                                   Geom::Point(100, 50));
+    EXPECT_FALSE(texts->stories[0]);
+
+    // A paragraph with nothing in it past the frame's end holds nothing; real text is kept.
+    texts = AN::read_text_document(text_setup(area_text_document("(Hello \\r\\r)", 8, {{0, 12, 7}})), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_TRUE(texts->stories[0]->overflow.empty());
+    EXPECT_EQ(texts->stories[0]->lines.at(0).runs.at(0).text, "Hello ");
+    texts = AN::read_text_document(text_setup(area_text_document("(Hello \\rworld\\r)", 13, {{0, 12, 7}})), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_EQ(texts->stories[0]->overflow, "world\n");
+    // Counts that reach past the story, or a line without one.
+    texts = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 9}})), Geom::Point(100, 50));
+    EXPECT_FALSE(texts->stories[0]);
+    auto uncounted = area_text_document("(Hello\\r)", 6, {{0, 12, 6}});
+    uncounted.replace(uncounted.find("/15 << /0 6 /2 0 /5 false >>"), 28, "");
+    texts = AN::read_text_document(text_setup(uncounted), Geom::Point(100, 50));
+    EXPECT_FALSE(texts->stories[0]);
+
+    // A frame nothing was typed in has no layout at all.
+    auto blank = area_text_document("(\\r)", 1, {}, "ArialMT", {}, {}, " ");
+    texts = AN::read_text_document(text_setup(blank), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_TRUE(texts->stories[0]->empty);
+    std::string error;
+    auto ai = AN::read(records(layer("0 g\n" + rect + "/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(blank)), error);
+    ASSERT_TRUE(ai) << error;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    EXPECT_TRUE(elements(b->document->getReprRoot(), "svg:text").empty());
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("nothing typed"), std::string::npos) << b->notes[0];
+}
+
+TEST_F(AiNativeImportTest, AreaTypeBuildsPositionedLinesAndKeepsItsFrame)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(area_text_document("(Hello \\rworld\\rmore\\r)", 18, {{0, 12, 7}, {0, 26, 6}}, font)));
+    auto b = make(source);
+    ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    auto spans = elements(texts[0], "svg:tspan");
+    ASSERT_EQ(spans.size(), 2u);
+    EXPECT_STREQ(spans[0]->firstChild()->content(), "Hello ");
+    EXPECT_STREQ(spans[1]->firstChild()->content(), "world");
+    EXPECT_EQ(attr(spans[0], "y"), "8203.5");
+    EXPECT_EQ(attr(spans[1], "y"), "8217.5");
+    // The frame, in the text's own coordinates, and what it is too small to show.
+    auto const frame = sp_svg_read_pathv(attr(texts[0], AN::TEXT_FRAME_ATTRIBUTE).c_str());
+    ASSERT_EQ(frame.size(), 1u);
+    EXPECT_EQ(*frame.boundsExact(), Geom::Rect(Geom::Point(8191.5, 8191.5), Geom::Point(8291.5, 8231.5)));
+    EXPECT_EQ(attr(texts[0], AN::TEXT_OVERFLOW_ATTRIBUTE), "more\n");
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("more text than fits"), std::string::npos) << b->notes[0];
+    // Drawn inside its frame on the page: 10..110 across, 40..80 down (the page is 100 high).
+    auto bounds = drawn(b->document.get(), texts[0]);
+    ASSERT_TRUE(bounds);
+    EXPECT_GT(bounds->left(), 9.0);
+    EXPECT_LT(bounds->right(), 110.0);
+    EXPECT_GT(bounds->top(), 40.0);
+    EXPECT_LT(bounds->bottom(), 72.0);
+    // Both survive a save and reopen.
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto again = elements(reopened->getReprRoot(), "svg:text");
+    ASSERT_EQ(again.size(), 1u);
+    EXPECT_EQ(attr(again[0], AN::TEXT_FRAME_ATTRIBUTE), attr(texts[0], AN::TEXT_FRAME_ATTRIBUTE));
+    EXPECT_EQ(attr(again[0], AN::TEXT_OVERFLOW_ATTRIBUTE), "more\n");
+}
+
+TEST_F(AiNativeImportTest, BaselineShiftMovesOnlyItsOwnCharacters)
+{
+    auto shifted = AN::read_text_document(text_setup(text_document("(Hi\\r)", 3, "ArialMT", "/9 -1.5")), Geom::Point(100, 50));
+    ASSERT_TRUE(shifted->stories[0]) << shifted->errors[0];
+    EXPECT_EQ(shifted->stories[0]->lines.at(0).runs.at(0).style.baseline_shift, -1.5);
+
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto top = [&](std::string const &style, std::string *span_style = nullptr, std::string *text_style = nullptr) {
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(text_document("(HHH\\r)", 4, font, "/1 20 " + style))));
+        EXPECT_TRUE(b);
+        if (!b) return 0.0;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        auto spans = elements(texts[0], "svg:tspan");
+        if (span_style && !spans.empty()) *span_style = attr(spans.back(), "style");
+        if (text_style) *text_style = attr(texts[0], "style");
+        auto bounds = drawn(b->document.get(), texts[0]);
+        EXPECT_TRUE(bounds);
+        return bounds ? bounds->top() : 0.0;
+    };
+    std::string span, text;
+    double const plain = top({});
+    double const raised = top("/9 6", &span, &text);
+    double const lowered = top("/9 -4");
+    // Above the baseline is up the page; the document's y points down.
+    EXPECT_NEAR(raised, plain - 6, 0.05);
+    EXPECT_NEAR(lowered, plain + 4, 0.05);
+    // The span the characters are in carries the shift, not the text object.
+    EXPECT_NE(span.find("baseline-shift:6"), std::string::npos) << span;
+    EXPECT_EQ(text.find("baseline-shift"), std::string::npos) << text;
+}
+
+TEST_F(AiNativeImportTest, TypeAnAppearanceDrewHasStoriesOfItsOwn)
+{
+    // An object with an appearance: what that draws (type marked FreeUndo, numbered among the
+    // drawn stories), then the object itself on %_ lines, numbered among the typed ones.
+    auto const art = std::string("u\n/AI11Text :\n1 /FreeUndo ,\n0 /StoryIndex ,\n;\nU\n"
+                                 "%_/AI11Text :\n%_0 /FreeUndo ,\n%_0 /StoryIndex ,\n%_;\n1 (Anon) XW\n");
+    auto const red = "/53 << /0 << /0 1 /1 [1 1 0 0] >> >>";
+    auto documents = AN::read_text_document(text_setup(text_document(), text_document("(World\\r)", 6, "ArialMT", red)),
+                                            Geom::Point(100, 50));
+    ASSERT_TRUE(documents->error.empty()) << documents->error;
+    ASSERT_EQ(documents->stories.size(), 1u);
+    ASSERT_EQ(documents->drawn.size(), 1u);
+    ASSERT_TRUE(documents->stories[0] && documents->drawn[0]) << documents->drawn_errors[0];
+    EXPECT_EQ(documents->stories[0]->lines.at(0).runs.at(0).text, "Hello");
+    EXPECT_EQ(documents->drawn[0]->lines.at(0).runs.at(0).text, "World");
+    EXPECT_FALSE(AN::same_drawing(*documents->stories[0], *documents->drawn[0]));
+    EXPECT_TRUE(AN::same_drawing(*documents->stories[0], *documents->stories[0]));
+    // A second document that can't be read leaves drawn type without stories; the first stands.
+    auto broken = text_setup(text_document(), "/0 [ nonsense");
+    documents = AN::read_text_document(broken, Geom::Point(100, 50));
+    EXPECT_TRUE(documents->error.empty());
+    EXPECT_EQ(documents->stories.size(), 1u);
+    EXPECT_TRUE(documents->drawn.empty());
+
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // The appearance drew nothing but the type as it was typed: the object stands, editable.
+    auto b = make(records(layer(art), text_setup(text_document("(Hello\\r)", 6, font), text_document("(Hello\\r)", 6, font))));
+    ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:ai-story"), "0");
+    EXPECT_EQ(attr(texts[0], "proof:ai-drawn-story"), "");
+    EXPECT_STREQ(texts[0]->parent()->attribute("inkscape:groupmode"), "layer");
+    EXPECT_TRUE(b->notes.empty());
+
+    // The appearance paints it red: the look stands, set from its own story.
+    b = make(records(layer(art), text_setup(text_document("(Hello\\r)", 6, font), text_document("(Hello\\r)", 6, font, red))));
+    ASSERT_TRUE(b);
+    texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:ai-drawn-story"), "0");
+    EXPECT_EQ(attr(texts[0], "proof:ai-story"), "");
+    EXPECT_NE(attr(texts[0], "style").find("fill:#ff0000"), std::string::npos) << attr(texts[0], "style");
+    EXPECT_EQ(attr(texts[0]->parent(), "proof:drawn-look"), "true");
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("came in as groups of what they draw"), std::string::npos) << b->notes[0];
+
+    // Drawn type whose number is past the drawn stories has nothing to say what it sets.
+    std::string error;
+    auto const lone = std::string("/AI11Text :\n1 /FreeUndo ,\n3 /StoryIndex ,\n;\n");
+    EXPECT_FALSE(AN::read(records(layer(lone), text_setup(text_document("(Hello\\r)", 6, font), text_document("(Hello\\r)", 6, font))), error));
+    EXPECT_NE(error.find("type drawn by an appearance"), std::string::npos) << error;
+}
+
+TEST_F(AiNativeImportTest, StoriesCanHoldACharacterThatSetsNothing)
+{
+    // A NUL among the characters (a paste leaves one): it counts as a character and sets none.
+    auto texts = AN::read_text_document(text_setup(text_document("(\\376\\377\\000H\\000i\\000\\000\\000\\015)", 4)),
+                                        Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    ASSERT_EQ(texts->stories[0]->lines.size(), 1u);
+    EXPECT_EQ(texts->stories[0]->lines[0].runs.at(0).text, "Hi");
+}
+
+TEST_F(AiNativeImportTest, KerningAndLigaturesFollowTheRun)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    std::vector<std::string> notes;
+    auto width = [&](std::string const &style, std::string *text_style = nullptr) {
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(text_document("(AVAVAVAV\\r)", 9, font, "/1 40 " + style))));
+        EXPECT_TRUE(b);
+        if (!b) return 0.0;
+        notes = b->notes;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        if (text_style) *text_style = attr(texts[0], "style");
+        auto bounds = drawn(b->document.get(), texts[0]);
+        EXPECT_TRUE(bounds);
+        return bounds ? bounds->width() : 0.0;
+    };
+    std::string plain, off, substitutions, optical;
+    double const kerned = width({}, &plain);
+    // The font's own kerning is what a run has unless it says otherwise: nothing is written.
+    EXPECT_EQ(plain.find("font-feature-settings"), std::string::npos) << plain;
+    EXPECT_EQ(plain.find("font-variant-ligatures"), std::string::npos) << plain;
+    EXPECT_TRUE(notes.empty());
+    // Kerning switched off: A and V stand their full widths apart.
+    double const unkerned = width("/11 0", &off);
+    EXPECT_NE(off.find("font-feature-settings:'kern' 0"), std::string::npos) << off;
+    EXPECT_GT(unkerned, kerned + 5.0);
+    width("/18 false /20 false", &substitutions);
+    EXPECT_NE(substitutions.find("font-variant-ligatures:no-common-ligatures no-contextual"), std::string::npos) << substitutions;
+    EXPECT_NE(substitutions.find("font-feature-settings:normal"), std::string::npos) << substitutions;
+    // Optical kerning is Illustrator's own: the font's stands in, and the import says so.
+    EXPECT_NEAR(width("/11 2", &optical), kerned, 1e-6);
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_NE(notes[0].find("kerned optically"), std::string::npos) << notes[0];
+    auto bad = AN::read_text_document(text_setup(text_document("(Hi\\r)", 3, "ArialMT", "/11 7")), Geom::Point(100, 50));
+    EXPECT_FALSE(bad->stories[0]);
+}
+
+// ---- patterns -----------------------------------------------------------------------------
+
+namespace {
+
+/// A pattern as Illustrator CS and later write it: every line of the tile's art hidden.
+std::string pattern(std::string const &name, std::string const &box, std::string const &art)
+{
+    std::string hidden;
+    for (std::size_t at = 0; at < art.size();) {
+        auto const end = art.find('\n', at);
+        hidden += "%_" + art.substr(at, end - at) + "\n";
+        if (end == std::string::npos) break;
+        at = end + 1;
+    }
+    return "%AI3_BeginPattern: (" + name + ")\n(" + name + ") " + box + "\n" + hidden + "E\n%AI3_EndPattern\n";
+}
+
+} // namespace
+
+TEST_F(AiNativeImportTest, PatternFillsAreTilesPlacedPerObject)
+{
+    // A 20 x 10 tile with a square in its lower left corner (the pattern's y points up).
+    auto const tile = "0 g\n0 0 m 0 5 L 10 5 L 10 0 L 0 0 L\nf\n";
+    auto b = make(records(layer("(Dots) 0 0 1 1 0 0 0 0 0 [2 0 0 2 30 40] p\n" + rect +
+                                "0 0 1 0 K\n(Dots) 0 0 1 1 0 0 0 0 0 [1 0 0 1 0 0] P\n" + rect.substr(0, rect.size() - 2) + "B\n"),
+                          pattern("Dots", "0 0 20 10", tile) + pattern("Unused", "5 5 9 9", tile) +
+                              pattern("Odd", "0 0 4 4", "7 Qz\n")));
+    ASSERT_TRUE(b);
+    auto patterns = elements(b->document->getReprRoot(), "svg:pattern");
+    // The tile, one for each of the three places it paints (a fill, and the next object's
+    // fill and stroke), and the pattern nothing uses: Illustrator lists it among the
+    // swatches. The one that can't be read isn't there.
+    ASSERT_EQ(patterns.size(), 5u);
+    auto find = [&](std::string const &label) -> XML::Node * {
+        for (auto *p : patterns) if (attr(p, "inkscape:label") == label) return p;
+        return nullptr;
+    };
+    auto *dots = find("Dots");
+    ASSERT_TRUE(dots);
+    EXPECT_TRUE(find("Unused"));
+    EXPECT_FALSE(find("Odd"));
+    EXPECT_EQ(attr(dots, "patternUnits"), "userSpaceOnUse");
+    EXPECT_EQ(attr(dots, "width"), "20");
+    EXPECT_EQ(attr(dots, "height"), "10");
+    // The tile's art in the tile's space: its top-left corner at 0,0, y down.
+    auto art = elements(dots, "svg:path");
+    ASSERT_EQ(art.size(), 1u);
+    EXPECT_EQ(*sp_svg_read_pathv(attr(art[0], "d").c_str()).boundsExact(), Geom::Rect(Geom::Point(0, 5), Geom::Point(10, 10)));
+    // The Unused one's tile starts at 5,5 of its own space: its art is moved with it.
+    auto unused = elements(find("Unused"), "svg:path");
+    ASSERT_EQ(unused.size(), 1u);
+    EXPECT_EQ(*sp_svg_read_pathv(attr(unused[0], "d").c_str()).boundsExact(), Geom::Rect(Geom::Point(-5, 4), Geom::Point(5, 9)));
+
+    auto paths = elements(b->document->getReprRoot()->lastChild(), "svg:path");
+    ASSERT_EQ(paths.size(), 2u);
+    auto placed = [&](XML::Node *path, char const *property) -> XML::Node * {
+        auto const style = attr(path, "style");
+        auto const at = style.find(std::string(property) + ":url(#");
+        if (at == std::string::npos) return nullptr;
+        auto const from = at + std::string(property).size() + 6;
+        return b->document->getObjectById(style.substr(from, style.find(')', from) - from))->getRepr();
+    };
+    auto *fill = placed(paths[0], "fill");
+    ASSERT_TRUE(fill);
+    EXPECT_EQ(attr(fill, "xlink:href"), "#" + attr(dots, "id"));
+    Geom::Affine m;
+    ASSERT_TRUE(sp_svg_transform_read(attr(fill, "patternTransform").c_str(), &m));
+    // Tile to pattern (flip in the 10 high tile), the object's matrix, art to page (flip in the 100 high page).
+    EXPECT_TRUE(Geom::are_near(m, Geom::Affine(2, 0, 0, 2, 30, 40), 1e-9)) << attr(fill, "patternTransform");
+    auto *stroke = placed(paths[1], "stroke");
+    ASSERT_TRUE(stroke);
+    EXPECT_NE(stroke, fill);
+    ASSERT_TRUE(sp_svg_transform_read(attr(stroke, "patternTransform").c_str(), &m));
+    EXPECT_TRUE(Geom::are_near(m, Geom::Affine(1, 0, 0, 1, 0, 90), 1e-9)) << attr(stroke, "patternTransform");
+    // The second object still has the first's fill: a pattern stays the paint like a colour.
+    EXPECT_NE(attr(paths[1], "style").find("fill:url(#"), std::string::npos);
+    // They survive a save and reopen, and the tile draws.
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    EXPECT_EQ(elements(reopened->getReprRoot(), "svg:pattern").size(), 5u);
+}
+
+// ---- linked pictures ----------------------------------------------------------------------
+
+namespace {
+
+/// A 4 x 2 picture written to `file`.
+void write_picture(std::string const &file)
+{
+    auto *pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, false, 8, 4, 2);
+    ASSERT_NE(pb, nullptr);
+    gdk_pixbuf_fill(pb, 0x336699ff);
+    EXPECT_TRUE(gdk_pixbuf_save(pb, file.c_str(), "png", nullptr, nullptr));
+    g_object_unref(pb);
+}
+
+/// A file name as a string of the records.
+std::string escaped(std::string const &name)
+{
+    std::string out;
+    for (char c : name) {
+        if (c == '\\' || c == '(' || c == ')') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
+/// A linked picture as Illustrator 2025 writes it, in the box 10..50 x 20..40 of the page.
+std::string linked(std::string const &file, std::string const &folder = {})
+{
+    return "%AI5_BeginPlace\n%%FileType: 1\n[1 0 0 -1 0 100] 10 20 50 40 4 4 0\n(" + escaped(file) + ")`\n"
+           "%%IncludeFile:" + file + "\n%AI17_Begin_Content_if_version_gt:24 12\n\n%AI28_BeginPlacedRelativePath\n(" +
+           escaped(folder) + ")\n%AI28_EndPlacedRelativePath\n%AI17_Alternate_Content\n%AI17_End_Versioned_Content\n\n~\n"
+           "%AI5_EndPlace\n%_/ArtDictionary :\n%_(Photo) /UnicodeString (AIArtName) ,\n%_;\n";
+}
+
+std::string temporary_folder()
+{
+    gchar *dir = g_dir_make_tmp("proof-linked-XXXXXX", nullptr);
+    EXPECT_NE(dir, nullptr);
+    std::string out = dir ? dir : "";
+    g_free(dir);
+    return out;
+}
+
+} // namespace
+
+TEST_F(AiNativeImportTest, LinkedPictureStaysALinkToItsFile)
+{
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    auto const file = folder + G_DIR_SEPARATOR_S + "photo (1).png";
+    write_picture(file);
+    std::string error;
+    auto ai = AN::read(records(layer(linked(file))), error);
+    ASSERT_TRUE(ai) << error;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    EXPECT_TRUE(b->notes.empty());
+    auto images = elements(b->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    // A link, not a copy of the picture.
+    auto const href = attr(images[0], "xlink:href");
+    EXPECT_EQ(href.substr(0, 8), "file:///");
+    gchar *named = g_filename_from_uri(href.c_str(), nullptr, nullptr);
+    ASSERT_NE(named, nullptr);
+    EXPECT_TRUE(g_file_test(named, G_FILE_TEST_IS_REGULAR)) << named;
+    g_free(named);
+    EXPECT_EQ(attr(images[0], "sodipodi:absref"), file);
+    EXPECT_EQ(attr(images[0], "inkscape:label"), "Photo");
+    EXPECT_EQ(attr(images[0], "preserveAspectRatio"), "none");
+    // Where the document puts it, and drawn.
+    b->document->ensureUpToDate();
+    auto *image = dynamic_cast<SPImage *>(b->document->getObjectByRepr(images[0]));
+    ASSERT_TRUE(image);
+    EXPECT_NE(image->pixbuf, nullptr);
+    auto bounds = drawn(b->document.get(), images[0]);
+    ASSERT_TRUE(bounds);
+    EXPECT_TRUE(Geom::are_near(bounds->min(), Geom::Point(10, 20), 1e-6)) << bounds->min();
+    EXPECT_TRUE(Geom::are_near(bounds->max(), Geom::Point(50, 40), 1e-6)) << bounds->max();
+}
+
+TEST_F(AiNativeImportTest, LinkedPictureIsLookedForBesideTheDocument)
+{
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    auto const links = folder + G_DIR_SEPARATOR_S + "Links";
+    ASSERT_EQ(g_mkdir_with_parents(links.c_str(), 0700), 0);
+    write_picture(folder + G_DIR_SEPARATOR_S + "beside.png");
+    write_picture(links + G_DIR_SEPARATOR_S + "below.png");
+    AN::Source source;
+    source.folder = folder;
+    std::string error;
+    // The machine that saved the document kept them somewhere this one doesn't have.
+    auto const elsewhere = std::string("Q:\\Jobs\\2026\\");
+    for (auto const &[name, relative] : {std::pair<std::string, std::string>{"beside.png", ""}, {"below.png", "Links\\"}}) {
+        auto ai = AN::read(records(layer(linked(elsewhere + name, relative))), error);
+        ASSERT_TRUE(ai) << error;
+        // Without the document's folder there is nowhere to look.
+        EXPECT_FALSE(AN::build(*ai, error));
+        EXPECT_NE(error.find("can't be found (" + name + ")"), std::string::npos) << error;
+        auto b = AN::build(*ai, error, source);
+        ASSERT_TRUE(b) << error;
+        auto images = elements(b->document->getReprRoot(), "svg:image");
+        ASSERT_EQ(images.size(), 1u);
+        gchar *named = g_filename_from_uri(attr(images[0], "xlink:href").c_str(), nullptr, nullptr);
+        ASSERT_NE(named, nullptr) << attr(images[0], "xlink:href");
+        EXPECT_TRUE(g_file_test(named, G_FILE_TEST_IS_REGULAR)) << named;
+        g_free(named);
+    }
+}
+
+TEST_F(AiNativeImportTest, LinkedPictureMissingOrUnreadable)
+{
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    AN::Source source;
+    source.folder = folder;
+    std::string error;
+    // Not there: refused where it shows, kept as a link where it doesn't.
+    auto const gone = std::string("Q:\\Jobs\\gone.png");
+    auto ai = AN::read(records(layer("0 g\n" + rect + linked(gone))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error, source));
+    EXPECT_NE(error.find("can't be found (gone.png)"), std::string::npos) << error;
+    ai->layers[0].visible = false;
+    auto hidden = AN::build(*ai, error, source);
+    ASSERT_TRUE(hidden) << error;
+    auto images = elements(hidden->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    EXPECT_EQ(attr(images[0], "sodipodi:absref"), gone);
+    ASSERT_EQ(hidden->notes.size(), 1u);
+    EXPECT_NE(hidden->notes[0].find("linked picture"), std::string::npos) << hidden->notes[0];
+    // A hidden object in a layer that shows doesn't show either.
+    ai->layers[0].visible = true;
+    ai->layers[0].children.back().visible = false;
+    EXPECT_TRUE(AN::build(*ai, error, source)) << error;
+
+    // A file nothing here draws (Photoshop's, a PDF).
+    auto const other = folder + G_DIR_SEPARATOR_S + "layout.psd";
+    ASSERT_TRUE(g_file_set_contents(other.c_str(), "8BPS not a picture", -1, nullptr));
+    ai = AN::read(records(layer(linked(other))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error, source));
+    EXPECT_NE(error.find("can't show yet (layout.psd)"), std::string::npos) << error;
+}
+
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
+TEST_F(AiNativeImportTest, PatternFillMatchesIndependentPdfAndAShiftedOneIsRefused)
+{
+    // A 20 x 20 tile with a 10 x 10 square in its lower left corner, started at 5, 5 of the
+    // art. The page draws the same squares one by one.
+    auto const tile = "0 g\n0 0 m 0 10 L 10 10 L 10 0 L 0 0 L\nf\n";
+    auto native = [&](std::string const &matrix) {
+        return records(layer("(Checks) 0 0 1 1 0 0 0 0 0 [" + matrix + "] p\n0 0 m 0 100 L 200 100 L 200 0 L 0 0 L\nf\n"),
+                       pattern("Checks", "0 0 20 20", tile));
+    };
+    std::string page = "0 g ";
+    for (int i = -1; i < 10; ++i) {
+        for (int j = -1; j < 5; ++j) page += std::to_string(5 + 20 * i) + " " + std::to_string(5 + 20 * j) + " 10 10 re ";
+    }
+    page += "f";
+    std::string reason;
+    auto good = Extension::Internal::open_ai_native(fixture(native("1 0 0 1 5 5"), {page}), reason);
+    ASSERT_TRUE(good) << reason;
+    ASSERT_EQ(good->differences.size(), 1u);
+    EXPECT_LT(good->differences[0].lightness, 0.005);
+    // The tile started elsewhere, or drawn upside down (the square in its upper left corner).
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(native("1 0 0 1 15 5"), {page}), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(native("1 0 0 1 5 15"), {page}), reason));
+    // Scaled and turned a quarter: 40 x 40 tiles, the square now in the tile's lower right.
+    std::string turned = "0 g ";
+    for (int i = -1; i < 6; ++i) {
+        for (int j = -1; j < 4; ++j) turned += std::to_string(20 + 40 * i) + " " + std::to_string(40 * j) + " 20 20 re ";
+    }
+    turned += "f";
+    EXPECT_TRUE(Extension::Internal::open_ai_native(fixture(native("0 2 -2 0 40 0"), {turned}), reason)) << reason;
+}
+
+TEST_F(AiNativeImportTest, AreaTypeMatchesIndependentPdf)
+{
+    // Courier New's advance is 0.6 em: the page sets the two lines itself, where the frame
+    // broke the paragraph.
+    auto *font = FontFactory::get().parsePostscriptName("CourierNewPSMT", false);
+    if (!font) GTEST_SKIP() << "CourierNewPSMT isn't installed";
+    pango_font_description_free(font);
+    auto src = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                       text_setup(area_text_document("(Hello world\\r)", 12, {{0, 22, 6}, {0, 46, 6}}, "CourierNewPSMT",
+                                                     "/1 24 /53 << /0 << /0 0 /1 [1 0] >> >>")));
+    std::string reason;
+    auto good = Extension::Internal::open_ai_native(
+        fixture(src, {"0 g BT /F1 24 Tf 10 38 Td (Hello ) Tj ET BT /F1 24 Tf 10 14 Td (world) Tj ET"},
+                "/MediaBox [0 0 200 100]", "CourierNewPSMT"), reason);
+    ASSERT_TRUE(good) << reason;
+    // The second line where a renderer that didn't break the paragraph would put it.
+    EXPECT_FALSE(Extension::Internal::open_ai_native(
+        fixture(src, {"0 g BT /F1 24 Tf 10 38 Td (Hello ) Tj ET BT /F1 24 Tf 96.4 38 Td (world) Tj ET"},
+                "/MediaBox [0 0 200 100]", "CourierNewPSMT"), reason));
+}
+
 TEST_F(AiNativeImportTest, PointTextRightAndCentreMatchIndependentPdfAndReopen)
 {
     // Courier New's advance is 0.6 em: these independent PDF starts are exact.
@@ -1059,6 +1690,7 @@ TEST_F(AiNativeImportTest, Corpus)
                     static_cast<long long>(ms), utf8(path).c_str(), reason.c_str());
         std::printf("AI_CACHE\t%u\t%u\n", cache.records_reused, cache.references_reused);
         if (result) for (auto const &note : result->notes) std::printf("AI_NOTE\t%s\n", note.c_str());
+        if (result) for (auto const &[part, seconds] : result->timings) std::printf("AI_TIME\t%s\t%.3f\n", part.c_str(), seconds);
         std::fflush(stdout);
     }
 }

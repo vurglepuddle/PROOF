@@ -12,7 +12,10 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <functional>
 #include <string_view>
+#include <tuple>
+#include <unordered_map>
 #include <utility>
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
@@ -169,20 +172,25 @@ std::string font_style(std::string const &name, std::shared_ptr<FontInstance> &f
     return result.empty() ? std::string{} : result.raw() + ";";
 }
 
+/// A text object's story: of those typed, or of those appearances drew.
+using StoryKey = std::pair<bool, std::size_t>;
+
 std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool shown,
                        std::map<std::string, std::string> &fonts,
                        std::map<std::string, std::shared_ptr<FontInstance>> &faces,
-                       std::set<std::size_t> &unsupported_hidden)
+                       std::set<StoryKey> &unsupported_hidden)
 {
     for (auto const &n : nodes) {
         bool const visible = shown && n.visible;
         if (n.kind == Node::Kind::Text) {
             std::string error;
+            auto const *stories = ai.texts ? (n.text_proxy ? &ai.texts->drawn : &ai.texts->stories) : nullptr;
+            auto const *errors = ai.texts ? (n.text_proxy ? &ai.texts->drawn_errors : &ai.texts->errors) : nullptr;
             if (!ai.texts) error = "the text document is missing";
             else if (!ai.texts->error.empty()) error = ai.texts->error;
-            else if (!n.story || *n.story >= ai.texts->stories.size()) error = "a text object has no matching story";
-            else if (!ai.texts->stories[*n.story]) error = ai.texts->errors[*n.story];
-            else for (auto const &line : ai.texts->stories[*n.story]->lines) for (auto const &run : line.runs) {
+            else if (!n.story || *n.story >= stories->size()) error = "a text object has no matching story";
+            else if (!(*stories)[*n.story]) error = (*errors)[*n.story];
+            else for (auto const &line : (*stories)[*n.story]->lines) for (auto const &run : line.runs) {
                 auto const &name = run.style.font;
                 if (!fonts.count(name)) fonts[name] = font_style(name, faces[name]);
                 if (fonts[name].empty() || !faces[name]) error = "the exact font '" + name + "' isn't installed or couldn't be loaded";
@@ -195,7 +203,7 @@ std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool 
                 }
             }
             if (visible && !error.empty()) return "its visible text can't be reconstructed: " + error;
-            if (!visible && !error.empty() && n.story) unsupported_hidden.insert(*n.story);
+            if (!visible && !error.empty() && n.story) unsupported_hidden.insert({n.text_proxy, *n.story});
         } else if (auto error = check_text(ai, n.children, visible, fonts, faces, unsupported_hidden); !error.empty()) return error;
     }
     return {};
@@ -338,7 +346,9 @@ std::optional<std::string> png(std::vector<std::uint8_t> const &pixels, int w, i
     gchar *buf = nullptr;
     gsize len = 0;
     GError *err = nullptr;
-    bool const ok = gdk_pixbuf_save_to_buffer(pb, &buf, &len, "png", &err, "compression", "6", nullptr);
+    // A document for print holds hundreds of megabytes of samples, and opening it waits for
+    // this: a light setting packs them several times faster for a tenth more bytes.
+    bool const ok = gdk_pixbuf_save_to_buffer(pb, &buf, &len, "png", &err, "compression", "3", nullptr);
     g_object_unref(pb);
     if (!ok) {
         if (err) g_error_free(err);
@@ -369,7 +379,7 @@ std::optional<std::string> cmyk_tiff(std::uint32_t w, std::uint32_t h, std::stri
     uLongf len = compressBound(raw.size());
     std::string z(len, '\0');
     if (compress2(reinterpret_cast<Bytef *>(z.data()), &len, reinterpret_cast<Bytef const *>(raw.data()), raw.size(),
-                  6) != Z_OK) {
+                  3) != Z_OK) {
         return {};
     }
     z.resize(len);
@@ -457,11 +467,36 @@ struct StopPaint
     double tint = 1.0;
 };
 
+/// The last part of a file name written with either kind of separator.
+std::string base_name(std::string const &name)
+{
+    auto const at = name.find_last_of("/\\");
+    return at == std::string::npos ? name : name.substr(at + 1);
+}
+
+/// A file name's bytes as text, in each encoding they may be in: Illustrator writes the
+/// name the way the system that saved the document gave it.
+std::vector<std::string> decodings(std::string const &bytes)
+{
+    std::vector<std::string> out;
+    auto add = [&](std::string s) {
+        if (!s.empty() && std::find(out.begin(), out.end(), s) == out.end()) out.push_back(std::move(s));
+    };
+    if (g_utf8_validate(bytes.data(), bytes.size(), nullptr)) add(bytes);
+    gsize written = 0;
+    if (auto *s = g_locale_to_utf8(bytes.data(), bytes.size(), nullptr, &written, nullptr)) {
+        add(std::string(s, written));
+        g_free(s);
+    }
+    add(text_of(bytes));
+    return out;
+}
+
 class Builder
 {
 public:
     Builder(Document const &ai, SPDocument *doc, std::map<std::string, std::string> fonts,
-            std::set<std::size_t> unsupported_hidden);
+            std::set<StoryKey> unsupported_hidden, Source const &source);
     ~Builder();
     Builder(Builder const &) = delete;
     Builder &operator=(Builder const &) = delete;
@@ -471,8 +506,14 @@ public:
 
     std::vector<Geom::Path> guides; ///< In the document's user units.
     std::size_t hidden_text = 0;
+    std::size_t empty_text = 0;
+    std::size_t overflowing_text = 0;
+    std::size_t optical_kerning = 0;
     std::size_t knockouts = 0;
     std::size_t images_left_out = 0;
+    /// A linked picture that shows and can't be placed: why. The first one found.
+    std::string link_error;
+    std::size_t hidden_links_missing = 0;
 
 private:
     XML::Node *create(char const *name) { return _xml->createElement(name); }
@@ -484,10 +525,13 @@ private:
     std::string unique(std::string const &stem);
 
     XML::Node *node(Node const &n);
+    XML::Node *made(Node const &n);
     XML::Node *layer(Node const &n);
     XML::Node *group(Node const &n);
     XML::Node *shape(Node const &n, Geom::PathVector const &pv);
     XML::Node *image(Node const &n);
+    XML::Node *placed(Node const &n);
+    std::optional<std::string> linked_file(Placed const &p) const;
     XML::Node *text(Node const &n);
     void children(XML::Node *parent, std::vector<Node> const &kids, bool clipped);
     std::string clip_path(Node const &clip);
@@ -499,6 +543,8 @@ private:
     std::string process_swatch(Ink const &ink, double tint);
     std::string gradient(Paint const &p);
     std::string gradient_vector(int index);
+    std::string pattern(Paint const &p);
+    std::string pattern_tile(int index);
     Colors::Color shown(StopPaint const &s) const;
     void add_stop(XML::Node *vector, double offset, StopPaint const *paint, Colors::Color const &color, double opacity,
                   bool sample);
@@ -515,13 +561,23 @@ private:
     cmsHTRANSFORM _cmyk_to_rgb = nullptr;
     std::map<std::pair<int, double>, std::string> _inks; ///< (ink, tint) to its paint.
     std::map<int, std::string> _vectors;               ///< Gradient to its vector's id.
+    std::map<int, std::string> _tiles;                 ///< Pattern to its tile's id.
+    /// An image as the document holds it: for the screen, and its CMYK samples for print.
+    struct Encoded
+    {
+        int image = -1; ///< The first image that had these samples.
+        std::string screen, samples;
+    };
+    std::unordered_multimap<std::size_t, Encoded> _encoded; ///< By a digest of the samples.
     std::map<std::string, int> _counters;
     std::map<std::string, std::string> _text_fonts;
-    std::set<std::size_t> _unsupported_hidden_text;
+    std::set<StoryKey> _unsupported_hidden_text;
+    std::string _folder;       ///< The .ai file's folder, for linked pictures.
+    std::size_t _hidden = 0;   ///< How many of the objects being built into don't show.
 };
 
 Builder::Builder(Document const &ai, SPDocument *doc, std::map<std::string, std::string> fonts,
-                 std::set<std::size_t> unsupported_hidden)
+                 std::set<StoryKey> unsupported_hidden, Source const &source)
     : _ai(ai)
     , _doc(doc)
     , _xml(doc->getReprDoc())
@@ -529,6 +585,7 @@ Builder::Builder(Document const &ai, SPDocument *doc, std::map<std::string, std:
     , _to_doc(ai.to_doc)
     , _text_fonts(std::move(fonts))
     , _unsupported_hidden_text(std::move(unsupported_hidden))
+    , _folder(source.folder)
 {
     auto space = Colors::DocumentColors::assignedSpace(doc);
     if (space && space->getComponentType() == Type::CMYK) {
@@ -565,9 +622,42 @@ void Builder::run()
     for (auto const &l : _ai.layers) {
         if (auto e = node(l)) append(root, e);
     }
+    // And its patterns. One nothing is painted with must not cost the document for
+    // something its tile holds: such a tile is taken out again. Nor is what its tile holds
+    // worth a note: nothing shows it.
+    for (std::size_t i = 0; i < _ai.patterns.size(); ++i) {
+        if (_tiles.count(int(i)) || !_ai.patterns[i].unread.empty()) continue;
+        auto const images = images_left_out;
+        auto const error = link_error;
+        auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
+                                       hidden_links_missing);
+        auto const id = pattern_tile(int(i));
+        bool const placed = images_left_out == images && link_error == error;
+        images_left_out = images;
+        link_error = error;
+        std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing) = counts;
+        if (placed) continue;
+        for (auto *child = _defs->firstChild(); child; child = child->next()) {
+            auto const *child_id = child->attribute("id");
+            if (child_id && id == child_id) {
+                _defs->removeChild(child);
+                break;
+            }
+        }
+    }
 }
 
 XML::Node *Builder::node(Node const &n)
+{
+    // What a hidden object holds doesn't show either.
+    bool const hidden = !n.visible;
+    if (hidden) ++_hidden;
+    auto *e = made(n);
+    if (hidden) --_hidden;
+    return e;
+}
+
+XML::Node *Builder::made(Node const &n)
 {
     switch (n.kind) {
         case Node::Kind::Layer:
@@ -587,6 +677,8 @@ XML::Node *Builder::node(Node const &n)
             return shape(n, n.path);
         case Node::Kind::Image:
             return image(n);
+        case Node::Kind::Placed:
+            return placed(n);
         case Node::Kind::Text:
             return text(n);
     }
@@ -595,31 +687,58 @@ XML::Node *Builder::node(Node const &n)
 
 XML::Node *Builder::text(Node const &n)
 {
-    if (!_ai.texts || !n.story || *n.story >= _ai.texts->stories.size() || !_ai.texts->stories[*n.story] ||
-        _unsupported_hidden_text.count(*n.story)) {
+    auto const *stories = _ai.texts ? (n.text_proxy ? &_ai.texts->drawn : &_ai.texts->stories) : nullptr;
+    if (!stories || !n.story || *n.story >= stories->size() || !(*stories)[*n.story] ||
+        _unsupported_hidden_text.count({n.text_proxy, *n.story})) {
         ++hidden_text; return nullptr;
     }
-    auto const &story = *_ai.texts->stories[*n.story];
+    auto const &story = *(*stories)[*n.story];
+    if (story.empty) { ++empty_text; return nullptr; }
     for (auto const &line : story.lines) for (auto const &run : line.runs) {
         auto it = _text_fonts.find(run.style.font);
         if (it == _text_fonts.end() || it->second.empty()) { ++hidden_text; return nullptr; }
     }
     auto e = create("svg:text");
     e->setAttribute("xml:space", "preserve");
-    e->setAttribute("proof:ai-story", std::to_string(*n.story));
+    // Type an appearance drew isn't the object's own text: its story is told apart.
+    e->setAttribute(n.text_proxy ? "proof:ai-drawn-story" : "proof:ai-story", std::to_string(*n.story));
     e->setAttribute("transform", sp_svg_transform_write(story.to_art * _to_doc));
+    if (story.area) {
+        // Area type, set as Illustrator laid it out. Its frame is kept for what flows text
+        // into it again; the lines don't move when the text is edited.
+        e->setAttribute(TEXT_FRAME_ATTRIBUTE, sp_svg_write_path(story.frame));
+        if (!story.overflow.empty()) {
+            e->setAttribute(TEXT_OVERFLOW_ATTRIBUTE, story.overflow);
+            ++overflowing_text;
+        }
+    }
     // A run's style in parts, each inherited by spans. The text object carries the first
     // run's, so its fill, stroke and font are the object's own, as the Appearance controls
     // read and set them; a span carries only what its run has different.
+    // Kerning and the substitutions a font makes unasked are the font's own unless a run
+    // says otherwise; a story where none does says nothing about them.
+    bool features = false, optical = false;
+    for (auto const &line : story.lines) for (auto const &run : line.runs) {
+        features = features || run.style.kerning == 0 || !run.style.ligatures || !run.style.contextual;
+        optical = optical || run.style.kerning == 2;
+    }
+    if (optical) ++optical_kerning;
     auto parts = [&](auto const &s) {
         auto color = [&](std::optional<Color> const &c) { Paint p; if (c) p.color = *c; return c ? paint(p) : std::string("none"); };
-        return std::array<std::string, 8>{
+        std::string ligatures, kerning;
+        if (features) {
+            ligatures = std::string("font-variant-ligatures:") +
+                        (s.ligatures ? (s.contextual ? "normal" : "no-contextual")
+                                     : (s.contextual ? "no-common-ligatures" : "no-common-ligatures no-contextual")) + ";";
+            kerning = std::string("font-feature-settings:") + (s.kerning == 0 ? "'kern' 0" : "normal") + ";";
+        }
+        return std::array<std::string, 10>{
             _text_fonts.at(s.font), "font-size:" + num(s.size) + ";", "fill:" + color(s.fill) + ";",
             "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke) + ";",
             "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
-            "letter-spacing:" + num(s.size * s.tracking / 1000.0) + ";"};
+            "letter-spacing:" + num(s.size * s.tracking / 1000.0) + ";", ligatures, kerning};
     };
-    std::optional<std::array<std::string, 8>> base;
+    std::optional<std::array<std::string, 10>> base;
     for (auto const &line : story.lines) {
         if (!base && !line.runs.empty()) base = parts(line.runs.front().style);
     }
@@ -645,6 +764,9 @@ XML::Node *Builder::text(Node const &n)
             for (std::size_t i = 0; i < own.size(); ++i) {
                 if (own[i] != (*base)[i]) style += own[i];
             }
+            // A shift is taken from the baseline of what holds the span, and added to that
+            // one's own: only the span the characters are in carries it.
+            if (run.style.baseline_shift != 0) style += "baseline-shift:" + num(run.style.baseline_shift) + ";";
             if (style.empty()) {
                 plain += run.text;
                 continue;
@@ -820,6 +942,7 @@ Colors::Color Builder::process(Color const &c) const
 std::string Builder::paint(Paint const &p)
 {
     if (p.kind == Paint::Kind::Gradient) return gradient(p);
+    if (p.kind == Paint::Kind::Pattern) return pattern(p);
     if (p.ink >= 0 && p.ink < static_cast<int>(_ai.inks.size())) return ink(p.ink, p.tint);
     return process(p.color).toString(false);
 }
@@ -1005,6 +1128,56 @@ std::string Builder::gradient(Paint const &p)
     return "url(#" + id + ")";
 }
 
+// ---- patterns -------------------------------------------------------------------------------
+
+/// A pattern's own space (y up) to its tile's: the tile's top-left corner at 0,0, y down.
+Geom::Affine tile_space(Pattern const &p)
+{
+    return Geom::Affine(1, 0, 0, -1, -p.tile.left(), p.tile.bottom());
+}
+
+/// The pattern holding the tile and its art, once for the document.
+std::string Builder::pattern_tile(int index)
+{
+    if (auto it = _tiles.find(index); it != _tiles.end()) return it->second;
+    auto const &pat = _ai.patterns[index];
+    auto e = create("svg:pattern");
+    auto const id = unique("pattern");
+    e->setAttribute("id", id);
+    if (!pat.name.empty()) e->setAttribute("inkscape:label", pat.name);
+    e->setAttribute("patternUnits", "userSpaceOnUse");
+    e->setAttributeSvgDouble("width", pat.tile.width());
+    e->setAttributeSvgDouble("height", pat.tile.height());
+    // The art is built in the tile's space, and shows wherever the pattern does.
+    auto const outer = std::exchange(_to_doc, tile_space(pat));
+    auto const hidden = std::exchange(_hidden, 0);
+    auto outer_guides = std::exchange(guides, {});
+    children(e, pat.art, false);
+    guides = std::move(outer_guides);
+    _hidden = hidden;
+    _to_doc = outer;
+    append(_defs, e);
+    return _tiles[index] = id;
+}
+
+/// The pattern as one object places it: the tile's, with that object's matrix.
+std::string Builder::pattern(Paint const &p)
+{
+    if (p.pattern < 0 || p.pattern >= static_cast<int>(_ai.patterns.size())) return "none";
+    auto const &pat = _ai.patterns[p.pattern];
+    Geom::Affine const m = tile_space(pat).inverse() * p.pattern_matrix * _to_doc;
+    if (!finite(m) || m.isSingular()) return "none";
+    auto const tile = pattern_tile(p.pattern);
+    auto e = create("svg:pattern");
+    auto const id = unique("pattern");
+    e->setAttribute("id", id);
+    e->setAttribute("inkscape:collect", "always");
+    e->setAttribute("xlink:href", "#" + tile);
+    e->setAttribute("patternTransform", sp_svg_transform_write(m));
+    append(_defs, e);
+    return "url(#" + id + ")";
+}
+
 // ---- images ---------------------------------------------------------------------------------
 
 /// The image's colours for the screen, 8-bit RGB or RGBA (`channels`); `eight` gets its
@@ -1067,13 +1240,39 @@ XML::Node *Builder::image(Node const &n)
         ++images_left_out;
         return nullptr;
     }
-    std::string eight;
-    int channels = 3;
-    auto const pixels = screen_pixels(img, eight, channels);
-    auto const data = png(pixels, img.width, img.height, channels);
-    if (!data) {
-        ++images_left_out;
-        return nullptr;
+    // A picture placed several times is in the records as many times, whole. Its samples
+    // are converted and packed once.
+    auto const same = [&](int other) {
+        auto const &o = _ai.images[other];
+        return o.width == img.width && o.height == img.height && o.bits == img.bits && o.channels == img.channels &&
+               o.samples == img.samples && o.alpha == img.alpha;
+    };
+    auto const digest = std::hash<std::string_view>{}(img.samples) ^ (std::hash<std::string_view>{}(img.alpha) << 1) ^
+                        (std::size_t(img.width) << 32) ^ std::size_t(img.height);
+    Encoded const *encoded = nullptr;
+    auto const [first, last] = _encoded.equal_range(digest);
+    for (auto it = first; it != last && !encoded; ++it) {
+        if (same(it->second.image)) encoded = &it->second;
+    }
+    if (!encoded) {
+        std::string eight;
+        int channels = 3;
+        auto const pixels = screen_pixels(img, eight, channels);
+        auto const data = png(pixels, img.width, img.height, channels);
+        if (!data) {
+            ++images_left_out;
+            return nullptr;
+        }
+        Encoded made;
+        made.image = n.image;
+        made.screen = "data:image/png;base64," + base64(*data);
+        if (img.channels == 4) {
+            // The screen sees RGB; the CMYK samples stay for print.
+            if (auto tiff = cmyk_tiff(img.width, img.height, eight, img.alpha)) {
+                made.samples = "data:image/tiff;base64," + base64(*tiff);
+            }
+        }
+        encoded = &_encoded.emplace(digest, std::move(made))->second;
     }
     auto e = create("svg:image");
     e->setAttributeSvgDouble("x", 0);
@@ -1082,13 +1281,86 @@ XML::Node *Builder::image(Node const &n)
     e->setAttributeSvgDouble("height", img.height);
     e->setAttribute("preserveAspectRatio", "none");
     e->setAttribute("transform", sp_svg_transform_write(m));
-    e->setAttribute("xlink:href", "data:image/png;base64," + base64(*data));
-    if (img.channels == 4) {
-        // The screen sees RGB; the CMYK samples stay for print.
-        if (auto tiff = cmyk_tiff(img.width, img.height, eight, img.alpha)) {
-            e->setAttribute("proof:samples", "data:image/tiff;base64," + base64(*tiff));
+    e->setAttribute("xlink:href", encoded->screen);
+    if (!encoded->samples.empty()) e->setAttribute("proof:samples", encoded->samples);
+    std::string style;
+    common(e, n, style);
+    if (!style.empty()) e->setAttribute("style", style);
+    return e;
+}
+
+/// The file a placed picture links to: where the document says it is, else in the folder
+/// the document gives from its own, else beside the document. Nothing when it isn't there.
+std::optional<std::string> Builder::linked_file(Placed const &p) const
+{
+    std::vector<std::string> tries;
+    auto const folders = decodings(p.folder);
+    for (auto const &name : decodings(p.path)) {
+        if (g_path_is_absolute(name.c_str())) tries.push_back(name);
+        auto const base = base_name(name);
+        if (base.empty()) continue;
+        auto join = [&](std::initializer_list<std::string> parts) {
+            std::string out;
+            for (auto const &part : parts) {
+                if (!out.empty() && out.back() != '/' && out.back() != '\\') out += G_DIR_SEPARATOR;
+                out += part;
+            }
+            tries.push_back(std::move(out));
+        };
+        for (auto const &folder : folders) {
+            if (g_path_is_absolute(folder.c_str())) {
+                join({folder, base});
+            } else if (!_folder.empty()) {
+                join({_folder, folder, base});
+            }
         }
+        if (!_folder.empty()) join({_folder, base});
     }
+    for (auto const &file : tries) {
+        if (g_file_test(file.c_str(), G_FILE_TEST_IS_REGULAR)) return file;
+    }
+    return {};
+}
+
+XML::Node *Builder::placed(Node const &n)
+{
+    if (n.placed < 0 || n.placed >= static_cast<int>(_ai.placed.size())) {
+        ++images_left_out;
+        return nullptr;
+    }
+    auto const &p = _ai.placed[n.placed];
+    Geom::Affine const m = p.matrix * _to_doc;
+    if (!finite(m) || m.isSingular()) {
+        ++images_left_out;
+        return nullptr;
+    }
+    auto const names = decodings(p.path);
+    auto const name = names.empty() ? std::string() : base_name(names.front());
+    auto file = linked_file(p);
+    if (file && !gdk_pixbuf_get_file_info(file->c_str(), nullptr, nullptr)) {
+        // A file of another application's (Photoshop, PDF, EPS): nothing here draws it.
+        if (!_hidden && link_error.empty()) link_error = "a linked file is of a kind PROOF can't show yet (" + name + ")";
+        file.reset();
+    } else if (!file && !_hidden && link_error.empty()) {
+        link_error = "a linked picture can't be found (" + name + ")";
+    }
+    // One that doesn't show keeps its link as the document has it, to be found again later.
+    if (!file) {
+        if (_hidden) ++hidden_links_missing;
+        if (names.empty()) return nullptr;
+        file = names.front();
+    }
+    auto e = create("svg:image");
+    e->setAttributeSvgDouble("x", p.box.left());
+    e->setAttributeSvgDouble("y", p.box.top());
+    e->setAttributeSvgDouble("width", p.box.width());
+    e->setAttributeSvgDouble("height", p.box.height());
+    e->setAttribute("preserveAspectRatio", "none");
+    e->setAttribute("transform", sp_svg_transform_write(m));
+    gchar *uri = g_path_is_absolute(file->c_str()) ? g_filename_to_uri(file->c_str(), nullptr, nullptr) : nullptr;
+    e->setAttribute("xlink:href", uri ? uri : file->c_str());
+    g_free(uri);
+    e->setAttribute("sodipodi:absref", *file);
     std::string style;
     common(e, n, style);
     if (!style.empty()) e->setAttribute("style", style);
@@ -1126,7 +1398,7 @@ std::size_t add_guides(SPDocument *doc, std::vector<Geom::Path> const &paths)
 
 } // namespace
 
-std::optional<Built> build(Document const &ai, std::string &error)
+std::optional<Built> build(Document const &ai, std::string &error, Source const &source)
 {
     error.clear();
     // These warnings describe artwork the reader replaced or omitted. A small
@@ -1137,7 +1409,7 @@ std::optional<Built> build(Document const &ai, std::string &error)
     }
     std::map<std::string, std::string> fonts;
     std::map<std::string, std::shared_ptr<FontInstance>> faces;
-    std::set<std::size_t> unsupported_hidden;
+    std::set<StoryKey> unsupported_hidden;
     error = check_text(ai, ai.layers, true, fonts, faces, unsupported_hidden);
     if (!error.empty()) return {};
     auto doc = SPDocument::createNewDoc(nullptr, true);
@@ -1173,10 +1445,14 @@ std::optional<Built> build(Document const &ai, std::string &error)
     // The document's colour mode and profile come first: process colours are written in it.
     Colors::DocumentColors::adopt(doc.get(), ai.cmyk ? Type::CMYK : Type::RGB);
 
-    Builder b(ai, doc.get(), std::move(fonts), std::move(unsupported_hidden));
+    Builder b(ai, doc.get(), std::move(fonts), std::move(unsupported_hidden), source);
     b.run();
     if (b.images_left_out) {
         error = "an embedded image couldn't be placed";
+        return {};
+    }
+    if (!b.link_error.empty()) {
+        error = b.link_error;
         return {};
     }
 
@@ -1204,6 +1480,23 @@ std::optional<Built> build(Document const &ai, std::string &error)
     if (b.hidden_text) {
         notes.push_back(count(b.hidden_text, "text object", "text objects") +
                         " that don't show were left out: their story, style or exact font isn't supported");
+    }
+    if (b.empty_text) {
+        notes.push_back(count(b.empty_text, "text frame with nothing typed in it was", "text frames with nothing typed in them were") +
+                        " left out");
+    }
+    if (b.overflowing_text) {
+        notes.push_back(count(b.overflowing_text, "text frame holds", "text frames hold") +
+                        " more text than fits; what doesn't show is kept with the frame as plain text");
+    }
+    if (b.optical_kerning) {
+        notes.push_back(count(b.optical_kerning, "text object is", "text objects are") +
+                        " kerned optically in Illustrator; here the letters are spaced by their fonts' own kerning");
+    }
+    if (b.hidden_links_missing) {
+        notes.push_back(count(b.hidden_links_missing, "linked picture that doesn't show wasn't",
+                              "linked pictures that don't show weren't") +
+                        " found; the links are kept as the document has them");
     }
     if (b.knockouts) notes.push_back(count(b.knockouts, "knockout group", "knockout groups") + " draw as ordinary groups");
     if (curved) notes.push_back(count(curved, "curved guide segment was", "curved guide segments were") + " left out");

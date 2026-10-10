@@ -9,9 +9,11 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <new>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -52,7 +54,9 @@
 namespace Inkscape::Extension::Internal {
 namespace {
 
-constexpr std::size_t RECORDS_LIMIT = std::size_t(256) << 20;
+/// The most decoded records read. They hold every embedded image uncompressed: a brochure
+/// of photographs for print runs to several hundred megabytes from a file of twenty.
+constexpr std::size_t RECORDS_LIMIT = std::size_t(2048) << 20;
 /// The longest side, in pixels, of an artboard as it is weighed.
 constexpr double LONGEST_SIDE = 600.0;
 /// An artboard that differs is weighed again from pictures drawn this many times larger and
@@ -383,9 +387,27 @@ struct Unref
 };
 #endif
 
+std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, bool keep_differing,
+                                         std::string const &diagnostic_directory, AiNativeCache *cache);
+
 } // namespace
 
 std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, bool keep_differing,
+                                         std::string const &diagnostic_directory, AiNativeCache *cache)
+{
+    // The records hold every image uncompressed. A machine that runs out of memory over
+    // them still has the page to open.
+    try {
+        return open_checked(path, reason, keep_differing, diagnostic_directory, cache);
+    } catch (std::bad_alloc const &) {
+        reason = "there isn't enough memory to read its own art";
+        return {};
+    }
+}
+
+namespace {
+
+std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, bool keep_differing,
                                          std::string const &diagnostic_directory, AiNativeCache *cache)
 {
     reason.clear();
@@ -395,6 +417,13 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
     return {};
 #else
     std::string error;
+    std::vector<std::pair<std::string, double>> timings;
+    auto clock = std::chrono::steady_clock::now();
+    auto timed = [&](char const *part) {
+        auto const now = std::chrono::steady_clock::now();
+        timings.emplace_back(part, std::chrono::duration<double>(now - clock).count());
+        clock = now;
+    };
     std::optional<AiNativeRecords> records;
     if (cache && !cache->records_directory.empty()) {
         if (auto text = read_cached(cache->records_directory + "/records.txt", RECORDS_LIMIT)) {
@@ -418,18 +447,27 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
         reason = "its own data has no layers";
         return {};
     }
+    timed("records");
     auto ai = AiNative::read(records->text, error);
     records.reset();
     if (!ai) {
         reason = error;
         return {};
     }
-    auto built = AiNative::build(*ai, error);
+    timed("read");
+    AiNative::Source source;
+    {
+        gchar *folder = g_path_get_dirname(path.c_str());
+        source.folder = folder;
+        g_free(folder);
+    }
+    auto built = AiNative::build(*ai, error, source);
     ai.reset();
     if (!built) {
         reason = error;
         return {};
     }
+    timed("build");
     auto *doc = built->document.get();
     auto const &boards = built->artboards;
 
@@ -583,8 +621,12 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
     }
     for (auto &n : built->notes) result.notes.push_back(std::move(n));
     result.document = std::move(built->document);
+    timed("compare");
+    result.timings = std::move(timings);
     return result;
 #endif
 }
+
+} // namespace
 
 } // namespace Inkscape::Extension::Internal

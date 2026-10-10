@@ -8,12 +8,20 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 #include <glib.h>
+#include <2geom/affine.h>
+#include <2geom/bezier-curve.h>
+#include <2geom/path.h>
+#include <2geom/transforms.h>
 
 namespace Inkscape::Extension::Internal::AiNative {
 namespace {
-constexpr std::size_t MAX_BYTES = 64u << 20, MAX_STORY = 1u << 20, MAX_VALUES = 250000;
+// A document of some hundred pages has several hundred stories and a few hundred thousand
+// values in each of its two text documents.
+constexpr std::size_t MAX_BYTES = 64u << 20, MAX_STORY = 1u << 20, MAX_VALUES = 2000000;
 
 struct Bad : std::runtime_error { using std::runtime_error::runtime_error; };
 
@@ -150,14 +158,21 @@ public:
     }
 };
 
-std::string unpack(std::string_view records)
+/// The text documents' section of the records.
+std::string_view text_section(std::string_view records)
 {
     auto start = records.find("%AI11_BeginTextDocument");
     if (start == records.npos) throw Bad("the text document is missing");
     auto end = records.find("%AI11_EndTextDocument", start);
     if (end == records.npos) throw Bad("the text document doesn't end");
-    auto section = records.substr(start, end - start);
-    auto from = section.find("/ASCII85Decode");
+    return records.substr(start, end - start);
+}
+
+/// The ASCII85 block that starts at or after `from` in `section`, decoded; `from` is left
+/// after it.
+std::string unpack(std::string_view section, std::size_t &from)
+{
+    from = section.find("/ASCII85Decode", from);
     if (from == section.npos) throw Bad("the text encoding isn't supported");
     from += std::string_view("/ASCII85Decode").size();
     while (from < section.size() && g_ascii_isspace(section[from])) ++from;
@@ -188,7 +203,20 @@ std::string unpack(std::string_view records)
     }
     if (digits == 1) throw Bad("incomplete ASCII85 text");
     if (digits) { auto count = digits - 1; while (digits++ < 5) acc = acc * 85 + 84; emit(count); }
+    from = finish + 2;
     return out;
+}
+
+/// Whether `text` is UTF-8 throughout. A story can hold a NUL (it sets nothing), which
+/// glib's own check takes for the end.
+bool utf8_with_nuls(std::string const &text)
+{
+    for (std::size_t at = 0; at < text.size();) {
+        auto const end = std::min(text.find('\0', at), text.size());
+        if (end > at && !g_utf8_validate(text.data() + at, end - at, nullptr)) return false;
+        at = end + 1;
+    }
+    return true;
 }
 
 void find_nodes(Value const &v, char const *name, std::vector<Value const *> &out)
@@ -218,7 +246,20 @@ TextStyle style(Value const &own, Value const &defaults, std::vector<std::string
     out.horizontal_scale = number("6", 1); out.vertical_scale = number("7", 1);
     if (out.horizontal_scale < 0.01 || out.horizontal_scale > 100 ||
         out.vertical_scale < 0.01 || out.vertical_scale > 100) throw Bad("invalid or excessive text scale");
-    if (number("9", 0) != 0) throw Bad("text uses baseline shifts not supported yet");
+    out.baseline_shift = number("9", 0);
+    if (std::abs(out.baseline_shift) > 1e5) throw Bad("invalid text baseline shift");
+    // How pairs are kerned (11), and the two substitutions fonts make unasked that
+    // Illustrator lets a run switch off: standard ligatures (18), contextual alternates (20).
+    auto const kerning = number("11", 1);
+    if (kerning != 0 && kerning != 1 && kerning != 2 && kerning != 3) throw Bad("text is kerned in a way that isn't supported");
+    out.kerning = int(kerning);
+    auto on = [&](char const *k) {
+        if (!own.dict.count(k) && !defaults.dict.count(k)) return true;
+        auto const &v = pick(k);
+        return v.kind != Value::Boolean || v.boolean;
+    };
+    out.ligatures = on("18");
+    out.contextual = on("20");
     out.tracking = number("8", 0);
     if (std::abs(out.tracking) > 1e6) throw Bad("invalid text tracking");
     auto paint = [&](char const *k, double &opacity) -> Color {
@@ -245,30 +286,127 @@ TextStyle style(Value const &own, Value const &defaults, std::vector<std::string
     return out;
 }
 
+/// A line of area type as Illustrator laid it out.
+struct Laid
+{
+    Value const *line;
+    Geom::Point at; ///< Its origin, from the frame's anchor.
+};
+
+/// A node's own offset from what holds it (`/0 << /0 [x y] >>`), nothing when it has none.
+Geom::Point offset_of(Value const &node)
+{
+    if (node.kind != Value::Dictionary || !node.dict.count("0")) return {};
+    auto const o = node.get("0").get("0").nums(2);
+    return {o[0], o[1]};
+}
+
+/// The lines under `v` (the frame, or a row or column in it), each from the frame's anchor:
+/// the offsets of what holds a line add up.
+void laid_lines(Value const &v, Geom::Point const &at, unsigned depth, std::vector<Laid> &out)
+{
+    auto const kids = v.dict.find("6");
+    if (depth > 8 || kids == v.dict.end() || kids->second.kind != Value::Array) {
+        throw Bad("area type has a layout that isn't supported yet");
+    }
+    for (auto const &k : kids->second.list) {
+        auto const here = at + offset_of(k);
+        if (k.node("L")) {
+            out.push_back({&k, here});
+        } else if (k.node("R")) {
+            laid_lines(k, here, depth + 1, out);
+        } else {
+            throw Bad("area type has a layout that isn't supported yet");
+        }
+        if (out.size() > 65536) throw Bad("text has too many lines");
+    }
+}
+
+/// A frame's outline: its segments one after another, each four points (a start, two
+/// handles and an end).
+Geom::PathVector frame_outline(Value const &points)
+{
+    if (points.kind != Value::Array || points.list.empty() || points.list.size() % 8 || points.list.size() > 8 * 8192) {
+        throw Bad("invalid text frame outline");
+    }
+    Geom::PathVector out;
+    std::optional<Geom::Path> path;
+    auto finish = [&] {
+        if (!path) return;
+        if (Geom::distance(path->initialPoint(), path->finalPoint()) < 1e-6) path->close(true);
+        out.push_back(std::move(*path));
+        path.reset();
+    };
+    for (std::size_t i = 0; i < points.list.size(); i += 8) {
+        Geom::Point p[4];
+        for (int k = 0; k < 4; ++k) {
+            p[k] = {points.list[i + 2 * k].num(), points.list[i + 2 * k + 1].num()};
+            if (std::abs(p[k].x()) > 1e9 || std::abs(p[k].y()) > 1e9) throw Bad("invalid text frame outline");
+        }
+        if (!path || Geom::distance(path->finalPoint(), p[0]) > 1e-6) {
+            finish();
+            path = Geom::Path(p[0]);
+        }
+        if (p[1] == p[0] && p[2] == p[3]) {
+            path->appendNew<Geom::LineSegment>(p[3]);
+        } else {
+            path->appendNew<Geom::CubicBezier>(p[1], p[2], p[3]);
+        }
+    }
+    finish();
+    return out;
+}
+
 PointText story(Value const &s, Value const &frames, Value const &defaults,
                 std::vector<std::string> const &fonts, Geom::Point const &center)
 {
     auto const &text = s.get("0").get("0").str();
-    if (text.empty() || text.size() > MAX_STORY || text.find('\0') != text.npos ||
-        !g_utf8_validate(text.data(), text.size(), nullptr)) throw Bad("invalid or oversized story text");
+    if (text.size() > MAX_STORY || !utf8_with_nuls(text)) throw Bad("invalid or oversized story text");
     auto const &frame_refs = s.get("1").get("0");
     if (frame_refs.list.size() != 1) throw Bad("linked text frames aren't supported yet");
     auto const &frame = frames.at(frame_refs.at(0).get("0").index()).get("0");
-    for (auto const &[k, value] : frame.dict) if (k != "0" && k != "2" && k != "97")
-        throw Bad("text frame has unsupported geometry or options");
     auto const &carries = frame.get("2");
-    if (carries.kind != Value::Dictionary || carries.dict.size() > 1 ||
-        (!carries.dict.empty() && !carries.dict.count("2"))) throw Bad("area/path text isn't supported yet");
-    auto matrix = carries.dict.empty() ? std::vector<double>{1, 0, 0, 1, 0, 0} : carries.get("2").nums(6);
+    if (carries.kind != Value::Dictionary) throw Bad("text frame has unsupported geometry or options");
+    // What a frame carries says its kind (0): nothing for point type, 1 for area type. Area
+    // type then has an outline (the frame's 1) where point type has its point (0), and
+    // carries its gutters (7, 8) and its first-baseline rule (10): the lines are placed as
+    // Illustrator laid them out, so neither is needed to draw them.
+    bool const area = carries.dict.count("0") && carries.get("0").num() == 1;
+    if (carries.dict.count("0") && !area) throw Bad("type on a path isn't supported yet");
+    for (auto const &[k, value] : frame.dict) {
+        if (k != "2" && k != "97" && k != (area ? "1" : "0")) throw Bad("text frame has unsupported geometry or options");
+    }
+    for (auto const &[k, value] : carries.dict) {
+        if (k == "2" || (area && (k == "0" || k == "7" || k == "8" || k == "10"))) continue;
+        throw Bad(area ? "area type has options that aren't supported yet" : "area/path text isn't supported yet");
+    }
+    auto matrix = carries.dict.count("2") ? carries.get("2").nums(6) : std::vector<double>{1, 0, 0, 1, 0, 0};
     auto const det = matrix[0] * matrix[3] - matrix[1] * matrix[2];
     if (!std::isfinite(det) || std::abs(det) < 1e-9 ||
         std::any_of(matrix.begin(), matrix.end(), [](double x) { return std::abs(x) > 1e9; })) throw Bad("invalid text frame matrix");
     std::vector<Value const *> anchors;
-    find_nodes(s.get("1").get("2"), "F", anchors);
+    if (s.get("1").dict.count("2")) find_nodes(s.get("1").get("2"), "F", anchors);
+    PointText out;
+    out.area = area;
+    out.to_art = Geom::Affine(matrix[0], -matrix[1], matrix[2], -matrix[3],
+                              matrix[4] - 8191.5 + center.x(), 8191.5 + center.y() - matrix[5]);
+    if (area) out.frame = frame_outline(frame.get("1").get("0"));
+    // A frame nothing was typed in has no layout: there is nothing of it to draw.
+    if (anchors.empty() && std::all_of(text.begin(), text.end(), [](char c) { return c == '\r' || c == '\n' || c == 3 || c == 0; })) {
+        out.empty = true;
+        return out;
+    }
+    if (text.empty()) throw Bad("invalid or oversized story text");
     if (anchors.size() != 1) throw Bad("text has an unsupported layout frame");
     auto const anchor = anchors[0]->get("0").get("0").nums(2);
     std::vector<Value const *> lines;
-    find_nodes(*anchors[0], "L", lines);
+    std::vector<Laid> laid;
+    if (area) {
+        laid_lines(*anchors[0], Geom::Point(anchor[0], anchor[1]), 0, laid);
+        for (auto const &l : laid) lines.push_back(l.line);
+    } else {
+        find_nodes(*anchors[0], "L", lines);
+    }
     if (lines.empty() || lines.size() > 65536) throw Bad("text has no supported lines");
     struct Paragraph { std::size_t end; unsigned alignment; };
     std::vector<Paragraph> paragraphs;
@@ -285,17 +423,24 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (paragraphs.empty()) throw Bad("text has no paragraph runs");
     }
-    PointText out;
-    out.to_art = Geom::Affine(matrix[0], -matrix[1], matrix[2], -matrix[3],
-                              matrix[4] - 8191.5 + center.x(), 8191.5 + center.y() - matrix[5]);
-    for (auto const *line : lines) {
-        auto offset = line->dict.count("0") ? line->get("0").get("0").nums(2) : std::vector<double>{0, 0};
-        auto const &segments = line->get("6");
+    // Area type: how many characters Illustrator put in each line, their ends included.
+    std::vector<std::size_t> line_units;
+    auto segment_of = [](Value const &line) -> Value const & {
+        auto const &segments = line.get("6");
         if (std::count_if(segments.list.begin(), segments.list.end(), [](Value const &v) { return v.node("S"); }) != 1)
             throw Bad("text line has multiple layout segments not supported yet");
-        auto it = std::find_if(segments.list.begin(), segments.list.end(), [](Value const &v) { return v.node("S"); });
-        if (it == segments.list.end()) throw Bad("text line has no supported segment");
-        auto segment = it->dict.count("0") ? it->get("0").get("0").nums(2) : std::vector<double>{0, 0};
+        return *std::find_if(segments.list.begin(), segments.list.end(), [](Value const &v) { return v.node("S"); });
+    };
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        auto const *line = lines[i];
+        auto const &found = segment_of(*line);
+        if (area) {
+            out.lines.push_back({laid[i].at + offset_of(found), {}});
+            line_units.push_back(found.get("15").get("0").index());
+            continue;
+        }
+        auto offset = line->dict.count("0") ? line->get("0").get("0").nums(2) : std::vector<double>{0, 0};
+        auto segment = found.dict.count("0") ? found.get("0").get("0").nums(2) : std::vector<double>{0, 0};
         out.lines.push_back({Geom::Point(anchor[0] + offset[0] + segment[0], anchor[1] + offset[1]), {}});
     }
     struct Run { std::size_t end; TextStyle style; };
@@ -317,8 +462,15 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     // explicit baseline positions so glyphs scale without moving their anchors.
     out.to_art = Geom::Scale(hscale, vscale) * out.to_art;
     for (auto &l : out.lines) l.origin *= Geom::Scale(1 / hscale, 1 / vscale);
+    out.frame *= Geom::Scale(1 / hscale, 1 / vscale);
     if (!paragraphs.empty() && paragraph_units != units) throw Bad("paragraph runs don't cover the story");
-    std::size_t run = 0, line = 0, at_units = 0, paragraph = 0;
+    if (area) {
+        std::size_t laid_units = 0;
+        for (auto const n : line_units) laid_units += n;
+        // Fewer is a frame too small for its text: the rest isn't laid out.
+        if (laid_units > units) throw Bad("text runs or line layout don't cover the story");
+    }
+    std::size_t run = 0, line = 0, at_units = 0, paragraph = 0, line_end = area ? line_units[0] : 0;
     for (auto const *at = text.data(); at < text.data() + text.size();) {
         auto const cp = g_utf8_get_char(at); auto const *next = g_utf8_next_char(at);
         auto const count = cp > 0xffff ? 2u : 1u;
@@ -327,8 +479,23 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             throw Bad("paragraph run cuts a Unicode character or ends early");
         while (run < runs.size() && at_units == runs[run].end) ++run;
         if (run == runs.size() || at_units + count > runs[run].end) throw Bad("text run cuts a Unicode character or ends early");
-        if (cp == '\r' || cp == 3 || cp == '\n') {
-            ++line;
+        if (area) {
+            // A line ends where its count does: where Illustrator wrapped it, typed or not.
+            while (line < out.lines.size() && at_units == line_end) {
+                if (++line < out.lines.size()) line_end += line_units[line];
+            }
+            if (line == out.lines.size()) {
+                // What the frame is too small to show: kept, not drawn.
+                if (cp == '\r' || cp == 3 || cp == '\n') out.overflow.push_back('\n'); else if (cp) out.overflow.append(at, next - at);
+                at_units += count; at = next;
+                continue;
+            }
+            if (at_units + count > line_end) throw Bad("text line cuts a Unicode character or ends early");
+        }
+        if (cp == 0) {
+            // A character that sets nothing; it only counts.
+        } else if (cp == '\r' || cp == 3 || cp == '\n') {
+            if (!area) ++line;
         } else {
             if (line >= out.lines.size() || cp < 32) throw Bad("text line count or control character isn't supported");
             auto &pieces = out.lines[line].runs;
@@ -339,16 +506,64 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         at_units += count; at = next;
     }
-    if (at_units != units || line > out.lines.size() ||
-        (line + 1 != out.lines.size() && line != out.lines.size())) throw Bad("text runs or line layout don't cover the story");
+    if (at_units != units) throw Bad("text runs or line layout don't cover the story");
+    if (!area && (line > out.lines.size() || (line + 1 != out.lines.size() && line != out.lines.size()))) {
+        throw Bad("text runs or line layout don't cover the story");
+    }
+    // Paragraphs with nothing in them past the frame's end hold nothing to keep.
+    if (out.overflow.find_first_not_of('\n') == std::string::npos) out.overflow.clear();
+
+    // Every line starts where its glyphs do. Centred or right-aligned lines are anchored at
+    // their middle or right end instead, to stay there when edited. A text object has one
+    // anchor for all its lines (they are one paragraph to what sets them, which takes its
+    // alignment from the first), so that is done only when every line with characters has
+    // the same alignment and each says where its anchor is: point type by its segment's
+    // offset from the story's anchor, area type by the middle or right end of its line's
+    // box, when its glyphs' own extent agrees that that is where it sits (a line that keeps
+    // a space at its end doesn't).
+    std::optional<unsigned> common;
+    bool together = true;
+    for (auto const &l : out.lines) {
+        if (l.runs.empty()) continue;
+        together = together && (!common || *common == l.alignment);
+        common = l.alignment;
+    }
+    std::vector<double> moves(out.lines.size(), 0.0); // From each line's start to its anchor.
+    together = together && common && *common != 0;
+    for (std::size_t i = 0; together && i < out.lines.size(); ++i) {
+        if (out.lines[i].runs.empty()) continue;
+        // A space at a line's end is part of what Illustrator centres, and not of what is
+        // centred here: such a line is only exact from its start.
+        auto const &last = out.lines[i].runs.back().text;
+        if (!last.empty() && g_unichar_isspace(g_utf8_get_char(g_utf8_prev_char(last.data() + last.size())))) {
+            together = false;
+            break;
+        }
+        auto const &found = segment_of(*lines[i]);
+        if (!area) {
+            if (!found.dict.count("0")) throw Bad("aligned text has no explicit layout offset");
+            moves[i] = -offset_of(found).x();
+            continue;
+        }
+        if (!lines[i]->dict.count("1") || !found.dict.count("6")) {
+            together = false;
+            break;
+        }
+        auto const box = lines[i]->get("1").nums(4);
+        double const start = offset_of(found).x();
+        std::optional<double> width;
+        for (auto const &g : found.get("6").list) {
+            if (g.node("G") && g.dict.count("1")) {
+                width = std::max(width.value_or(0.0), offset_of(g).x() + g.get("1").nums(4)[2]);
+            }
+        }
+        double const target = *common == 2 ? (box[0] + box[2]) / 2 : box[2];
+        together = width && std::abs((*common == 2 ? start + *width / 2 : start + *width) - target) <= 0.02;
+        moves[i] = target - start;
+    }
     for (std::size_t i = 0; i < out.lines.size(); ++i) {
-        auto &l = out.lines[i];
-        if (!l.alignment) continue;
-        auto const &segments = lines[i]->get("6").list;
-        auto const it = std::find_if(segments.begin(), segments.end(), [](Value const &v) { return v.node("S"); });
-        if (!it->dict.count("0")) throw Bad("aligned text has no explicit layout offset");
-        auto const offset = it->get("0").get("0").nums(2);
-        l.origin.x() -= offset[0] / hscale;
+        out.lines[i].alignment = together ? *common : 0u;
+        if (together) out.lines[i].origin.x() += moves[i] / hscale;
     }
     return out;
 }
@@ -361,20 +576,62 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
         if (!center) throw Bad("text has no template centre for placement");
         if (!std::isfinite(center->x()) || !std::isfinite(center->y()) ||
             std::abs(center->x()) > 1e9 || std::abs(center->y()) > 1e9) throw Bad("invalid text template centre");
-        auto data = unpack(records);
-        auto doc = Reader(data).root();
-        std::vector<std::string> fonts;
-        for (auto const &font : doc.get("0").get("1").get("0").list) fonts.push_back(font.get("0").get("0").get("0").str());
-        auto const &main = doc.get("1");
-        auto const &stories = main.get("1");
-        if (stories.kind != Value::Array || stories.list.size() > 65536) throw Bad("invalid or oversized story list");
-        for (auto const &s : stories.list) {
+        auto const section = text_section(records);
+        // The stories of one text document, each read on its own.
+        auto read = [&](std::string const &data, std::vector<std::optional<PointText>> &stories_out,
+                        std::vector<std::string> &errors) {
+            auto doc = Reader(data).root();
+            std::vector<std::string> fonts;
+            for (auto const &font : doc.get("0").get("1").get("0").list) fonts.push_back(font.get("0").get("0").get("0").str());
+            auto const &main = doc.get("1");
+            auto const &stories = main.get("1");
+            if (stories.kind != Value::Array || stories.list.size() > 65536) throw Bad("invalid or oversized story list");
+            for (auto const &s : stories.list) {
+                try {
+                    stories_out.push_back(story(s, doc.get("0").get("8").get("0"), main.get("2"), fonts, *center));
+                    errors.emplace_back();
+                } catch (Bad const &e) { stories_out.emplace_back(); errors.push_back(e.what()); }
+            }
+        };
+        std::size_t at = 0;
+        read(unpack(section, at), out->stories, out->errors);
+        // After the document of what was typed comes, when appearances drew type, the document
+        // of that type. Without it, or when it can't be read, such type has no stories.
+        auto const drawn = section.find("/AI11UndoFreeTextDocument", at);
+        if (drawn != section.npos) {
             try {
-                out->stories.push_back(story(s, doc.get("0").get("8").get("0"), main.get("2"), fonts, *center));
-                out->errors.emplace_back();
-            } catch (Bad const &e) { out->stories.emplace_back(); out->errors.push_back(e.what()); }
+                at = drawn;
+                read(unpack(section, at), out->drawn, out->drawn_errors);
+            } catch (Bad const &) {
+                out->drawn.clear();
+                out->drawn_errors.clear();
+            }
         }
     } catch (Bad const &e) { out->error = e.what(); }
     return out;
+}
+
+bool same_drawing(PointText const &a, PointText const &b)
+{
+    if (a.empty != b.empty || a.lines.size() != b.lines.size()) return false;
+    auto same_style = [](TextStyle const &s, TextStyle const &t) {
+        return s.font == t.font && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&
+               s.fill_opacity == t.fill_opacity && s.stroke_opacity == t.stroke_opacity &&
+               (!s.stroke || s.stroke_width == t.stroke_width) && s.tracking == t.tracking &&
+               s.horizontal_scale == t.horizontal_scale && s.vertical_scale == t.vertical_scale &&
+               s.baseline_shift == t.baseline_shift && s.kerning == t.kerning && s.ligatures == t.ligatures &&
+               s.contextual == t.contextual;
+    };
+    // Scaled and turned alike, and (below) each line in the same place on the art.
+    if (!Geom::are_near(a.to_art.withoutTranslation(), b.to_art.withoutTranslation(), 1e-6)) return false;
+    for (std::size_t i = 0; i < a.lines.size(); ++i) {
+        auto const &la = a.lines[i], &lb = b.lines[i];
+        if (la.runs.size() != lb.runs.size() || la.alignment != lb.alignment) return false;
+        if (!la.runs.empty() && !Geom::are_near(la.origin * a.to_art, lb.origin * b.to_art, 0.01)) return false;
+        for (std::size_t r = 0; r < la.runs.size(); ++r) {
+            if (la.runs[r].text != lb.runs[r].text || !same_style(la.runs[r].style, lb.runs[r].style)) return false;
+        }
+    }
+    return true;
 }
 } // namespace Inkscape::Extension::Internal::AiNative

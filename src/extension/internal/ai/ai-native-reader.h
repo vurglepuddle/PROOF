@@ -6,12 +6,13 @@
  * Illustrator's own copy of the art: layers and their options, groups, compound
  * paths, clipping groups, object names, hidden and locked objects, paths with
  * their fills and strokes, process colours, spot inks, global colours and
- * Registration, gradients, transparency, overprint, embedded images and every
- * artboard. This reads them into plain structures, in art space (y up), for the
- * importer and for checking the native writer.
+ * Registration, gradients, patterns, transparency, overprint, embedded images,
+ * placed (linked) pictures and every artboard. This reads them into plain
+ * structures, in art space (y up), for the importer and for checking the native
+ * writer.
  *
  * Reading fails closed: anything a layer that shows holds and this doesn't read
- * (an unknown operator, a mesh, a pattern fill, a placed file, a symbol, an
+ * (an unknown operator, a mesh, a pattern of the old format, a symbol, an
  * opacity mask, legacy type) makes read() return nothing with the reason, and the
  * caller opens the PDF page instead. What a hidden layer holds and this doesn't
  * read is left out of it, and listed in Document::left_out.
@@ -117,12 +118,15 @@ struct Paint
     {
         Solid,
         Gradient,
+        Pattern,
     };
     Kind kind = Kind::Solid;
     Color color;        ///< Solid: the colour; with an ink, the ink's full colour.
     int ink = -1;       ///< Solid: index into Document::inks.
     double tint = 1.0;  ///< Solid with an ink: 0-1, 1 = full strength.
     GradientPlacement gradient;
+    int pattern = -1;            ///< Pattern: index into Document::patterns.
+    Geom::Affine pattern_matrix; ///< Pattern: the pattern's own space to art space (p's matrix).
 };
 
 struct GradientStop
@@ -156,6 +160,23 @@ struct Image
     std::string space; ///< The XN colour space name ("DeviceCMYK"...), if given.
     std::string samples; ///< Rows of width * channels samples (bits per sample), top row first.
     std::string alpha;   ///< One byte a pixel, or empty.
+};
+
+/**
+ * A placed file: a picture the document links to instead of holding (%AI5_BeginPlace).
+ *
+ * The file is named as the machine that saved the document knew it. Newer files also give
+ * the folder it was found in from the document's own, empty when that is the same folder.
+ */
+struct Placed
+{
+    Geom::Affine matrix; ///< The picture's own space to art space.
+    /// Where the picture lies in its own space, whose y points down: its top edge is the
+    /// box's least y.
+    Geom::Rect box;
+    std::string path;    ///< The file's bytes for the name, undecoded.
+    std::string folder;  ///< %AI28_BeginPlacedRelativePath, undecoded.
+    int file_type = -1;  ///< %%FileType.
 };
 
 struct StrokeStyle
@@ -197,7 +218,8 @@ struct Node
         Compound,
         Path,
         Image,
-        Text, ///< A text object; its characters are in the text document (story).
+        Text,   ///< A text object; its characters are in the text document (story).
+        Placed, ///< A placed (linked) file.
     };
     Kind kind = Kind::Group;
     std::string name;
@@ -222,13 +244,36 @@ struct Node
     bool guide = false;
 
     int image = -1; ///< Image: index into Document::images.
+    int placed = -1; ///< Placed: index into Document::placed.
     std::optional<unsigned> story; ///< Text: its story in the text document.
+    /// Text: drawn by an appearance (FreeUndo), not typed. Its story is one of the text
+    /// document's drawn stories (TextDocument::drawn), not of those that were typed.
+    bool text_proxy = false;
+    /// Only while the records are read: the object that a drawn look holding type stands
+    /// for, kept until the stories of both can be compared. Empty in what read() returns.
+    std::vector<Node> typed;
     std::optional<double> box_rotation; ///< BBAccumRotation (radians), when the box is turned.
     /// Group: an object with several fills or strokes, effects or a brush, read as
     /// its drawn look.
     bool drawn_look = false;
     /// Read from %_ lines (Illustrator's own copy of an object).
     bool commented = false;
+};
+
+/**
+ * A pattern (%AI3_BeginPattern): a tile of art that repeats, in a space of its own.
+ *
+ * The tile is the box of the definition; art that reaches past it is cut off there (the
+ * pattern editor adds the neighbouring tiles' copies so that the cut edges join up).
+ */
+struct Pattern
+{
+    std::string name;
+    Geom::Rect tile;       ///< The pattern's own space (y up).
+    std::vector<Node> art; ///< In that space, bottom first.
+    /// Why its art can't be used, when it holds something that isn't read. Only an object
+    /// painted with it is refused for that.
+    std::string unread;
 };
 
 struct Artboard
@@ -246,7 +291,9 @@ struct Document
     bool cmyk = false; ///< The document colour mode.
     std::vector<Ink> inks;
     std::vector<Gradient> gradients;
+    std::vector<Pattern> patterns;
     std::vector<Image> images;
+    std::vector<Placed> placed;
     std::shared_ptr<TextDocument const> texts; ///< Bounded point-type stories, when text slots occur.
     std::optional<Geom::Point> template_center; ///< Centre used by the text document's canvas.
     std::optional<Geom::Rect> bbox; ///< %%HiResBoundingBox, else %%BoundingBox (art space).

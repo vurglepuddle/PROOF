@@ -8,7 +8,9 @@
  *
  * - A line starting with "%_" holds tokens like any other line; they are marked
  *   hidden (readers of the printed format skip them as comments).
- * - Any other line starting with "%" is a comment token (the section markers).
+ * - Any other line starting with "%" is a comment token (the section markers), and so
+ *   is a "%" straight after "%_": an object written on hidden lines keeps its markers
+ *   and its image data there ("%_%AI5_BeginRaster", "%_%%BeginData: n").
  *   A "%" later in a line starts a comment that is skipped, except a gradient
  *   definition's "%_BS", "%_Bs" and "%_Br" ending a line: a hidden operator.
  * - The binary image data after "%%BeginData:" and "XI" is one data token, and
@@ -44,7 +46,7 @@ struct Token
     double number = 0.0;
     std::string_view view;
     std::string string;
-    bool hidden = false; ///< Read from a "%_" line.
+    bool hidden = false; ///< Read from a "%_" line (comments and data after "%_" too).
 };
 
 class Lexer
@@ -71,6 +73,7 @@ private:
     std::string_view _src;
     std::size_t _pos = 0;
     bool _hidden = false;
+    std::size_t _hidden_from = 0; ///< Where the tokens of the current "%_" line start.
 };
 
 /// A finite number token ("12", "-3.5", ".5", "1e-3"), or nothing.

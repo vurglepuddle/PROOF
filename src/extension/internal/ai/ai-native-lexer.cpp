@@ -274,19 +274,25 @@ std::optional<Token> Lexer::next()
             continue;
         }
         if (b == '%') {
-            if (at_line_start()) {
-                if (_src.substr(_pos, 2) == "%_") {
+            // An object written on "%_" lines has its section markers and image data there
+            // too ("%_%AI5_BeginRaster", "%_%%BeginData: n"): comments like any other.
+            bool const after_hidden = _hidden && _pos == _hidden_from;
+            if (at_line_start() || after_hidden) {
+                if (!after_hidden && _src.substr(_pos, 2) == "%_") {
                     _pos += 2;
                     _hidden = true;
+                    _hidden_from = _pos;
                     continue;
                 }
                 auto const l = line();
                 if (auto t = special(l)) {
+                    t->hidden = after_hidden;
                     return t;
                 }
                 Token t;
                 t.kind = Token::Kind::Comment;
                 t.view = l.substr(1);
+                t.hidden = after_hidden;
                 return t;
             }
             auto const rest = line(); // a comment later in a line

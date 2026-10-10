@@ -28,7 +28,10 @@ executed. A reader tokenizes them and acts on a fixed table of operators.
 - **Lines starting with `%_`** are tokens hidden from a PostScript interpreter.
   They hold Illustrator-only data, such as the object behind a drawn look,
   object dictionaries and mask art.
-- **Other `%` lines** are section markers, such as `%AI5_BeginLayer`.
+- **Other `%` lines** are section markers, such as `%AI5_BeginLayer`. So is a
+  `%` straight after `%_`: an object written on hidden lines keeps its markers
+  and its image data there (`%_%AI5_BeginRaster`, `%_%%BeginData: n`). The
+  samples that follow are never prefixed.
 - **Dictionaries are written postfix:**
   - `/Type :` opens one.
   - `values /ValueType (Key) ,` adds an entry.
@@ -69,8 +72,11 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `(name) type n Bd` … `Bs` … `BD` | Gradient definition. Each stop is `colour style [opacity 6] midpoint ramp Bs`. The styles are 0 grey, 1 CMYK, 2 RGB with CMYK, 3 and 4 named, and **5 named with its type, in the `Xx`/`Xk` layout** (`c m y k [v1 v2 v3] (name) tint type`). | VectorCraft; style 5 from the 2026-10-10 trial |
 | `… %_BS`, `… %_Bs`, `n %_Br` | **Operators ending a line after `%_`.** Each stop is written twice: `c m y k 1 opacity 6 midpoint ramp %_BS`, a process stand-in, then the exact stop on its own `%_… Bs` line. Old files end the one line `%_Bs`. `%_Br` is the ramp count. Read as comments, their operands pile up in front of the next operator. | **2026-10-10 trial**. VectorCraft skips them, and then misreads every named stop. |
 | `[flag] Bb`, `Bg`, `Xm`, `Bm`, `Bc`, `Bh`, `BB` | Gradient on an object. See "Gradient placement" below: with `Xm` or `Bm` present that matrix is the whole placement, and `Bg`'s origin, angle, length and matrix are not applied as well. | VectorCraft read `Bg` × `Bm`; corrected in the **2026-10-10 trial** |
-| `%AI5_BeginRaster`, `/Space XN`, `[m] … w h bits type alpha … XI` | Embedded image. The samples stay in their colour space; CMYK is common. | VectorCraft |
-| `/AI11Text : /StoryIndex …` | Text object. Its text lives in `%AI11_BeginTextDocument`. | VectorCraft |
+| `%AI5_BeginRaster`, `/Space XN`, `[m] … w h bits type alpha … XI`, `XH`, `N` | Embedded image. The samples stay in their colour space; CMYK is common. The image is an object once its samples are read: the `XH` and the `N` (which paints no path) after it don't end what follows an object, so its name and a `1 () XW` still reach it. | VectorCraft; the tail from the **second 2026-10-10 trial** |
+| `%AI3_BeginPattern: (name)`, `(name) llx lly urx ury`, the tile's art on `%_` lines, `E`, `%AI3_EndPattern` | Pattern. The box is the tile, in a space of the pattern's own (y up); art past it is cut off there. | **second 2026-10-10 trial**. VectorCraft skips the section. |
+| `(name) px py sx sy angle rf r k ka [a b c d tx ty] p` (`P` for a stroke) | Paint with a pattern. The matrix carries the pattern's space onto the art, the same space the paths are in. The nine numbers before it are how Illustrator 8 and older moved, scaled, turned, mirrored and slanted a pattern; later versions leave them at `0 0 1 1 0 0 0 0 0`. Like a colour, it stays the paint until another is set. | **second 2026-10-10 trial**; the matrix checked against a file's own PDF pattern |
+| `%AI5_BeginPlace`, `%%FileType: n`, `[a b c d tx ty] llx lly urx ury … (path)` then `` ` ``, `%AI28_BeginPlacedRelativePath` `(folder)` `%AI28_EndPlacedRelativePath`, `~`, `%AI5_EndPlace` | Placed (linked) file. The box is where the picture lies in a space of its own whose y points down (its top edge is `lly`); the matrix carries that onto the art. The path is as the saving machine knew it; the folder is where the file was found from the document's own, empty when it is the same. | **second 2026-10-10 trial** |
+| `/AI11Text : /FreeUndo … /StoryIndex …` | Text object. Its text lives in `%AI11_BeginTextDocument`. The section holds two documents: `/AI11TextDocument`, what was typed, and `/AI11UndoFreeTextDocument`, the type appearances drew. With `FreeUndo` 1 the object is drawn type and its `StoryIndex` counts in the second: see "Type an appearance drew" below. | VectorCraft; the second document from the **second 2026-10-10 trial** |
 | `n Ar` | The old Attributes panel's output resolution (300, 800). No visual effect. | **census** |
 | `1 An` | CS5 only, after every object. Almost certainly *Align to Pixel Grid*. No visual effect. | **census** |
 | `(hex) Xt n XD` | Brush metadata inside drawn looks, with n running 0–4. No geometry or paint. | **census** |
@@ -81,10 +87,14 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | Feature | Records | Files (of 877) |
 |---|---|---|
 | Gradient mesh | `/Mesh X!` … `/End X!`, with `value /Key X#` pairs (Version, Type, Size, the patch data) | 11 |
-| Pattern fills | `p`/`P` | 15 |
-| Placed (linked) files | `%AI5_BeginPlace` … `%AI5_EndPlace`, with a `~` inside | 6 |
+| Patterns of Illustrator 8 and older | The tile as procedures of the printing format (`[ %AI3_Tile (…) @ … ] E`), or a `p` whose nine numbers aren't at rest | not counted |
+| Placed files that aren't pictures | A placement without the `` ` `` operator (embedded EPS); a linked Photoshop, PDF or Illustrator file, which nothing here draws | not counted |
 | Symbols | `/SymbolInstance` | 2 |
 | Opacity masks | `/Mask : (Clipping) (Inverted) (Disabled) (Linked) ,` inside the masked object's ArtDictionary, with the mask art on `%_` lines | 3 in `Typical.ai` |
+
+A pattern whose tile holds something that isn't read costs only the objects
+painted with it: the definition is read in a frame of its own, and whatever
+goes wrong in it stays the pattern's.
 
 **VectorCraft drops opacity masks silently.** It discards art built inside a
 dictionary, so a masked group comes in unmasked, without an error. PROOF must
@@ -267,8 +277,10 @@ left/centre/right paragraph anchors, and process RGB/CMYK/grey fill and stroke.
 The exact PostScript font must be installed and contain the characters; missing
 fonts or glyphs refuse native import rather than silently substituting. The
 source font names and character styles are resolved before building the SVG.
-Area/path/linked text, varying character scales within a story, baseline shifts,
-justification and unsupported character features still refuse visible text.
+Area type in one frame, baseline shifts and a run's kerning and ligature
+switches are read since the second trial of 2026-10-10 (below). Type on a path,
+linked frames, varying character scales within a story, justification and
+unsupported character features still refuse visible text.
 The parser bounds decoded bytes, nesting, value count, story size and run lengths;
 malformed text or a run splitting a surrogate pair also refuses the native path.
 Hidden text is retained when supported; unsupported hidden text/content may be
@@ -478,6 +490,203 @@ pattern fills, 15 unknown operators (meshes among them), 7 opacity masks, and
 about 30 text the reader refuses (exact fonts not installed, mostly). The
 same limits of a sampled comparison apply as before.
 
+### Second designer trial of 2026-10-10: patterns, linked pictures, area type
+
+After the first trial about one more file in ten opened natively, and the most
+common failure left was the offer of the PDF import. Eleven such files were
+handed over (`spike/files/Fail/`). Every one was refused before anything was
+drawn, for five causes; behind those, the visual check and the corpus found
+more. Ten of the eleven open natively now, and the eleventh needs a font this
+machine doesn't have installed (see the end).
+
+**Images on hidden lines.** A picture with an effect is written twice: what
+the effect draws, then the picture itself on `%_` lines, markers and all
+(`%_%AI5_BeginRaster` … `%_%%BeginData: 786436`, then `XI` and the samples,
+unprefixed). The scanner took `%` after `%_` for a comment inside a line and
+then read the samples as operators (`{`, `}`, runs of bytes). Comments and
+data after `%_` are tokens now, marked hidden. Of the reader's sections only
+images and placed files are acted on from hidden lines; a hidden marker of
+any other section is still passed over, as before, and doesn't count when a
+skipped section looks for its end.
+
+**Placed files.** See the operator table. Four of the ten files link PNG or
+JPEG pictures. The box starts at the artboard's ruler origin on Illustrator's
+canvas (`7885 7795` in one file, whose `RulerOrigin` is `7885 7795`); the
+matrix puts it on the art. That `lly` is the top edge was settled by the
+document's own bounding box, and then by a file whose page shows its pictures. The picture stays a link in PROOF
+(`xlink:href` as a `file:` address, `sodipodi:absref` beside it): the file is
+looked for where the document says, then in the folder the document gives
+from its own, then beside the document, as Illustrator looks. The name is
+tried in UTF-8, in the machine's own encoding and in Windows-1252. One that
+shows and can't be found, or isn't a picture (Photoshop, PDF), refuses the
+native import with its name; one that doesn't show keeps its link as written,
+with a note. A path on a network share is followed like any other, as
+Illustrator follows it.
+
+**Patterns.** See the operator table. Illustrator CS and later write the tile
+as ordinary art, every line of it hidden, between the box and `E`; the
+pattern editor's backing rectangle and the copies it adds along the edges
+(`AIPattern_Editor_Backing_Tile_Rect`, `AIPattern_Is_Repeated_Art`) are
+ordinary paths. One file's PDF page has the same pattern as a tiling pattern,
+and its `/Matrix` is `p`'s matrix moved by the artboard's corner
+(`1164.12 −4995.58` against `3283.858 −6686.019` less `2119.739 −1690.435`):
+the matrix carries the pattern onto the art, with nothing else to apply. In
+PROOF the tile is a `<pattern>` holding the art in the tile's own space (its
+top-left corner at 0,0, y down), kept once and listed under the pattern's
+name; each object that paints with it gets a `<pattern>` of its own that
+refers to the tile and carries that object's matrix. Patterns nothing paints
+with are kept too, as Illustrator lists them among the swatches; one whose
+tile couldn't be placed is taken out again instead of refusing the document.
+A hand-written pair checks the phase, the flip and a quarter turn against
+squares the PDF page draws one by one.
+
+**Area type.** A frame's entry in the text document says its kind in what it
+carries: nothing for point type, `/0 1` for area type, beside the gutters
+(`/7`, `/8`, 18 points when untouched) and the first-baseline rule (`/10`).
+Where point type has its point (`/0 [x y]`), area type has its outline (`/1`):
+segments one after another, each four points. The story's layout is the same
+tree as point type's, and it holds what Illustrator composed: under the frame
+node (`F`, its anchor the frame's top-left corner) come rows and columns
+(`R`), lines (`L`, each with its offset and its box) and in each line a
+segment (`S`) whose `/15 /0` is the number of characters in it, line end
+included, and whose glyph runs (`G`) give their extent. So a paragraph is
+broken where Illustrator broke it, without setting it again: each line is a
+span at its recorded place, holding its recorded characters. The frame's
+outline is kept in `proof:text-frame`, in the text's own coordinates; nothing
+flows the text into it again yet, so the lines stay put when the text is
+edited. Characters past the last line are what the frame is too small to
+show: empty paragraphs are dropped, real text is kept as plain text in
+`proof:text-overflow` with a note. A frame nothing was typed in has no layout
+at all and is left out, with a note. Type on a path (`/0` other than 1),
+linked frames and tabs are still refused.
+
+**One anchor a text object.** What sets text in PROOF takes the alignment of
+a whole `<text>` from its first line: the lines are chunks of one paragraph.
+Lines anchored differently in one object (a centred paragraph after a blank
+line, a centred line beside one set from its start) were therefore all set by
+the first, and moved by half their width. A story now has one anchor for all
+its lines. It is the middle or the right end only when every line with
+characters is aligned that way and says where its anchor is: point type by
+its segment's offset from the story's anchor, area type by the middle or
+right end of its line's box, when the glyphs' own extent agrees. A line that
+keeps a space at its end doesn't qualify: Illustrator centres the space with
+the line and PROOF's text setting leaves it out, half a space's width apart.
+Otherwise every line is set from where its glyphs start, which is exact.
+
+**Baseline shift.** Character feature 9, in points, up when positive; the
+glyph runs of a shifted story are offset by it downwards
+(`/0 [0 1.00112]` for `−1.00112`). It becomes `baseline-shift` on the span
+that holds the characters and never on the text object: a shift is taken from
+the baseline of what holds the span and added to that one's own.
+
+**Kerning and substitutions.** Character feature 11 is how pairs are kerned:
+0 not at all, 1 by the font's own kerning (the default), 2 optically, 3 by
+the font's for Roman only. A headline with kerning off came in 2.6% narrower,
+because the font's kerning was applied regardless. Features 18 and 20 are
+standard ligatures and contextual alternates, both on unless a run switches
+them off. They become `font-feature-settings:'kern' 0` and
+`font-variant-ligatures`, written only in a story where some run differs from
+the font's own behaviour. Optical kerning is Illustrator's own measure of the
+shapes: the font's kerning stands in for it, and the import says so in a
+note.
+
+**Type an appearance drew.** The Dallas trial found type in a drawn look
+written with "another story's number". The number is right; it counts in
+another document. The text section holds two: `/AI11TextDocument`, what was
+typed, and after it `/AI11UndoFreeTextDocument`, the type that appearances
+drew. A text object with `FreeUndo` 1 names its story in the second (one file:
+109 such objects, numbered 0 to 108, and 109 stories there; all 15 corpus
+files with such objects have the second document). Read against the first,
+a heading came out as story 36 of the typed ones, a different text elsewhere,
+and ten pages of headings were missing, each replaced by a second copy of
+some other story drawn over the first.
+
+Both documents are read now (`TextDocument::stories`, `::drawn`). A look that
+holds type is kept with the object it stands for until the stories are read.
+When the look is nothing but type, in groups that add nothing, and each piece
+sets what the object's own type sets (the same characters, styles and
+places), the object stands in the look's place, editable as it was typed.
+Otherwise the look stands and draws its own stories, which is what the
+appearance made of the type (`proof:ai-drawn-story`). Drawn type whose story
+isn't in the records takes the object's typed story when there is one a
+piece or one for all (records without a second document, and the Dallas
+rule as it was); with nothing to say what it sets, it refuses the native
+import where it shows. An object with an appearance *inside* one with an
+appearance is on `%_` lines altogether, its look, itself and the `1 () XW`
+between them; that marker is acted on too now, where it used to be passed
+over. So is a marker whose style has no name (`1 () XW`), which one file
+writes throughout.
+
+**Characters that set nothing.** A story can hold a NUL (a paste leaves one
+before a paragraph's end). It counts as a character in the run and line
+lengths and sets nothing; such stories were refused whole.
+
+**Foreign objects.** `/ForeignObject : … /Data ,` is art of another format
+that Illustrator keeps as it came (from a placed or pasted PDF, mostly) and
+can't edit either: a transform, bounds and a blob in ASCII85 lines that
+start with a percent sign. Nothing acted on the dictionary, so the art was
+dropped without a word, and a data line that happened to begin `%_(` opened a
+string that swallowed the rest of the layer ("it ends inside a layer"). The
+blob is skipped as a blob now and the object refuses the native import where
+it shows. Four corpus files have one; none of them read natively before.
+
+**The text document's size.** One of the first test files has 560 typed
+stories and 340 drawn ones: 357,536 and 263,695 values, against a limit of
+250,000 to a document. The limit is two million.
+
+**Size.** The records hold every embedded image uncompressed. A two-page file
+with 283 CMYK images is 19 MB on disk and 564 MB of records (435 MB of
+samples, one picture eight times over), and the limit was 256 MB. It is
+2 GB now. The Zstandard decoder makes room for a frame that says its size at
+once, running out of memory falls back to the page instead of ending the
+program, and a picture that occurs several times is converted and packed
+once. That file takes about 20 seconds to pass the check on this machine:
+2.4 s for the records, 0.5 s to read them, 7.4 s to build the document and
+10.4 s to draw it and the two pages for the comparison. The opener reports
+those parts (`AiNativeOpen::timings`; `AI_TIME` lines from the corpus case).
+
+**What the visual check doesn't see.** It compares artboards. Four of the
+eleven files keep the art in question beside the artboard (the pattern of
+`Gradient_Fail.ai`, the pictures of two others), where the page has nothing to
+compare with. Those were rendered whole and looked at instead; the pattern
+and the placement rules above rest on the files whose pages do show them and
+on the hand-written pairs.
+
+**Not opened natively: one file, for its font.** Its type is set in
+`MinionConceptRoman-DisplayMedium`, an instance of Minion Variable Concept.
+That font ships inside Illustrator's own folder
+(`Support Files\Required\Fonts`), where no other program is offered it, and
+it isn't installed for Windows. Reading it would take the font being
+installed, or PROOF being pointed at that folder, and then naming instances
+of variable fonts by their PostScript names, which PROOF doesn't do yet.
+
+**Results.** The corpus case over all 879 distinct approved files, one
+worker, once: **785 pass the visual check natively and 94 use the page**,
+with no error or timeout; against the 768 of the first trial, 17 gained (14
+that had pattern fills, 2 over the size limit, 1 whose pattern section
+"didn't end") and none lost, and none of the 768 drawn differently by more
+than 0.2% of an artboard. That run was made before the two text documents
+were read as described above, before NULs, foreign objects and the larger
+text limit. Those changes can touch 27 of the files (the ones with drawn
+type, nameless look markers, foreign objects, or last refused for what the
+changes read); run again, 2 more read natively and none was lost or drawn
+differently: **787 and 92**, 19 gained on the first trial and none lost. The
+run also showed 128 files with a new note about knockout groups, which came
+from Illustrator's stock pattern swatches, kept now though nothing paints
+with them. What a tile nothing paints with holds is no longer worth a note;
+12 of the 128 were run again and are without it. With the other 116 counted
+the same way, 392 of the 787 have no reported loss and 395 have notes
+(appearances as drawn groups, mostly).
+
+Of the 92: 37 still draw differently; 18 need a font that isn't installed;
+11 have operators that aren't read (meshes among them), 6 opacity masks or
+symbols, 4 foreign objects; 4 set type in All Caps (character feature 12 is
+2; one of them superscript as well, feature 13), which PROOF's text setting
+doesn't do yet; 3 link a picture that isn't where the document says; 3 have a text
+document with entries missing; and the rest are one or two each (artboard
+and page counts that differ, an image that can't be read, type on a path, a
+file that can't be opened).
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
@@ -494,7 +703,10 @@ same limits of a sampled comparison apply as before.
    render is compared with the PDF page, and the page is used whenever they
    differ or anything is unread.
 3. **Point type**, delivered for the bounded subset above, with VectorCraft's
-   `ate.rs` as the numeric-key reference. Expand from confirmed root causes;
-   source ICC profiles and remaining rendering families are still future work.
+   `ate.rs` as the numeric-key reference, and **area type** as Illustrator
+   composed it. Expand from confirmed root causes. Still to come: area type
+   that flows again when edited (the frame and the overflow are kept for it),
+   type on a path, justified paragraphs, instances of variable fonts, source
+   ICC profiles and the remaining rendering families.
 4. **Writer** extensions, in this order: gradients, images, text. They use the
    same tables, and the reader checks the writer's output alongside Illustrator.

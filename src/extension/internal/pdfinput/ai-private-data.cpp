@@ -62,6 +62,12 @@ bool decode_zstd(std::string const &data, std::size_t start, AiNativeRecords &ou
     ZSTD_initDStream(stream.get());
     std::vector<char> buffer(ZSTD_DStreamOutSize());
     ZSTD_inBuffer in{data.data() + start, data.size() - start, 0};
+    // A frame that says how much it holds: room for it at once, where growing by halves
+    // would for a while take twice the memory of records of several hundred megabytes.
+    if (auto const size = ZSTD_getFrameContentSize(in.src, in.size);
+        size != ZSTD_CONTENTSIZE_UNKNOWN && size != ZSTD_CONTENTSIZE_ERROR && size <= limit - std::min(limit, out.text.size())) {
+        out.text.reserve(out.text.size() + static_cast<std::size_t>(size));
+    }
     // A full output buffer means the decoder may still hold data, even with no input left.
     bool full = false;
     while (in.pos < in.size || full) {

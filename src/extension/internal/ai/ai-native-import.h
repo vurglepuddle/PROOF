@@ -17,8 +17,12 @@
  *   global process colour          swatch named after it, one per tint
  *   gradient                       gradient named after it, and one per object that places it;
  *                                  midpoints become stops along Illustrator's blend curve
+ *   pattern                        pattern holding its tile's art, and one per object that
+ *                                  places it
  *   embedded image                 image (PNG for the screen); CMYK samples kept in
  *                                  proof:samples as a CMYK TIFF
+ *   placed (linked) picture        image linked to the same file, found where the document
+ *                                  says it is or beside the document
  *   name, hidden, locked           label, display:none, sodipodi:insensitive
  *   transparency                   opacity, mix-blend-mode, isolation; knockout in proof:knockout
  *   turned box (BBAccumRotation)   proof:box-angle on paths
@@ -26,9 +30,13 @@
  *   artboards                      pages; the first artboard's top-left corner is 0,0
  *   guides                         guides
  *
+ *   point type, area type          text, a span to a line where Illustrator laid it out; area
+ *                                  type keeps its frame in proof:text-frame
+ *
  * User units are points, as in the records; width and height use the file's ruler unit.
- * Text objects aren't set yet: a file with type that shows is refused (the caller
- * opens its page), and type that doesn't show is left out.
+ * Type that shows and can't be set as it is (ai-native-text.h; a font that isn't
+ * installed) refuses the file, and the caller opens its page; such type that doesn't
+ * show is left out.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_IMPORT_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_IMPORT_H
@@ -48,6 +56,10 @@ namespace Inkscape::Extension::Internal::AiNative {
 
 /// On a layer that doesn't print: "false".
 inline constexpr char const *LAYER_PRINT_ATTRIBUTE = "proof:layer-print";
+/// On area type: its frame's outline as path data, in the text's own coordinates.
+inline constexpr char const *TEXT_FRAME_ATTRIBUTE = "proof:text-frame";
+/// On area type whose frame is too small for its text: the text that doesn't show.
+inline constexpr char const *TEXT_OVERFLOW_ATTRIBUTE = "proof:text-overflow";
 
 struct Built
 {
@@ -58,13 +70,22 @@ struct Built
     std::vector<std::string> notes;
 };
 
+/// Where the records came from, for what they refer to outside themselves.
+struct Source
+{
+    /// The folder of the .ai file (a file name in UTF-8), or empty. Linked pictures that
+    /// aren't where the document says are looked for there, as Illustrator does.
+    std::string folder;
+};
+
 /**
  * Build the document of `ai`.
  *
  * @return the document, or nothing with the reason in `error` when it holds something
- *         the import can't place yet (type that shows).
+ *         the import can't place: type that shows and isn't supported, a linked picture
+ *         that shows and can't be found or read.
  */
-std::optional<Built> build(Document const &ai, std::string &error);
+std::optional<Built> build(Document const &ai, std::string &error, Source const &source = {});
 
 } // namespace Inkscape::Extension::Internal::AiNative
 
