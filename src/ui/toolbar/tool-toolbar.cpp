@@ -46,12 +46,15 @@ ToolToolbar::ToolToolbar(InkscapeWindow *window)
     auto builder = Inkscape::UI::create_builder("toolbar-tool.ui");
     auto &tool_toolbar = UI::get_widget<Gtk::ScrolledWindow>(builder, "tool-toolbar");
     tool_toolbar.set_halign(Gtk::Align::FILL);
+    tool_toolbar.set_vexpand(false);
+    tool_toolbar.set_propagate_natural_height(true);
 
     attachHandlers(builder, window);
 
     _popoverbin.setChild(&tool_toolbar);
     _popoverbin.setPopover(_context_menu.get());
     _popoverbin.set_hexpand(true);
+    _popoverbin.set_vexpand(false);
     append(_popoverbin);
     _paint_controls = std::make_unique<UI::Widget::FillStrokeControls>();
     append(*_paint_controls);

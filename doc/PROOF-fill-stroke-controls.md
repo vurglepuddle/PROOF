@@ -6,6 +6,11 @@ in front; click either exposed square to activate it, or double-click to open
 the existing native paint editor. Mixed paints have an indicator rather than
 an averaged colour. Gradients retain their paint when the editor is opened.
 
+The picker sits immediately below the last visible tool, as requested, with
+unused sidebar space below it. The tool scroller propagates its natural height
+and does not expand; shorter windows retain scrolling for the tools. At the
+tested 1080-pixel desktop, the fill target centre moved from y989 to y625.
+
 ## Commands and paint application
 
 The small buttons provide default paints, swap and None. Under the Illustrator
