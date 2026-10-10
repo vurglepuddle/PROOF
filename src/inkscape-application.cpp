@@ -411,7 +411,7 @@ void InkscapeApplication::document_fix(SPDesktop *desktop)
         sp_file_fix_lpe(document);
 
         // Check for font substitutions, requires text to have been rendered.
-        Inkscape::UI::Dialog::checkFontSubstitutions(document);
+        Inkscape::UI::Dialog::checkFontSubstitutions(desktop);
     }
 }
 

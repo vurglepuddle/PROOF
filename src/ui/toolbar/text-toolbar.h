@@ -89,6 +89,10 @@ private:
     UI::Widget::ComboBoxEntryToolItem *_font_style_item;
     UI::Widget::UnitMenu*_line_height_units_item;
     UI::Widget::SpinButton &_line_height_item;
+    // PROOF: Illustrator's four Character buttons. All caps and small caps are one or
+    // neither, and so are superscript and subscript.
+    Gtk::ToggleButton &_all_caps_btn;
+    Gtk::ToggleButton &_small_caps_btn;
     Gtk::ToggleButton &_superscript_btn;
     Gtk::ToggleButton &_subscript_btn;
 
@@ -128,6 +132,7 @@ private:
     void fontsize_value_changed(double size);
     void subselection_wrap_toggle(bool start);
     void fontstyle_value_changed();
+    void caps_changed(int mode);
     void script_changed(int mode);
     void align_mode_changed(int mode);
     void writing_mode_changed(int mode);

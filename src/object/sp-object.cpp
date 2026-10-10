@@ -45,6 +45,7 @@
 #include "sp-script.h"
 #include "streq.h"
 #include "strneq.h"
+#include "type-settings.h"
 #include "xml/node-fns.h"
 #include "xml/href-attribute-helper.h"
 #include "debug/event-tracker.h"
@@ -1183,6 +1184,11 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
     if (document && document->getReprRoot() == getRepr() &&
         (!std::strcmp(key, "proof:color-mode") || !std::strcmp(key, "proof:color-profile"))) {
         Inkscape::Colors::DocumentColors::assignmentChanged(document);
+    }
+    // PROOF: and the sizes of superscripts, subscripts and small capitals, which every text
+    // of the document is laid out by.
+    if (document && document->getReprRoot() == getRepr() && Inkscape::TypeSettings::is_attribute(key)) {
+        requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);
     }
     // PROOF: redraw the transform box when its angle changes, also on undo and redo.
     if (!std::strcmp(key, Inkscape::BOX_ANGLE_ATTRIBUTE)) {

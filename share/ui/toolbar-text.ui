@@ -216,6 +216,34 @@
       </object>
     </child>
     <child>
+      <object class="GtkToggleButton" id="_all_caps_btn">
+        <property name="valign">center</property>
+        <property name="focusable">True</property>
+        <property name="focus-on-click">False</property>
+        <property name="receives-default">True</property>
+        <property name="tooltip-text" translatable="yes">All caps: set in capitals, whatever was typed</property>
+        <property name="has-frame">False</property>
+        <property name="icon-name">text_all_caps</property>
+        <style>
+            <class name="priority1"/>
+        </style>
+      </object>
+    </child>
+    <child>
+      <object class="GtkToggleButton" id="_small_caps_btn">
+        <property name="valign">center</property>
+        <property name="focusable">True</property>
+        <property name="focus-on-click">False</property>
+        <property name="receives-default">True</property>
+        <property name="tooltip-text" translatable="yes">Small caps: small letters set as small capitals</property>
+        <property name="has-frame">False</property>
+        <property name="icon-name">text_small_caps</property>
+        <style>
+            <class name="priority1"/>
+        </style>
+      </object>
+    </child>
+    <child>
       <object class="GtkToggleButton" id="_superscript_btn">
         <property name="valign">center</property>
         <property name="focusable">True</property>

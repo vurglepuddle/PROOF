@@ -16,11 +16,16 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 class FontInstance;
 class SPDocument;
 class SPItem;
+
+namespace Inkscape::XML {
+class Node;
+} // namespace Inkscape::XML
 
 namespace Inkscape::Extension::Internal::AiNative {
 
@@ -86,6 +91,24 @@ std::vector<MissingFont> missing_fonts(SPDocument *document);
  * @return how many texts and spans got their font back.
  */
 unsigned restore_fonts(SPDocument *document);
+
+/**
+ * Set the text that a font stands in for `name` in a font chosen for it, for good.
+ *
+ * @param css the chosen font's declarations as the font controls write them: they name an
+ *            -inkscape-font-specification, by which the text is that font's from then on.
+ * @return how many texts and spans were changed.
+ */
+unsigned replace_font(SPDocument *document, std::string const &name, std::string const &css);
+
+/// Whether this element is set in a font that stands in for the one it names.
+bool stands_in(XML::Node const *element);
+
+/**
+ * The characters of a text object that are set in a font standing in for another: runs
+ * of the places its layout counts, each the first place and the one after the last.
+ */
+std::vector<std::pair<unsigned, unsigned>> standing_in(SPItem const *text);
 
 } // namespace Inkscape::Extension::Internal::AiNative
 

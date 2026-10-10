@@ -23,6 +23,7 @@
 #include "style-text.h"
 #include "svg/svg-length.h"
 #include "font-factory.h"
+#include "type-settings.h"
 
 
 namespace Inkscape {
@@ -104,6 +105,21 @@ void Layout::appendText(Glib::ustring const &text,
     if (style->font_variant_caps.computed == SP_CSS_FONT_VARIANT_CAPS_SMALL) {
         auto font = new_source->styleGetFontInstance();
         made_small_caps = font && !font->get_opentype_tables().contains("smcp");
+    }
+    // PROOF: superscript and subscript are made too, whatever the font has: smaller, and
+    // off the baseline. How much is the document's to say, as is the size of small capitals.
+    auto const position = style->font_variant_position.computed;
+    bool const positioned = position == SP_CSS_FONT_VARIANT_POSITION_SUPER || position == SP_CSS_FONT_VARIANT_POSITION_SUB;
+    if (made_small_caps || positioned) {
+        auto const settings = TypeSettings::of(style->document);
+        new_source->small_caps_size = settings.small_caps_size;
+        if (position == SP_CSS_FONT_VARIANT_POSITION_SUPER) {
+            new_source->position_size = settings.superscript_size;
+            new_source->position_shift = settings.superscript_shift;
+        } else if (position == SP_CSS_FONT_VARIANT_POSITION_SUB) {
+            new_source->position_size = settings.subscript_size;
+            new_source->position_shift = -settings.subscript_shift;
+        }
     }
     bool const copied = transform != SP_CSS_TEXT_TRANSFORM_NONE || made_small_caps;
     for ( ; text_begin != text_end && text_begin != text.end() ; ++text_begin) {

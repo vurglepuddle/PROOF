@@ -773,10 +773,11 @@ Setup > Type). They are in the settings of the text document's main part
 | `5`, `6` | Subscript: size, and how far below | 0.583, 0.333 |
 | `7` | Small caps: size | 0.7 |
 
-Such a run becomes a span at that size and baseline shift (added to a shift
-of its own, feature 9), marked `proof:position` `super` or `sub`. The marker
-is for the Character controls to come: the size and shift are plain values,
-and nothing reads the marker yet.
+Such a run says where it stands with `font-variant-position` (`super` or
+`sub`) and keeps its own size; a shift of its own (feature 9) stays in
+`baseline-shift` and adds to it. The text layout sets the run smaller and off
+the baseline by the document's settings (since 2026-10-11, see "The editor's
+side of type" below; until then the run was a span at a plain size and shift).
 
 **A font that isn't installed** no longer sends the file to its page. As in
 Illustrator, another font sets the type: Myriad Pro when it is installed, else
@@ -789,11 +790,10 @@ the font chosen. Lines stay where Illustrator put them.
 
 When a document opens in the editor, text whose font has been installed since
 gets it back (`restore_fonts`), and the fonts that still aren't are listed in
-the font substitution dialog, with the text set in another font selected on
-request. That list shows once for a document and by default; Preferences >
-Text has the switch (`/options/font/missingdlg`). The dialog has not been
-looked at in the running editor yet: its parts are covered by the unit tests
-below.
+the Missing Fonts window, which can replace each across the document and
+selects the text still set in another font on request
+([PROOF-type.md](PROOF-type.md)). That list shows once for a document and by
+default; Preferences > Text has the switch (`/options/font/missingdlg`).
 
 Such type can't look like the page, so the visual check leaves it out. Each
 run of glyphs in the layout tree (`G`) has the box Illustrator set it in, in
@@ -873,7 +873,9 @@ document's setting 7. The story keeps what was typed. The run gets
 font that has small capitals uses its own, as before; for one that hasn't, a
 small letter is laid out as its capital at 0.7 of the size
 (`InputStreamTextSource::reduced`), in the same one-character-for-one copy
-that all caps uses. A document whose setting isn't 0.7 refuses the story.
+that all caps uses. The size is the document's setting 7 (kept with the
+document since 2026-10-11; before that a setting other than 0.7 refused the
+story).
 
 **Strikethrough and underline** (features 15 and 16, each 0 or 1) become
 `text-decoration-line` on the span of the run. An underline's box is in the
@@ -915,6 +917,48 @@ anything these changes read (letters read from the right, not put in order);
 it used its page before and does now, so the corpus was not run again and
 stays at 802 of 879.
 
+### The editor's side of type (2026-10-11)
+
+Nothing new is read from the records in this round. What the import writes for
+three options changed, so that the editor's Character buttons and the imported
+type are one thing ([PROOF-type.md](PROOF-type.md)).
+
+**Superscript and subscript** (character feature 13) are now
+`font-variant-position:super` or `sub` on the run, at the run's own size. The
+text layout makes them: the run's characters at the document's size for them,
+moved off the baseline by the document's distance, each a share of the type's
+size. A shift of the run's own (feature 9) stays in `baseline-shift` and adds
+to it. Before, the import worked the size and the shift out and wrote them as
+plain values, so the size shown for such type was the reduced one and a later
+change of size left the shift behind.
+
+**The document's settings** (the text document's `/1 /0`, keys 3 to 7) are
+kept with the document, on its root element: `proof:superscript` and
+`proof:subscript` (size, distance) and `proof:small-caps` (size). What is
+Illustrator's own (0.583 and 0.333, 0.583 and 0.333, 0.7) isn't written. The
+layout reads them when it sets such type.
+
+**Small caps at a size other than 0.7** no longer refuse the story: the size
+is one of those settings.
+
+**Type that appearances drew** is in a text document of its own
+(`AI11UndoFreeTextDocument`), with settings of its own. A document has one
+set. Where the second text document's differ, its stories that use the
+setting in question are refused, as any type that can't be set as it is; no
+file has been seen where they differ.
+
+**Checked.** The gauntlet file, drawn at 300 dpi by the build before this
+change and by this one, is the same in every pixel: small caps, superscript
+and subscript lie where they lay. The trial files' distances from their pages
+are unchanged to the last digit. Two corpus files have superscript or
+subscript (one native, 0.22% from its page before and now; one on its page for
+another reason); none has small caps or settings of its own, so the corpus was
+not run again and stays at 802 of 879.
+
+**Not seen in a file.** Small caps and superscript on the same run (each makes
+the letters smaller in its turn here), and settings other than Illustrator's
+own. Both are covered by unit tests only.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
@@ -933,8 +977,9 @@ stays at 802 of 879.
 3. **Point type**, delivered for the bounded subset above, with VectorCraft's
    `ate.rs` as the numeric-key reference, and **area type** as Illustrator
    composed it. Instances of variable fonts, all caps and small caps,
-   superscript and subscript, underline and strikethrough, and paragraphs read
-   from the right are read, and a font that isn't installed is stood in for.
+   superscript and subscript (with the document's sizes for them), underline
+   and strikethrough, and paragraphs read from the right are read, and a font
+   that isn't installed is stood in for.
    Expand from confirmed root causes. Still to come: area type
    that flows again when edited (the frame and the overflow are kept for it),
    type on a path, justified paragraphs, linked frames, source ICC profiles

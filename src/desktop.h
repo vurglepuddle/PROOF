@@ -135,6 +135,7 @@ class TemporaryItemList;
 class TemporaryItem;
 class TranslucencyGroups;
 class SnapIndicator;
+class FontHighlight;
 } // namespace Display
 
 } // namespace Inkscape
@@ -182,6 +183,8 @@ private:
     std::unique_ptr<Inkscape::Display::TemporaryItemList> _temporary_item_list;
     std::unique_ptr<Inkscape::Display::TranslucencyGroups> _translucency_groups;
     std::unique_ptr<Inkscape::Display::SnapIndicator> _snapindicator;
+    /// PROOF: the pink highlight on type set in a font that stands in for another.
+    std::unique_ptr<Inkscape::Display::FontHighlight> _font_highlight;
 
     SPNamedView *namedview = nullptr;
     int _view_number{};

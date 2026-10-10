@@ -45,6 +45,7 @@
 #include "actions/actions-tools.h" // To change tools
 #include "display/drawing.h"
 #include "display/control/canvas-temporary-item-list.h"
+#include "display/control/font-highlight.h"
 #include "display/control/snap-indicator.h"
 #include "display/control/canvas-item-catchall.h"
 #include "display/control/canvas-item-drawing.h"
@@ -113,6 +114,7 @@ SPDesktop::SPDesktop(SPNamedView *namedview_)
     _temporary_item_list = std::make_unique<Inkscape::Display::TemporaryItemList>();
     _translucency_groups = std::make_unique<Inkscape::Display::TranslucencyGroups>(dkey);
     _snapindicator = std::make_unique<Inkscape::Display::SnapIndicator>(this);
+    _font_highlight = std::make_unique<Inkscape::Display::FontHighlight>(this);
 
     _translucency_key = _translucency_groups->createGroupKey();
 
@@ -207,6 +209,7 @@ SPDesktop::~SPDesktop()
     }
 
     _snapindicator.reset();
+    _font_highlight.reset();
     _temporary_item_list.reset();
     _selection.reset();
 
@@ -1489,6 +1492,8 @@ void SPDesktop::_attachDocument()
         clearNodeCache();
     });
 
+    _font_highlight->setDocument(document);
+
     // set new document before firing signal, so handlers can see new value if they query desktop
     _document_replaced_signal.emit(this, document);
 
@@ -1497,6 +1502,7 @@ void SPDesktop::_attachDocument()
 
 void SPDesktop::_detachDocument()
 {
+    _font_highlight->setDocument(nullptr);
     namedview->hide(this);
     document->getRoot()->invoke_hide(dkey);
 

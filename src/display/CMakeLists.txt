@@ -47,6 +47,7 @@ target_sources(inkscape_base PRIVATE
     control/ctrl-handle-manager.cpp
     control/ctrl-handle-rendering.cpp
     control/ctrl-handle-styling.cpp
+    control/font-highlight.cpp
     control/snap-indicator.cpp
 
     control/canvas-item.cpp
@@ -120,6 +121,7 @@ target_sources(inkscape_base PRIVATE
     control/ctrl-handle-manager.h
     control/ctrl-handle-rendering.h
     control/ctrl-handle-styling.h
+    control/font-highlight.h
     control/snap-indicator.h
 
     control/canvas-item.h

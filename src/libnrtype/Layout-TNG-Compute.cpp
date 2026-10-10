@@ -1490,7 +1490,9 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
 
                     // At some point we may want to calculate baseline_shift here (to take advantage
                     // of otm features like superscript baseline), but for now we use style baseline_shift.
-                    new_span.baseline_shift = text_source->style->baseline_shift.computed;
+                    // PROOF: a superscript or subscript adds its own, a share of the type's size.
+                    new_span.baseline_shift = text_source->style->baseline_shift.computed
+                                              + text_source->position_shift * text_source->style->font_size.computed;
                     new_span.text_orientation = (SPCSSTextOrientation)text_source->style->text_orientation.computed;
 
                     // TODO: metrics for vertical text

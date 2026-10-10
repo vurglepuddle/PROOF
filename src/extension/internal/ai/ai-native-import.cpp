@@ -753,8 +753,11 @@ XML::Node *Builder::text(Node const &n)
     // Nor about a variable font's axes, unless one of its fonts is an instance of one: an
     // ordinary font beside it then says it has none, where it would inherit the instance's.
     // All Caps is the same: said for every run of a story that has any, and not otherwise.
+    // So are small capitals, and superscript and subscript.
     bool features = false, optical = false, instances = false, capitals = false, small_capitals = false, stand_in = false;
+    bool positions = false;
     for (auto const &line : story.lines) for (auto const &run : line.runs) {
+        positions = positions || run.style.position;
         features = features || run.style.kerning == 0 || !run.style.ligatures || !run.style.contextual;
         optical = optical || run.style.kerning == 2;
         instances = instances || _text_fonts.at(run.style.font)->font.variable;
@@ -772,7 +775,7 @@ XML::Node *Builder::text(Node const &n)
     // A run's style, and the font it stands in for when its own isn't installed.
     struct Parts
     {
-        std::array<std::string, 12> css;
+        std::array<std::string, 13> css;
         std::string missing, axes;
         bool same_font(Parts const &o) const { return css[0] == o.css[0] && missing == o.missing && axes == o.axes; }
         void name(XML::Node *element) const
@@ -796,12 +799,15 @@ XML::Node *Builder::text(Node const &n)
         Parts out;
         out.css = {
             font.css + (instances && !font.variable ? "font-variation-settings:normal;" : ""),
-            "font-size:" + num(s.set_size()) + ";", "fill:" + color(s.fill) + ";",
+            // The type's own size: a superscript or subscript is drawn smaller by the layout.
+            "font-size:" + num(s.size) + ";", "fill:" + color(s.fill) + ";",
             "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke) + ";",
             "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
             "letter-spacing:" + num(s.set_size() * s.tracking / 1000.0) + ";", ligatures, kerning,
             capitals ? std::string("text-transform:") + (s.all_caps ? "uppercase" : "none") + ";" : std::string(),
-            small_capitals ? std::string("font-variant-caps:") + (s.small_caps ? "small-caps" : "normal") + ";" : std::string()};
+            small_capitals ? std::string("font-variant-caps:") + (s.small_caps ? "small-caps" : "normal") + ";" : std::string(),
+            positions ? std::string("font-variant-position:") + (s.position == 1 ? "super" : s.position == 2 ? "sub" : "normal") + ";"
+                      : std::string()};
         if (text_font.missing) {
             out.missing = s.font;
             for (auto const v : s.design) out.axes += (out.axes.empty() ? "" : " ") + num(v);
@@ -844,9 +850,9 @@ XML::Node *Builder::text(Node const &n)
                 if (i == 0 ? font_differs : own.css[i] != base->css[i]) style += own.css[i];
             }
             // A shift is taken from the baseline of what holds the span, and added to that
-            // one's own: only the span the characters are in carries it. Superscript and
-            // subscript are a shift too, and a size.
-            if (run.style.set_shift() != 0) style += "baseline-shift:" + num(run.style.set_shift()) + ";";
+            // one's own: only the span the characters are in carries it. A superscript's or
+            // subscript's own place is no part of it.
+            if (run.style.baseline_shift != 0) style += "baseline-shift:" + num(run.style.baseline_shift) + ";";
             // So are the lines drawn under and through a run: they are the span's own.
             if (run.style.underline || run.style.strikethrough) {
                 style += std::string("text-decoration-line:") + (run.style.underline ? "underline" : "") +
@@ -861,7 +867,6 @@ XML::Node *Builder::text(Node const &n)
             auto piece = create("svg:tspan");
             piece->setAttribute("style", style);
             if (font_differs) own.name(piece);
-            if (run.style.position) piece->setAttribute(TEXT_POSITION_ATTRIBUTE, run.style.position == 1 ? "super" : "sub");
             append(piece, _xml->createTextNode(run.text.c_str())); append(span, piece);
         }
         write_plain();
@@ -1538,6 +1543,8 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
 
     // The document's colour mode and profile come first: process colours are written in it.
     Colors::DocumentColors::adopt(doc.get(), ai.cmyk ? Type::CMYK : Type::RGB);
+    // And how it sets superscripts, subscripts and small capitals, which its text is laid out by.
+    if (ai.texts && ai.texts->error.empty()) ai.texts->type.write(doc.get());
 
     Builder b(ai, doc.get(), std::move(text), source);
     b.run();

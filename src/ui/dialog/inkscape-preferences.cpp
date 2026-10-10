@@ -1146,6 +1146,8 @@ void InkscapePreferences::initPageTools()
         // PROOF
         _font_missing_dialog.init(_("List fonts that aren't installed when a document opens"), "/options/font/missingdlg", true);
         _page_text.add_line( false, "", _font_missing_dialog, "", _("When a document from Illustrator names fonts that aren't installed, list them and the text set in another font meanwhile"));
+        _font_missing_highlight.init(_("Highlight text whose font isn't installed"), "/options/font/missinghighlight", true);
+        _page_text.add_line( false, "", _font_missing_highlight, "", _("Show a pink highlight on the canvas behind text that is set in another font because its own isn't installed. It is never exported or printed"));
         _font_sample.init("/tools/text/font_sample", true);
         _page_text.add_line( false, _("Font sample"), _font_sample, "", _("Change font preview sample text"), true);
 

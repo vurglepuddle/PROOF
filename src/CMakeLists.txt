@@ -76,6 +76,7 @@ target_sources(inkscape_base PRIVATE
   text-chemistry.cpp
   text-editing.cpp
   transf_mat_3x4.cpp
+  type-settings.cpp
   unicoderange.cpp
   vanishing-point.cpp
   version.cpp
@@ -174,6 +175,7 @@ target_sources(inkscape_base PRIVATE
   text-editing.h
   text-tag-attributes.h
   transf_mat_3x4.h
+  type-settings.h
   undo-stack-observer.h
   unicoderange.h
   vanishing-point.h

@@ -13,11 +13,17 @@
 #ifndef INKSCAPE_UI_DIALOG_FONT_SUBSTITUTION_H
 #define INKSCAPE_UI_DIALOG_FONT_SUBSTITUTION_H
 
+class SPDesktop;
 class SPDocument;
 
 namespace Inkscape::UI::Dialog {
 
-void checkFontSubstitutions(SPDocument *doc);
+/// What a document that has just opened in `desktop` needs said about its fonts.
+void checkFontSubstitutions(SPDesktop *desktop);
+
+/// PROOF: list the fonts the window's document names that aren't installed, with a font
+/// to replace each by across the document. What opening a document shows, on request.
+void showMissingFonts(SPDesktop *desktop);
 
 } // namespace Inkscape::UI::Dialog
 

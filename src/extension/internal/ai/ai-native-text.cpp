@@ -254,14 +254,14 @@ Font font_entry(Value const &entry)
 struct Setup
 {
     std::vector<Font> fonts;
-    // Superscript and subscript: their size and their distance from the baseline, each a
-    // share of the type's size (the document's settings 3 to 6; these are Illustrator's own
-    // when a document says nothing).
-    double superscript_size = 0.583, superscript_shift = 0.333;
-    double subscript_size = 0.583, subscript_shift = 0.333;
-    /// Small capitals a font doesn't have: the size of the capitals that stand for them
-    /// (setting 7), a share of the type's size.
-    double small_caps_size = 0.7;
+    /// Superscript and subscript: their size and their distance from the baseline (the
+    /// text document's settings 3 to 6). Small capitals a font doesn't have: the size of
+    /// the capitals that stand for them (7). Each a share of the type's size; Illustrator's
+    /// own when the text document says nothing.
+    TypeSettings type;
+    /// For the document of type that appearances drew: what the document of typed text
+    /// says, which is what the whole document is set by.
+    TypeSettings const *document = nullptr;
 };
 
 TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
@@ -306,9 +306,10 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
     if (caps != 0 && caps != 1 && caps != 2) throw Bad("text has an unsupported character style feature");
     out.all_caps = caps == 2;
     out.small_caps = caps == 1;
-    // PROOF's text layout makes small capitals at Illustrator's own size, and no other.
-    if (out.small_caps && std::abs(setup.small_caps_size - 0.7) > 1e-6) {
-        throw Bad("small caps at a size of the document's own aren't supported yet");
+    // A document has one size for small capitals, and one each for the two positions.
+    auto const &whole = setup.document ? *setup.document : setup.type;
+    if (out.small_caps && setup.type.small_caps_size != whole.small_caps_size) {
+        throw Bad("type an appearance drew has small caps at a size that isn't the document's");
     }
     // Strikethrough (15) and underline (16): 0 none, 1 drawn. An underline has other
     // places in vertical type (2), which nothing here sets.
@@ -322,9 +323,16 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
     auto const position = number("13", 0);
     if (position != 0 && position != 1 && position != 2) throw Bad("text has an unsupported character style feature");
     out.position = int(position);
-    if (out.position) {
-        out.position_size = out.position == 1 ? setup.superscript_size : setup.subscript_size;
-        out.position_shift = out.position == 1 ? setup.superscript_shift : setup.subscript_shift;
+    if (out.position == 1) {
+        if (setup.type.superscript_size != whole.superscript_size || setup.type.superscript_shift != whole.superscript_shift) {
+            throw Bad("type an appearance drew has superscript at a size or place that isn't the document's");
+        }
+        out.position_size = setup.type.superscript_size;
+    } else if (out.position == 2) {
+        if (setup.type.subscript_size != whole.subscript_size || setup.type.subscript_shift != whole.subscript_shift) {
+            throw Bad("type an appearance drew has subscript at a size or place that isn't the document's");
+        }
+        out.position_size = setup.type.subscript_size;
     }
     auto paint = [&](char const *k, double &opacity) -> Color {
         auto const &p = pick(k).get("0");
@@ -685,9 +693,10 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
         auto const section = text_section(records);
         // The stories of one text document, each read on its own.
         auto read = [&](std::string const &data, std::vector<std::optional<PointText>> &stories_out,
-                        std::vector<std::string> &errors) {
+                        std::vector<std::string> &errors, bool typed) {
             auto doc = Reader(data).root();
             Setup setup;
+            if (!typed) setup.document = &out->type;
             for (auto const &font : doc.get("0").get("1").get("0").list) setup.fonts.push_back(font_entry(font.get("0").get("0")));
             auto const &main = doc.get("1");
             if (auto const settings = main.dict.find("0"); settings != main.dict.end() && settings->second.kind == Value::Dictionary) {
@@ -701,12 +710,13 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
                     }
                     value = v.number;
                 };
-                share("3", setup.superscript_size, true);
-                share("4", setup.superscript_shift, false);
-                share("5", setup.subscript_size, true);
-                share("6", setup.subscript_shift, false);
-                share("7", setup.small_caps_size, true);
+                share("3", setup.type.superscript_size, true);
+                share("4", setup.type.superscript_shift, false);
+                share("5", setup.type.subscript_size, true);
+                share("6", setup.type.subscript_shift, false);
+                share("7", setup.type.small_caps_size, true);
             }
+            if (typed) out->type = setup.type;
             auto const &stories = main.get("1");
             if (stories.kind != Value::Array || stories.list.size() > 65536) throw Bad("invalid or oversized story list");
             for (auto const &s : stories.list) {
@@ -717,14 +727,14 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
             }
         };
         std::size_t at = 0;
-        read(unpack(section, at), out->stories, out->errors);
+        read(unpack(section, at), out->stories, out->errors, true);
         // After the document of what was typed comes, when appearances drew type, the document
         // of that type. Without it, or when it can't be read, such type has no stories.
         auto const drawn = section.find("/AI11UndoFreeTextDocument", at);
         if (drawn != section.npos) {
             try {
                 at = drawn;
-                read(unpack(section, at), out->drawn, out->drawn_errors);
+                read(unpack(section, at), out->drawn, out->drawn_errors, false);
             } catch (Bad const &) {
                 out->drawn.clear();
                 out->drawn_errors.clear();
@@ -744,8 +754,7 @@ bool same_drawing(PointText const &a, PointText const &b)
                s.horizontal_scale == t.horizontal_scale && s.vertical_scale == t.vertical_scale &&
                s.baseline_shift == t.baseline_shift && s.kerning == t.kerning && s.ligatures == t.ligatures &&
                s.contextual == t.contextual && s.all_caps == t.all_caps && s.small_caps == t.small_caps &&
-               s.underline == t.underline && s.strikethrough == t.strikethrough && s.position == t.position &&
-               s.position_size == t.position_size && s.position_shift == t.position_shift;
+               s.underline == t.underline && s.strikethrough == t.strikethrough && s.position == t.position;
     };
     // Scaled and turned alike, and (below) each line in the same place on the art.
     if (!Geom::are_near(a.to_art.withoutTranslation(), b.to_art.withoutTranslation(), 1e-6)) return false;

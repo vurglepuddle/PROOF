@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" id="svg1" width="16" height="16" viewBox="0 0 16 16">
+  <g id="text_small_caps">
+    <path d="M0 0h16v16H0z" fill="none"/>
+    <path d="M1 3h6v2H5v8H3V5H1z M9 7h6v2h-2v4h-2V9H9z" fill="#2e3436"/>
+  </g>
+</svg>

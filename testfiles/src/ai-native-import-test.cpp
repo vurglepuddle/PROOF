@@ -27,6 +27,8 @@
 #include "display/drawing.h"
 #include "colors/document-colors.h"
 #include "colors/spaces/cms.h"
+#include "desktop-style.h"
+#include "display/control/font-highlight.h"
 #include "doc-per-case-test.h"
 #include "document.h"
 #include "file.h"
@@ -49,6 +51,7 @@
 #include "spot-ink.h"
 #include "style.h"
 #include "svg/svg.h"
+#include "type-settings.h"
 #include "util/units.h"
 #include "xml/node.h"
 #include "xml/repr.h"
@@ -1606,6 +1609,182 @@ TEST_F(AiNativeImportTest, TextGetsItsFontBackOnceItIsInstalled)
     EXPECT_EQ(AN::restore_fonts(doc.get()), 0u);
 }
 
+TEST_F(AiNativeImportTest, AFontThatIsNotInstalledIsReplacedAcrossTheDocument)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial isn't installed";
+    auto stand_in = AN::substitute_font();
+    ASSERT_TRUE(stand_in);
+    auto q = [](std::string const &value) { return "\"" + value + "\""; };
+    // Two texts in one missing font, one of them with a span in another and one in a font
+    // chosen by hand; and a text whose spans alone say their fonts.
+    auto doc = SPDocument::createNewDocFromMem(
+        "<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1' width='400' height='200'>"
+        "<text id='a' xml:space='preserve' proof:font-missing='PROOF-Missing-One' style=" + q("font-size:40px;fill:#ff0000;" + stand_in->css) + ">"
+        "<tspan x='10' y='60'>ab"
+        "<tspan proof:font-missing='PROOF-Missing-Two' style=" + q(stand_in->css) + ">cd</tspan>"
+        "<tspan style='font-family:Arial;-inkscape-font-specification:Arial'>ef</tspan>gh</tspan></text>"
+        "<text id='b' xml:space='preserve' proof:font-missing='PROOF-Missing-One' proof:font-missing-axes='350 80' style=" +
+        q("font-size:20px;font-variation-settings:'wght' 350;" + stand_in->css) + "><tspan x='10' y='120'>ij</tspan></text>"
+        "<text id='c' xml:space='preserve' style='font-size:20px;font-family:Arial'><tspan x='10' y='160'>kl"
+        "<tspan proof:font-missing='PROOF-Missing-Two' style=" + q(stand_in->css) + ">mn</tspan></tspan></text></svg>");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto item = [&](char const *id) { return cast<SPItem>(doc->getObjectById(id)); };
+    using Runs = std::vector<std::pair<unsigned, unsigned>>;
+    // What a font stands in for, as the layout counts its characters: all of the first text
+    // but the span given a font by hand.
+    EXPECT_EQ(AN::standing_in(item("a")), (Runs{{0, 4}, {6, 8}}));
+    EXPECT_EQ(AN::standing_in(item("b")), (Runs{{0, 2}}));
+    EXPECT_EQ(AN::standing_in(item("c")), (Runs{{2, 4}}));
+    auto before = AN::missing_fonts(doc.get());
+    ASSERT_EQ(before.size(), 2u);
+    EXPECT_EQ(before[0].name, "PROOF-Missing-One");
+    EXPECT_EQ(before[0].texts.size(), 2u);
+    EXPECT_EQ(before[1].texts.size(), 2u);
+
+    // Declarations that don't say which font was chosen replace nothing.
+    EXPECT_EQ(AN::replace_font(doc.get(), "PROOF-Missing-One", "font-family:Arial;"), 0u);
+    EXPECT_EQ(AN::replace_font(doc.get(), "PROOF-Missing-None", "font-family:Arial;-inkscape-font-specification:'Arial Bold';"), 0u);
+    std::string const chosen = "font-family:Arial;-inkscape-font-specification:'Arial Bold';font-weight:bold;font-style:normal;"
+                               "font-stretch:normal;font-variant:normal;";
+    auto const plain = drawn(doc.get(), item("b")->getRepr());
+    EXPECT_EQ(AN::replace_font(doc.get(), "PROOF-Missing-One", chosen), 2u);
+    for (auto const *id : {"a", "b"}) {
+        auto *node = item(id)->getRepr();
+        auto const style = attr(node, "style");
+        EXPECT_EQ(attr(node, "proof:font-missing"), "") << id;
+        EXPECT_EQ(attr(node, "proof:font-missing-axes"), "") << id;
+        EXPECT_NE(style.find("-inkscape-font-specification:'Arial Bold'"), std::string::npos) << style;
+        EXPECT_NE(style.find("font-weight:bold"), std::string::npos) << style;
+        // An ordinary font has no axes: the instance's are gone.
+        EXPECT_NE(style.find("font-variation-settings:normal"), std::string::npos) << style;
+        EXPECT_EQ(style.find("'wght' 350"), std::string::npos) << style;
+    }
+    // The rest of the style stays, and so does the other missing font.
+    EXPECT_NE(attr(item("a")->getRepr(), "style").find("font-size:40px"), std::string::npos);
+    EXPECT_NE(attr(item("a")->getRepr(), "style").find("fill:#ff0000"), std::string::npos);
+    auto const bold = drawn(doc.get(), item("b")->getRepr());
+    ASSERT_TRUE(plain && bold);
+    EXPECT_GT(bold->width(), plain->width() + 0.2);
+    EXPECT_EQ(AN::standing_in(item("a")), (Runs{{2, 4}}));
+    EXPECT_TRUE(AN::standing_in(item("b")).empty());
+    auto after = AN::missing_fonts(doc.get());
+    ASSERT_EQ(after.size(), 1u);
+    EXPECT_EQ(after[0].name, "PROOF-Missing-Two");
+    EXPECT_EQ(after[0].texts.size(), 2u);
+    // The other font likewise, in both texts that have it.
+    EXPECT_EQ(AN::replace_font(doc.get(), "PROOF-Missing-Two", chosen), 2u);
+    EXPECT_TRUE(AN::missing_fonts(doc.get()).empty());
+    EXPECT_TRUE(AN::standing_in(item("a")).empty());
+    EXPECT_TRUE(AN::standing_in(item("c")).empty());
+}
+
+TEST_F(AiNativeImportTest, TheHighlightLiesOnTheTypeAFontStandsInFor)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial isn't installed";
+    auto stand_in = AN::substitute_font();
+    ASSERT_TRUE(stand_in);
+    auto q = [](std::string const &value) { return "\"" + value + "\""; };
+    // Two lines. In the first a span has a font chosen by hand; the second is one style
+    // from end to end, in two spans.
+    auto doc = SPDocument::createNewDocFromMem(
+        "<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1' width='400' height='200'>"
+        "<text id='a' xml:space='preserve' proof:font-missing='PROOF-Missing-One' style=" + q("font-size:40px;" + stand_in->css) + ">"
+        "<tspan x='10' y='60'>ab<tspan style='font-family:Arial;-inkscape-font-specification:Arial'>cd</tspan>ef</tspan>"
+        "<tspan x='10' y='120'>gh<tspan style='fill:#ff0000'>ij</tspan></tspan></text>"
+        "<text id='b' xml:space='preserve' style='font-size:40px;font-family:Arial'><tspan x='10' y='180'>kl</tspan></text></svg>");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto *a = cast<SPText>(doc->getObjectById("a"));
+    ASSERT_TRUE(a);
+    auto const shape = Inkscape::Display::font_highlight_shape(a);
+    // "ab", "ef", and the whole second line as one stretch.
+    ASSERT_EQ(shape.size(), 12u);
+    auto box = [&](unsigned i) { return Geom::Rect(shape[i * 4], shape[i * 4 + 2]); };
+    // Each lies on its line, from above the letters to below the baseline.
+    for (unsigned i = 0; i < 3; ++i) {
+        double const baseline = i < 2 ? 60 : 120;
+        EXPECT_LT(box(i).top(), baseline - 25) << i;
+        EXPECT_GT(box(i).bottom(), baseline + 2) << i;
+        EXPECT_LT(box(i).bottom(), baseline + 20) << i;
+        // Corners go round from the top left.
+        EXPECT_EQ(shape[i * 4], box(i).corner(0)) << i;
+        EXPECT_EQ(shape[i * 4 + 1], box(i).corner(1)) << i;
+        EXPECT_EQ(shape[i * 4 + 3], box(i).corner(3)) << i;
+    }
+    EXPECT_NEAR(box(0).left(), 10, 1e-6);
+    // The span with a font of its own lies between the first two, uncovered.
+    EXPECT_GT(box(1).left(), box(0).right() + 20);
+    EXPECT_NEAR(box(2).left(), 10, 1e-6);
+    // The type itself is inside what covers it.
+    auto const drawn_second = a->layout.bounds(Geom::identity(), false, 6, 3);
+    ASSERT_TRUE(drawn_second);
+    EXPECT_TRUE(box(2).contains(*drawn_second));
+    // Text in its own font has none, nor has text whose font was replaced.
+    EXPECT_TRUE(Inkscape::Display::font_highlight_shape(cast<SPItem>(doc->getObjectById("b"))).empty());
+    EXPECT_EQ(AN::replace_font(doc.get(), "PROOF-Missing-One", "font-family:Arial;-inkscape-font-specification:Arial;"), 1u);
+    doc->ensureUpToDate();
+    EXPECT_TRUE(Inkscape::Display::font_highlight_shape(a).empty());
+}
+
+TEST_F(AiNativeImportTest, TheCharacterButtonsReadWhatTheTextIs)
+{
+    auto doc = SPDocument::createNewDocFromMem(std::string(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='200'>"
+        "<text id='caps' style='font-size:20px;text-transform:uppercase'><tspan x='10' y='30'>ab</tspan></text>"
+        "<text id='caps2' style='font-size:20px;text-transform:uppercase'><tspan x='10' y='60'>cd"
+        "<tspan id='none' style='text-transform:none;font-variant-position:super'>ef</tspan></tspan></text>"
+        "<text id='small' style='font-size:20px;font-variant-caps:small-caps;font-variant-position:sub'><tspan x='10' y='90'>gh</tspan></text>"
+        "<text id='plain' style='font-size:20px'><tspan x='10' y='120'>ij</tspan></text></svg>"));
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto item = [&](char const *id) { return cast<SPItem>(doc->getObjectById(id)); };
+    auto query = [&](std::vector<SPItem *> const &items, SPStyle &style) {
+        return sp_desktop_query_style_from_list(items, &style, QUERY_STYLE_PROPERTY_FONTVARIANTS);
+    };
+    {
+        // Texts that agree: all caps, on the line.
+        SPStyle style(doc.get());
+        EXPECT_EQ(query({item("caps"), item("caps2")}, style), QUERY_STYLE_MULTIPLE_SAME);
+        EXPECT_TRUE(style.text_transform.set);
+        EXPECT_EQ(style.text_transform.computed, SP_CSS_TEXT_TRANSFORM_UPPERCASE);
+        EXPECT_EQ(style.font_variant_position.value, 0);
+        EXPECT_EQ(style.font_variant_position.computed, SP_CSS_FONT_VARIANT_POSITION_NORMAL);
+    }
+    {
+        // A span that undoes its text's capitals, above the line.
+        SPStyle style(doc.get());
+        EXPECT_EQ(query({item("none")}, style), QUERY_STYLE_SINGLE);
+        EXPECT_TRUE(style.text_transform.set);
+        EXPECT_EQ(style.text_transform.computed, SP_CSS_TEXT_TRANSFORM_NONE);
+        EXPECT_EQ(style.font_variant_position.value, 0);
+        EXPECT_EQ(style.font_variant_position.computed, SP_CSS_FONT_VARIANT_POSITION_SUPER);
+    }
+    {
+        // Texts that differ in both: neither button is down.
+        SPStyle style(doc.get());
+        query({item("caps"), item("small")}, style);
+        EXPECT_FALSE(style.text_transform.set);
+        EXPECT_NE(style.font_variant_caps.value, 0);
+        EXPECT_NE(style.font_variant_position.value, 0);
+    }
+    {
+        SPStyle style(doc.get());
+        EXPECT_EQ(query({item("small")}, style), QUERY_STYLE_SINGLE);
+        EXPECT_TRUE(style.text_transform.set);
+        EXPECT_EQ(style.text_transform.computed, SP_CSS_TEXT_TRANSFORM_NONE);
+        EXPECT_EQ(style.font_variant_caps.value, 0);
+        EXPECT_EQ(style.font_variant_caps.computed, SP_CSS_FONT_VARIANT_CAPS_SMALL);
+        EXPECT_EQ(style.font_variant_position.computed, SP_CSS_FONT_VARIANT_POSITION_SUB);
+    }
+    {
+        // Nothing that is text: nothing is said.
+        SPStyle style(doc.get());
+        EXPECT_EQ(query({}, style), QUERY_STYLE_NOTHING);
+        EXPECT_FALSE(style.text_transform.set);
+    }
+}
+
 // ---- capitals -----------------------------------------------------------------------------
 
 TEST_F(AiNativeImportTest, TextTransformSetsCapitalsOneCharacterForOne)
@@ -1732,7 +1911,7 @@ TEST_F(AiNativeImportTest, SuperscriptAndSubscriptTakeTheDocumentsSizes)
     auto font = available_text_font();
     if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
     // "x" then "2" above the line, at 20 points; and the same below it.
-    auto build = [&](int position, std::string const &settings, std::string *style, std::string *marked) {
+    auto build = [&](int position, std::string const &settings, std::string *style, std::string *root) {
         auto data = text_document("(x2\\r)", 1, font, "/1 20", "/2 [1 0 0 1 -90 -10]",
                                   "<< /1 2 /0 << /0 << /6 << /1 20 /13 " + std::to_string(position) + " >> >> >> >>");
         if (!settings.empty()) {
@@ -1748,38 +1927,60 @@ TEST_F(AiNativeImportTest, SuperscriptAndSubscriptTakeTheDocumentsSizes)
         auto spans = elements(texts.at(0), "svg:tspan");
         EXPECT_EQ(spans.size(), 2u);
         if (spans.size() != 2) return Geom::OptRect();
+        // The type says which it is and keeps its size: the layout sets it smaller and moved.
+        EXPECT_NE(attr(texts[0], "style").find("font-size:20;"), std::string::npos) << attr(texts[0], "style");
+        EXPECT_NE(attr(texts[0], "style").find("font-variant-position:normal;"), std::string::npos) << attr(texts[0], "style");
         if (style) *style = attr(spans[1], "style");
-        if (marked) *marked = attr(spans[1], "proof:position");
+        if (root) {
+            *root = attr(b->document->getReprRoot(), "proof:superscript") + "|" + attr(b->document->getReprRoot(), "proof:subscript");
+        }
         EXPECT_STREQ(spans[1]->firstChild()->content(), "2");
         return drawn(b->document.get(), spans[1]);
     };
-    std::string style, marked;
+    // The figure on the line, for its size and place.
+    auto on_line = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(x2\\r)", 3, font, "/1 20"))));
+    ASSERT_TRUE(on_line);
+    auto line_text = elements(on_line->document->getReprRoot(), "svg:text").at(0);
+    ASSERT_EQ(elements(line_text, "svg:tspan").size(), 1u);
+    // Nothing says where it stands, nor does the document say how such type is set.
+    EXPECT_EQ(attr(line_text, "style").find("font-variant-position"), std::string::npos) << attr(line_text, "style");
+    EXPECT_EQ(attr(on_line->document->getReprRoot(), "proof:superscript"), "");
+    auto whole = drawn(on_line->document.get(), line_text);
+    ASSERT_TRUE(whole);
+    // The figure's height at 20 points: both are set from the same baseline.
+    auto const figure = [&] {
+        auto doc = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(2\\r)", 2, font, "/1 20"))));
+        auto bounds = doc ? drawn(doc->document.get(), elements(doc->document->getReprRoot(), "svg:text").at(0)) : Geom::OptRect();
+        EXPECT_TRUE(bounds);
+        return bounds ? *bounds : Geom::Rect();
+    }();
+    double const baseline = figure.bottom(); // A 2 stands on the line.
+
+    std::string style, root;
     // Illustrator's own settings: 58.3% of the size, a third of the size up.
-    auto super = build(1, {}, &style, &marked);
-    EXPECT_EQ(marked, "super");
-    EXPECT_NE(style.find("font-size:11.66;"), std::string::npos) << style;
-    EXPECT_NE(style.find("baseline-shift:6.66;"), std::string::npos) << style;
-    auto sub = build(2, {}, &style, &marked);
-    EXPECT_EQ(marked, "sub");
-    EXPECT_NE(style.find("font-size:11.66;"), std::string::npos) << style;
-    EXPECT_NE(style.find("baseline-shift:-6.66;"), std::string::npos) << style;
+    auto super = build(1, {}, &style, &root);
+    EXPECT_EQ(style, "font-variant-position:super;");
+    EXPECT_EQ(root, "|");
+    auto sub = build(2, {}, &style, &root);
+    EXPECT_EQ(style, "font-variant-position:sub;");
     ASSERT_TRUE(super && sub);
     // The same figure, 13.32 points apart.
     EXPECT_NEAR(sub->top() - super->top(), 13.32, 1e-6);
     EXPECT_NEAR(super->height(), sub->height(), 1e-6);
-    // A document with settings of its own.
-    auto own = build(1, "/3 0.5 /4 0.4 /5 0.6 /6 0.2", &style, &marked);
-    EXPECT_NE(style.find("font-size:10;"), std::string::npos) << style;
-    EXPECT_NE(style.find("baseline-shift:8;"), std::string::npos) << style;
-    build(2, "/3 0.5 /4 0.4 /5 0.6 /6 0.2", &style, &marked);
-    EXPECT_NE(style.find("font-size:12;"), std::string::npos) << style;
-    EXPECT_NE(style.find("baseline-shift:-4;"), std::string::npos) << style;
-    // On the line there is neither, and nothing marks it.
-    auto plain = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(x2\\r)", 3, font, "/1 20"))));
-    ASSERT_TRUE(plain);
-    auto spans = elements(elements(plain->document->getReprRoot(), "svg:text").at(0), "svg:tspan");
-    ASSERT_EQ(spans.size(), 1u);
-    EXPECT_EQ(attr(spans[0], "proof:position"), "");
+    EXPECT_NEAR(super->height(), figure.height() * 0.583, 1e-6);
+    EXPECT_NEAR(super->bottom(), baseline - 6.66, 0.02);
+    EXPECT_NEAR(sub->bottom(), baseline + 6.66, 0.02);
+    // A document with settings of its own says them, and its type is set by them.
+    auto own = build(1, "/3 0.5 /4 0.4 /5 0.6 /6 0.2", &style, &root);
+    EXPECT_EQ(style, "font-variant-position:super;");
+    EXPECT_EQ(root, "0.5 0.4|0.6 0.2");
+    ASSERT_TRUE(own);
+    EXPECT_NEAR(own->height(), figure.height() * 0.5, 1e-6);
+    EXPECT_NEAR(own->bottom(), baseline - 8, 0.02);
+    auto own_sub = build(2, "/3 0.5 /4 0.4 /5 0.6 /6 0.2", &style, &root);
+    ASSERT_TRUE(own_sub);
+    EXPECT_NEAR(own_sub->height(), figure.height() * 0.6, 1e-6);
+    EXPECT_NEAR(own_sub->bottom(), baseline + 4, 0.02);
     // A setting that isn't a share of the size refuses the document's stories.
     auto data = text_document("(x2\\r)", 3, font, "/1 20 /13 1");
     data.insert(data.find("/1 << /1 [ << /0 << /0 (x2") + 6, "/0 << /3 7 >> ");
@@ -1823,6 +2024,22 @@ TEST_F(AiNativeImportTest, SmallCapitalsAreMadeOfCapitalsForAFontWithoutThem)
     same("font-variant-caps:small-caps;text-transform:uppercase;", "Test", "TEST");
     // Type without small letters is untouched.
     same("font-variant-caps:small-caps;", "TEST 12", "TEST 12");
+    // The size is the document's to say.
+    {
+        auto a = SPDocument::createNewDocFromMem(
+            "<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1' width='400' height='100' "
+            "proof:small-caps='0.5'><text xml:space='preserve' style=\"font-size:40px;" + font->css +
+            "font-variant-caps:small-caps;\"><tspan x='10' y='60'>Test</tspan></text></svg>");
+        auto b = document({}, "T<tspan style='font-size:20px'>EST</tspan>");
+        auto const ra = bounds(a.get()), rb = bounds(b.get());
+        ASSERT_TRUE(ra && rb);
+        EXPECT_NEAR(ra->width(), rb->width(), 1e-6);
+        EXPECT_NEAR(ra->top(), rb->top(), 1e-6);
+    }
+    // Small capitals above the line: each makes the letters smaller in its turn.
+    same("font-variant-caps:small-caps;font-variant-position:super;", "Test",
+         "<tspan style='font-size:23.32px;baseline-shift:13.32px'>T</tspan>"
+         "<tspan style='font-size:16.324px;baseline-shift:13.32px'>EST</tspan>");
     // The text is what was typed, a place in the layout a place in it.
     auto doc = document("font-variant-caps:small-caps;", "Test");
     doc->ensureUpToDate();
@@ -1875,13 +2092,123 @@ TEST_F(AiNativeImportTest, SmallCapsUnderlineAndStrikethroughFollowTheRun)
     EXPECT_EQ(span_style, "text-decoration-line:underline;");
     build("/15 1 /16 1", nullptr, &span_style);
     EXPECT_EQ(span_style, "text-decoration-line:underline line-through;");
-    // A document whose small caps are another size than Illustrator's own isn't set yet.
-    auto data = text_document("(Hello\\r)", 6, font, "/12 1");
+    // A document whose small caps are another size than Illustrator's own says so, and the
+    // layout sets them at it (for a font that has none of its own).
+    auto data = text_document("(Hello\\r)", 6, font, "/1 40 /12 1");
     data.insert(data.find("/1 << /1 [ << /0 << /0 (Hello") + 6, "/0 << /7 0.5 >> ");
     auto texts = AN::read_text_document(text_setup(data), Geom::Point(100, 50));
     ASSERT_EQ(texts->stories.size(), 1u);
-    EXPECT_FALSE(texts->stories[0]);
-    EXPECT_NE(texts->errors.at(0).find("small caps"), std::string::npos) << texts->errors.at(0);
+    ASSERT_TRUE(texts->stories[0]) << texts->errors.at(0);
+    EXPECT_EQ(texts->type.small_caps_size, 0.5);
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(data)));
+    ASSERT_TRUE(b);
+    EXPECT_EQ(attr(b->document->getReprRoot(), "proof:small-caps"), "0.5");
+    auto found = AN::find_font(font);
+    ASSERT_TRUE(found && found->face);
+    auto bounds = drawn(b->document.get(), elements(b->document->getReprRoot(), "svg:text").at(0));
+    ASSERT_TRUE(bounds);
+    if (!found->face->get_opentype_tables().contains("smcp")) {
+        EXPECT_LT(bounds->width(), small - 5);
+        EXPECT_GT(bounds->width(), plain * 0.5);
+    }
+    // Type an appearance drew is in a text document of its own. Where that one says another
+    // size than the document's, its small caps can't be set.
+    auto typed = text_document("(Hello\\r)", 6, font, "/1 40");
+    auto other = text_document("(Hello\\r)", 6, font, "/1 40 /12 1");
+    other.insert(other.find("/1 << /1 [ << /0 << /0 (Hello") + 6, "/0 << /7 0.5 >> ");
+    auto both = AN::read_text_document(text_setup(typed, other), Geom::Point(100, 50));
+    ASSERT_TRUE(both->error.empty()) << both->error;
+    ASSERT_EQ(both->drawn.size(), 1u);
+    EXPECT_FALSE(both->drawn[0]);
+    EXPECT_NE(both->drawn_errors.at(0).find("small caps"), std::string::npos) << both->drawn_errors.at(0);
+    EXPECT_EQ(both->type.small_caps_size, 0.7);
+}
+
+TEST_F(AiNativeImportTest, SuperscriptAndSubscriptAreMadeByTheLayout)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial isn't installed";
+    auto document = [](std::string const &root, std::string const &content) {
+        return SPDocument::createNewDocFromMem(
+            "<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1' width='400' height='100' " + root +
+            "><text xml:space='preserve' style='font-family:Arial;font-size:40px'><tspan x='10' y='60'>" + content +
+            "</tspan></text></svg>");
+    };
+    auto bounds = [&](SPDocument *doc) {
+        auto texts = elements(doc->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        return texts.empty() ? Geom::OptRect() : drawn(doc, texts[0]);
+    };
+    auto same = [&](std::string const &root, std::string const &made, std::string const &set) {
+        auto a = document(root, made), b = document({}, set);
+        auto const ra = bounds(a.get()), rb = bounds(b.get());
+        EXPECT_TRUE(ra && rb);
+        if (!ra || !rb) return;
+        EXPECT_NEAR(ra->left(), rb->left(), 1e-6) << made;
+        EXPECT_NEAR(ra->width(), rb->width(), 1e-6) << made;
+        EXPECT_NEAR(ra->top(), rb->top(), 1e-6) << made;
+        EXPECT_NEAR(ra->bottom(), rb->bottom(), 1e-6) << made;
+    };
+    // Illustrator's own: 58.3% of the size, a third of the size off the baseline. The type
+    // keeps its size; what follows is back on the line.
+    same({}, "H<tspan style='font-variant-position:super'>2x</tspan>H",
+         "H<tspan style='font-size:23.32px;baseline-shift:13.32px'>2x</tspan>H");
+    same({}, "H<tspan style='font-variant-position:sub'>2x</tspan>H",
+         "H<tspan style='font-size:23.32px;baseline-shift:-13.32px'>2x</tspan>H");
+    // The size is the type's own, whatever holds it.
+    same({}, "H<tspan style='font-size:20px;font-variant-position:super'>2x</tspan>",
+         "H<tspan style='font-size:11.66px;baseline-shift:6.66px'>2x</tspan>");
+    // A span inside one is the same, not smaller again; one that says normal is on the line.
+    same({}, "H<tspan style='font-variant-position:super'>2<tspan style='fill:#ff0000'>x</tspan><tspan "
+             "style='font-variant-position:normal'>y</tspan></tspan>",
+         "H<tspan style='font-size:23.32px;baseline-shift:13.32px'>2x</tspan>y");
+    // A baseline shift of the type's own is added to it.
+    same({}, "H<tspan style='font-variant-position:super;baseline-shift:5px'>2x</tspan>",
+         "H<tspan style='font-size:23.32px;baseline-shift:18.32px'>2x</tspan>");
+    // What the document says.
+    same("proof:superscript='0.5 0.25' proof:subscript='0.75 0.1'",
+         "H<tspan style='font-variant-position:super'>2</tspan><tspan style='font-variant-position:sub'>x</tspan>",
+         "H<tspan style='font-size:20px;baseline-shift:10px'>2</tspan><tspan style='font-size:30px;baseline-shift:-4px'>x</tspan>");
+    // What it says wrongly is Illustrator's own.
+    same("proof:superscript='0 1' proof:subscript='big'",
+         "H<tspan style='font-variant-position:super'>2</tspan><tspan style='font-variant-position:sub'>x</tspan>",
+         "H<tspan style='font-size:23.32px;baseline-shift:13.32px'>2</tspan><tspan style='font-size:23.32px;baseline-shift:-13.32px'>x</tspan>");
+
+    // Its settings read and written; Illustrator's own aren't written.
+    auto doc = document({}, "H<tspan style='font-variant-position:super'>2</tspan>");
+    auto const before = bounds(doc.get());
+    ASSERT_TRUE(before);
+    EXPECT_EQ(Inkscape::TypeSettings::of(doc.get()), Inkscape::TypeSettings());
+    Inkscape::TypeSettings settings;
+    settings.write(doc.get());
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:superscript"), "");
+    settings.superscript_size = 0.8;
+    settings.superscript_shift = 0;
+    settings.small_caps_size = 0.6;
+    settings.write(doc.get());
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:superscript"), "0.8 0");
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:subscript"), "");
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:small-caps"), "0.6");
+    EXPECT_EQ(Inkscape::TypeSettings::of(doc.get()), settings);
+    // The document's text is laid out again by them.
+    auto const after = bounds(doc.get());
+    ASSERT_TRUE(after);
+    EXPECT_GT(after->width(), before->width() + 2);
+    auto reference = document({}, "H<tspan style='font-size:32px'>2</tspan>");
+    EXPECT_NEAR(after->width(), bounds(reference.get())->width(), 1e-6);
+    // Settings no document can have aren't written.
+    settings.subscript_size = 0;
+    EXPECT_FALSE(settings.valid());
+    settings.write(doc.get());
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:superscript"), "0.8 0");
+    Inkscape::TypeSettings().write(doc.get());
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:superscript"), "");
+    EXPECT_EQ(attr(doc->getReprRoot(), "proof:small-caps"), "");
+
+    // Each character of the layout is still a character of the source.
+    auto *text = cast<SPText>(doc->getObjectByRepr(elements(doc->getReprRoot(), "svg:text").at(0)));
+    ASSERT_TRUE(text);
+    doc->ensureUpToDate();
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 2);
 }
 
 TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)

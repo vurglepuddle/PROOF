@@ -23,6 +23,8 @@
 #include "libnrtype/font-utils.h"
 #include "object/sp-item.h"
 #include "object/sp-root.h"
+#include "object/sp-string.h"
+#include "object/sp-text.h"
 #include "style.h"
 #include "svg/css-ostringstream.h"
 #include "text-editing.h"
@@ -451,14 +453,27 @@ std::string without(std::string const &declarations, char const *property)
     return result.empty() ? std::string{} : result.raw() + ";";
 }
 
-/// Whether the element is still set in the font the import gave it in place of its own.
-bool stands_in(XML::Node const *node)
+/// Whether the element's own style says which font sets it.
+bool declares_font(XML::Node const *node)
 {
-    if (!node->attribute(FONT_MISSING_ATTRIBUTE)) return false;
     auto *css = sp_repr_css_attr(node, "style");
-    bool const untouched = !sp_repr_css_property(css, "-inkscape-font-specification", nullptr);
+    bool const declares = sp_repr_css_property(css, "font-family", nullptr) || sp_repr_css_property(css, "font", nullptr) ||
+                          sp_repr_css_property(css, "-inkscape-font-specification", nullptr);
     sp_repr_css_attr_unref(css);
-    return untouched;
+    return declares;
+}
+
+/// The declarations of `chosen` put in place of the element's own font, which then names
+/// no font that isn't installed.
+void set_font(XML::Node *node, SPCSSAttr const *chosen)
+{
+    auto *css = sp_repr_css_attr(node, "style");
+    for (auto const *property : FONT_PROPERTIES) sp_repr_css_unset_property(css, property);
+    sp_repr_css_merge(css, const_cast<SPCSSAttr *>(chosen));
+    sp_repr_css_set(node, css, "style");
+    sp_repr_css_attr_unref(css);
+    node->removeAttribute(FONT_MISSING_ATTRIBUTE);
+    node->removeAttribute(FONT_MISSING_AXES_ATTRIBUTE);
 }
 
 /// Every element of the document that names a font that isn't installed.
@@ -474,6 +489,16 @@ std::vector<XML::Node *> naming_fonts(SPDocument *document)
 }
 
 } // namespace
+
+/// Still set in the font the import gave it in place of its own.
+bool stands_in(XML::Node const *node)
+{
+    if (!node || !node->attribute(FONT_MISSING_ATTRIBUTE)) return false;
+    auto *css = sp_repr_css_attr(node, "style");
+    bool const untouched = !sp_repr_css_property(css, "-inkscape-font-specification", nullptr);
+    sp_repr_css_attr_unref(css);
+    return untouched;
+}
 
 std::optional<FontMatch> substitute_font()
 {
@@ -526,10 +551,9 @@ unsigned restore_fonts(SPDocument *document)
             }
             font = find_font(node->attribute(FONT_MISSING_ATTRIBUTE), design);
             if (!font) continue; // Still not installed.
-            auto *css = sp_repr_css_attr(node, "style");
-            for (auto const *property : FONT_PROPERTIES) sp_repr_css_unset_property(css, property);
+            auto *css = sp_repr_css_attr_new();
             sp_repr_css_attr_add_from_string(css, font->css.c_str());
-            sp_repr_css_set(node, css, "style");
+            set_font(node, css);
             sp_repr_css_attr_unref(css);
             ++restored;
         }
@@ -538,6 +562,58 @@ unsigned restore_fonts(SPDocument *document)
         node->removeAttribute(FONT_MISSING_AXES_ATTRIBUTE);
     }
     return restored;
+}
+
+unsigned replace_font(SPDocument *document, std::string const &name, std::string const &declarations)
+{
+    auto *css = sp_repr_css_attr_new();
+    sp_repr_css_attr_add_from_string(css, declarations.c_str());
+    unsigned replaced = 0;
+    // Without these the text would be no font's, or go on counting as one standing in.
+    if (sp_repr_css_property(css, "font-family", nullptr) && sp_repr_css_property(css, "-inkscape-font-specification", nullptr)) {
+        // What holds the text may be an instance of a variable font: an ordinary font
+        // says it has no axes of its own to be set.
+        if (!sp_repr_css_property(css, "font-variation-settings", nullptr)) {
+            sp_repr_css_set_property(css, "font-variation-settings", "normal");
+        }
+        for (auto *node : naming_fonts(document)) {
+            if (!stands_in(node) || name != node->attribute(FONT_MISSING_ATTRIBUTE)) continue;
+            set_font(node, css);
+            ++replaced;
+        }
+    }
+    sp_repr_css_attr_unref(css);
+    return replaced;
+}
+
+std::vector<std::pair<unsigned, unsigned>> standing_in(SPItem const *text)
+{
+    std::vector<std::pair<unsigned, unsigned>> out;
+    if (!text) return out;
+    // An element's font sets what is inside it, down to an element that says a font again.
+    auto visit = [&](auto const &self, SPObject const *object, bool standing) -> void {
+        if (auto const *string = cast<SPString>(object)) {
+            if (!standing || string->string.empty()) return;
+            unsigned const start = sp_text_get_length_upto(text, string);
+            unsigned const end = start + string->string.length();
+            if (!out.empty() && out.back().second == start) {
+                out.back().second = end;
+            } else {
+                out.emplace_back(start, end);
+            }
+            return;
+        }
+        if (auto const *node = object->getRepr()) {
+            if (node->attribute(FONT_MISSING_ATTRIBUTE)) {
+                standing = stands_in(node);
+            } else if (declares_font(node)) {
+                standing = false;
+            }
+        }
+        for (auto const &child : object->children) self(self, &child, standing);
+    };
+    visit(visit, text, false);
+    return out;
 }
 
 } // namespace Inkscape::Extension::Internal::AiNative

@@ -21,6 +21,7 @@
 #include "actions/actions-extra-data.h"
 #include "inkscape-application.h"
 #include "text-chemistry.h"
+#include "ui/dialog/font-substitution.h"
 
 void
 selection_text_put_on_path()
@@ -81,6 +82,13 @@ text_unkern()
     text_remove_all_kerns();
 }
 
+// PROOF: the fonts the document names that aren't installed, and a font to replace each by.
+void
+text_missing_fonts(InkscapeApplication* app)
+{
+    Inkscape::UI::Dialog::showMissingFonts(app->get_active_desktop());
+}
+
 const Glib::ustring SECTION = NC_("Action Section", "Text");
 
 std::vector<std::vector<Glib::ustring>> raw_data_text =
@@ -94,7 +102,8 @@ std::vector<std::vector<Glib::ustring>> raw_data_text =
     {"app.text-unflow-and-keep-shape",N_("Unflow and Keep Shape"),  SECTION, N_("Remove text from shape")},
     {"app.text-convert-to-regular",   N_("Convert to Text"),        SECTION, N_("Convert flowed text to regular text object (preserves appearance)")},
     {"app.text-convert-to-glyphs",    N_("Convert to Glyphs"),      SECTION, N_("Convert text into individual glyphs")},
-    {"app.text-unkern",               N_("Remove Manual Kerns"),    SECTION, N_("Remove all manual kerns and glyph rotations from a text object")}
+    {"app.text-unkern",               N_("Remove Manual Kerns"),    SECTION, N_("Remove all manual kerns and glyph rotations from a text object")},
+    {"app.text-missing-fonts",        N_("Missing Fonts"),          SECTION, N_("List the fonts the document uses that aren't installed, and replace them")}
     // clang-format on
 };
 
@@ -113,6 +122,7 @@ add_actions_text(InkscapeApplication* app)
     gapp->add_action( "text-convert-to-regular",     sigc::ptr_fun(text_convert_to_regular));
     gapp->add_action( "text-convert-to-glyphs",      sigc::ptr_fun(text_convert_to_glyphs));
     gapp->add_action( "text-unkern",                 sigc::ptr_fun(text_unkern));
+    gapp->add_action( "text-missing-fonts",          sigc::bind(sigc::ptr_fun(&text_missing_fonts), app));
     // clang-format on
 
     app->get_action_extra_data().add_data(raw_data_text);

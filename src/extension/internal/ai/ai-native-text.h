@@ -13,6 +13,7 @@
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
 
 #include "ai-native-reader.h"
+#include "type-settings.h"
 
 namespace Inkscape::Extension::Internal::AiNative {
 
@@ -34,19 +35,17 @@ struct TextStyle
     bool contextual = true; ///< Contextual alternates.
     bool all_caps = false;  ///< Set in capitals, whatever was typed.
     /// Small letters set as small capitals: the font's own where it has them, else its
-    /// capitals at 70% of the size.
+    /// capitals at the size the document says (TextDocument::type).
     bool small_caps = false;
     bool underline = false;
     bool strikethrough = false;
     /// Where the characters stand: 0 on the line, 1 superscript, 2 subscript. Illustrator
-    /// makes those of the same font, smaller and moved, by what the document says:
+    /// makes those of the same font, smaller and moved, by what the document says
+    /// (TextDocument::type). `size` and `baseline_shift` stay the type's own.
     int position = 0;
-    double position_size = 1;  ///< their size, as a share of `size`;
-    double position_shift = 0; ///< and how far up (or, for subscript, down), as a share of it.
+    double position_size = 1; ///< Their size, as a share of `size`.
     /// The size the characters are set at.
-    double set_size() const { return position ? size * position_size : size; }
-    /// How far above the baseline they are set, in points.
-    double set_shift() const { return baseline_shift + (position == 1 ? 1 : position == 2 ? -1 : 0) * position_shift * size; }
+    double set_size() const { return size * position_size; }
 };
 
 struct TextRun
@@ -97,6 +96,8 @@ struct PointText
  */
 struct TextDocument
 {
+    /// How the document sets superscripts, subscripts and made-up small capitals.
+    TypeSettings type;
     std::vector<std::optional<PointText>> stories;
     std::vector<std::string> errors;
     std::string error; ///< Malformed/missing document or template centre.

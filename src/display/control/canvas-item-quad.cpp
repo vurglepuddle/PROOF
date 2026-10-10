@@ -132,14 +132,24 @@ void CanvasItemQuad::_render(Inkscape::CanvasItemBuffer &buf) const
 
     if (_inverted) {
         cairo_set_operator(buf.cr->cobj(), CAIRO_OPERATOR_DIFFERENCE);
+    } else if (_highlighter) {
+        // A light wash first, so the mark shows on a dark desk too; then the ink, which
+        // tints what is light and leaves what is dark.
+        auto wash = Colors::Color(_fill);
+        wash.setOpacity(wash.getOpacity() * 0.25);
+        ink_cairo_set_source_color(buf.cr, wash);
+        buf.cr->fill_preserve();
+        cairo_set_operator(buf.cr->cobj(), CAIRO_OPERATOR_MULTIPLY);
     }
 
     ink_cairo_set_source_color(buf.cr, Colors::Color(_fill));
     buf.cr->fill_preserve();
 
-    buf.cr->set_line_width(1);
-    ink_cairo_set_source_color(buf.cr, Colors::Color(_stroke));
-    buf.cr->stroke_preserve();
+    if (!_highlighter) {
+        buf.cr->set_line_width(1);
+        ink_cairo_set_source_color(buf.cr, Colors::Color(_stroke));
+        buf.cr->stroke_preserve();
+    }
     buf.cr->begin_new_path();
 
     buf.cr->restore();
@@ -150,6 +160,15 @@ void CanvasItemQuad::set_inverted(bool inverted)
     defer([=, this] {
         if (_inverted == inverted) return;
         _inverted = inverted;
+        request_redraw();
+    });
+}
+
+void CanvasItemQuad::set_highlighter(bool highlighter)
+{
+    defer([=, this] {
+        if (_highlighter == highlighter) return;
+        _highlighter = highlighter;
         request_redraw();
     });
 }

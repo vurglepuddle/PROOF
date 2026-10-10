@@ -1034,13 +1034,9 @@ SPStyle::getFontFeatureString() {
     if ( !(font_variant_ligatures.computed & SP_CSS_FONT_VARIANT_LIGATURES_CONTEXTUAL) )
         feature_string += "calt 0, ";
 
-    switch (font_variant_position.computed) {
-        case SP_CSS_FONT_VARIANT_POSITION_SUB:
-            feature_string += "subs, ";
-            break;
-        case SP_CSS_FONT_VARIANT_POSITION_SUPER:
-            feature_string += "sups, ";
-    }
+    // PROOF: font-variant-position asks the font for nothing. A superscript or subscript is
+    // made of the font's ordinary characters, as Illustrator's are, and the text layout makes
+    // it (Layout::appendText). A font's own superiors are 'sups' in font-feature-settings.
 
     switch (font_variant_caps.computed) {
         case SP_CSS_FONT_VARIANT_CAPS_SMALL:

@@ -1162,6 +1162,11 @@ objects_query_fontvariants (const std::vector<SPItem*> &objects, SPStyle *style_
     numeric_res->value   = 0;
     asian_res->value     = 0;
 
+    // PROOF: text-transform goes with the capitals (All Caps). The result's `set` says the
+    // texts agree on it, and `computed` on what.
+    auto transform = SP_CSS_TEXT_TRANSFORM_NONE;
+    bool transform_same = true;
+
     for (auto obj : objects) {
         if (!isTextualItem(obj)) {
             continue;
@@ -1199,7 +1204,10 @@ objects_query_fontvariants (const std::vector<SPItem*> &objects, SPStyle *style_
             asian_res->value  |= (asian_res->computed ^ asian_in->computed );
             asian_res->computed &= asian_in->computed;
 
+            transform_same = transform_same && transform == style->text_transform.computed;
+
         } else {
+            transform                = style->text_transform.computed;
             ligatures_res->computed  = ligatures_in->computed;
             position_computed        = position_in->computed;
             caps_computed            = caps_in->computed;
@@ -1215,6 +1223,8 @@ objects_query_fontvariants (const std::vector<SPItem*> &objects, SPStyle *style_
     style_res->font_variant_position.computed = static_cast<SPCSSFontVariantPosition>(position_computed);
     style_res->font_variant_caps.value = static_cast<SPCSSFontVariantCaps>(caps_value);
     style_res->font_variant_caps.computed = static_cast<SPCSSFontVariantCaps>(caps_computed);
+    style_res->text_transform.set = set && transform_same;
+    style_res->text_transform.value = style_res->text_transform.computed = transform;
 
     bool different = (style_res->font_variant_ligatures.value  != 0 ||
                       position_value                           != 0 ||

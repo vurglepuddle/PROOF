@@ -713,15 +713,20 @@ public:
         /// What is laid out: #transformed, or the source's text when nothing transforms it.
         Glib::ustring::const_iterator laid_begin, laid_end;
         /** PROOF: small capitals made up for a font that has none of its own, as Illustrator
-        makes them: a small letter is set as its capital at #SMALL_CAPS_SIZE of the size.
+        makes them: a small letter is set as its capital at #small_caps_size of the size.
         One entry for each character of #transformed, true for those; empty when the style
         asks for no small capitals or the font has its own. */
         std::vector<bool> reduced;
-        static constexpr double SMALL_CAPS_SIZE = 0.7;
+        double small_caps_size = 1.0; ///< What the document says (see type-settings.h).
+        /** PROOF: superscript and subscript (font-variant-position), made of the font's
+        ordinary characters as Illustrator makes them: smaller, and moved off the baseline,
+        by what the document says. The style keeps the type's own size. */
+        double position_size = 1.0;  ///< Their size, as a share of the style's.
+        double position_shift = 0.0; ///< How far above the baseline, as a share of it; below when negative.
         /// The size the character at this place in the source is set at, as a share of the style's.
         double sizeScale(unsigned char_index) const
         {
-            return char_index < reduced.size() && reduced[char_index] ? SMALL_CAPS_SIZE : 1.0;
+            return position_size * (char_index < reduced.size() && reduced[char_index] ? small_caps_size : 1.0);
         }
         SPStyle *style;
         sigc::scoped_connection style_conn;

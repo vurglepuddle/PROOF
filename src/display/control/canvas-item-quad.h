@@ -38,6 +38,9 @@ public:
     bool contains(Geom::Point const &p, double tolerance = 0) override;
 
     void set_inverted(bool inverted);
+    /// PROOF: a highlighter's mark. The fill darkens what is under it and doesn't cover
+    /// it (dark type stays dark), and no edge is drawn.
+    void set_highlighter(bool highlighter);
 
 protected:
     ~CanvasItemQuad() override = default;
@@ -51,6 +54,7 @@ protected:
     Geom::Point _p3;
 
     bool _inverted = false;
+    bool _highlighter = false;
 };
 
 } // namespace Inkscape

@@ -143,6 +143,8 @@ TextToolbar::TextToolbar(Glib::RefPtr<Gtk::Builder> const &builder)
     , _font_collections_list{get_widget<Gtk::ListBox>(builder, "_font_collections_list")}
     , _reset_button{get_widget<Gtk::Button>(builder, "reset_btn")}
     , _line_height_item{get_derived_widget<UI::Widget::SpinButton>(builder, "_line_height_item")}
+    , _all_caps_btn{get_widget<Gtk::ToggleButton>(builder, "_all_caps_btn")}
+    , _small_caps_btn{get_widget<Gtk::ToggleButton>(builder, "_small_caps_btn")}
     , _superscript_btn{get_widget<Gtk::ToggleButton>(builder, "_superscript_btn")}
     , _subscript_btn{get_widget<Gtk::ToggleButton>(builder, "_subscript_btn")}
     , _word_spacing_item{get_derived_widget<UI::Widget::SpinButton>(builder, "_word_spacing_item")}
@@ -152,8 +154,6 @@ TextToolbar::TextToolbar(Glib::RefPtr<Gtk::Builder> const &builder)
     , _rotation_item{get_derived_widget<UI::Widget::SpinButton>(builder, "_rotation_item")}
     , _font_size_item{get_widget<UI::Widget::FontSizeSelector>(builder, "font_size")}
 {
-    auto prefs = Preferences::get();
-
     // Line height unit tracker.
     auto const &unit_table = Util::UnitTable::get();
     auto lines = Unit::create("lines");
@@ -260,13 +260,12 @@ TextToolbar::TextToolbar(Glib::RefPtr<Gtk::Builder> const &builder)
     _line_height_units_item->signal_changed().connect(sigc::mem_fun(*this, &TextToolbar::lineheight_unit_changed));
     get_widget<Gtk::Box>(builder, "line_height_unit_box").append(*_line_height_units_item);
 
-    // Superscript button.
+    // PROOF: all caps and small caps; superscript and subscript. They show what the
+    // selection is (_selectionChanged), or what text typed next will be.
+    _all_caps_btn.signal_toggled().connect(sigc::bind(sigc::mem_fun(*this, &TextToolbar::caps_changed), 0));
+    _small_caps_btn.signal_toggled().connect(sigc::bind(sigc::mem_fun(*this, &TextToolbar::caps_changed), 1));
     _superscript_btn.signal_toggled().connect(sigc::bind(sigc::mem_fun(*this, &TextToolbar::script_changed), 0));
-    _superscript_btn.set_active(prefs->getBool("/tools/text/super", false));
-
-    // Subscript button.
     _subscript_btn.signal_toggled().connect(sigc::bind(sigc::mem_fun(*this, &TextToolbar::script_changed), 1));
-    _subscript_btn.set_active(prefs->getBool("/tools/text/sub", false));
 
     // Font collections signals.
     auto const font_collections = FontCollections::get();
@@ -522,77 +521,72 @@ void TextToolbar::fontstyle_value_changed()
     _freeze = false;
 }
 
-// Handles both Superscripts and Subscripts
+/**
+ * PROOF: All Caps (mode 0) and Small Caps (mode 1), as in Illustrator's Character panel.
+ *
+ * The text keeps what was typed. All caps is text-transform:uppercase; small caps is
+ * font-variant-caps:small-caps, which the layout sets with the font's own small capitals
+ * or makes of its capitals. Turning one on turns the other off.
+ */
+void TextToolbar::caps_changed(int mode)
+{
+    // quit if run by the _changed callbacks
+    if (_freeze) {
+        return;
+    }
+    _freeze = true;
+
+    bool const on = (mode == 0 ? _all_caps_btn : _small_caps_btn).get_active();
+    (mode == 0 ? _small_caps_btn : _all_caps_btn).set_active(false);
+
+    // Both are said either way: a span inside text that has one must be able to have none.
+    SPCSSAttr *css = sp_repr_css_attr_new();
+    sp_repr_css_set_property(css, "text-transform", on && mode == 0 ? "uppercase" : "none");
+    sp_repr_css_set_property(css, "font-variant-caps", on && mode == 1 ? "small-caps" : "normal");
+    if (mergeDefaultStyle(css)) {
+        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Text: Change capitals"), INKSCAPE_ICON("draw-text"));
+    }
+    sp_repr_css_attr_unref(css);
+
+    _freeze = false;
+}
+
+/**
+ * PROOF: Superscript (mode 0) and Subscript (mode 1), as in Illustrator's Character panel.
+ *
+ * The type says where it stands (font-variant-position) and keeps its size; the layout
+ * sets it smaller and off the baseline by what the document says (type-settings.h).
+ * Turning one on turns the other off.
+ */
 void TextToolbar::script_changed(int mode)
 {
     // quit if run by the _changed callbacks
     if (_freeze) {
         return;
     }
-
     _freeze = true;
 
-    // Called by Superscript or Subscript button?
+    bool const on = (mode == 0 ? _superscript_btn : _subscript_btn).get_active();
+    (mode == 0 ? _subscript_btn : _superscript_btn).set_active(false);
 
-    if constexpr (DEBUG_TEXT) {
-        std::cout << "TextToolbar::script_changed: " << mode << std::endl;
-    }
-
-    // Query baseline
-    SPStyle query(_desktop->getDocument());
-    int result_baseline = sp_desktop_query_style(_desktop, &query, QUERY_STYLE_PROPERTY_BASELINES);
-
-    bool setSuper = false;
-    bool setSub   = false;
-
-    if (is_query_style_updateable(result_baseline)) {
-        // If not set or mixed, turn on superscript or subscript
-        if (mode == 0) {
-            setSuper = true;
-        } else {
-            setSub = true;
-        }
-    } else {
-        // Superscript
-        bool superscriptSet = query.baseline_shift.set &&
-                              query.baseline_shift.type == SP_BASELINE_SHIFT_LITERAL &&
-                              query.baseline_shift.literal == SP_CSS_BASELINE_SHIFT_SUPER;
-
-        // Subscript
-        bool subscriptSet = query.baseline_shift.set &&
-                            query.baseline_shift.type == SP_BASELINE_SHIFT_LITERAL &&
-                            query.baseline_shift.literal == SP_CSS_BASELINE_SHIFT_SUB;
-
-        setSuper = !superscriptSet && mode == 0;
-        setSub = !subscriptSet && mode == 1;
-    }
-
-    // Set css properties
     SPCSSAttr *css = sp_repr_css_attr_new();
-    if (setSuper || setSub) {
-        // Openoffice 2.3 and Adobe use 58%, Microsoft Word 2002 uses 65%, LaTex about 70%.
-        // 58% looks too small to me, especially if a superscript is placed on a superscript.
-        // If you make a change here, consider making a change to baseline-shift amount
-        // in style.cpp.
-        sp_repr_css_set_property (css, "font-size", "65%");
-    } else {
-        sp_repr_css_set_property (css, "font-size", "");
-    }
-    if( setSuper ) {
-        sp_repr_css_set_property (css, "baseline-shift", "super");
-    } else if( setSub ) {
-        sp_repr_css_set_property (css, "baseline-shift", "sub");
-    } else {
-        sp_repr_css_set_property (css, "baseline-shift", "baseline");
+    sp_repr_css_set_property(css, "font-variant-position", !on ? "normal" : mode == 0 ? "super" : "sub");
+
+    // Text that Inkscape made a superscript or subscript says so in its baseline shift, at
+    // 65% of the size. It is put back on its line at its size, to be the one thing or neither.
+    SPStyle query(_desktop->getDocument());
+    int const result_baseline = sp_desktop_query_style(_desktop, &query, QUERY_STYLE_PROPERTY_BASELINES);
+    if (result_baseline != QUERY_STYLE_NOTHING && query.baseline_shift.set &&
+        query.baseline_shift.type == SP_BASELINE_SHIFT_LITERAL &&
+        (query.baseline_shift.literal == SP_CSS_BASELINE_SHIFT_SUPER || query.baseline_shift.literal == SP_CSS_BASELINE_SHIFT_SUB)) {
+        sp_repr_css_set_property(css, "baseline-shift", "baseline");
+        sp_repr_css_set_property(css, "font-size", "");
     }
 
-    // Apply css to selected objects.
-    sp_desktop_set_style(_desktop, css, true, false);
-
-    // Save for undo
-    if (result_baseline != QUERY_STYLE_NOTHING) {
-        DocumentUndo::maybeDone(_desktop->getDocument(), "ttb:script", RC_("Undo", "Text: Change superscript or subscript"), INKSCAPE_ICON("draw-text"));
+    if (mergeDefaultStyle(css)) {
+        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Text: Change superscript or subscript"), INKSCAPE_ICON("draw-text"));
     }
+    sp_repr_css_attr_unref(css);
 
     _freeze = false;
 }
@@ -1425,6 +1419,8 @@ void TextToolbar::_selectionChanged(Selection *selection) // don't bother to upd
     int result_style = sp_desktop_query_style(desktop, &query, QUERY_STYLE_PROPERTY_FONTSTYLE);
     int result_baseline = sp_desktop_query_style(desktop, &query, QUERY_STYLE_PROPERTY_BASELINES);
     int result_wmode = sp_desktop_query_style(desktop, &query, QUERY_STYLE_PROPERTY_WRITINGMODES);
+    // PROOF: capitals and position, for the Character buttons.
+    int result_variants = sp_desktop_query_style(desktop, &query, QUERY_STYLE_PROPERTY_FONTVARIANTS);
 
     // Calling sp_desktop_query_style will result in a call to TextTool::_styleQueried().
     // This returns the style of the selected text inside the <text> element... which
@@ -1521,8 +1517,6 @@ void TextToolbar::_selectionChanged(Selection *selection) // don't bother to upd
              query.baseline_shift.type == SP_BASELINE_SHIFT_LITERAL &&
              query.baseline_shift.literal == SP_CSS_BASELINE_SHIFT_SUPER );
 
-        _superscript_btn.set_active(superscriptSet);
-
         // Subscript
         bool subscriptSet =
             ((result_baseline == QUERY_STYLE_SINGLE || result_baseline == QUERY_STYLE_MULTIPLE_SAME ) &&
@@ -1530,7 +1524,21 @@ void TextToolbar::_selectionChanged(Selection *selection) // don't bother to upd
              query.baseline_shift.type == SP_BASELINE_SHIFT_LITERAL &&
              query.baseline_shift.literal == SP_CSS_BASELINE_SHIFT_SUB );
 
-        _subscript_btn.set_active(subscriptSet);
+        // PROOF: the four Character buttons. A button is down when all the text selected
+        // is that; with nothing selected, when the text typed next will be.
+        // The query leaves in `value` what differs between the texts, and in `set` whether
+        // they agree on text-transform; the style of text to come is one style.
+        bool const one_style = result_variants == QUERY_STYLE_NOTHING;
+        bool const same_position = one_style || query.font_variant_position.value == 0;
+        bool const same_caps = one_style || query.font_variant_caps.value == 0;
+        bool const same_transform = one_style || query.text_transform.set;
+        _superscript_btn.set_active(superscriptSet ||
+                                    (same_position && query.font_variant_position.computed == SP_CSS_FONT_VARIANT_POSITION_SUPER));
+        _subscript_btn.set_active(subscriptSet ||
+                                  (same_position && query.font_variant_position.computed == SP_CSS_FONT_VARIANT_POSITION_SUB));
+        bool const all_caps = same_transform && query.text_transform.computed == SP_CSS_TEXT_TRANSFORM_UPPERCASE;
+        _all_caps_btn.set_active(all_caps);
+        _small_caps_btn.set_active(!all_caps && same_caps && query.font_variant_caps.computed == SP_CSS_FONT_VARIANT_CAPS_SMALL);
 
         // Alignment
 

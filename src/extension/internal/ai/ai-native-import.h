@@ -35,11 +35,13 @@
  *   an instance of a variable font its family, with every axis in font-variation-settings
  *   All Caps                       text-transform:uppercase on what was typed
  *   small caps                     font-variant-caps:small-caps, which the text layout sets
- *                                  with the font's own or makes of its capitals
+ *                                  with the font's own or makes of its capitals, at the size
+ *                                  the document says (type-settings.h)
  *   underline, strikethrough       text-decoration-line on the span of the run
  *   a paragraph read from the right direction:rtl, each line anchored at the same end
- *   superscript, subscript         a span at the size and baseline shift the document's
- *                                  settings give them, marked proof:position
+ *   superscript, subscript         font-variant-position:super or sub at the type's own
+ *                                  size, which the text layout sets smaller and off the
+ *                                  baseline by what the document says (type-settings.h)
  *   a font that isn't installed    the font that stands in for it (ai-native-fonts.h), and
  *                                  its own name kept in proof:font-missing
  *
@@ -73,9 +75,6 @@ inline constexpr char const *LAYER_PRINT_ATTRIBUTE = "proof:layer-print";
 inline constexpr char const *TEXT_FRAME_ATTRIBUTE = "proof:text-frame";
 /// On area type whose frame is too small for its text: the text that doesn't show.
 inline constexpr char const *TEXT_OVERFLOW_ATTRIBUTE = "proof:text-overflow";
-/// On a span Illustrator set as superscript or subscript: "super" or "sub". Its font size
-/// and baseline shift are what that made of the size around it.
-inline constexpr char const *TEXT_POSITION_ATTRIBUTE = "proof:position";
 
 struct Built
 {

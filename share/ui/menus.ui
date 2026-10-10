@@ -1154,6 +1154,10 @@
           <attribute name="target">SVGFonts</attribute>
           <attribute name="icon">dialog-svg-font</attribute>
         </item>
+        <item>
+          <attribute name="label" translatable="yes">_Missing Fonts...</attribute>
+          <attribute name="action">app.text-missing-fonts</attribute>
+        </item>
       </section>
       <section>
         <item>
