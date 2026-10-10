@@ -3,6 +3,7 @@
  * PROOF: make a document from Illustrator's native records. See ai-native-import.h.
  */
 #include "ai-native-import.h"
+#include "ai-native-fonts.h"
 #include "ai-native-text.h"
 
 #include <algorithm>
@@ -41,6 +42,7 @@
 #include "libnrtype/font-instance.h"
 #include "object/sp-defs.h"
 #include "object/sp-guide.h"
+#include "object/sp-item.h"
 #include "object/sp-namedview.h"
 #include "spot-ink.h"
 #include "style.h"
@@ -145,41 +147,36 @@ Colors::Color definition(Color const &c)
     return Colors::Color(Type::RGB, {0.0, 0.0, 0.0});
 }
 
-std::string font_style(std::string const &name, std::shared_ptr<FontInstance> &face)
-{
-    auto *desc = FontFactory::get().parsePostscriptName(name, false);
-    if (!desc) return {};
-    Glib::ustring family = sp_font_description_get_family(desc);
-    css_font_family_quote(family);
-    auto *spec = pango_font_description_to_string(desc);
-    Glib::ustring specification = spec ? spec : "";
-    g_free(spec); css_quote(specification);
-    auto css = sp_repr_css_attr_new();
-    sp_repr_css_set_property(css, "font-family", family.c_str());
-    sp_repr_css_set_property(css, "-inkscape-font-specification", specification.c_str());
-    sp_repr_css_set_property(css, "font-weight", std::to_string(pango_font_description_get_weight(desc)).c_str());
-    auto const slant = pango_font_description_get_style(desc);
-    sp_repr_css_set_property(css, "font-style", slant == PANGO_STYLE_ITALIC ? "italic" : slant == PANGO_STYLE_OBLIQUE ? "oblique" : "normal");
-    constexpr char const *stretch[] = {"ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal",
-                                      "semi-expanded", "expanded", "extra-expanded", "ultra-expanded"};
-    sp_repr_css_set_property(css, "font-stretch", stretch[std::clamp(int(pango_font_description_get_stretch(desc)), 0, 8)]);
-    Glib::ustring result;
-    sp_repr_css_write_string(css, result);
-    sp_repr_css_attr_unref(css);
-    try { face = FontFactory::get().Face(desc, false); }
-    catch (std::runtime_error const &) { result.clear(); }
-    pango_font_description_free(desc);
-    return result.empty() ? std::string{} : result.raw() + ";";
-}
-
 /// A text object's story: of those typed, or of those appearances drew.
 using StoryKey = std::pair<bool, std::size_t>;
 
-std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool shown,
-                       std::map<std::string, std::string> &fonts,
-                       std::map<std::string, std::shared_ptr<FontInstance>> &faces,
-                       std::set<StoryKey> &unsupported_hidden)
+/// The font that sets what a text document names.
+struct TextFont
 {
+    FontMatch font;
+    bool missing = false; ///< It isn't installed: `font` stands in for it.
+};
+
+/// The font for each font name the text uses; nothing when none can set it.
+using Fonts = std::map<std::string, std::optional<TextFont>>;
+
+/// What looking through the text finds, for building it.
+struct TextCheck
+{
+    Fonts fonts;
+    std::set<StoryKey> unsupported_hidden; ///< Stories that don't show and can't be set.
+    std::vector<std::string> missing;      ///< The fonts that aren't installed, in the order met.
+    /// Stories with characters their font lacks, which another font draws.
+    std::set<StoryKey> glyphs_missing;
+    /// Stories that show and are set by a font other than their own.
+    std::set<StoryKey> substituted_shown;
+    /// Where Illustrator set those, in the document's user units.
+    std::vector<std::array<Geom::Point, 4>> substituted_type;
+};
+
+std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool shown, TextCheck &check)
+{
+    auto &fonts = check.fonts;
     for (auto const &n : nodes) {
         bool const visible = shown && n.visible;
         if (n.kind == Node::Kind::Text) {
@@ -190,21 +187,50 @@ std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool 
             else if (!ai.texts->error.empty()) error = ai.texts->error;
             else if (!n.story || *n.story >= stories->size()) error = "a text object has no matching story";
             else if (!(*stories)[*n.story]) error = (*errors)[*n.story];
-            else for (auto const &line : (*stories)[*n.story]->lines) for (auto const &run : line.runs) {
-                auto const &name = run.style.font;
-                if (!fonts.count(name)) fonts[name] = font_style(name, faces[name]);
-                if (fonts[name].empty() || !faces[name]) error = "the exact font '" + name + "' isn't installed or couldn't be loaded";
-                else for (auto const *at = run.text.data(); at < run.text.data() + run.text.size(); at = g_utf8_next_char(at)) {
-                    auto const cp = g_utf8_get_char(at);
-                    if (g_unichar_type(cp) != G_UNICODE_FORMAT && !faces[name]->MapUnicodeChar(cp)) {
-                        error = "the exact font '" + name + "' doesn't contain every text character";
-                        break;
+            else {
+                // A font that isn't installed doesn't refuse the text, nor does a character its
+                // font lacks: another font sets it, as in Illustrator, and the text says so.
+                auto const &story = *(*stories)[*n.story];
+                bool substituted = false;
+                for (auto const &line : story.lines) for (auto const &run : line.runs) {
+                    auto const &name = run.style.font;
+                    if (!fonts.count(name)) {
+                        if (auto found = find_font(name, run.style.design)) {
+                            fonts[name] = TextFont{std::move(*found), false};
+                        } else if (auto stand_in = substitute_font()) {
+                            fonts[name] = TextFont{std::move(*stand_in), true};
+                            check.missing.push_back(name);
+                        } else {
+                            fonts[name] = std::nullopt;
+                        }
+                    }
+                    auto const &font = fonts[name];
+                    if (!font) {
+                        error = "the font '" + name + "' isn't installed, and no font could be loaded in its place";
+                    } else if (font->missing) {
+                        substituted = true;
+                    } else for (auto const *at = run.text.data(); at < run.text.data() + run.text.size(); at = g_utf8_next_char(at)) {
+                        // The character that is set: its capital under All Caps.
+                        auto const cp = run.style.all_caps ? g_unichar_toupper(g_utf8_get_char(at)) : g_utf8_get_char(at);
+                        if (g_unichar_type(cp) != G_UNICODE_FORMAT && !font->font.face->MapUnicodeChar(cp)) {
+                            check.glyphs_missing.insert({n.text_proxy, *n.story});
+                            substituted = true;
+                            break;
+                        }
+                    }
+                }
+                if (error.empty() && substituted && visible && !story.empty) {
+                    check.substituted_shown.insert({n.text_proxy, *n.story});
+                    for (auto const &box : story.set) {
+                        std::array<Geom::Point, 4> corners;
+                        for (unsigned i = 0; i < 4; ++i) corners[i] = box.corner(i) * story.to_art * ai.to_doc;
+                        check.substituted_type.push_back(corners);
                     }
                 }
             }
             if (visible && !error.empty()) return "its visible text can't be reconstructed: " + error;
-            if (!visible && !error.empty() && n.story) unsupported_hidden.insert({n.text_proxy, *n.story});
-        } else if (auto error = check_text(ai, n.children, visible, fonts, faces, unsupported_hidden); !error.empty()) return error;
+            if (!visible && !error.empty() && n.story) check.unsupported_hidden.insert({n.text_proxy, *n.story});
+        } else if (auto error = check_text(ai, n.children, visible, check); !error.empty()) return error;
     }
     return {};
 }
@@ -495,8 +521,7 @@ std::vector<std::string> decodings(std::string const &bytes)
 class Builder
 {
 public:
-    Builder(Document const &ai, SPDocument *doc, std::map<std::string, std::string> fonts,
-            std::set<StoryKey> unsupported_hidden, Source const &source);
+    Builder(Document const &ai, SPDocument *doc, TextCheck text, Source const &source);
     ~Builder();
     Builder(Builder const &) = delete;
     Builder &operator=(Builder const &) = delete;
@@ -509,6 +534,10 @@ public:
     std::size_t empty_text = 0;
     std::size_t overflowing_text = 0;
     std::size_t optical_kerning = 0;
+    std::size_t substituted_text = 0;   ///< Text objects set in a font standing in for theirs.
+    std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
+    /// The text objects that show and are set by a font other than their own.
+    std::vector<XML::Node *> substituted_shown;
     std::size_t knockouts = 0;
     std::size_t images_left_out = 0;
     /// A linked picture that shows and can't be placed: why. The first one found.
@@ -570,21 +599,22 @@ private:
     };
     std::unordered_multimap<std::size_t, Encoded> _encoded; ///< By a digest of the samples.
     std::map<std::string, int> _counters;
-    std::map<std::string, std::string> _text_fonts;
-    std::set<StoryKey> _unsupported_hidden_text;
+    Fonts _text_fonts;
+    std::set<StoryKey> _unsupported_hidden_text, _glyphs_missing, _substituted_shown;
     std::string _folder;       ///< The .ai file's folder, for linked pictures.
     std::size_t _hidden = 0;   ///< How many of the objects being built into don't show.
 };
 
-Builder::Builder(Document const &ai, SPDocument *doc, std::map<std::string, std::string> fonts,
-                 std::set<StoryKey> unsupported_hidden, Source const &source)
+Builder::Builder(Document const &ai, SPDocument *doc, TextCheck text, Source const &source)
     : _ai(ai)
     , _doc(doc)
     , _xml(doc->getReprDoc())
     , _defs(doc->getDefs()->getRepr())
     , _to_doc(ai.to_doc)
-    , _text_fonts(std::move(fonts))
-    , _unsupported_hidden_text(std::move(unsupported_hidden))
+    , _text_fonts(std::move(text.fonts))
+    , _unsupported_hidden_text(std::move(text.unsupported_hidden))
+    , _glyphs_missing(std::move(text.glyphs_missing))
+    , _substituted_shown(std::move(text.substituted_shown))
     , _folder(source.folder)
 {
     auto space = Colors::DocumentColors::assignedSpace(doc);
@@ -630,12 +660,13 @@ void Builder::run()
         auto const images = images_left_out;
         auto const error = link_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
-                                       hidden_links_missing);
+                                       hidden_links_missing, substituted_text, glyphs_missing_text);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error;
         images_left_out = images;
         link_error = error;
-        std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing) = counts;
+        std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
+                 substituted_text, glyphs_missing_text) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -696,7 +727,7 @@ XML::Node *Builder::text(Node const &n)
     if (story.empty) { ++empty_text; return nullptr; }
     for (auto const &line : story.lines) for (auto const &run : line.runs) {
         auto it = _text_fonts.find(run.style.font);
-        if (it == _text_fonts.end() || it->second.empty()) { ++hidden_text; return nullptr; }
+        if (it == _text_fonts.end() || !it->second) { ++hidden_text; return nullptr; }
     }
     auto e = create("svg:text");
     e->setAttribute("xml:space", "preserve");
@@ -717,12 +748,37 @@ XML::Node *Builder::text(Node const &n)
     // read and set them; a span carries only what its run has different.
     // Kerning and the substitutions a font makes unasked are the font's own unless a run
     // says otherwise; a story where none does says nothing about them.
-    bool features = false, optical = false;
+    // Nor about a variable font's axes, unless one of its fonts is an instance of one: an
+    // ordinary font beside it then says it has none, where it would inherit the instance's.
+    // All Caps is the same: said for every run of a story that has any, and not otherwise.
+    bool features = false, optical = false, instances = false, capitals = false, stand_in = false;
     for (auto const &line : story.lines) for (auto const &run : line.runs) {
         features = features || run.style.kerning == 0 || !run.style.ligatures || !run.style.contextual;
         optical = optical || run.style.kerning == 2;
+        instances = instances || _text_fonts.at(run.style.font)->font.variable;
+        capitals = capitals || run.style.all_caps;
+        stand_in = stand_in || _text_fonts.at(run.style.font)->missing;
     }
     if (optical) ++optical_kerning;
+    if (stand_in) ++substituted_text;
+    if (_glyphs_missing.count({n.text_proxy, *n.story})) {
+        ++glyphs_missing_text;
+        e->setAttribute(GLYPHS_MISSING_ATTRIBUTE, "true");
+    }
+    if (_substituted_shown.count({n.text_proxy, *n.story})) substituted_shown.push_back(e);
+    // A run's style, and the font it stands in for when its own isn't installed.
+    struct Parts
+    {
+        std::array<std::string, 11> css;
+        std::string missing, axes;
+        bool same_font(Parts const &o) const { return css[0] == o.css[0] && missing == o.missing && axes == o.axes; }
+        void name(XML::Node *element) const
+        {
+            if (missing.empty()) return;
+            element->setAttribute(FONT_MISSING_ATTRIBUTE, missing);
+            if (!axes.empty()) element->setAttribute(FONT_MISSING_AXES_ATTRIBUTE, axes);
+        }
+    };
     auto parts = [&](auto const &s) {
         auto color = [&](std::optional<Color> const &c) { Paint p; if (c) p.color = *c; return c ? paint(p) : std::string("none"); };
         std::string ligatures, kerning;
@@ -732,19 +788,32 @@ XML::Node *Builder::text(Node const &n)
                                      : (s.contextual ? "no-common-ligatures" : "no-common-ligatures no-contextual")) + ";";
             kerning = std::string("font-feature-settings:") + (s.kerning == 0 ? "'kern' 0" : "normal") + ";";
         }
-        return std::array<std::string, 10>{
-            _text_fonts.at(s.font), "font-size:" + num(s.size) + ";", "fill:" + color(s.fill) + ";",
+        auto const &text_font = *_text_fonts.at(s.font);
+        auto const &font = text_font.font;
+        Parts out;
+        out.css = {
+            font.css + (instances && !font.variable ? "font-variation-settings:normal;" : ""),
+            "font-size:" + num(s.set_size()) + ";", "fill:" + color(s.fill) + ";",
             "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke) + ";",
             "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
-            "letter-spacing:" + num(s.size * s.tracking / 1000.0) + ";", ligatures, kerning};
+            "letter-spacing:" + num(s.set_size() * s.tracking / 1000.0) + ";", ligatures, kerning,
+            capitals ? std::string("text-transform:") + (s.all_caps ? "uppercase" : "none") + ";" : std::string()};
+        if (text_font.missing) {
+            out.missing = s.font;
+            for (auto const v : s.design) out.axes += (out.axes.empty() ? "" : " ") + num(v);
+        }
+        return out;
     };
-    std::optional<std::array<std::string, 10>> base;
+    std::optional<Parts> base;
     for (auto const &line : story.lines) {
         if (!base && !line.runs.empty()) base = parts(line.runs.front().style);
     }
     std::string common_style = "text-anchor:start;";
     common(e, n, common_style);
-    if (base) for (auto const &part : *base) common_style += part;
+    if (base) {
+        for (auto const &part : base->css) common_style += part;
+        base->name(e);
+    }
     e->setAttribute("style", common_style);
     for (auto const &line : story.lines) {
         auto span = create("svg:tspan");
@@ -761,12 +830,16 @@ XML::Node *Builder::text(Node const &n)
         for (auto const &run : line.runs) {
             auto const own = parts(run.style);
             std::string style;
-            for (std::size_t i = 0; i < own.size(); ++i) {
-                if (own[i] != (*base)[i]) style += own[i];
+            // Another font, or another one that isn't installed, says its font again: the
+            // name of a font that isn't installed goes with the declarations it stands for.
+            bool const font_differs = !own.same_font(*base);
+            for (std::size_t i = 0; i < own.css.size(); ++i) {
+                if (i == 0 ? font_differs : own.css[i] != base->css[i]) style += own.css[i];
             }
             // A shift is taken from the baseline of what holds the span, and added to that
-            // one's own: only the span the characters are in carries it.
-            if (run.style.baseline_shift != 0) style += "baseline-shift:" + num(run.style.baseline_shift) + ";";
+            // one's own: only the span the characters are in carries it. Superscript and
+            // subscript are a shift too, and a size.
+            if (run.style.set_shift() != 0) style += "baseline-shift:" + num(run.style.set_shift()) + ";";
             if (style.empty()) {
                 plain += run.text;
                 continue;
@@ -774,6 +847,8 @@ XML::Node *Builder::text(Node const &n)
             write_plain();
             auto piece = create("svg:tspan");
             piece->setAttribute("style", style);
+            if (font_differs) own.name(piece);
+            if (run.style.position) piece->setAttribute(TEXT_POSITION_ATTRIBUTE, run.style.position == 1 ? "super" : "sub");
             append(piece, _xml->createTextNode(run.text.c_str())); append(span, piece);
         }
         write_plain();
@@ -1233,9 +1308,11 @@ XML::Node *Builder::image(Node const &n)
         return nullptr;
     }
     auto const &img = _ai.images[n.image];
-    // The matrix maps pixels (y down) into art space with its y flipped.
+    // The matrix is written for rows that count upwards, and the picture's count down: the
+    // rows' direction is turned over before it, which for a picture that isn't upright is
+    // not the same as turning over what comes out.
     auto const &r = img.matrix;
-    Geom::Affine const m = Geom::Affine(r[0], r[1], r[2], r[3], r[4], -r[5]) * Geom::Scale(1, -1) * _to_doc;
+    Geom::Affine const m = Geom::Affine(r[0], r[1], -r[2], -r[3], r[4], r[5]) * _to_doc;
     if (!finite(m) || m.isSingular()) {
         ++images_left_out;
         return nullptr;
@@ -1407,11 +1484,16 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         error = ai.warnings.front();
         return {};
     }
-    std::map<std::string, std::string> fonts;
-    std::map<std::string, std::shared_ptr<FontInstance>> faces;
-    std::set<StoryKey> unsupported_hidden;
-    error = check_text(ai, ai.layers, true, fonts, faces, unsupported_hidden);
+    TextCheck text;
+    error = check_text(ai, ai.layers, true, text);
     if (!error.empty()) return {};
+    Built built;
+    built.missing_fonts = text.missing;
+    built.substituted_type = std::move(text.substituted_type);
+    std::string stand_in;
+    for (auto const &[name, font] : text.fonts) {
+        if (font && font->missing && font->font.face) stand_in = sp_font_description_get_family(font->font.face->get_descr());
+    }
     auto doc = SPDocument::createNewDoc(nullptr, true);
     if (!doc || !doc->getRoot()) {
         error = "a document couldn't be made";
@@ -1420,7 +1502,6 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     auto const undo = DocumentUndo::getUndoSensitive(doc.get());
     DocumentUndo::setUndoSensitive(doc.get(), false);
 
-    Built built;
     for (auto const &a : ai.artboards) {
         auto rect = a.rect;
         rect *= ai.to_doc;
@@ -1445,7 +1526,7 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     // The document's colour mode and profile come first: process colours are written in it.
     Colors::DocumentColors::adopt(doc.get(), ai.cmyk ? Type::CMYK : Type::RGB);
 
-    Builder b(ai, doc.get(), std::move(fonts), std::move(unsupported_hidden), source);
+    Builder b(ai, doc.get(), std::move(text), source);
     b.run();
     if (b.images_left_out) {
         error = "an embedded image couldn't be placed";
@@ -1492,6 +1573,26 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     if (b.optical_kerning) {
         notes.push_back(count(b.optical_kerning, "text object is", "text objects are") +
                         " kerned optically in Illustrator; here the letters are spaced by their fonts' own kerning");
+    }
+    if (b.substituted_text) {
+        std::string names;
+        for (auto const &name : built.missing_fonts) names += (names.empty() ? "" : ", ") + name;
+        notes.push_back(count(built.missing_fonts.size(), "font isn't", "fonts aren't") + " installed (" + names + "): " +
+                        count(b.substituted_text, "text object is", "text objects are") + " set in " + stand_in +
+                        " until " + (built.missing_fonts.size() == 1 ? "it is" : "they are"));
+    }
+    if (b.glyphs_missing_text) {
+        notes.push_back(count(b.glyphs_missing_text, "text object has", "text objects have") +
+                        " characters that " + (b.glyphs_missing_text == 1 ? "its font doesn't" : "their fonts don't") +
+                        " have; another font draws those");
+    }
+    // Where that type lies here, with the font that sets it.
+    for (auto *repr : b.substituted_shown) {
+        auto *item = cast<SPItem>(doc->getObjectByRepr(repr));
+        auto bounds = item ? item->documentVisualBounds() : Geom::OptRect();
+        if (!bounds) continue;
+        *bounds *= doc->getDocumentScale().inverse();
+        built.substituted_type.push_back({bounds->corner(0), bounds->corner(1), bounds->corner(2), bounds->corner(3)});
     }
     if (b.hidden_links_missing) {
         notes.push_back(count(b.hidden_links_missing, "linked picture that doesn't show wasn't",

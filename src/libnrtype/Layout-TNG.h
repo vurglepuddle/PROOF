@@ -706,6 +706,12 @@ public:
         Glib::ustring const *text;    /// owned by the caller
         Glib::ustring::const_iterator text_begin, text_end;
         int text_length;    /// in characters, from text_start to text_end only
+        /** PROOF: the text as it is set when the style has a text-transform (All Caps): the
+        source's, with one character for each of its own, so that a character's place in the
+        layout is still its place in the source. Empty when there is no transform. */
+        Glib::ustring transformed;
+        /// What is laid out: #transformed, or the source's text when nothing transforms it.
+        Glib::ustring::const_iterator laid_begin, laid_end;
         SPStyle *style;
         sigc::scoped_connection style_conn;
         /** These vectors can (often will) be shorter than the text

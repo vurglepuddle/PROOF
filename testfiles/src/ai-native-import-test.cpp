@@ -28,6 +28,7 @@
 #include "doc-per-case-test.h"
 #include "document.h"
 #include "file.h"
+#include "extension/internal/ai/ai-native-fonts.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
 #include "libnrtype/font-factory.h"
@@ -40,6 +41,7 @@
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
 #include "object/sp-root.h"
+#include "object/sp-text.h"
 #include "page-manager.h"
 #include "spot-ink.h"
 #include "style.h"
@@ -183,6 +185,17 @@ std::string area_text_document(std::string const &characters, int units, std::ve
            " /6 << /0 [ << /1 " + std::to_string(units) + " /0 << /0 << /6 << " + style + " >> >> >> >> ] >> >> "
            "/1 << /0 [ << /0 0 >> ] " + tree + " >> >> ] "
            "/2 << /0 0 /1 12 /56 true /57 false /53 << /0 << /0 2 /1 [1 0.25 0.5 0.75 0.1] >> >> >> >>";
+}
+
+/// `document` with its one line's run of glyphs saying where Illustrator set it: its box in
+/// the layout's space (left, top, right, bottom).
+std::string with_glyph_run(std::string document, std::string const &box)
+{
+    std::string const segment = "<< /99 /S >>";
+    auto const at = document.find(segment);
+    EXPECT_NE(at, std::string::npos);
+    if (at != std::string::npos) document.replace(at, segment.size(), "<< /99 /S /6 [ << /99 /G /8 [" + box + "] >> ] >>");
+    return document;
 }
 
 std::string available_text_font()
@@ -563,6 +576,33 @@ TEST_F(AiNativeImportTest, CmykImageKeepsPngAndExactTiffSamples)
     EXPECT_EQ(attr(again[0], "xlink:href"), attr(images[0], "xlink:href"));
 }
 
+TEST_F(AiNativeImportTest, TurnedImagesLieWhereTheirMatrixPutsThem)
+{
+    // Two pixels by one, each two points across, turned a quarter each way as Illustrator
+    // writes the corner tiles of a pattern brush. On a 100 point artboard, y counted down.
+    auto box = [&](std::string const &matrix) {
+        std::string art = "%AI5_BeginRaster\n() 1 XG\n/DeviceCMYK XN\n[" + matrix + "] 0 0 2 1 2 1 8 4 0 0 1 0 0\n"
+                          "%%BeginData: 12\nXI\n\x10\x20\x30\x40\x50\x60\x70\x80\n%%EndData\nXH\n%AI5_EndRaster\n";
+        auto b = make(records(layer(art)));
+        EXPECT_TRUE(b);
+        auto images = b ? elements(b->document->getReprRoot(), "svg:image") : std::vector<XML::Node *>();
+        EXPECT_EQ(images.size(), 1u);
+        auto m = Geom::Affine();
+        if (images.empty() || !sp_svg_transform_read(images[0]->attribute("transform"), &m)) return std::array<Geom::Point, 2>{};
+        // Where the picture's first pixel starts, and where its last one ends.
+        return std::array<Geom::Point, 2>{Geom::Point(0, 0) * m, Geom::Point(2, 1) * m};
+    };
+    auto near = [](Geom::Point const &a, Geom::Point const &b) { return Geom::are_near(a, b, 1e-9); };
+    auto upright = box("2 0 0 -2 50 40");
+    EXPECT_TRUE(near(upright[0], {50, 60}) && near(upright[1], {54, 58})) << upright[0] << " " << upright[1];
+    auto half = box("-2 0 0 2 50 40");
+    EXPECT_TRUE(near(half[0], {50, 60}) && near(half[1], {46, 62})) << half[0] << " " << half[1];
+    auto quarter = box("0 2 2 0 50 40");
+    EXPECT_TRUE(near(quarter[0], {50, 60}) && near(quarter[1], {48, 56})) << quarter[0] << " " << quarter[1];
+    auto other = box("0 -2 -2 0 50 40");
+    EXPECT_TRUE(near(other[0], {50, 60}) && near(other[1], {52, 64})) << other[0] << " " << other[1];
+}
+
 TEST_F(AiNativeImportTest, AppearanceAndTurnedBox)
 {
     auto b = make(records(layer("1 Xw 1 A 1 O 1 R 0 g 0 G\n1 0.4 1 2 0 Xy\n10 20 m 90 60 L B\n"
@@ -644,6 +684,10 @@ TEST_F(AiNativeImportTest, PointTextRefusesBrokenUnicodeFramesStylesAndEncodings
              text_document("(Hi\\r)", 1, "ArialMT", {}, "/2 [1 0 0 1 -90 -10]",
                            "<< /1 2 /0 << /0 << /6 << /6 1.2 >> >> >> >>"),
              text_document("(Hi\\r)", 3, "ArialMT", "/2 true"),
+             // Small caps, and a capitals setting and a position that aren't known.
+             text_document("(Hi\\r)", 3, "ArialMT", "/12 1"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/12 3"),
+             text_document("(Hi\\r)", 3, "ArialMT", "/13 3"),
              text_document("(Hi\\r)", 3, "ArialMT", {}, "/1 [1 2]"),
              text_document("(Hi\\r)", 3, "ArialMT", {}, "/2 [1 0 0 0 0 0]")}) {
         auto texts = AN::read_text_document(text_setup(doc), Geom::Point(100, 50));
@@ -737,29 +781,139 @@ TEST_F(AiNativeImportTest, PointTextRunsCarryOnlyWhatDiffersFromTheObject)
               text->style->fill.getColor().toString());
 }
 
-TEST_F(AiNativeImportTest, PointTextMissingExactFontUsesFallback)
+TEST_F(AiNativeImportTest, FontThatIsNotInstalledIsStoodInFor)
 {
+    std::string const missing = "PROOF-Missing-Unique-Font-734";
     auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
-                          text_setup(text_document("(Hello\\r)", 6, "PROOF-Missing-Unique-Font-734")));
-    std::string error; auto ai = AN::read(source, error); ASSERT_TRUE(ai);
-    EXPECT_FALSE(AN::build(*ai, error));
-    EXPECT_NE(error.find("exact font"), std::string::npos) << error;
+                          text_setup(with_glyph_run(text_document("(Hello\\r)", 6, missing), "8191.5 8180 8220 8195")));
+    auto b = make(source);
+    ASSERT_TRUE(b);
+    // The text is there, set in the font that stands in, and says whose place that takes.
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:font-missing"), missing);
+    EXPECT_EQ(attr(texts[0], "proof:font-missing-axes"), "");
+    EXPECT_NE(attr(texts[0], "style").find("font-family:"), std::string::npos);
+    EXPECT_EQ(attr(texts[0], "style").find(missing), std::string::npos);
+    auto bounds = drawn(b->document.get(), texts[0]);
+    ASSERT_TRUE(bounds);
+    EXPECT_GT(bounds->width(), 10);
+    EXPECT_EQ(b->missing_fonts, std::vector<std::string>{missing});
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("1 font isn't installed (" + missing + "): 1 text object is set in "), std::string::npos) << b->notes[0];
+    // Where a page would show its type, and where it is set here: neither can be compared.
+    ASSERT_EQ(b->substituted_type.size(), 2u);
+    auto const &there = b->substituted_type[0];
+    EXPECT_TRUE(Geom::are_near(there[0], Geom::Point(10, 28.5), 1e-9)) << there[0];
+    EXPECT_TRUE(Geom::are_near(there[2], Geom::Point(38.5, 43.5), 1e-9)) << there[2];
+    auto const &here = b->substituted_type[1];
+    EXPECT_TRUE(Geom::are_near(here[0], bounds->min(), 1e-6) && Geom::are_near(here[2], bounds->max(), 1e-6));
+
+    // Type that doesn't show is stood in for as well, and isn't a place to leave out.
+    std::string error;
+    auto ai = AN::read(source, error);
+    ASSERT_TRUE(ai) << error;
+    ai->layers[0].visible = false;
+    auto hidden = AN::build(*ai, error);
+    ASSERT_TRUE(hidden) << error;
+    EXPECT_EQ(elements(hidden->document->getReprRoot(), "svg:text").size(), 1u);
+    EXPECT_TRUE(hidden->substituted_type.empty());
+    EXPECT_EQ(hidden->missing_fonts.size(), 1u);
 }
 
-TEST_F(AiNativeImportTest, PointTextMissingGlyphRefusesImplicitFontSubstitution)
+TEST_F(AiNativeImportTest, FontsThatAreNotInstalledKeepTheirOwnNames)
 {
     auto font = available_text_font();
     if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    std::string error;
+    auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(Hello!\\r)", 7, font))), error);
+    ASSERT_TRUE(ai) << error;
+    auto styled = std::make_shared<AN::TextDocument>(*ai->texts);
+    auto &line = styled->stories.at(0)->lines.at(0);
+    // "He" in one font that isn't installed, "l" in another, "lo" in an instance of a
+    // variable font that isn't, and "!" in one that is.
+    auto first = line.runs.at(0);
+    auto second = first, third = first, fourth = first;
+    first.text = "He";
+    first.style.font = "PROOF-Missing-One";
+    second.text = "l";
+    second.style.font = "PROOF-Missing-Two";
+    third.text = "lo";
+    third.style.font = "PROOFMissing_350.000wght";
+    third.style.design = {350, 87.5};
+    fourth.text = "!";
+    line.runs = {first, second, third, fourth};
+    ai->texts = styled;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:font-missing"), "PROOF-Missing-One");
+    // The line's span, then one for each run whose font isn't the object's.
+    auto spans = elements(texts[0], "svg:tspan");
+    ASSERT_EQ(spans.size(), 4u);
+    EXPECT_STREQ(spans[0]->firstChild()->content(), "He");
+    EXPECT_EQ(attr(spans[1], "proof:font-missing"), "PROOF-Missing-Two");
+    EXPECT_NE(attr(spans[1], "style").find("font-family:"), std::string::npos) << attr(spans[1], "style");
+    EXPECT_EQ(attr(spans[2], "proof:font-missing"), "PROOFMissing_350.000wght");
+    EXPECT_EQ(attr(spans[2], "proof:font-missing-axes"), "350 87.5");
+    // The one that is installed says its font, and isn't one standing in.
+    EXPECT_EQ(attr(spans[3], "proof:font-missing"), "");
+    EXPECT_NE(attr(spans[3], "style").find("font-family:"), std::string::npos) << attr(spans[3], "style");
+    EXPECT_EQ(b->missing_fonts, (std::vector<std::string>{"PROOF-Missing-One", "PROOF-Missing-Two", "PROOFMissing_350.000wght"}));
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("3 fonts aren't installed"), std::string::npos) << b->notes[0];
+    EXPECT_NE(b->notes[0].find("until they are"), std::string::npos) << b->notes[0];
+}
+
+TEST_F(AiNativeImportTest, CharactersAFontLacksAreDrawnByAnother)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // A private-use character no text font has.
     auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
         text_setup(text_document("(\\376\\377\\333\\377\\337\\375\\000\\015)", 3, font)));
-    std::string error; auto ai = AN::read(source, error); ASSERT_TRUE(ai);
-    EXPECT_FALSE(AN::build(*ai, error));
-    EXPECT_NE(error.find("doesn't contain every text character"), std::string::npos) << error;
-    ai->layers[0].visible = false;
-    auto hidden = AN::build(*ai, error); ASSERT_TRUE(hidden) << error;
-    EXPECT_TRUE(elements(hidden->document->getReprRoot(), "svg:text").empty());
-    ASSERT_EQ(hidden->notes.size(), 1u);
-    EXPECT_NE(hidden->notes[0].find("left out"), std::string::npos);
+    auto b = make(source);
+    ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:glyphs-missing"), "true");
+    EXPECT_EQ(attr(texts[0], "proof:font-missing"), "");
+    EXPECT_TRUE(b->missing_fonts.empty());
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("1 text object has characters that its font doesn't have"), std::string::npos) << b->notes[0];
+    // Text whose font has all its characters says nothing.
+    auto plain = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(Hello\\r)", 6, font))));
+    ASSERT_TRUE(plain);
+    EXPECT_EQ(attr(elements(plain->document->getReprRoot(), "svg:text").at(0), "proof:glyphs-missing"), "");
+    EXPECT_TRUE(plain->notes.empty());
+    EXPECT_TRUE(plain->substituted_type.empty());
+}
+
+TEST_F(AiNativeImportTest, GlyphRunsSayWhereTheyWereSet)
+{
+    auto read = [&](std::string const &style) {
+        auto texts = AN::read_text_document(text_setup(with_glyph_run(text_document("(Hi\\r)", 3, "ArialMT", style), "8191.5 8180 8220 8195")),
+                                            Geom::Point(100, 50));
+        EXPECT_TRUE(texts->stories.at(0)) << texts->errors.at(0);
+        return *texts->stories[0];
+    };
+    auto story = read({});
+    ASSERT_EQ(story.set.size(), 1u);
+    EXPECT_TRUE(Geom::are_near(story.set[0].min() * story.to_art, Geom::Point(10, 71.5), 1e-9));
+    EXPECT_TRUE(Geom::are_near(story.set[0].max() * story.to_art, Geom::Point(38.5, 56.5), 1e-9));
+    // Under a character scale the box is still where the type is on the art.
+    auto scaled = read("/6 0.5 /7 2");
+    ASSERT_EQ(scaled.set.size(), 1u);
+    EXPECT_TRUE(Geom::are_near(scaled.set[0].min() * scaled.to_art, Geom::Point(10, 71.5), 1e-9));
+    EXPECT_TRUE(Geom::are_near(scaled.set[0].max() * scaled.to_art, Geom::Point(38.5, 56.5), 1e-9));
+    // A run without a box, or with one that isn't four numbers, has none.
+    auto none = AN::read_text_document(text_setup(text_document()), Geom::Point(100, 50));
+    ASSERT_TRUE(none->stories.at(0));
+    EXPECT_TRUE(none->stories[0]->set.empty());
+    auto bad = AN::read_text_document(text_setup(with_glyph_run(text_document(), "1 2 (x) 4")), Geom::Point(100, 50));
+    ASSERT_TRUE(bad->stories.at(0));
+    EXPECT_TRUE(bad->stories[0]->set.empty());
 }
 
 TEST_F(AiNativeImportTest, PointTextPreservesStyledLinesAndAffinePlacement)
@@ -1173,6 +1327,460 @@ TEST_F(AiNativeImportTest, KerningAndLigaturesFollowTheRun)
     EXPECT_FALSE(bad->stories[0]);
 }
 
+// ---- instances of variable fonts ----------------------------------------------------------
+
+namespace {
+
+/// `document` with this font's entry given axis values, in 16.16 fixed point as a text
+/// document keeps them.
+std::string with_design(std::string document, std::string const &font, std::string const &values)
+{
+    auto const entry = "/0 (" + font + ")";
+    auto const at = document.find(entry);
+    EXPECT_NE(at, std::string::npos);
+    if (at != std::string::npos) document.insert(at + entry.size(), " /4 [" + values + "]");
+    return document;
+}
+
+std::string fixed(std::vector<double> const &design)
+{
+    std::string out;
+    for (auto v : design) out += " " + std::to_string(std::llround(v * 65536));
+    return out + " ";
+}
+
+/// Bahnschrift comes with Windows 10 and later: weight 300 to 700 (400 by default) and
+/// width 75 to 100 (100 by default), in that order.
+bool has_bahnschrift()
+{
+    return bool(AN::find_font("Bahnschrift"));
+}
+
+} // namespace
+
+TEST_F(AiNativeImportTest, VariableFontInstanceKeepsItsAxisValues)
+{
+    std::string const name = "AcuminConcept_396.000wght_64.000wdth_4.200slnt";
+    auto read = [&](std::string const &values) {
+        auto texts = AN::read_text_document(text_setup(with_design(text_document("(Hi\\r)", 3, name), name, values)),
+                                            Geom::Point(100, 50));
+        EXPECT_TRUE(texts->stories.at(0)) << texts->errors.at(0);
+        return texts->stories[0] ? texts->stories[0]->lines.at(0).runs.at(0).style : AN::TextStyle();
+    };
+    auto const style = read(fixed({396, 64, 4.2}));
+    EXPECT_EQ(style.font, name);
+    ASSERT_EQ(style.design.size(), 3u);
+    EXPECT_NEAR(style.design[0], 396, 1e-4);
+    EXPECT_NEAR(style.design[1], 64, 1e-4);
+    EXPECT_NEAR(style.design[2], 4.2, 1e-4);
+    // Values that aren't numbers leave the name to say which instance it is.
+    EXPECT_TRUE(read(" 25952256 (wide) ").design.empty());
+    // An ordinary font has none.
+    auto plain = AN::read_text_document(text_setup(text_document()), Geom::Point(100, 50));
+    ASSERT_TRUE(plain->stories.at(0));
+    EXPECT_TRUE(plain->stories[0]->lines.at(0).runs.at(0).style.design.empty());
+    // Two instances of one font aren't the same drawing.
+    auto a = AN::read_text_document(text_setup(with_design(text_document("(Hi\\r)", 3, name), name, fixed({396, 64, 4.2}))),
+                                    Geom::Point(100, 50));
+    auto b = AN::read_text_document(text_setup(with_design(text_document("(Hi\\r)", 3, name), name, fixed({400, 64, 4.2}))),
+                                    Geom::Point(100, 50));
+    ASSERT_TRUE(a->stories.at(0) && b->stories.at(0));
+    EXPECT_TRUE(AN::same_drawing(*a->stories[0], *a->stories[0]));
+    EXPECT_FALSE(AN::same_drawing(*a->stories[0], *b->stories[0]));
+}
+
+TEST_F(AiNativeImportTest, VariableFontInstancesAreFoundByNameAndAxisValues)
+{
+    if (!has_bahnschrift()) GTEST_SKIP() << "Bahnschrift isn't installed";
+    auto has = [](std::optional<AN::FontMatch> const &font, char const *declaration) {
+        return font && font->css.find(declaration) != std::string::npos;
+    };
+    // The font itself: an instance with every axis at its default.
+    auto itself = AN::find_font("Bahnschrift");
+    ASSERT_TRUE(itself);
+    EXPECT_TRUE(itself->variable);
+    EXPECT_TRUE(itself->face);
+    EXPECT_TRUE(has(itself, "font-family:Bahnschrift;")) << itself->css;
+    EXPECT_TRUE(has(itself, "font-variation-settings:'wdth' 100, 'wght' 400;")) << itself->css;
+    EXPECT_TRUE(has(itself, "font-weight:400;")) << itself->css;
+    // A named instance, which the system lists under its name.
+    auto condensed = AN::find_font("Bahnschrift-SemiBoldCondensed");
+    ASSERT_TRUE(condensed);
+    EXPECT_TRUE(has(condensed, "font-variation-settings:'wdth' 75, 'wght' 600;")) << condensed->css;
+    EXPECT_TRUE(has(condensed, "font-weight:600;")) << condensed->css;
+    EXPECT_TRUE(has(condensed, "font-stretch:condensed;")) << condensed->css;
+    // One it doesn't list: Regular is the font itself to the system.
+    auto regular = AN::find_font("Bahnschrift-Regular");
+    ASSERT_TRUE(regular);
+    EXPECT_EQ(regular->css, itself->css);
+    // An instance between the named ones, by the values the document keeps.
+    auto between = AN::find_font("Bahnschrift_350.000wght_80.000wdth", {350, 80});
+    ASSERT_TRUE(between);
+    EXPECT_TRUE(has(between, "font-variation-settings:'wdth' 80, 'wght' 350;")) << between->css;
+    EXPECT_TRUE(has(between, "font-weight:350;")) << between->css;
+    // Without them its name spells them out, an axis at its default left unsaid.
+    auto spelled = AN::find_font("Bahnschrift_350.000wght_80.000wdth");
+    ASSERT_TRUE(spelled);
+    EXPECT_EQ(spelled->css, between->css);
+    auto light = AN::find_font("Bahnschrift_300.000wght");
+    ASSERT_TRUE(light);
+    EXPECT_TRUE(has(light, "font-variation-settings:'wdth' 100, 'wght' 300;")) << light->css;
+    // Another version of a font names an instance otherwise: the values still say which.
+    auto renamed = AN::find_font("Bahnschrift-SemiboldCond", {600, 75});
+    ASSERT_TRUE(renamed);
+    EXPECT_EQ(renamed->css, condensed->css);
+    // The values win over the name, and stay within the font's axes.
+    auto moved = AN::find_font("Bahnschrift-SemiBoldCondensed", {900, 10});
+    ASSERT_TRUE(moved);
+    EXPECT_TRUE(has(moved, "font-variation-settings:'wdth' 75, 'wght' 700;")) << moved->css;
+    // Not this font's instances.
+    EXPECT_FALSE(AN::find_font("Bahnschrift-NoSuchStyle"));
+    EXPECT_FALSE(AN::find_font("Bahnschriftx_350.000wght"));
+    EXPECT_FALSE(AN::find_font("Bahnschrift_350.000zzzz"));
+    EXPECT_FALSE(AN::find_font("Bahnschrift_wght"));
+    // As many values as another font's axes: the name has to say.
+    EXPECT_FALSE(AN::find_font("Bahnschrift-NoSuchStyle", {350, 80, 3}));
+    // An ordinary font is as it was: no axes.
+    if (auto font = available_text_font(); !font.empty()) {
+        auto plain = AN::find_font(font, {350, 80});
+        ASSERT_TRUE(plain);
+        EXPECT_FALSE(plain->variable);
+        EXPECT_EQ(plain->css.find("font-variation-settings"), std::string::npos) << plain->css;
+    }
+}
+
+TEST_F(AiNativeImportTest, VariableFontInstanceSetsTextInItsOwnShapes)
+{
+    if (!has_bahnschrift()) GTEST_SKIP() << "Bahnschrift isn't installed";
+    auto width = [&](std::string const &font, std::vector<double> const &design, std::string *style = nullptr) {
+        auto data = text_document("(HHHHHHHH\\r)", 9, font, "/1 40");
+        if (!design.empty()) data = with_design(data, font, fixed(design));
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(data)));
+        EXPECT_TRUE(b);
+        if (!b) return 0.0;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        if (style) *style = attr(texts[0], "style");
+        auto bounds = drawn(b->document.get(), texts[0]);
+        EXPECT_TRUE(bounds);
+        return bounds ? bounds->width() : 0.0;
+    };
+    std::string style;
+    double const regular = width("Bahnschrift", {});
+    double const narrow = width("Bahnschrift-LightCondensed", {});
+    double const bold = width("Bahnschrift-Bold", {700, 100});
+    double const between = width("Bahnschrift_350.000wght_80.000wdth", {350, 80}, &style);
+    EXPECT_NE(style.find("font-variation-settings:'wdth' 80, 'wght' 350"), std::string::npos) << style;
+    EXPECT_GT(regular, 100);
+    EXPECT_LT(narrow, regular - 20);
+    // Its heavier stems reach a little further at both ends; the letters stand as far apart.
+    EXPECT_GT(bold, regular + 0.5);
+    EXPECT_GT(between, narrow + 2);
+    EXPECT_LT(between, regular - 20);
+    // It survives being saved and opened again.
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(with_design(text_document("(HHHHHHHH\\r)", 9, "Bahnschrift-X", "/1 40"), "Bahnschrift-X",
+                                                 fixed({350, 80})))));
+    ASSERT_TRUE(b);
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto again = elements(reopened->getReprRoot(), "svg:text");
+    ASSERT_EQ(again.size(), 1u);
+    auto bounds = drawn(reopened.get(), again[0]);
+    ASSERT_TRUE(bounds);
+    EXPECT_NEAR(bounds->width(), between, 1e-6);
+}
+
+TEST_F(AiNativeImportTest, VariableFontAxesStopAtTheirOwnRuns)
+{
+    auto plain = available_text_font();
+    if (!has_bahnschrift() || plain.empty()) GTEST_SKIP() << "Bahnschrift or the plain test font isn't installed";
+    auto build = [&](std::string const &first_font, std::vector<double> const &first_design, std::string const &second_font,
+                     std::vector<double> const &second_design) {
+        std::string error;
+        auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(Hello\\r)", 6, plain))), error);
+        EXPECT_TRUE(ai) << error;
+        auto styled = std::make_shared<AN::TextDocument>(*ai->texts);
+        auto &line = styled->stories.at(0)->lines.at(0);
+        auto first = line.runs.at(0);
+        auto second = first;
+        first.text = "He";
+        first.style.font = first_font;
+        first.style.design = first_design;
+        second.text = "llo";
+        second.style.font = second_font;
+        second.style.design = second_design;
+        line.runs = {first, second};
+        ai->texts = styled;
+        auto b = AN::build(*ai, error);
+        EXPECT_TRUE(b) << error;
+        return b;
+    };
+    // An ordinary font after an instance says it has no axes: it would inherit the object's.
+    auto b = build("Bahnschrift-Light", {300, 100}, plain, {});
+    ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    auto spans = elements(texts[0], "svg:tspan");
+    ASSERT_EQ(spans.size(), 2u);
+    EXPECT_NE(attr(texts[0], "style").find("font-variation-settings:'wdth' 100, 'wght' 300"), std::string::npos) << attr(texts[0], "style");
+    EXPECT_NE(attr(spans[1], "style").find("font-variation-settings:normal"), std::string::npos) << attr(spans[1], "style");
+    // An instance after an ordinary font carries its own; so does one after another.
+    b = build(plain, {}, "Bahnschrift-Light", {300, 100});
+    ASSERT_TRUE(b);
+    texts = elements(b->document->getReprRoot(), "svg:text");
+    spans = elements(texts.at(0), "svg:tspan");
+    ASSERT_EQ(spans.size(), 2u);
+    EXPECT_NE(attr(texts[0], "style").find("font-variation-settings:normal"), std::string::npos) << attr(texts[0], "style");
+    EXPECT_NE(attr(spans[1], "style").find("font-variation-settings:'wdth' 100, 'wght' 300"), std::string::npos) << attr(spans[1], "style");
+    b = build("Bahnschrift-Light", {300, 100}, "Bahnschrift-Bold", {700, 100});
+    ASSERT_TRUE(b);
+    spans = elements(elements(b->document->getReprRoot(), "svg:text").at(0), "svg:tspan");
+    ASSERT_EQ(spans.size(), 2u);
+    EXPECT_NE(attr(spans[1], "style").find("font-variation-settings:'wdth' 100, 'wght' 700"), std::string::npos) << attr(spans[1], "style");
+    // Text with no instance in it says nothing about axes.
+    b = build(plain, {}, plain, {});
+    ASSERT_TRUE(b);
+    EXPECT_EQ(attr(elements(b->document->getReprRoot(), "svg:text").at(0), "style").find("font-variation-settings"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, TextGetsItsFontBackOnceItIsInstalled)
+{
+    auto font = available_text_font();
+    if (font.empty() || !has_bahnschrift()) GTEST_SKIP() << "the test fonts aren't installed";
+    // A document saved while two fonts weren't installed, as the import writes it: the
+    // object's font and one span's stand in for an ordinary font and for an instance of a
+    // variable one, another span's for a font that still isn't there, and a last span was
+    // given a font by hand since.
+    auto stand_in = AN::substitute_font();
+    ASSERT_TRUE(stand_in);
+    EXPECT_EQ(stand_in->css.find("-inkscape-font-specification"), std::string::npos) << stand_in->css;
+    // Font names are quoted with apostrophes: the attributes take the other quotes.
+    auto q = [](std::string const &value) { return "\"" + value + "\""; };
+    auto doc = SPDocument::createNewDocFromMem(
+        "<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1' width='400' height='100'>"
+        "<text xml:space='preserve' proof:font-missing='" + font + "' style=" + q("font-size:40px;fill:#ff0000;" + stand_in->css) + ">"
+        "<tspan x='10' y='60'>ab"
+        "<tspan proof:font-missing='Bahnschrift_350.000wght' proof:font-missing-axes='350 80' style=" + q(stand_in->css) + ">cd</tspan>"
+        "<tspan proof:font-missing='PROOF-Missing-Unique-Font-734' style=" + q(stand_in->css) + ">ef</tspan>"
+        "<tspan proof:font-missing='PROOF-Missing-Unique-Font-735' style='font-family:Arial;-inkscape-font-specification:Arial'>gh</tspan>"
+        "</tspan></text></svg>");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto before = AN::missing_fonts(doc.get());
+    // The one given a font by hand isn't standing in for anything.
+    ASSERT_EQ(before.size(), 3u);
+    EXPECT_EQ(before[0].name, font);
+    EXPECT_EQ(before[1].name, "Bahnschrift_350.000wght");
+    EXPECT_EQ(before[2].name, "PROOF-Missing-Unique-Font-734");
+    ASSERT_EQ(before[2].texts.size(), 1u);
+    EXPECT_EQ(before[0].texts, before[2].texts);
+
+    EXPECT_EQ(AN::restore_fonts(doc.get()), 2u);
+    auto texts = elements(doc->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    auto spans = elements(texts[0], "svg:tspan");
+    ASSERT_EQ(spans.size(), 4u);
+    // Its own font again, with the rest of its style as it was.
+    EXPECT_EQ(attr(texts[0], "proof:font-missing"), "");
+    EXPECT_EQ(attr(texts[0], "style").find(stand_in->css), std::string::npos) << attr(texts[0], "style");
+    EXPECT_NE(attr(texts[0], "style").find("-inkscape-font-specification"), std::string::npos) << attr(texts[0], "style");
+    EXPECT_NE(attr(texts[0], "style").find("font-size:40px"), std::string::npos) << attr(texts[0], "style");
+    EXPECT_NE(attr(texts[0], "style").find("fill:#ff0000"), std::string::npos) << attr(texts[0], "style");
+    EXPECT_EQ(attr(spans[1], "proof:font-missing"), "");
+    EXPECT_EQ(attr(spans[1], "proof:font-missing-axes"), "");
+    EXPECT_NE(attr(spans[1], "style").find("font-variation-settings:'wdth' 80, 'wght' 350"), std::string::npos) << attr(spans[1], "style");
+    // The font that still isn't installed keeps its name; the one chosen by hand drops its.
+    EXPECT_EQ(attr(spans[2], "proof:font-missing"), "PROOF-Missing-Unique-Font-734");
+    EXPECT_EQ(attr(spans[3], "proof:font-missing"), "");
+    EXPECT_NE(attr(spans[3], "style").find("font-family:Arial"), std::string::npos) << attr(spans[3], "style");
+    auto after = AN::missing_fonts(doc.get());
+    ASSERT_EQ(after.size(), 1u);
+    EXPECT_EQ(after[0].name, "PROOF-Missing-Unique-Font-734");
+    // Nothing more to give back.
+    EXPECT_EQ(AN::restore_fonts(doc.get()), 0u);
+}
+
+// ---- capitals -----------------------------------------------------------------------------
+
+TEST_F(AiNativeImportTest, TextTransformSetsCapitalsOneCharacterForOne)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial isn't installed";
+    auto document = [](std::string const &style, std::string const &content) {
+        return SPDocument::createNewDocFromMem(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='100'><text xml:space='preserve' "
+            "style='font-family:Arial;font-size:40px;" + style + "'><tspan x='10' y='60'>" + content + "</tspan></text></svg>");
+    };
+    auto bounds = [&](SPDocument *doc) {
+        auto texts = elements(doc->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        return texts.empty() ? Geom::OptRect() : drawn(doc, texts[0]);
+    };
+    auto same = [&](std::string const &style, std::string const &typed, std::string const &set) {
+        auto a = document(style, typed), b = document({}, set);
+        auto const ra = bounds(a.get()), rb = bounds(b.get());
+        EXPECT_TRUE(ra && rb);
+        if (!ra || !rb) return false;
+        EXPECT_NEAR(ra->left(), rb->left(), 1e-6) << typed;
+        EXPECT_NEAR(ra->width(), rb->width(), 1e-6) << typed;
+        EXPECT_NEAR(ra->height(), rb->height(), 1e-6) << typed;
+        return true;
+    };
+    // Capitals draw as capitals typed.
+    EXPECT_TRUE(same("text-transform:uppercase;", "Hello, world", "HELLO, WORLD"));
+    EXPECT_TRUE(same("text-transform:lowercase;", "Hello, WORLD", "hello, world"));
+    EXPECT_TRUE(same("text-transform:capitalize;", "hello wORLD it's", "Hello WORLD It's"));
+    // Letters whose capitals take another number of bytes (a long s, a dotless i), Cyrillic,
+    // and a sharp s, which has no one capital and stays.
+    EXPECT_TRUE(same("text-transform:uppercase;",
+                     "\xc5\xbft\xc4\xb1r \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82 stra\xc3\x9f" "e",
+                     "STIR \xd0\x9f\xd0\xa0\xd0\x98\xd0\x92\xd0\x95\xd0\xa2 STRA\xc3\x9f" "E"));
+    // Inherited by a span, and undone by one.
+    auto mixed = SPDocument::createNewDocFromMem(std::string(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='100'><text xml:space='preserve' "
+        "style='font-family:Arial;font-size:40px;text-transform:uppercase'><tspan x='10' y='60'>ab<tspan "
+        "style='text-transform:none'>cd</tspan>ef</tspan></text></svg>"));
+    auto plain = document({}, "ABcdEF");
+    auto const rm = bounds(mixed.get()), rp = bounds(plain.get());
+    ASSERT_TRUE(rm && rp);
+    EXPECT_NEAR(rm->width(), rp->width(), 1e-6);
+    // A word that runs through a span is still one word.
+    auto through = SPDocument::createNewDocFromMem(std::string(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='100'><text xml:space='preserve' "
+        "style='font-family:Arial;font-size:40px;text-transform:capitalize'><tspan x='10' y='60'>hel<tspan "
+        "style='fill:#ff0000'>lo wor</tspan>ld</tspan></text></svg>"));
+    auto typed = document({}, "Hello World");
+    auto const rt = bounds(through.get()), ry = bounds(typed.get());
+    ASSERT_TRUE(rt && ry);
+    EXPECT_NEAR(rt->width(), ry->width(), 1e-6);
+    // Each character of the layout is a character of the source: the cursor's places.
+    auto doc = document("text-transform:uppercase;", "\xc5\xbft\xc4\xb1r");
+    doc->ensureUpToDate();
+    auto *text = cast<SPText>(doc->getObjectByRepr(elements(doc->getReprRoot(), "svg:text").at(0)));
+    ASSERT_TRUE(text);
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 4);
+    auto it = text->layout.begin();
+    it.nextCharacter();
+    it.nextCharacter();
+    SPObject *source = nullptr;
+    Glib::ustring::iterator at;
+    text->layout.getSourceOfCharacter(it, &source, &at);
+    ASSERT_TRUE(source);
+    // The third character typed, a dotless i, not the I that is drawn.
+    EXPECT_EQ(*at, gunichar(0x131));
+}
+
+TEST_F(AiNativeImportTest, AllCapsKeepsWhatWasTyped)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto build = [&](std::string const &characters, std::string const &style, std::string *text_style, std::string *content) {
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(text_document(characters, 6, font, "/1 40 " + style))));
+        EXPECT_TRUE(b);
+        if (!b) return 0.0;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        if (text_style) *text_style = attr(texts[0], "style");
+        auto spans = elements(texts[0], "svg:tspan");
+        if (content && !spans.empty() && spans[0]->firstChild()) *content = spans[0]->firstChild()->content();
+        auto bounds = drawn(b->document.get(), texts[0]);
+        EXPECT_TRUE(bounds);
+        return bounds ? bounds->width() : 0.0;
+    };
+    std::string caps_style, typed, plain_style;
+    double const caps = build("(Hello\\r)", "/12 2", &caps_style, &typed);
+    double const capitals = build("(HELLO\\r)", {}, &plain_style, nullptr);
+    double const lower = build("(Hello\\r)", {}, nullptr, nullptr);
+    EXPECT_NE(caps_style.find("text-transform:uppercase;"), std::string::npos) << caps_style;
+    EXPECT_EQ(typed, "Hello");
+    EXPECT_NEAR(caps, capitals, 1e-6);
+    EXPECT_GT(caps, lower + 5);
+    // Text without it says nothing of capitals.
+    EXPECT_EQ(plain_style.find("text-transform"), std::string::npos) << plain_style;
+
+    // A run of capitals beside one as typed: each says which it is.
+    std::string error;
+    auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(Hello\\r)", 6, font))), error);
+    ASSERT_TRUE(ai) << error;
+    auto styled = std::make_shared<AN::TextDocument>(*ai->texts);
+    auto &line = styled->stories.at(0)->lines.at(0);
+    auto first = line.runs.at(0);
+    auto second = first;
+    first.text = "He";
+    first.style.all_caps = true;
+    second.text = "llo";
+    line.runs = {first, second};
+    EXPECT_FALSE(AN::same_drawing(*styled->stories[0], *ai->texts->stories[0]));
+    ai->texts = styled;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    auto spans = elements(texts.at(0), "svg:tspan");
+    ASSERT_EQ(spans.size(), 2u);
+    EXPECT_NE(attr(texts[0], "style").find("text-transform:uppercase;"), std::string::npos);
+    EXPECT_EQ(attr(spans[1], "style"), "text-transform:none;");
+}
+
+TEST_F(AiNativeImportTest, SuperscriptAndSubscriptTakeTheDocumentsSizes)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // "x" then "2" above the line, at 20 points; and the same below it.
+    auto build = [&](int position, std::string const &settings, std::string *style, std::string *marked) {
+        auto data = text_document("(x2\\r)", 1, font, "/1 20", "/2 [1 0 0 1 -90 -10]",
+                                  "<< /1 2 /0 << /0 << /6 << /1 20 /13 " + std::to_string(position) + " >> >> >> >>");
+        if (!settings.empty()) {
+            auto const at = data.find("/1 << /1 [ << /0 << /0 (x2");
+            EXPECT_NE(at, std::string::npos);
+            if (at != std::string::npos) data.insert(at + 6, "/0 << " + settings + " >> ");
+        }
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(data)));
+        EXPECT_TRUE(b);
+        if (!b) return Geom::OptRect();
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        auto spans = elements(texts.at(0), "svg:tspan");
+        EXPECT_EQ(spans.size(), 2u);
+        if (spans.size() != 2) return Geom::OptRect();
+        if (style) *style = attr(spans[1], "style");
+        if (marked) *marked = attr(spans[1], "proof:position");
+        EXPECT_STREQ(spans[1]->firstChild()->content(), "2");
+        return drawn(b->document.get(), spans[1]);
+    };
+    std::string style, marked;
+    // Illustrator's own settings: 58.3% of the size, a third of the size up.
+    auto super = build(1, {}, &style, &marked);
+    EXPECT_EQ(marked, "super");
+    EXPECT_NE(style.find("font-size:11.66;"), std::string::npos) << style;
+    EXPECT_NE(style.find("baseline-shift:6.66;"), std::string::npos) << style;
+    auto sub = build(2, {}, &style, &marked);
+    EXPECT_EQ(marked, "sub");
+    EXPECT_NE(style.find("font-size:11.66;"), std::string::npos) << style;
+    EXPECT_NE(style.find("baseline-shift:-6.66;"), std::string::npos) << style;
+    ASSERT_TRUE(super && sub);
+    // The same figure, 13.32 points apart.
+    EXPECT_NEAR(sub->top() - super->top(), 13.32, 1e-6);
+    EXPECT_NEAR(super->height(), sub->height(), 1e-6);
+    // A document with settings of its own.
+    auto own = build(1, "/3 0.5 /4 0.4 /5 0.6 /6 0.2", &style, &marked);
+    EXPECT_NE(style.find("font-size:10;"), std::string::npos) << style;
+    EXPECT_NE(style.find("baseline-shift:8;"), std::string::npos) << style;
+    build(2, "/3 0.5 /4 0.4 /5 0.6 /6 0.2", &style, &marked);
+    EXPECT_NE(style.find("font-size:12;"), std::string::npos) << style;
+    EXPECT_NE(style.find("baseline-shift:-4;"), std::string::npos) << style;
+    // On the line there is neither, and nothing marks it.
+    auto plain = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(text_document("(x2\\r)", 3, font, "/1 20"))));
+    ASSERT_TRUE(plain);
+    auto spans = elements(elements(plain->document->getReprRoot(), "svg:text").at(0), "svg:tspan");
+    ASSERT_EQ(spans.size(), 1u);
+    EXPECT_EQ(attr(spans[0], "proof:position"), "");
+    // A setting that isn't a share of the size refuses the document's stories.
+    auto data = text_document("(x2\\r)", 3, font, "/1 20 /13 1");
+    data.insert(data.find("/1 << /1 [ << /0 << /0 (x2") + 6, "/0 << /3 7 >> ");
+    EXPECT_FALSE(AN::read_text_document(text_setup(data), Geom::Point(100, 50))->error.empty());
+}
+
 // ---- patterns -----------------------------------------------------------------------------
 
 namespace {
@@ -1513,6 +2121,55 @@ TEST_F(AiNativeImportTest, PointTextVisiblePdfGlyphsAndDisplacedTextRefused)
         fixture(scaled_src, {"q 0.8 0 0 1.2 10 60 cm 0 g BT /F1 32 Tf 0 0 Td (Hello) Tj ET Q"},
                 "/MediaBox [0 0 200 100]", font), reason);
     ASSERT_TRUE(scaled) << reason;
+}
+
+TEST_F(AiNativeImportTest, TypeInAFontThatIsNotInstalledIsLeftOutOfTheComparison)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // The page sets "Hello" at 32 points with a font the page has; the records name one
+    // nothing has, and say where the run was set: from the baseline at 10, 60 (40 from the
+    // top), 30 points up and 8 down, 80 across.
+    std::string const missing = "PROOF-Missing-Unique-Font-734";
+    auto text = [&](std::string const &box) {
+        return text_setup(with_glyph_run(text_document("(Hello\\r)", 6, missing, "/1 32 /53 << /0 << /0 0 /1 [1 0] >> >>"), box));
+    };
+    std::string const where = "8191.5 8161.5 8271.5 8199.5";
+    std::string const page = "0 g BT /F1 32 Tf 10 60 Td (Hello) Tj ET";
+    std::string reason;
+    auto src = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text(where));
+    auto good = Extension::Internal::open_ai_native(fixture(src, {page}, "/MediaBox [0 0 200 100]", font), reason);
+    ASSERT_TRUE(good) << reason;
+    EXPECT_EQ(good->missing_fonts, std::vector<std::string>{missing});
+    ASSERT_FALSE(good->notes.empty());
+    bool noted = false, share = false;
+    for (auto const &note : good->notes) {
+        noted = noted || note.find("1 font isn't installed (" + missing + ")") != std::string::npos;
+        share = share || note.find("wasn't compared with the page") != std::string::npos;
+    }
+    EXPECT_TRUE(noted);
+    // A fifth of the artboard isn't much of it.
+    EXPECT_FALSE(share);
+    auto texts = elements(good->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    EXPECT_EQ(attr(texts[0], "proof:font-missing"), missing);
+
+    // Only the type is left out. Art beside it that the page doesn't have still refuses,
+    auto extra = records(layer("0 g\n120 10 m 120 50 L 190 50 L 190 10 L 120 10 L\nf\n/AI11Text :\n0 /StoryIndex ,\n;\n"), text(where));
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(extra, {page}, "/MediaBox [0 0 200 100]", font), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+    // and so does the page's type set somewhere the records don't say.
+    auto moved = "0 g BT /F1 32 Tf 100 10 Td (Hello) Tj ET";
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(src, {moved}, "/MediaBox [0 0 200 100]", font), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+
+    // Type over most of an artboard: it opens, and says how much of it went unchecked.
+    auto big = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text("8191.5 8141.5 8371.5 8211.5"));
+    auto most = Extension::Internal::open_ai_native(fixture(big, {page}, "/MediaBox [0 0 200 100]", font), reason);
+    ASSERT_TRUE(most) << reason;
+    share = false;
+    for (auto const &note : most->notes) share = share || note.find("wasn't compared with the page") != std::string::npos;
+    EXPECT_TRUE(share);
 }
 
 TEST_F(AiNativeImportTest, MatchingPdfAcceptedAndStaleRecordsRefused)

@@ -226,8 +226,44 @@ void find_nodes(Value const &v, char const *name, std::vector<Value const *> &ou
     for (auto const &child : v.list) find_nodes(child, name, out);
 }
 
-TextStyle style(Value const &own, Value const &defaults, std::vector<std::string> const &fonts)
+/// A font as the text document lists it.
+struct Font
 {
+    std::string name;
+    std::vector<double> design; ///< An instance of a variable font: its axis values.
+};
+
+/// A font's entry in the text document's list: its PostScript name (0) and, for an instance
+/// of a variable font, where it is on each of the font's axes (4), in 16.16 fixed point.
+Font font_entry(Value const &entry)
+{
+    Font out;
+    out.name = entry.get("0").str();
+    auto const design = entry.dict.find("4");
+    if (design != entry.dict.end() && design->second.kind == Value::Array && design->second.list.size() <= 64) {
+        for (auto const &v : design->second.list) {
+            // Values that aren't numbers leave the name to say which instance it is.
+            if (v.kind != Value::Number || !std::isfinite(v.number) || std::abs(v.number) > 2147483648.0) return {out.name, {}};
+            out.design.push_back(v.number / 65536.0);
+        }
+    }
+    return out;
+}
+
+/// What a text document says for all its stories.
+struct Setup
+{
+    std::vector<Font> fonts;
+    // Superscript and subscript: their size and their distance from the baseline, each a
+    // share of the type's size (the document's settings 3 to 6; these are Illustrator's own
+    // when a document says nothing).
+    double superscript_size = 0.583, superscript_shift = 0.333;
+    double subscript_size = 0.583, subscript_shift = 0.333;
+};
+
+TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
+{
+    auto const &fonts = setup.fonts;
     auto pick = [&](char const *k) -> Value const & {
         auto it = own.dict.find(k); return it == own.dict.end() ? defaults.get(k) : it->second;
     };
@@ -237,8 +273,8 @@ TextStyle style(Value const &own, Value const &defaults, std::vector<std::string
     };
     TextStyle out;
     auto const font = pick("0").index();
-    if (font >= fonts.size() || fonts[font].empty()) throw Bad("text has no known font name");
-    out.font = fonts[font]; out.size = pick("1").num();
+    if (font >= fonts.size() || fonts[font].name.empty()) throw Bad("text has no known font name");
+    out.font = fonts[font].name; out.design = fonts[font].design; out.size = pick("1").num();
     if (out.font.size() > 256 || std::any_of(out.font.begin(), out.font.end(), [](unsigned char c) {
             return !g_ascii_isalnum(c) && c != '-' && c != '_' && c != '+' && c != '.';
         })) throw Bad("invalid PostScript font name");
@@ -262,6 +298,19 @@ TextStyle style(Value const &own, Value const &defaults, std::vector<std::string
     out.contextual = on("20");
     out.tracking = number("8", 0);
     if (std::abs(out.tracking) > 1e6) throw Bad("invalid text tracking");
+    // Capitals (12): 0 as typed, 1 small caps, 2 all caps. The story keeps what was typed.
+    auto const caps = number("12", 0);
+    if (caps == 1) throw Bad("text is set in small caps, which isn't supported yet");
+    if (caps != 0 && caps != 2) throw Bad("text has an unsupported character style feature");
+    out.all_caps = caps == 2;
+    // Position (13): 0 on the line, 1 superscript, 2 subscript.
+    auto const position = number("13", 0);
+    if (position != 0 && position != 1 && position != 2) throw Bad("text has an unsupported character style feature");
+    out.position = int(position);
+    if (out.position) {
+        out.position_size = out.position == 1 ? setup.superscript_size : setup.subscript_size;
+        out.position_shift = out.position == 1 ? setup.superscript_shift : setup.subscript_shift;
+    }
     auto paint = [&](char const *k, double &opacity) -> Color {
         auto const &p = pick(k).get("0");
         auto kind = p.get("0").index(); auto const &values = p.get("1");
@@ -276,7 +325,7 @@ TextStyle style(Value const &own, Value const &defaults, std::vector<std::string
     out.stroke_width = number("63", 1);
     if (out.stroke_width < 0 || out.stroke_width > 1e6) throw Bad("invalid text stroke width");
     // Features beyond the supported style subset must not be silently normalised.
-    for (auto const *k : {"2", "3", "10", "12", "13", "14", "15", "16", "17", "19", "21", "22", "23", "24", "25", "26", "28", "29", "30", "31", "32", "33", "34"}) {
+    for (auto const *k : {"2", "3", "10", "14", "15", "16", "17", "19", "21", "22", "23", "24", "25", "26", "28", "29", "30", "31", "32", "33", "34"}) {
         if (own.dict.count(k) || defaults.dict.count(k)) {
             auto const &v = pick(k);
             if ((v.kind == Value::Boolean && v.boolean) || (v.kind == Value::Number && v.num() != 0))
@@ -358,7 +407,7 @@ Geom::PathVector frame_outline(Value const &points)
 }
 
 PointText story(Value const &s, Value const &frames, Value const &defaults,
-                std::vector<std::string> const &fonts, Geom::Point const &center)
+                Setup const &setup, Geom::Point const &center)
 {
     auto const &text = s.get("0").get("0").str();
     if (text.size() > MAX_STORY || !utf8_with_nuls(text)) throw Bad("invalid or oversized story text");
@@ -408,6 +457,21 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         find_nodes(*anchors[0], "L", lines);
     }
     if (lines.empty() || lines.size() > 65536) throw Bad("text has no supported lines");
+    // Each run of glyphs says where it was set (8: left, top, right, bottom).
+    std::vector<Value const *> glyph_runs;
+    find_nodes(*anchors[0], "G", glyph_runs);
+    for (auto const *g : glyph_runs) {
+        auto const box = g->dict.find("8");
+        if (box == g->dict.end() || box->second.kind != Value::Array || box->second.list.size() != 4 || out.set.size() >= 65536) continue;
+        double b[4];
+        bool sane = true;
+        for (int i = 0; i < 4; ++i) {
+            auto const &v = box->second.list[i];
+            sane = sane && v.kind == Value::Number && std::isfinite(v.number) && std::abs(v.number) < 1e9;
+            b[i] = v.number;
+        }
+        if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
+    }
     struct Paragraph { std::size_t end; unsigned alignment; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0;
@@ -450,7 +514,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         auto count = run.get("1").index();
         if (!count || count > MAX_STORY * 2 - units) throw Bad("invalid text run length");
         units += count;
-        runs.push_back({units, style(run.get("0").get("0").get("6"), defaults, fonts)});
+        runs.push_back({units, style(run.get("0").get("0").get("6"), defaults, setup)});
     }
     if (runs.empty()) throw Bad("text has no character runs");
     auto const hscale = runs[0].style.horizontal_scale, vscale = runs[0].style.vertical_scale;
@@ -463,6 +527,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     out.to_art = Geom::Scale(hscale, vscale) * out.to_art;
     for (auto &l : out.lines) l.origin *= Geom::Scale(1 / hscale, 1 / vscale);
     out.frame *= Geom::Scale(1 / hscale, 1 / vscale);
+    for (auto &r : out.set) r *= Geom::Scale(1 / hscale, 1 / vscale);
     if (!paragraphs.empty() && paragraph_units != units) throw Bad("paragraph runs don't cover the story");
     if (area) {
         std::size_t laid_units = 0;
@@ -581,14 +646,30 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
         auto read = [&](std::string const &data, std::vector<std::optional<PointText>> &stories_out,
                         std::vector<std::string> &errors) {
             auto doc = Reader(data).root();
-            std::vector<std::string> fonts;
-            for (auto const &font : doc.get("0").get("1").get("0").list) fonts.push_back(font.get("0").get("0").get("0").str());
+            Setup setup;
+            for (auto const &font : doc.get("0").get("1").get("0").list) setup.fonts.push_back(font_entry(font.get("0").get("0")));
             auto const &main = doc.get("1");
+            if (auto const settings = main.dict.find("0"); settings != main.dict.end() && settings->second.kind == Value::Dictionary) {
+                // Illustrator takes sizes up to twice the type's own; a shift can be none.
+                auto share = [&](char const *k, double &value, bool size) {
+                    auto const it = settings->second.dict.find(k);
+                    if (it == settings->second.dict.end()) return;
+                    auto const &v = it->second;
+                    if (v.kind != Value::Number || !(v.number >= 0) || v.number > 4 || (size && v.number == 0)) {
+                        throw Bad("invalid superscript or subscript setting");
+                    }
+                    value = v.number;
+                };
+                share("3", setup.superscript_size, true);
+                share("4", setup.superscript_shift, false);
+                share("5", setup.subscript_size, true);
+                share("6", setup.subscript_shift, false);
+            }
             auto const &stories = main.get("1");
             if (stories.kind != Value::Array || stories.list.size() > 65536) throw Bad("invalid or oversized story list");
             for (auto const &s : stories.list) {
                 try {
-                    stories_out.push_back(story(s, doc.get("0").get("8").get("0"), main.get("2"), fonts, *center));
+                    stories_out.push_back(story(s, doc.get("0").get("8").get("0"), main.get("2"), setup, *center));
                     errors.emplace_back();
                 } catch (Bad const &e) { stories_out.emplace_back(); errors.push_back(e.what()); }
             }
@@ -615,12 +696,13 @@ bool same_drawing(PointText const &a, PointText const &b)
 {
     if (a.empty != b.empty || a.lines.size() != b.lines.size()) return false;
     auto same_style = [](TextStyle const &s, TextStyle const &t) {
-        return s.font == t.font && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&
+        return s.font == t.font && s.design == t.design && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&
                s.fill_opacity == t.fill_opacity && s.stroke_opacity == t.stroke_opacity &&
                (!s.stroke || s.stroke_width == t.stroke_width) && s.tracking == t.tracking &&
                s.horizontal_scale == t.horizontal_scale && s.vertical_scale == t.vertical_scale &&
                s.baseline_shift == t.baseline_shift && s.kerning == t.kerning && s.ligatures == t.ligatures &&
-               s.contextual == t.contextual;
+               s.contextual == t.contextual && s.all_caps == t.all_caps && s.position == t.position &&
+               s.position_size == t.position_size && s.position_shift == t.position_shift;
     };
     // Scaled and turned alike, and (below) each line in the same place on the art.
     if (!Geom::are_near(a.to_art.withoutTranslation(), b.to_art.withoutTranslation(), 1e-6)) return false;

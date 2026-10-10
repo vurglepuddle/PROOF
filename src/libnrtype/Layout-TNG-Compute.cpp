@@ -1101,7 +1101,7 @@ void  Layout::Calculator::_buildPangoItemizationForPara(ParagraphInfo *para) con
 
             unsigned const start_index = para->text.bytes();
 
-            para->text.append(&*text_source->text_begin.base(), text_source->text_length);     // build the combined text
+            para->text.append(&*text_source->laid_begin.base(), text_source->text_length);     // build the combined text
 
             unsigned const end_index = para->text.bytes();
 
@@ -1289,13 +1289,15 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                                                     : ( para->pango_items[pango_item_index].item->offset
                                                         + para->pango_items[pango_item_index].item->length
                                                         - byte_index_in_para ) );
-                unsigned const text_source_bytes = ( text_source->text_end.base()
-                                                     - text_source->text_begin.base()
+                // PROOF: bytes are counted in the text as it is laid out (a text-transform can
+                // change how many a character takes); characters are the source's own.
+                unsigned const text_source_bytes = ( text_source->laid_end.base()
+                                                     - text_source->laid_begin.base()
                                                      - span_start_byte_in_source );
                 TRACE(("New Unbroken Span\n"));
                 UnbrokenSpan new_span;
                 new_span.text_bytes = std::min(text_source_bytes, pango_item_bytes);
-                new_span.input_stream_first_character = Glib::ustring::const_iterator(text_source->text_begin.base() + span_start_byte_in_source);
+                new_span.input_stream_first_character = Glib::ustring::const_iterator(text_source->laid_begin.base() + span_start_byte_in_source);
                 new_span.char_index_in_para = char_index_in_para + char_index_in_source;
                 new_span.input_index = input_index;
 
@@ -1328,7 +1330,7 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                 Glib::ustring::const_iterator iter_text = new_span.input_stream_first_character;
                 iter_text++;
                 for (unsigned i = char_index_in_source + 1 ; ; i++, iter_text++) {
-                    if (iter_text >= text_source->text_end) break;
+                    if (iter_text >= text_source->laid_end) break;
                     if (iter_text.base() - new_span.input_stream_first_character.base() >= (int)new_span.text_bytes) break;
                     if (   i >= text_source->x.size() && i >= text_source->y.size()
                         && i >= text_source->dx.size() && i >= text_source->dy.size()
@@ -1350,9 +1352,11 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                     new_span.glyph_string = pango_glyph_string_new();
                     /* Some assertions intended to help diagnose bug #1277746. */
                     g_assert( 0 < new_span.text_bytes );
-                    g_assert( span_start_byte_in_source < text_source->text->bytes() );
-                    g_assert( span_start_byte_in_source + new_span.text_bytes <= text_source->text->bytes() );
-                    g_assert( memchr(text_source->text->data() + span_start_byte_in_source, '\0', static_cast<size_t>(new_span.text_bytes))
+                    gchar const *const laid = &*text_source->laid_begin.base();
+                    unsigned const laid_bytes = text_source->laid_end.base() - text_source->laid_begin.base();
+                    g_assert( span_start_byte_in_source < laid_bytes );
+                    g_assert( span_start_byte_in_source + new_span.text_bytes <= laid_bytes );
+                    g_assert( memchr(laid + span_start_byte_in_source, '\0', static_cast<size_t>(new_span.text_bytes))
                               == nullptr );
 
                     /* Notes as of 4/29/13.  Pango_shape is not generating English language ligatures, but it is generating
@@ -1364,7 +1368,7 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                     */
 
                     // Assumption: old and new arguments are the same.
-                    auto gold = std::string_view(text_source->text->data() + span_start_byte_in_source, new_span.text_bytes);
+                    auto gold = std::string_view(laid + span_start_byte_in_source, new_span.text_bytes);
                     auto gnew = std::string_view(para->text.data()         + para_text_index,           new_span.text_bytes);
                     assert (gold == gnew);
 

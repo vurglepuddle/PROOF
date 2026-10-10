@@ -32,15 +32,23 @@
  *
  *   point type, area type          text, a span to a line where Illustrator laid it out; area
  *                                  type keeps its frame in proof:text-frame
+ *   an instance of a variable font its family, with every axis in font-variation-settings
+ *   All Caps                       text-transform:uppercase on what was typed
+ *   superscript, subscript         a span at the size and baseline shift the document's
+ *                                  settings give them, marked proof:position
+ *   a font that isn't installed    the font that stands in for it (ai-native-fonts.h), and
+ *                                  its own name kept in proof:font-missing
  *
  * User units are points, as in the records; width and height use the file's ruler unit.
- * Type that shows and can't be set as it is (ai-native-text.h; a font that isn't
- * installed) refuses the file, and the caller opens its page; such type that doesn't
- * show is left out.
+ * Type that shows and can't be set as it is (ai-native-text.h) refuses the file, and the
+ * caller opens its page; such type that doesn't show is left out. A font that isn't
+ * installed doesn't refuse it: as in Illustrator, another font sets the type until the
+ * font is there, and the document says which fonts those are.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_IMPORT_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_IMPORT_H
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -48,6 +56,7 @@
 
 #include <2geom/rect.h>
 
+#include "ai-native-fonts.h"
 #include "ai-native-reader.h"
 
 class SPDocument;
@@ -60,6 +69,9 @@ inline constexpr char const *LAYER_PRINT_ATTRIBUTE = "proof:layer-print";
 inline constexpr char const *TEXT_FRAME_ATTRIBUTE = "proof:text-frame";
 /// On area type whose frame is too small for its text: the text that doesn't show.
 inline constexpr char const *TEXT_OVERFLOW_ATTRIBUTE = "proof:text-overflow";
+/// On a span Illustrator set as superscript or subscript: "super" or "sub". Its font size
+/// and baseline shift are what that made of the size around it.
+inline constexpr char const *TEXT_POSITION_ATTRIBUTE = "proof:position";
 
 struct Built
 {
@@ -68,6 +80,13 @@ struct Built
     std::vector<Geom::Rect> artboards;
     /// What was left out or approximated, for the person opening the file.
     std::vector<std::string> notes;
+    /// The fonts that aren't installed, by PostScript name, in the order met.
+    std::vector<std::string> missing_fonts;
+    /// Where type that shows is set by a font other than its own (one standing in, or one
+    /// drawing characters its font lacks): four-cornered boxes in the document's user units,
+    /// both where Illustrator set that type and where it is set here. It can't look like the
+    /// file's page there, and a comparison with the page leaves these out.
+    std::vector<std::array<Geom::Point, 4>> substituted_type;
 };
 
 /// Where the records came from, for what they refer to outside themselves.

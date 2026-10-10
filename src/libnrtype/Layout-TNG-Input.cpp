@@ -37,7 +37,28 @@ void Layout::_clearInputObjects()
     _input_wrap_shapes.clear();
 }
 
-// this function does nothing more than store all its parameters for future reference
+/**
+ * PROOF: one character through text-transform.
+ *
+ * The result is always one character. The layout counts characters to tell where one of
+ * its own stands in the source, so a mapping that makes two of one (a sharp s to SS) is
+ * left undone: that letter stays as it was typed.
+ */
+static gunichar transformCharacter(gunichar c, unsigned transform, bool word_start)
+{
+    switch (transform) {
+        case SP_CSS_TEXT_TRANSFORM_UPPERCASE:
+            return g_unichar_toupper(c);
+        case SP_CSS_TEXT_TRANSFORM_LOWERCASE:
+            return g_unichar_tolower(c);
+        case SP_CSS_TEXT_TRANSFORM_CAPITALIZE:
+            return word_start ? g_unichar_totitle(c) : c;
+        default:
+            return c;
+    }
+}
+
+// this function stores all its parameters for future reference, and the text as its style transforms it
 void Layout::appendText(Glib::ustring const &text,
                         SPStyle *style,
                         SPObject *source,
@@ -63,8 +84,31 @@ void Layout::appendText(Glib::ustring const &text,
     new_source->style_conn = style->object->connectRelease([this] (auto) { clear(); });
 
     new_source->text_length = 0;
-    for ( ; text_begin != text_end && text_begin != text.end() ; ++text_begin)
+    new_source->laid_begin = text_begin;
+    new_source->laid_end = text_end;
+    auto const transform = style->text_transform.computed;
+    // A word can run on from the text before this one (a span in the middle of a word).
+    bool word_start = true;
+    if (transform == SP_CSS_TEXT_TRANSFORM_CAPITALIZE && !_input_stream.empty() && _input_stream.back()->Type() == TEXT_SOURCE) {
+        auto const *before = static_cast<InputStreamTextSource const *>(_input_stream.back());
+        if (before->text_length > 0) {
+            auto last = before->text_end;
+            --last;
+            word_start = !g_unichar_isalnum(*last) && *last != '\'' && *last != 0x2019;
+        }
+    }
+    for ( ; text_begin != text_end && text_begin != text.end() ; ++text_begin) {
         new_source->text_length++;        // save this because calculating the length of a UTF-8 string is expensive
+        if (transform != SP_CSS_TEXT_TRANSFORM_NONE) {
+            new_source->transformed.push_back(transformCharacter(*text_begin, transform, word_start));
+            // An apostrophe is inside its word.
+            word_start = !g_unichar_isalnum(*text_begin) && *text_begin != '\'' && *text_begin != 0x2019;
+        }
+    }
+    if (transform != SP_CSS_TEXT_TRANSFORM_NONE) {
+        new_source->laid_begin = new_source->transformed.begin();
+        new_source->laid_end = new_source->transformed.end();
+    }
 
     if (optional_attributes) {
         // we need to fill in x and y even if the text is empty so that empty paragraphs can be positioned correctly

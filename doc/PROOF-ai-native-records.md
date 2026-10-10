@@ -687,6 +687,171 @@ document with entries missing; and the rest are one or two each (artboard
 and page counts that differ, an image that can't be read, type on a path, a
 file that can't be opened).
 
+### Third round of 2026-10-10: font instances, capitals, fonts that aren't installed, turned pictures
+
+One trial file was left on its page after the second trial, for its font. Its
+owner set it in Acumin Variable Concept instead and installed that font. It
+then needed three things read, and showed a fourth that was wrong.
+
+**Instances of variable fonts.** The text document lists each font by a
+PostScript name. An instance of a variable font has none of its own, so
+Illustrator makes one up, as Adobe's Technical Note 5902 describes:
+
+| The instance | Its name |
+|---|---|
+| A named one | The font's prefix, a hyphen, the style: `AcuminConcept-ExtraCondUltraBlack` |
+| Any other | The prefix, then `_`, a value and an axis tag for each axis off its default: `AcuminConcept_396.000wght_64.000wdth_4.200slnt` |
+| The font's default | The font's own PostScript name: `MinionVariableConcept-Roman` |
+
+The prefix is the font's name 25, else its family name, with everything but
+letters and digits dropped. It isn't the family's PostScript name: Acumin
+Variable Concept is `AcuminVariableConcept`, and its instances start
+`AcuminConcept`.
+
+The name alone doesn't say which instance it is. Two versions of one font name
+the same instance differently: the corpus has `AcuminConcept-ExtraCondensedSemibold`
+where the installed font calls it `AcuminConcept-ExtraCondSemibold`. The system
+lists a named instance that equals the font's default under the font's own
+name only (Bahnschrift's Regular is `Bahnschrift`, never
+`Bahnschrift-Regular`). And a name too long to spell out ends in a checksum.
+
+What says it is beside the name. A font's entry in the list (`/0 /1 /0`, each
+`/0 /0`) holds:
+
+| Key | Value |
+|---|---|
+| `0` | The PostScript name |
+| `2` | The kind of font: 0 or 1 |
+| `4` | For an instance: its value on each axis, in the font's own order, in 16.16 fixed point. `[25952256 4194304 275251]` is weight 396, width 64, slant 4.2 |
+| `5` | The font's version string |
+
+So the name finds the font, and key 4 is the instance. `ai-native-fonts.cpp`
+does it in this order:
+
+1. A face the system knows by exactly that name. If its file has no axes, it
+   is an ordinary font, as before. If it has, the instance is key 4 when it has
+   a value for each axis, else the named instance the system numbers it, else
+   the font's defaults.
+2. No face by that name: the installed variable font whose prefix the name
+   starts with. The instance is key 4, else the named instance of that name
+   (the name the font gives it, or the one made from its style), else the
+   values the name spells out.
+
+The text gets the font's family and every axis in `font-variation-settings`,
+default or not: Pango picks a face of the family by weight, width and slant,
+that face can be a named instance, and it starts from the instance's own
+values. `font-weight` and `font-stretch` follow the weight and width axes. The
+face Pango then loads is checked to be that font at those values, and the font
+counts as not installed when it isn't (a family with ordinary fonts beside its
+variable one can give one of those).
+
+A count over the corpus's records: 15 files set type in a font with key 4; one
+of them names an instance by its values; no font name has an underscore
+without key 4.
+
+**All Caps.** Character feature 12 says how a run is capitalised: 0 as typed,
+1 small caps, 2 all caps. The story keeps what was typed. A run in all caps
+gets `text-transform:uppercase`, which PROOF's text layout now applies
+(`Layout-TNG-Input.cpp`): it had been parsed and ignored. The layout keeps a
+transformed copy of each source's text with one character for each typed one,
+so a place in the layout is still a place in the text and the cursor and
+editing work as before; `uppercase`, `lowercase` and `capitalize` all go
+through it. A letter whose capital is two letters (ß to SS) stays as typed for
+that reason. Small caps (1) still refuse the story.
+
+**Superscript and subscript.** Character feature 13 says where a run stands:
+0 on the line, 1 superscript, 2 subscript. Illustrator makes both from the
+run's own font, smaller and moved, by settings the document keeps (Document
+Setup > Type). They are in the settings of the text document's main part
+(`/1 /0`), each a share of the type's size:
+
+| Key | Setting | Illustrator's own |
+|---|---|---|
+| `3`, `4` | Superscript: size, and how far above the baseline | 0.583, 0.333 |
+| `5`, `6` | Subscript: size, and how far below | 0.583, 0.333 |
+| `7` | Small caps: size | 0.7 |
+
+Such a run becomes a span at that size and baseline shift (added to a shift
+of its own, feature 9), marked `proof:position` `super` or `sub`. The marker
+is for the Character controls to come: the size and shift are plain values,
+and nothing reads the marker yet.
+
+**A font that isn't installed** no longer sends the file to its page. As in
+Illustrator, another font sets the type: Myriad Pro when it is installed, else
+Arial, else the system's sans serif. The text or span carries the missing
+font's PostScript name in `proof:font-missing` (and an instance's axis values
+in `proof:font-missing-axes`), and its declarations name no
+`-inkscape-font-specification`. That last part is how a later choice is told
+apart: choosing a font for the text writes one, and the text is then simply in
+the font chosen. Lines stay where Illustrator put them.
+
+When a document opens in the editor, text whose font has been installed since
+gets it back (`restore_fonts`), and the fonts that still aren't are listed in
+the font substitution dialog, with the text set in another font selected on
+request. That list shows once for a document and by default; Preferences >
+Text has the switch (`/options/font/missingdlg`). The dialog has not been
+looked at in the running editor yet: its parts are covered by the unit tests
+below.
+
+Such type can't look like the page, so the visual check leaves it out. Each
+run of glyphs in the layout tree (`G`) has the box Illustrator set it in, in
+its key `8` (left, top, right, bottom, in the layout's space). Those boxes, and
+the bounds of the same text as it is set here, are painted white in both
+pictures before they are weighed. Everything else is still compared: of two
+files that came this far and still differ, one has a group drawn in a flat
+colour and one a blend mode missing, both refused as they should be. When more
+than a quarter of an artboard is left out, a note says so.
+
+Characters a font doesn't have are treated alike: another font draws them, the
+text is marked `proof:glyphs-missing`, and the check leaves it out.
+
+**Pictures that are turned** were placed wrongly. An image's matrix is written
+for rows counted upwards, and a picture's rows count down. For an upright
+picture it makes no difference which side of the matrix the rows are turned
+over on, and the import had it on the wrong one. The corner tiles of a pattern
+brush in the trial file settle it, since Illustrator writes the same picture
+turned each way inside one tile box:
+
+| Matrix | 201 x 106 pixels land in |
+|---|---|
+| `[0.24 0 0 -0.24 -7884 7768.56]` | x -7884 to -7835.76, y 7768.56 to 7794 |
+| `[0 0.24 0.24 0 -7848.21 7746.76]` | x -7873.65 to -7848.21, y 7746.76 to 7795 |
+| `[0 -0.24 -0.24 0 -7873.55 7795]` | x -7873.55 to -7848.11, y 7746.76 to 7795 |
+
+All inside the tile's box of -7885 to -7836.76 by 7746.76 to 7795, which the
+old reading left. A pixel (x, y) goes to (a·x − c·y + tx, b·x − d·y + ty).
+
+**Tests.** `ai-native-import-test` has cases for each: a font entry's axis
+values; Bahnschrift's instances by name, by values and by a name that only
+the values explain, and their widths as drawn; text-transform against the same
+capitals typed, with letters that change length in bytes, and the cursor's
+place; all caps from a run's features; superscript and subscript at
+Illustrator's sizes and at a document's own; pictures turned each way; a font
+that isn't installed, its name kept per span, and given back when it is found; and
+three against an independently written PDF page (the type left out, other art
+beside it still refused, and a page whose type lies elsewhere refused).
+
+**Results.** The trial file opens natively, at most 0.6% of an artboard
+from its page, and with it all seventeen trial files (the installed console
+build, each exit 0, none from its page). The corpus case over all 879 distinct
+approved files, one worker, once, on the final build: **802 pass the visual
+check natively and 77 use the page**, with no error or timeout. Against the
+787 of the second trial, 15 gained and none lost, and none of the 787 is drawn
+further from its page by more than 0.2% of an artboard. Of the 15, 12 had been
+refused for a font, 2 for pictures that are turned, and 1 for all caps (it
+also names a font that isn't installed). 13 of the 802 have type in a font
+that isn't installed, the furthest of them 0.5% from its page, one with more
+than a quarter of an artboard left out of the check. 399 of the 802 have no
+reported loss and 403 have notes. The run took about ten minutes.
+
+Of the 77: 36 draw differently (two of them reached the comparison only now);
+11 have operators that aren't read; 7 opacity masks; 4 link a picture that
+isn't where the document says; 4 have a text document with entries missing; 3
+foreign objects; and one or two each: a control character in a story,
+artboard and page counts that differ, an image that can't be read, a justified
+paragraph, type on a path, character scales that differ within a story, linked
+text frames, symbols, a file that can't be opened.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
@@ -704,9 +869,11 @@ file that can't be opened).
    differ or anything is unread.
 3. **Point type**, delivered for the bounded subset above, with VectorCraft's
    `ate.rs` as the numeric-key reference, and **area type** as Illustrator
-   composed it. Expand from confirmed root causes. Still to come: area type
+   composed it. Instances of variable fonts, all caps, superscript and
+   subscript are read, and a font that isn't installed is stood in for.
+   Expand from confirmed root causes. Still to come: small caps, area type
    that flows again when edited (the frame and the overflow are kept for it),
-   type on a path, justified paragraphs, instances of variable fonts, source
-   ICC profiles and the remaining rendering families.
+   type on a path, justified paragraphs, linked frames, source ICC profiles
+   and the remaining rendering families.
 4. **Writer** extensions, in this order: gradients, images, text. They use the
    same tables, and the reader checks the writer's output alongside Illustrator.

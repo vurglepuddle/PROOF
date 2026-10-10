@@ -152,7 +152,9 @@ struct Gradient
 /// An embedded image's samples, as the file has them.
 struct Image
 {
-    Geom::Affine matrix; ///< Pixels (y down) to art space, as the file writes it (y flipped).
+    /// The picture's space to art space, as the file writes it: for rows counted upwards,
+    /// so row y of the picture (counted down) is the matrix's -y.
+    Geom::Affine matrix;
     int width = 0;
     int height = 0;
     int bits = 8;     ///< 1 or 8.

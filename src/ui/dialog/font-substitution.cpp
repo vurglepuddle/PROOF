@@ -7,6 +7,9 @@
  * Released under GNU GPL v2+, read the file 'COPYING' for more information.
  */
 
+#include <set>
+#include <tuple>
+
 #include <glibmm/i18n.h>
 #include <glibmm/regex.h>
 #include <gtkmm/checkbutton.h>
@@ -16,7 +19,9 @@
 #include <libnrtype/font-factory.h>
 
 #include "desktop.h"
+#include "document-undo.h"
 #include "document.h"
+#include "extension/internal/ai/ai-native-fonts.h"
 #include "inkscape.h"
 #include "object/sp-flowdiv.h"
 #include "object/sp-root.h"
@@ -33,7 +38,8 @@
 namespace Inkscape::UI::Dialog {
 namespace {
 
-void show(std::vector<SPItem*> const &list, Glib::ustring const &out)
+/// `missing`: the list has fonts that aren't installed, which has a preference of its own.
+void show(std::vector<SPItem*> const &list, Glib::ustring const &out, bool substituted, bool missing)
 {
    Gtk::MessageDialog warning(_("Some fonts are not available and have been substituted."),
                               false, Gtk::MessageType::INFO, Gtk::ButtonsType::OK, true);
@@ -74,7 +80,8 @@ void show(std::vector<SPItem*> const &list, Glib::ustring const &out)
    Inkscape::UI::dialog_run(warning);
 
    if (cbWarning.get_active()) {
-       Inkscape::Preferences::get()->setBool("/options/font/substitutedlg", false);
+       if (substituted) Inkscape::Preferences::get()->setBool("/options/font/substitutedlg", false);
+       if (missing) Inkscape::Preferences::get()->setBool("/options/font/missingdlg", false);
    }
 
    if (cbSelect.get_active()) {
@@ -203,14 +210,46 @@ std::pair<std::vector<SPItem*>, Glib::ustring> getFontReplacedItems(SPDocument *
 
 void checkFontSubstitutions(SPDocument *doc)
 {
-    bool show_dlg = Inkscape::Preferences::get()->getBool("/options/font/substitutedlg");
-    if (!show_dlg) {
+    namespace AiNative = Inkscape::Extension::Internal::AiNative;
+    // PROOF: text from an Illustrator document whose font wasn't installed gets it back once
+    // it is. Like the document's colour mode, that isn't an edit.
+    {
+        Inkscape::DocumentUndo::ScopedInsensitive insensitive(doc);
+        AiNative::restore_fonts(doc);
+    }
+
+    // A document is looked at once: opening one comes through here more than once.
+    static std::set<unsigned long> seen;
+    if (!seen.insert(doc->serial()).second) {
         return;
     }
 
-    auto [list, msg] = getFontReplacedItems(doc);
+    // PROOF: the fonts it names that still aren't installed are listed, as Illustrator lists
+    // them on opening, unless that was switched off; other fonts that were substituted only
+    // when asked for, as before.
+    auto *prefs = Inkscape::Preferences::get();
+    bool const show_substituted = prefs->getBool("/options/font/substitutedlg");
+    auto const missing = prefs->getBool("/options/font/missingdlg", true) ? AiNative::missing_fonts(doc)
+                                                                         : std::vector<AiNative::MissingFont>();
+    if (!show_substituted && missing.empty()) {
+        return;
+    }
+
+    std::vector<SPItem *> list;
+    Glib::ustring msg;
+    if (show_substituted) std::tie(list, msg) = getFontReplacedItems(doc);
+    bool const substituted = !msg.empty();
+    for (auto const &font : missing) {
+        msg += Glib::ustring::compose(
+            ngettext("Font '%1' isn't installed: %2 text object is set in another font until it is",
+                     "Font '%1' isn't installed: %2 text objects are set in another font until it is", font.texts.size()),
+            font.name, font.texts.size()) + "\n";
+        for (auto *text : font.texts) {
+            if (std::find(list.begin(), list.end(), text) == list.end()) list.push_back(text);
+        }
+    }
     if (!msg.empty()) {
-        show(list, msg);
+        show(list, msg, substituted, !missing.empty());
     }
 }
 

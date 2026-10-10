@@ -1143,6 +1143,9 @@ void InkscapePreferences::initPageTools()
 
         _font_dialog.init(_("Show font substitution warning dialog"), "/options/font/substitutedlg", false);
         _page_text.add_line( false, "", _font_dialog, "", _("Show font substitution warning dialog when requested fonts are not available on the system"));
+        // PROOF
+        _font_missing_dialog.init(_("List fonts that aren't installed when a document opens"), "/options/font/missingdlg", true);
+        _page_text.add_line( false, "", _font_missing_dialog, "", _("When a document from Illustrator names fonts that aren't installed, list them and the text set in another font meanwhile"));
         _font_sample.init("/tools/text/font_sample", true);
         _page_text.add_line( false, _("Font sample"), _font_sample, "", _("Change font preview sample text"), true);
 

@@ -281,6 +281,59 @@ AiPageDifference weigh(Picture const &a, Picture const &b)
     return {by_light / n, by_colour / n};
 }
 
+/**
+ * Paint white, in a picture of `board` at `scale` pixels a point, each of `boxes` (in the
+ * document's user units) and two pixels around it: what isn't to be weighed.
+ *
+ * @return how many pixels that is.
+ */
+std::size_t leave_out(Picture &p, std::vector<std::array<Geom::Point, 4>> const &boxes, Geom::Rect const &board, double scale)
+{
+    constexpr double MARGIN = 2.0;
+    std::vector<bool> out(std::size_t(p.w) * p.h, false);
+    for (auto const &box : boxes) {
+        Geom::Point q[4];
+        bool sane = true;
+        for (int i = 0; i < 4; ++i) {
+            q[i] = (box[i] - board.min()) * scale;
+            sane = sane && std::isfinite(q[i].x()) && std::isfinite(q[i].y()) && std::abs(q[i].x()) < 1e7 && std::abs(q[i].y()) < 1e7;
+        }
+        if (!sane) continue;
+        double left = q[0].x(), right = q[0].x(), top = q[0].y(), bottom = q[0].y(), area = 0;
+        for (int i = 0; i < 4; ++i) {
+            left = std::min(left, q[i].x());
+            right = std::max(right, q[i].x());
+            top = std::min(top, q[i].y());
+            bottom = std::max(bottom, q[i].y());
+            area += Geom::cross(q[i], q[(i + 1) % 4]);
+        }
+        double const turn = area < 0 ? -1.0 : 1.0;
+        int const x0 = std::max(0, int(std::floor(left - MARGIN))), x1 = std::min(p.w, int(std::ceil(right + MARGIN)));
+        int const y0 = std::max(0, int(std::floor(top - MARGIN))), y1 = std::min(p.h, int(std::ceil(bottom + MARGIN)));
+        for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                Geom::Point const c(x + 0.5, y + 0.5);
+                bool inside = true;
+                for (int i = 0; i < 4 && inside; ++i) {
+                    auto const edge = q[(i + 1) % 4] - q[i];
+                    double const length = edge.length();
+                    // A box of no width or height is still its line.
+                    if (length < 1e-9) continue;
+                    inside = turn * Geom::cross(edge, c - q[i]) / length >= -MARGIN;
+                }
+                if (inside) out[std::size_t(y) * p.w + x] = true;
+            }
+        }
+    }
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if (!out[i]) continue;
+        ++count;
+        p.rgb[i * 3] = p.rgb[i * 3 + 1] = p.rgb[i * 3 + 2] = 255;
+    }
+    return count;
+}
+
 double difference_score(AiPageDifference const &d)
 {
     return std::max(d.lightness / AI_NATIVE_MAX_LIGHTNESS, d.colour / AI_NATIVE_MAX_COLOUR);
@@ -508,6 +561,12 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     std::size_t const compared = boards.size();
 
     AiNativeOpen result;
+    result.missing_fonts = built->missing_fonts;
+    // Type set by a font other than its own can't look like the page: where it lies isn't
+    // weighed, on either side.
+    auto const &unweighed = built->substituted_type;
+    double most_unweighed = 0;
+    std::size_t most_unweighed_board = 0;
     auto const doc_pages = doc->getPageManager().getPages();
     bool const non_printing = any_non_printing(doc);
     std::optional<NativeView> view;
@@ -561,11 +620,23 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             if (!reference_path.empty()) cache_reference(*reference, reference_path);
         }
         auto page_picture = std::move(*reference);
+        if (!unweighed.empty()) {
+            double const share = double(leave_out(page_picture, unweighed, board, scale)) / std::max(1.0, double(w) * h);
+            if (share > most_unweighed) {
+                most_unweighed = share;
+                most_unweighed_board = i;
+            }
+        }
         Picture native_picture;
         AiPageDifference d;
         // The art against `page`, each drawn by `draw`; also without the layers that don't
         // print, which a page may leave out.
-        auto weigh_art = [&](Picture const &page, auto const &draw) {
+        auto weigh_art = [&](Picture const &page, auto const &draw_art) {
+            auto draw = [&] {
+                auto picture = draw_art();
+                if (!unweighed.empty()) leave_out(picture, unweighed, board, scale);
+                return picture;
+            };
             auto picture = draw();
             auto difference = weigh(page, picture);
             if (difference_score(difference) > 1.0 && non_printing) {
@@ -587,6 +658,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             // averaged down, with the drawing keeping thin lines a pixel wide as well, both
             // show the same ink for the same line; art that really differs still does.
             auto fine_page = averaged(draw_page(drawn.get(), crop, trim, scale * FINER, w * FINER, h * FINER), FINER);
+            if (!unweighed.empty()) leave_out(fine_page, unweighed, board, scale);
             auto [e, fine_native] = weigh_art(fine_page, [&] {
                 return averaged(view->draw(board, scale * FINER, w * FINER, h * FINER, true), FINER);
             });
@@ -618,6 +690,11 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     if (std::max(d.lightness, d.colour) > NOTABLE) {
         result.notes.push_back("its own art differs from its page" + where + " in about " +
                                percent(std::max(d.lightness, d.colour)) + " of it");
+    }
+    if (most_unweighed > 0.25) {
+        result.notes.push_back("about " + percent(most_unweighed) + " of " +
+                               (boards.size() > 1 ? "artboard " + std::to_string(most_unweighed_board + 1) : "the artboard") +
+                               " is type set in another font than its own, and wasn't compared with the page");
     }
     for (auto &n : built->notes) result.notes.push_back(std::move(n));
     result.document = std::move(built->document);

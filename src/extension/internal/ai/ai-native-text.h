@@ -4,9 +4,9 @@
  * meanings follow VectorCraft's ate.rs at 4cf912f (MIT; LICENSES/MIT-VectorCraft.txt),
  * Copyright (c) 2026 ArtCraft Team and the VectorCraft contributors.
  * PROOF keeps explicit line origins and UTF-16 run lengths, reads area type's frames,
- * recorded lines and baseline shifts (worked out from real files, 2026-10-10), and
- * refuses missing fonts in the builder and unsupported frames/styles rather than
- * substituting.
+ * recorded lines, baseline shifts, all caps, superscript and subscript, and the axis values
+ * of a variable font's instance (worked out from real files, 2026-10-10), and refuses
+ * unsupported frames and styles rather than guessing at them.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
@@ -18,6 +18,8 @@ namespace Inkscape::Extension::Internal::AiNative {
 struct TextStyle
 {
     std::string font; ///< Exact PostScript font name.
+    /// For an instance of a variable font: its value on each axis, in the font's own order.
+    std::vector<double> design;
     double size = 12;
     std::optional<Color> fill, stroke;
     double fill_opacity = 1, stroke_opacity = 1, stroke_width = 1;
@@ -29,6 +31,16 @@ struct TextStyle
     int kerning = 1;
     bool ligatures = true;  ///< Standard ligatures.
     bool contextual = true; ///< Contextual alternates.
+    bool all_caps = false;  ///< Set in capitals, whatever was typed.
+    /// Where the characters stand: 0 on the line, 1 superscript, 2 subscript. Illustrator
+    /// makes those of the same font, smaller and moved, by what the document says:
+    int position = 0;
+    double position_size = 1;  ///< their size, as a share of `size`;
+    double position_shift = 0; ///< and how far up (or, for subscript, down), as a share of it.
+    /// The size the characters are set at.
+    double set_size() const { return position ? size * position_size : size; }
+    /// How far above the baseline they are set, in points.
+    double set_shift() const { return baseline_shift + (position == 1 ? 1 : position == 2 ? -1 : 0) * position_shift * size; }
 };
 
 struct TextRun
@@ -61,6 +73,9 @@ struct PointText
     /// Illustrator doesn't draw it either.
     std::string overflow;
     bool empty = false;     ///< Nothing typed and nothing laid out: an empty frame.
+    /// Where Illustrator set each run of glyphs, in the layout's space: what its type covers
+    /// on the page, whatever font sets it here.
+    std::vector<Geom::Rect> set;
 };
 
 /**

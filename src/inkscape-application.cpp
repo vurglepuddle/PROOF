@@ -87,6 +87,7 @@
 #include "actions/actions-window.h"
 #include "debug/logger.h"           // INKSCAPE_DEBUG_LOG support
 #include "extension/db.h"
+#include "extension/internal/ai/ai-native-fonts.h"
 #include "extension/effect.h"
 #include "extension/init.h"
 #include "extension/input.h"
@@ -197,6 +198,15 @@ SPDocument *InkscapeApplication::document_new(std::string const &template_filena
     return doc;
 }
 
+// PROOF: text set in another font because its own wasn't installed (ai-native-fonts.h) gets its
+// font back when the document opens with the font there, with or without a window. Like the
+// document's color mode, that is not an edit.
+static void restore_fonts(SPDocument *document)
+{
+    Inkscape::DocumentUndo::ScopedInsensitive insensitive(document);
+    Inkscape::Extension::Internal::AiNative::restore_fonts(document);
+}
+
 // Open a document, add it to app.
 std::pair<SPDocument *, bool> InkscapeApplication::document_open(Glib::RefPtr<Gio::File> const &file)
 {
@@ -211,6 +221,7 @@ std::pair<SPDocument *, bool> InkscapeApplication::document_open(Glib::RefPtr<Gi
     }
 
     document->setVirgin(false); // Prevents replacing document in same window during file open.
+    restore_fonts(document.get());
 
     // Add/promote recent file; when we call add_item and file is on a recent list already,
     // then apparently only "modified" time changes.
@@ -241,6 +252,7 @@ SPDocument *InkscapeApplication::document_open(std::span<char const> buffer)
     }
 
     document->setVirgin(false); // Prevents replacing document in same window during file open.
+    restore_fonts(document.get());
 
     return document_add(std::move(document));
 }
