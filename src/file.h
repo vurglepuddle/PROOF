@@ -27,6 +27,10 @@ class SPDocument;
 class SPObject;
 class SPRoot;
 
+// Dropping an Illustrator document onto a canvas without artwork opens it.
+// Explicit File > Import continues to import into the current document.
+bool file_drop_opens_document(SPDocument *document, std::string const &path);
+
 namespace Inkscape {
     namespace Extension {
         class Extension;

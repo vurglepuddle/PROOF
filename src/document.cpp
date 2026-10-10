@@ -2199,6 +2199,11 @@ void SPDocument::_importDefsNode(SPDocument *source, Inkscape::XML::Node *defs, 
         bool duplicate = false;
         SPObject *src = source->getObjectByRepr(def);
 
+        // Pages are placed explicitly by file_import_pages. Copying their
+        // svg:view definitions here creates a second set at untransformed
+        // source coordinates, detached from the imported artwork.
+        if (is<SPPage>(src)) continue;
+
         // Prevent duplication of symbols... could be more clever.
         // The tag "_inkscape_duplicate" is added to "id" by ClipboardManagerImpl::copySymbol().
         // We assume that symbols are in defs section (not required by SVG spec).

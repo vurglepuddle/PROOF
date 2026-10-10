@@ -23,6 +23,7 @@
 #include "colors/spaces/cms.h"
 #include "doc-per-case-test.h"
 #include "document.h"
+#include "file.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
 #include "libnrtype/font-factory.h"
@@ -241,6 +242,80 @@ TEST_F(AiNativeImportTest, LayersPagesUnitsAndYFlip)
     auto pv = sp_svg_read_pathv(attr(elements(root, "svg:path")[0], "d").c_str());
     ASSERT_EQ(pv.size(), 1u);
     EXPECT_EQ(pv[0].initialPoint(), Geom::Point(10, 80));
+}
+
+TEST_F(AiNativeImportTest, ImportedPagesAndArtworkKeepTheSamePhysicalCoordinates)
+{
+    auto source = make(records(layer("0 g\n" + rect), boards(2), false));
+    ASSERT_TRUE(source);
+    auto host = SPDocument::createNewDocFromMem(
+        std::string(R"(<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 100 50">
+             <rect id="existing" x="2" y="3" width="4" height="5"/>
+           </svg>)"));
+    ASSERT_TRUE(host);
+    host->ensureUpToDate();
+    auto const existing = cast<SPItem>(host->getObjectById("existing"))->documentGeometricBounds();
+    auto path = elements(source->document->getReprRoot(), "svg:path").front();
+    auto const original_bounds = cast<SPItem>(source->document->getObjectByRepr(path))->documentGeometricBounds();
+    ASSERT_TRUE(original_bounds);
+    file_import_pages(host.get(), source->document.get());
+    host->ensureUpToDate();
+    auto const pages = host->getPageManager().getPages();
+    ASSERT_EQ(pages.size(), 3u);
+    auto imported_path = elements(host->getReprRoot(), "svg:path").front();
+    auto const bounds = cast<SPItem>(host->getObjectByRepr(imported_path))->documentGeometricBounds();
+    ASSERT_TRUE(bounds);
+    auto const imported_page = pages[1]->getDocumentRect();
+    EXPECT_NEAR(imported_page.width(), 200 * 96.0 / 72, 1e-5);
+    EXPECT_NEAR(imported_page.height(), 100 * 96.0 / 72, 1e-5);
+    EXPECT_NEAR(bounds->left() - imported_page.left(), original_bounds->left(), 1e-5);
+    EXPECT_NEAR(bounds->top() - imported_page.top(), original_bounds->top(), 1e-5);
+    EXPECT_NEAR(bounds->width(), original_bounds->width(), 1e-5);
+    EXPECT_NEAR(bounds->height(), original_bounds->height(), 1e-5);
+    EXPECT_EQ(cast<SPItem>(host->getObjectById("existing"))->documentGeometricBounds(), existing);
+    EXPECT_STREQ(pages[1]->label(), "Page 1");
+    EXPECT_STREQ(pages[2]->label(), "Page 2");
+}
+
+TEST_F(AiNativeImportTest, ImportedOverlappingArtboardsRemainSeparate)
+{
+    auto setup = boards(2);
+    setup.replace(setup.find("220 100"), 7, "0 100");
+    setup.replace(setup.find("420 0"), 5, "200 0");
+    auto source = make(records(layer("0 g\n" + rect), setup, false));
+    ASSERT_TRUE(source);
+    auto const original_pages = source->document->getPageManager().getPages();
+    ASSERT_EQ(original_pages.size(), 2u);
+    for (unsigned i : {0u, 1u}) {
+        ASSERT_NEAR(original_pages[0]->getDocumentRect().min()[i], original_pages[1]->getDocumentRect().min()[i], 1e-5);
+        ASSERT_NEAR(original_pages[0]->getDocumentRect().max()[i], original_pages[1]->getDocumentRect().max()[i], 1e-5);
+    }
+    auto host = SPDocument::createNewDoc(nullptr, true);
+    ASSERT_TRUE(host);
+    file_import_pages(host.get(), source->document.get());
+    host->ensureUpToDate();
+    auto const pages = host->getPageManager().getPages();
+    ASSERT_EQ(pages.size(), 3u);
+    for (unsigned i : {0u, 1u}) {
+        EXPECT_NEAR(pages[1]->getDocumentRect().min()[i], pages[2]->getDocumentRect().min()[i], 1e-5);
+        EXPECT_NEAR(pages[1]->getDocumentRect().max()[i], pages[2]->getDocumentRect().max()[i], 1e-5);
+    }
+    EXPECT_STREQ(pages[1]->label(), "Page 1");
+    EXPECT_STREQ(pages[2]->label(), "Page 2");
+}
+
+TEST_F(AiNativeImportTest, IllustratorDropOpensBlankCanvasButPreservesExistingArtwork)
+{
+    auto blank = SPDocument::createNewDocFromMem(
+        std::string(R"(<svg xmlns="http://www.w3.org/2000/svg"><g><g/></g></svg>)"));
+    ASSERT_TRUE(blank);
+    EXPECT_TRUE(file_drop_opens_document(blank.get(), "Map.ai"));
+    EXPECT_TRUE(file_drop_opens_document(blank.get(), "Map.AI"));
+    EXPECT_FALSE(file_drop_opens_document(blank.get(), "Photo.png"));
+    auto existing = SPDocument::createNewDocFromMem(
+        std::string(R"(<svg xmlns="http://www.w3.org/2000/svg"><g style="display:none"><rect width="10" height="10"/></g></svg>)"));
+    ASSERT_TRUE(existing);
+    EXPECT_FALSE(file_drop_opens_document(existing.get(), "Map.ai"));
 }
 
 TEST_F(AiNativeImportTest, ProcessChannelsAndBlackOnlyGray)

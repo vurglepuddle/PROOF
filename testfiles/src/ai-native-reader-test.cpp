@@ -429,6 +429,53 @@ TEST(AiNativeReader, TextSlots)
     EXPECT_EQ(kids[0].story, 3u);
 }
 
+TEST(AiNativeReader, TextAppearanceUsesItsCanonicalStoryInItsOriginalLayer)
+{
+    // Illustrator's FreeUndo=1 appearance can refer to a different story. The
+    // following commented FreeUndo=0 object is the editable source of truth.
+    auto text = [](unsigned proxy, unsigned canonical) {
+        return "u\n/AI11Text :\n1 /FreeUndo ,\n" + std::to_string(proxy) +
+               " /StoryIndex ,\n;\nU\n6 () XW\n%_/AI11Text :\n%_0 /FreeUndo ,\n%_" +
+               std::to_string(canonical) + " /StoryIndex ,\n%_;\n1 (Text appearance) XW\n";
+    };
+    auto doc = read_ok(records(layer("Labels", text(4, 56)) + layer("Trees", text(5, 0))));
+    ASSERT_EQ(doc.layers.size(), 2u);
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    ASSERT_EQ(doc.layers[1].children.size(), 1u);
+    EXPECT_EQ(doc.layers[0].children[0].kind, Node::Kind::Text);
+    EXPECT_EQ(doc.layers[0].children[0].story, 56u);
+    EXPECT_EQ(doc.layers[1].children[0].kind, Node::Kind::Text);
+    EXPECT_EQ(doc.layers[1].children[0].story, 0u);
+}
+
+TEST(AiNativeReader, GroupNamesAfterAppearanceMarkers)
+{
+    auto art = "u\n0 g\n" + rect(0, 0, 10, 10) +
+               "f\nU\n9 () XW\n%_/ArtDictionary :\n%_(Named group) /UnicodeString (AIArtName) ,\n%_;\n";
+    auto doc = read_ok(records(layer("L", art)));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    EXPECT_EQ(doc.layers[0].children[0].name, "Named group");
+    EXPECT_TRUE(doc.layers[0].children[0].children[0].name.empty());
+}
+
+TEST(AiNativeReader, TextAppearanceKeepsNamedGroupsAndAppliesOpacityOnce)
+{
+    for (auto const &state : {std::string("0 0.5 0 0 0 Xy\n"),
+                              std::string("%_/ArtDictionary :\n%_(Named text group) /UnicodeString (AIArtName) ,\n%_;\n")}) {
+        auto art = "u\n/AI11Text :\n1 /FreeUndo ,\n4 /StoryIndex ,\n;\nU\n6 () XW\n" + state +
+                   "%_/AI11Text :\n%_0 /FreeUndo ,\n%_56 /StoryIndex ,\n%_;\n1 (Text appearance) XW\n";
+        auto doc = read_ok(records(layer("L", art)));
+        ASSERT_EQ(doc.layers[0].children.size(), 1u);
+        auto const &group = doc.layers[0].children[0];
+        EXPECT_EQ(group.kind, Node::Kind::Group);
+        ASSERT_EQ(group.children.size(), 1u);
+        EXPECT_EQ(group.children[0].story, 56u);
+        EXPECT_EQ(group.children[0].transparency.opacity, 1.0);
+        if (state.front() == '0') EXPECT_EQ(group.transparency.opacity, 0.5);
+        else EXPECT_EQ(group.name, "Named text group");
+    }
+}
+
 TEST(AiNativeReader, IgnoredCensusOperators)
 {
     // Ar (output resolution), An (CS5), XD brush metadata.

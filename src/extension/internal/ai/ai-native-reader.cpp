@@ -1275,7 +1275,6 @@ void Reader::style_marker(Values const &vals, bool hidden)
     double const code = nums.empty() ? 0.0 : nums.back();
     auto const style = last_text(vals).value_or("");
     bool const after = _after_object;
-    _after_object = false;
     // `1 (style) XW` after the object written on %_ lines; its drawn look comes before it.
     if (hidden || code != 1.0 || style.empty() || !after || _frames.empty()) return;
     auto &kids = _frames.back().children;
@@ -1286,6 +1285,24 @@ void Reader::style_marker(Values const &vals, bool hidden)
     Node obj = std::move(object);
     kids.pop_back();
     auto &l = kids.back();
+    // A text-only appearance is a proxy, not the editable object. Its
+    // FreeUndo=1 StoryIndex can refer to a different story (Dallas maps).
+    // Keep the following canonical story in this layer instead. There is no
+    // drawn effect to flatten when the wrapper has no appearance of its own.
+    if (obj.kind == Node::Kind::Text && l.children.size() == 1 &&
+        l.children.front().kind == Node::Kind::Text) {
+        obj.commented = false;
+        if (l.transparency.is_default() && l.visible && !l.locked && l.name.empty()) {
+            l = std::move(obj);
+        } else {
+            // The drawn wrapper already carries the appearance. Keep its
+            // child's paint/opacity rather than applying the canonical
+            // object's appearance a second time.
+            l.children.front().story = obj.story;
+            if (!obj.name.empty()) l.name = std::move(obj.name);
+        }
+        return;
+    }
     strip_commented(l);
     if (!obj.name.empty()) l.name = obj.name;
     l.visible = obj.visible;

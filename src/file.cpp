@@ -624,6 +624,26 @@ void sp_import_document(SPDesktop *desktop, SPDocument *clipdoc, bool in_place, 
  *  Import a resource.  Called by document_import() and Drag and Drop.
  *  The only place 'key' is used non-null is in drag-and-drop of a GDK_TYPE_TEXTURE.
  */
+bool file_drop_opens_document(SPDocument *document, std::string const &path)
+{
+    if (!document || path.size() < 3 || g_ascii_strcasecmp(path.c_str() + path.size() - 3, ".ai")) {
+        return false;
+    }
+    // Empty layers do not turn a blank canvas into an existing drawing. Hidden
+    // or locked artwork does: never discard it when deciding how to drop a file.
+    auto has_art = [&](auto &&self, SPObject const *object) -> bool {
+        for (auto const &child : object->children) {
+            if (is<SPGroup>(&child)) {
+                if (self(self, &child)) return true;
+            } else if (is<SPItem>(&child)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    return !has_art(has_art, document->getRoot());
+}
+
 SPObject *file_import(SPDocument *in_doc, std::string const &path, Inkscape::Extension::Extension *key,
                       std::optional<Geom::Point> drop_pos)
 {
@@ -637,6 +657,13 @@ SPObject *file_import(SPDocument *in_doc, std::string const &path, Inkscape::Ext
     // We need access to the module locally for our import logic
     if (!key) {
         key = Inkscape::Extension::Input::find_by_filename(path.c_str());
+    }
+
+    if (drop_pos && file_drop_opens_document(in_doc, path)) {
+        // Use the same open operation as File > Open, including colour mode,
+        // artboard coordinates, file identity and replacement of a virgin tab.
+        InkscapeApplication::instance()->create_window(Gio::File::create_for_path(path));
+        return nullptr;
     }
 
     // DEBUG_MESSAGE( fileImport, "file_import( in_doc:%p uri:[%s], key:%p", in_doc, uri, key );
@@ -727,7 +754,8 @@ void file_import_pages(SPDocument *this_doc, SPDocument *that_doc)
     auto &this_pm = this_doc->getPageManager();
     auto &that_pm = that_doc->getPageManager();
 
-    // Make sure objects have visualBounds created for import
+    // Resolve both coordinate systems before creating pages or placing artwork.
+    this_doc->ensureUpToDate();
     that_doc->ensureUpToDate();
     this_pm.enablePages();
 
@@ -736,6 +764,7 @@ void file_import_pages(SPDocument *this_doc, SPDocument *that_doc)
         auto this_page = this_pm.newDocumentPage(that_page->getDocumentRect() * tr);
         // Set the margin, bleed, etc
         this_page->copyFrom(that_page);
+        this_page->getRepr()->setAttribute("inkscape:label", that_page->label());
     }
 
     this_doc->import(*that_doc, nullptr, nullptr, tr, nullptr);

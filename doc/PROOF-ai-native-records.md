@@ -345,6 +345,47 @@ is labelled complete from visual acceptance alone. The gallery reuses actual
 comparison PNGs. `--all` requires an explicit milestone reason. Existing corpus
 files are already seen; an independent holdout awaits newly approved files.
 
+### Dallas designer trial: text appearances and dropped artboards (2026-10-10)
+
+Illustrator can write a text-only drawn appearance with `FreeUndo=1` and a
+`StoryIndex` different from the following commented, editable `FreeUndo=0`
+object. The Dallas map exposed labels apparently swapping layers: the reader
+had kept the appearance's text instead of the canonical story. Text-only
+appearances now use the canonical text in its original layer. An otherwise
+empty, anonymous appearance wrapper is removed; named wrappers and wrappers with
+transparency or object state remain without applying opacity twice. Appearance
+markers also retain the association needed to attach a
+following `AIArtName` dictionary to its group.
+
+Dropping an `.ai` file onto a canvas with no artwork uses the normal File > Open
+operation, preserving source colour mode, units and artboard coordinates.
+Empty layers count as blank; hidden or locked artwork counts as existing
+content. Explicit File > Import still imports. Opening a modified blank
+document preserves it in its tab through the existing open operation.
+
+For actual page imports, both documents are updated before calculating physical
+coordinates, page labels are copied, and `importDefs` excludes page definitions.
+Previously it copied each `svg:view` again at its untransformed source position,
+leaving an extra set of artboards detached from the imported artwork. Distinct
+overlapping artboards remain distinct.
+
+The Dallas file remains a **partial native import**. Its saved visible artwork
+passes the PDF comparison, but hidden layers include unsupported pattern fills.
+Matching the saved PDF cannot verify artwork that those layers hide. Pattern
+reconstruction and an independent user check of the updated drag operation are
+still required.
+
+The focused suites pass 32 active native-import cases and 33 active reader cases;
+their two opt-in corpus cases are skipped. Small fixtures cover physical page/art
+placement across differing document scales, overlapping pages, names after
+appearance markers, canonical text stories, named text wrappers and opacity.
+The six-file real smoke suite and 20 previously recovered text files retain their
+native decisions, with two effect-family representatives rechecked after the
+final wrapper guard. Installed CLI open and SVG save/reopen of Dallas retain RGB,
+six artboards, 58 editable text objects and the correct tree/label stories. The
+installed interchange smoke passes 19/19; none of these is a live drag-gesture
+or hidden-layer fidelity certificate.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

@@ -326,12 +326,12 @@ bool on_drop(Glib::ValueBase const &value, double x, double y, SPDesktopWidget *
             auto const path = g_file_get_path(f);
             auto const uri  = g_file_get_uri(f);
             if (path && std::strlen(path) > 2) {
-                file_import(doc, path, nullptr, dt_pos);
+                file_import(desktop->getDocument(), path, nullptr, dt_pos);
             }
             else if (uri) {
                 // gtk4 on macOS provides URIs instead of local paths. Unescape and import.
                 auto const unescaped = g_uri_unescape_string(uri, nullptr);
-                file_import(doc, unescaped, nullptr, dt_pos);
+                file_import(desktop->getDocument(), unescaped, nullptr, dt_pos);
                 g_free((void*)unescaped);
             }
             g_free(path);
