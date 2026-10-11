@@ -18,7 +18,10 @@ keymap, X switches targets, Shift+X swaps fill/stroke, D applies white fill and
 black stroke, and / removes the active paint. These shortcuts require canvas
 focus and are disabled while the Text tool is active or an entry has focus.
 In a CMYK document, D uses zero-ink white and K-only black. Default stroke width
-is 1 document unit and default paint opacity is 100%.
+is 1 pt, whatever the document's unit, and default paint opacity is 100%.
+Shift+X belongs to this swap alone: with nothing selected it swaps the drawing
+defaults, which the older `app.swap-fill-and-stroke` (still an action, without
+a key) does not.
 
 Selected objects, group children and text use the same application functions
 as Fill and Stroke. Numeric colour edits preserve the other paint, geometry

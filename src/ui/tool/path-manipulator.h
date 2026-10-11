@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <2geom/path-sink.h>
+#include <sigc++/scoped_connection.h>
 #include "manipulator.h"
 #include "node.h"
 #include "object/sp-object.h"
@@ -148,6 +149,7 @@ private:
     bool _shapeChanged() const;
     void _convertShape();
     void _restoreShapePreview();
+    void _watchPath();
     Glib::ustring _nodetypesKey();
     Inkscape::XML::Node *_getXMLNode();
     Geom::Affine _getTransform() const;
@@ -171,6 +173,7 @@ private:
     SubpathList _subpaths;
     MultiPathManipulator &_multi_path_manipulator;
     SPObject *_path; ///< can be an SPPath or an Inkscape::LivePathEffect::Effect  !!!
+    sigc::scoped_connection _path_released;
     Geom::PathVector _spcurve; // in item coordinates
     std::optional<Geom::PathVector> _shape_geometry;
     std::string _shape_types;

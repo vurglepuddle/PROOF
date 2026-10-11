@@ -130,6 +130,7 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
     }
     _d2i_transform = _i2d_transform.inverse();
     _dragpoint->setVisible(false);
+    _watchPath();
 
     _getGeometry();
 
@@ -196,6 +197,16 @@ void PathManipulator::_restoreShapePreview()
     }
 }
 
+/** The object can go while this manipulator stays: the selection only tells of what is
+ *  selected, and a shape inside a clip or a mask is edited without being. */
+void PathManipulator::_watchPath()
+{
+    _path_released = _path->connectRelease([this] (SPObject *) {
+        _path = nullptr;
+        _shape_geometry.reset();
+    });
+}
+
 void PathManipulator::_convertShape()
 {
     auto hold = shared_from_this();
@@ -236,6 +247,7 @@ void PathManipulator::_convertShape()
     old->deleteObject(false);
     parent->addChildAtPos(repr, position);
     _path = document->getObjectByRepr(repr);
+    _watchPath();
     delete _observer;
     _observer = new PathManipulatorObserver(this, repr);
     _shape_geometry.reset();

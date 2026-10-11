@@ -1007,7 +1007,7 @@ void InkscapePreferences::initPageTools()
     _page_selector.add_line( true, "", _t_too_layer, "", _("Indicate the selected layer by making all other layers fade."));
 
     //Node
-    AddSelcueCheckbox(_page_node, "/tools/nodes", true);
+    // No selection cue here: Direct Selection shows the object by its path and anchors.
     AddGradientCheckbox(_page_node, "/tools/nodes", true);
     AddLayerChangeCheckbox(_page_node, "/tools/nodes", false);
     AddPageChangeCheckbox(_page_node, "/tools/nodes", false);

@@ -458,6 +458,11 @@ std::unique_ptr<SPDocument> SPDocument::createDoc(
 
 void SPDocument::runMigrationsForOlderVersions()
 {
+    // What opening does to a file is not an edit. Left in the undo log, it would go into the
+    // first commit made, even one that changes nothing else (default paints chosen with
+    // nothing selected), which then marks the document as changed and can be undone.
+    DocumentUndo::ScopedInsensitive no_undo(this);
+
     /** Fix baseline spacing (pre-92 files) **/
     Inkscape::Version const lowest_version{0, 1};
     Inkscape::Version &docver = root->inkscape_version;

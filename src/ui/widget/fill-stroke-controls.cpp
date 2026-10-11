@@ -17,10 +17,12 @@
 #include "object/sp-item-group.h"
 #include "selection.h"
 #include "style.h"
+#include "svg/css-ostringstream.h"
 #include "ui/controller.h"
 #include "ui/icon-names.h"
 #include "ui/widget/paint-switch.h"
 #include "ui/widget/selection-paint.h"
+#include "util/units.h"
 
 namespace Inkscape::UI::Widget {
 namespace {
@@ -370,7 +372,11 @@ void FillStrokeControls::applyStyle(char const *fill, char const *stroke)
     sp_repr_css_set_property(css, "stroke", stroke);
     sp_repr_css_set_property(css, "fill-opacity", "1");
     sp_repr_css_set_property(css, "stroke-opacity", "1");
-    sp_repr_css_set_property(css, "stroke-width", "1");
+    // 1 pt, as in Illustrator. The desktop takes a width in px: it divides it by each
+    // item's scale to the document, the root's viewBox included.
+    CSSOStringStream width;
+    width << Util::Quantity::convert(1, "pt", "px");
+    sp_repr_css_set_property(css, "stroke-width", width.str().c_str());
     sp_desktop_set_style(_desktop, css);
     sp_repr_css_attr_unref(css);
     remember_default_paint(_desktop, true);

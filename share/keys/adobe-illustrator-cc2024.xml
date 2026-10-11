@@ -131,8 +131,6 @@
     <bind gaction="app.duplicate-transform"                keys="&lt;Primary&gt;d" />
     <bind gaction="app.delete"                             keys="Delete, KP_Delete, BackSpace" />
 
-    <bind gaction="app.swap-fill-and-stroke"               keys="&lt;Shift&gt;x" />
-
     <!-- Select -->
     <bind gaction="win.select-all-layers"                  keys="&lt;Primary&gt;a" />
     <bind gaction="win.select-none"                        keys="Escape, &lt;Primary&gt;&lt;Shift&gt;a"/>

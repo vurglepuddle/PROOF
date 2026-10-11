@@ -37,6 +37,9 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
 - **Presentation:** Direct Selection shows the path and anchors without the
   dashed object bounding box. Stationary anchors from the selected path are
   supplied to snapping during a direct anchor drag.
+- **An object that goes:** a path's manipulator forgets its object when the
+  object is released. The selection only reports what is selected, and a shape
+  inside a clip or a mask is edited without being selected.
 
 ## Remaining scope
 

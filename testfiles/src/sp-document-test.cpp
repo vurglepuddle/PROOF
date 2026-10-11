@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <glibmm/i18n.h>
 #include <gtest/gtest.h>
 #include <src/document.h>
 #include <src/object/sp-item.h>
 #include <src/object/sp-object.h>
 
+#include "document-undo.h"
 #include "geom-predicates.h"
 #include "inkscape.h"
 #include "object/object-set.h"
@@ -31,6 +33,24 @@ static ImportFileInfo const ImportTestFiles1[] = {
     {"p160x247_6mm_tl_shift.svg", Geom::Rect(3, 4, 44, 46)},
     {"p150x237_8mm_bl_shift.svg", Geom::Rect(42, 156, 81, 194)},
 };
+
+// Opening a file stamps it with this version. A commit that changes nothing must then find
+// nothing to record: otherwise choosing default paints with nothing selected marks a document
+// just opened as changed, and closing it asks to save.
+TEST(SPDocumentOpening, WhatOpeningDoesIsNotAnEdit)
+{
+    Application::create(false);
+    static char const svg[] =
+        R"(<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="5" height="5"/></svg>)";
+    auto doc = SPDocument::createNewDocFromMem(svg, "");
+    ASSERT_TRUE(doc);
+    ASSERT_NE(doc->getReprRoot()->attribute("inkscape:version"), nullptr);
+
+    DocumentUndo::done(doc.get(), RC_("Undo", "Nothing"), "");
+    EXPECT_FALSE(doc->isModifiedSinceSave());
+    EXPECT_FALSE(DocumentUndo::undo(doc.get()));
+    EXPECT_NE(doc->getReprRoot()->attribute("inkscape:version"), nullptr);
+}
 
 class SPDocumentTestFilePair : public ::testing::TestWithParam<std::tuple<ImportFileInfo, ImportFileInfo>>
 {
