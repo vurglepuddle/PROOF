@@ -60,10 +60,13 @@ public:
     }
 
     void show_window() {
-        _refresh = Glib::signal_timeout().connect_seconds([this] {
-            transition();
-            return true;
-        }, SLIDESHOW_DELAY_sec);
+        // PROOF: one screen of its own has nothing to change to.
+        if (_about_screens.size() > 1) {
+            _refresh = Glib::signal_timeout().connect_seconds([this] {
+                transition();
+                return true;
+            }, SLIDESHOW_DELAY_sec);
+        }
 
         // reset the stage
         _viewer1->set_paintable({});
@@ -91,6 +94,11 @@ private:
     Gtk::AspectFrame* _frame = nullptr;
 
     void find_about_screens() {
+        // PROOF: its own screen. Inkscape's release artwork is shown only where that one is missing.
+        if (auto own = Resource::get_filename(Resource::SCREENS, "proof-about.svg", false, true); !own.empty()) {
+            _about_screens.push_back(std::move(own));
+            return;
+        }
         auto path = Glib::build_filename(get_path_string(Resource::SYSTEM, Resource::SCREENS), "about");
         Resource::get_filenames_from_path(_about_screens, path, {".svgz"}, {});
         if (_about_screens.empty()) {
@@ -209,7 +217,7 @@ void show_about()
     auto translators  = &get_widget<Gtk::TextView>(builder, "credits-translators");
     auto license      = &get_widget<Gtk::Label>   (builder, "license-text");
 
-    auto text = Inkscape::inkscape_version();
+    auto text = Inkscape::proof_version();
     version_lbl->set_label(text);
     version->signal_clicked().connect(
         sigc::bind(&copy, version, label, std::move(text)));

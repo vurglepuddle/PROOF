@@ -3,7 +3,7 @@
   <requires lib="gtk" version="4.0"/>
   <object class="GtkWindow" id="about-screen-window">
     <property name="name">about</property>
-    <property name="title" translatable="yes">Inkscape. Draw freely.</property>
+    <property name="title" translatable="yes">About PROOF</property>
     <property name="resizable">False</property>
     <property name="modal">True</property>
     <property name="icon-name">org.inkscape.Inkscape</property>
@@ -22,21 +22,21 @@
                 <property name="child">
                   <object class="GtkAspectFrame" id="aspect-frame">
                     <property name="width-request">750</property>
-                    <property name="height-request">625</property>
+                    <property name="height-request">440</property>
                     <property name="yalign">0</property>
-                    <property name="ratio">1.2000000476837158</property>
+                    <property name="ratio">1.7045454978942871</property>
                     <property name="child">
                       <object class="GtkOverlay" id="overlay">
                         <property name="child">
                           <object class="GtkPicture" id="viewer1">
-                            <property name="width-request">725</property>
-                            <property name="height-request">625</property>
+                            <property name="width-request">750</property>
+                            <property name="height-request">440</property>
                           </object>
                         </property>
                         <child type="overlay">
                           <object class="GtkPicture" id="viewer2">
                             <property name="width-request">750</property>
-                            <property name="height-request">625</property>
+                            <property name="height-request">440</property>
                           </object>
                         </child>
                       </object>
@@ -48,7 +48,6 @@
                 </property>
                 <property name="tab">
                   <object class="GtkLabel" id="about-label">
-                    <property name="tooltip-text" translatable="yes">Official splash artwork of this version</property>
                     <property name="hexpand">True</property>
                     <property name="label" translatable="yes">About</property>
                   </object>
@@ -198,31 +197,51 @@
             <property name="vexpand">True</property>
             <property name="orientation">vertical</property>
             <child>
-              <object class="GtkBox" id="about-screen-footer">
+              <object class="GtkBox" id="about-screen-based-on">
                 <property name="margin-start">9</property>
                 <property name="margin-end">9</property>
                 <property name="margin-top">8</property>
-                <property name="margin-bottom">8</property>
                 <child>
-                  <object class="GtkLabel" id="copyright">
-                    <property name="halign">center</property>
-                    <property name="label" translatable="yes" context="Brief copyright notice at the footer of the About screen; the placeholder '%1' represents the year as a 4-digit number.">© %1 Inkscape Developers</property>
-                    <property name="wrap">True</property>
-                    <property name="wrap-mode">char</property>
+                  <object class="GtkLabel" id="based-on">
+                    <property name="halign">start</property>
+                    <property name="hexpand">True</property>
+                    <property name="label" translatable="yes">PROOF is based on Inkscape.</property>
                   </object>
                 </child>
                 <child>
                   <object class="GtkLinkButton" id="website">
-                    <property name="halign">center</property>
-                    <property name="hexpand">True</property>
                     <property name="label">www.inkscape.org</property>
                     <property name="focusable">True</property>
                     <property name="focus-on-click">False</property>
                     <property name="receives-default">True</property>
-                    <property name="tooltip-text" translatable="yes">Link to the official website</property>
-                    <property name="margin-start">15</property>
+                    <property name="tooltip-text" translatable="yes">Inkscape's website</property>
                     <property name="has-frame">False</property>
                     <property name="uri">https://inkscape.org/?about-screen=1</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLinkButton" id="proof-website">
+                    <property name="label" translatable="yes">PROOF on GitHub</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="tooltip-text" translatable="yes">PROOF's source code and its list of faults</property>
+                    <property name="margin-start">6</property>
+                    <property name="has-frame">False</property>
+                    <property name="uri">https://github.com/vurglepuddle/PROOF</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox" id="about-screen-footer">
+                <property name="margin-start">9</property>
+                <property name="margin-end">9</property>
+                <property name="margin-bottom">8</property>
+                <child>
+                  <object class="GtkLabel" id="copyright">
+                    <property name="halign">start</property>
+                    <property name="hexpand">True</property>
+                    <property name="label" translatable="yes" context="Brief copyright notice at the footer of the About screen; the placeholder '%1' represents the year as a 4-digit number.">© %1 Inkscape Developers and PROOF contributors</property>
                   </object>
                 </child>
                 <child>

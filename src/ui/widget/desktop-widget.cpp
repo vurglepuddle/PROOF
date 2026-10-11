@@ -40,6 +40,7 @@
 #include "enums.h"
 #include "helper/mathfns.h"
 #include "inkscape-version.h"
+#include "inkscape-version-info.h"
 #include "inkscape-window.h"
 #include "inkscape.h"
 #include "object/sp-image.h"
@@ -402,7 +403,7 @@ SPDesktopWidget::~SPDesktopWidget() = default;
 /**
  * Set the title in the desktop-window (if desktop has an own window).
  *
- * The title has form file name: desktop number - Inkscape.
+ * The title has form file name: desktop number - PROOF.
  * The desktop number is only shown if it's 2 or higher,
  */
 void SPDesktopWidget::_updateTitle()
@@ -457,11 +458,14 @@ void SPDesktopWidget::_updateTitle()
         }
         Name += ")";
 
-        Name += " - Inkscape";
+        Name += Inkscape::PROOF_TITLE_SUFFIX;
 
         if (prefs->getBool("/options/versionintitle/value", true)) {
-            Name += " ";
-            Name += Inkscape::version_string;
+            // PROOF: Inkscape's number after PROOF's name would read as PROOF's own.
+            if (auto const build = Inkscape::proof_build(); !build.empty()) {
+                Name += " ";
+                Name += build;
+            }
         }
 
         _window->set_title(Name);

@@ -291,8 +291,10 @@ if(WIN32)
   string(TIMESTAMP COPYRIGHT_YEAR %Y)
   
   set(FILE_NAME inkscape)
-  set(PROGRAM_NAME Inkscape)
-  set(PROGRAM_DESCRIPTION "Inkscape vector graphics editor")
+  # PROOF: the name Windows shows for the editor (Task Manager, the taskbar, the file's details).
+  # The file keeps Inkscape's name for now: every build and check script names inkscape.exe.
+  set(PROGRAM_NAME PROOF)
+  set(PROGRAM_DESCRIPTION "PROOF")
   configure_file(inkscape.rc ${CMAKE_BINARY_DIR}/src/inkscape.rc)
   configure_file(inkscape-manifest.xml ${CMAKE_BINARY_DIR}/src/inkscape-manifest.xml)  
   list(APPEND main_SRC ${CMAKE_BINARY_DIR}/src/inkscape.rc)

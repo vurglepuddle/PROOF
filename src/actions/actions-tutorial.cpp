@@ -64,7 +64,7 @@ std::vector<std::vector<Glib::ustring>> raw_data_tutorial =
     { "app.tutorial-interpolate",         N_("Inkscape: Interpolate"),       SECTION, N_("Using the interpolate extension")},
     { "app.tutorial-design",              N_("Elements of Design"),          SECTION, N_("Principles of design in the tutorial form")},
     { "app.tutorial-tips",                N_("Tips and Tricks"),             SECTION, N_("Miscellaneous tips and tricks")},
-    { "app.about",                        N_("About Inkscape"),              SECTION, N_("Inkscape version, authors, license")}
+    { "app.about",                        N_("About PROOF"),                 SECTION, N_("PROOF and the Inkscape version it is based on, authors, license")}
     // clang-format on
 };
 

@@ -16,13 +16,13 @@
         <child>
           <object class="GtkLabel">
             <property name="margin-top">2</property>
-            <property name="label" translatable="yes">&lt;b&gt;Inkscape has crashed and will now close.&lt;/b&gt;</property>
+            <property name="label" translatable="yes">&lt;b&gt;PROOF has crashed and will now close.&lt;/b&gt;</property>
             <property name="use-markup">True</property>
           </object>
         </child>
         <child>
           <object class="GtkLabel">
-            <property name="label" translatable="yes">If you can reproduce this crash, please &lt;a href="https://inkscape.org/report"&gt;file a bug&lt;/a&gt; and include the backtrace from the area below.</property>
+            <property name="label" translatable="yes">If you can reproduce this crash, please &lt;a href="https://github.com/vurglepuddle/PROOF/issues"&gt;file a bug&lt;/a&gt; and include the backtrace from the area below.</property>
             <property name="use-markup">True</property>
             <property name="margin-start">30</property>
             <property name="margin-end">30</property>

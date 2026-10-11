@@ -245,7 +245,7 @@ std::vector<std::vector<Glib::ustring>> raw_data_base =
     {"app.user-data-directory",   N_("User Directory"),             SECTION_BASE,    N_("Print user data directory and exit")                },
     {"app.action-list",           N_("List Actions"),               SECTION_BASE,    N_("Print a list of actions and exit")                  },
     {"app.list-input-types",      N_("List Input File Extensions"), SECTION_BASE,    N_("Print a list of input file extensions and exit")    },
-    {"app.quit",                  N_("Quit"),                       SECTION_BASE,    N_("Quit Inkscape, check for data loss")                },
+    {"app.quit",                  N_("Quit"),                       SECTION_BASE,    N_("Quit PROOF, check for data loss")                },
     {"app.quit-immediate",        N_("Quit Immediately"),           SECTION_BASE,    N_("Immediately quit Inkscape, no check for data loss") },
     {"app.refresh-user-extensions", N_("Refresh User Extensions"),  SECTION_BASE,    N_("Refresh list of available user extensions")         },
 

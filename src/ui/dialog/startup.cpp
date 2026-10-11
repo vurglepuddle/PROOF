@@ -135,7 +135,7 @@ StartScreen::StartScreen()
     , messages{get_widget<Gtk::Label>(build_splash, "messages")}
 {
     set_name("start-screen-window");
-    set_title(Inkscape::inkscape_version());
+    set_title("PROOF");
     set_focusable(true);
     set_receives_default(true);
     set_default_widget(*this);
@@ -194,10 +194,12 @@ StartScreen::StartScreen()
     refresh_dark_switch();
 
     // Load pictures. Gtk::Picture doesn't appear to be able to load image files from builder files.
-    auto const welcome_text_file   = Resource::get_filename(Resource::SCREENS, "start-welcome-text.svg", true);
-    auto const start_welcome_file  = Resource::get_filename(Resource::SCREENS, "start-welcome.png");
+    // PROOF: one banner of its own while loading and above the setup and the files tabs. It has no
+    // words, so it needs no translated text over it. The tab that asks for support of the Inkscape
+    // project keeps Inkscape's picture.
+    auto const start_welcome_file  = Resource::get_filename(Resource::SCREENS, "proof-banner.png");
     auto const start_support_file  = Resource::get_filename(Resource::SCREENS, "start-support.png");
-    auto const start_splash_file   = Resource::get_filename(Resource::SCREENS, "start-splash.png");
+    auto const start_splash_file   = start_welcome_file;
     auto const start_support_time  = Resource::get_filename(Resource::SCREENS, "start-support-time.png");
     auto const start_support_money = Resource::get_filename(Resource::SCREENS, "start-support-money.png");
 
@@ -206,11 +208,6 @@ StartScreen::StartScreen()
     get_widget<Gtk::Picture>(build_splash, "start-splash"  ).set_filename(start_splash_file);
     get_widget<Gtk::Picture>(build_welcome, "start-support-time" ).set_filename(start_support_time);
     get_widget<Gtk::Picture>(build_welcome, "start-support-money").set_filename(start_support_money);
-
-    // Set overlay on the Welcome tab
-    auto const welcome_text = Gtk::make_managed<Gtk::Picture>();
-    welcome_text->set_filename(welcome_text_file);
-    get_widget<Gtk::Overlay>(build_splash, "start-welcome-overlay").add_overlay(*welcome_text);
 
     // Welcome! tab
     canvas->signal_changed().connect(sigc::mem_fun(*this, &StartScreen::canvas_changed));

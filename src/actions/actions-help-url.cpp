@@ -70,8 +70,8 @@ void help_url_release_notes(InkscapeWindow *win, const char *lang, const char *v
 
 void help_url_report_bug(InkscapeWindow *win, const char *lang)
 {
-    Glib::ustring url = Glib::ustring::compose("https://inkscape.org/%1/contribute/report-bugs/", lang);
-    help_open_url(url);
+    // PROOF: a fault of this editor is PROOF's to hear of, not Inkscape's. The page has no translations.
+    help_open_url("https://github.com/vurglepuddle/PROOF/issues");
 }
 
 void help_url_manual(InkscapeWindow *win)

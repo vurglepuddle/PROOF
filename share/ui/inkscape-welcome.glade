@@ -512,7 +512,7 @@
                 <property name="margin-end">30</property>
                 <property name="margin-top">10</property>
                 <property name="margin-bottom">10</property>
-                <property name="label" translatable="yes">&lt;b&gt;The Inkscape project is supported by users like you.&lt;/b&gt; Through our collective time, money and skill, we have made this software for everyone in the world to enjoy free from restrictions and free from costs. &lt;b&gt;
+                <property name="label" translatable="yes">&lt;b&gt;PROOF is based on Inkscape, and the Inkscape project is supported by users like you.&lt;/b&gt; Through their collective time, money and skill, its contributors have made that software for everyone in the world to enjoy free from restrictions and free from costs. &lt;b&gt;
                 If you would like to get involved and make the next version of Inkscape even better, please consider joining the Inkscape project today.&lt;/b&gt;</property>
                 <property name="use-markup">True</property>
                 <property name="wrap">True</property>

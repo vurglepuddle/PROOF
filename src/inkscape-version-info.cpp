@@ -44,6 +44,22 @@ std::string inkscape_version() {
 }
 
 /**
+ * PROOF: the name the editor goes by, and what it is built on.
+ *
+ * `--version` keeps Inkscape's line (inkscape_version()), because extensions and scripts read it.
+ */
+std::string proof_version() {
+    return std::string("PROOF, based on Inkscape ") + Inkscape::version_string;
+}
+
+std::string proof_build() {
+    // The version string is "1.5-dev (revision, date)": the part in brackets is this build's.
+    std::string const version = Inkscape::version_string;
+    auto const at = version.find('(');
+    return at == std::string::npos ? std::string() : version.substr(at);
+}
+
+/**
  * Return Inkscape repository revision string
  *
  * @return code revision string
@@ -117,7 +133,7 @@ std::string os_version() {
 std::string debug_info() {
     std::stringstream ss;
 
-    ss << inkscape_version() << std::endl;
+    ss << proof_version() << std::endl;
     ss << std::endl;
 
     ss << "                      Compile  (Run)" << std::endl;

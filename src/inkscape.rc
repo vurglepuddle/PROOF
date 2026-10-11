@@ -12,11 +12,11 @@ BEGIN
         BLOCK "040904E4"
         BEGIN
             VALUE "Comments",         "Published under the GNU GPL"
-            VALUE "CompanyName",      "Inkscape project"
+            VALUE "CompanyName",      "PROOF, based on Inkscape"
             VALUE "FileDescription",  "${PROGRAM_DESCRIPTION}"
             VALUE "FileVersion",      "${INKSCAPE_VERSION}"
             VALUE "InternalName",     "${PROGRAM_NAME}"
-            VALUE "LegalCopyright",   "© ${COPYRIGHT_YEAR} Inkscape project"
+            VALUE "LegalCopyright",   "© ${COPYRIGHT_YEAR} Inkscape project and PROOF contributors"
             VALUE "OriginalFilename", "${FILE_NAME}.exe"
             VALUE "ProductName",      "${PROGRAM_NAME}"
             VALUE "ProductVersion",   "${INKSCAPE_VERSION}"

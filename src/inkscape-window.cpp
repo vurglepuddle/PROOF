@@ -29,6 +29,7 @@
 #include "document.h"
 #include "enums.h"      // PREFS_WINDOW_GEOMETRY_NONE
 #include "inkscape-application.h"
+#include "inkscape-version-info.h"
 
 #include "actions/actions-canvas-mode.h"
 #include "actions/actions-canvas-snapping.h"
@@ -144,7 +145,7 @@ InkscapeWindow::InkscapeWindow(SPDesktop *desktop)
     header->set_title_widget(*title);
     property_title().signal_changed().connect([this, title, name, note] {
         auto full = get_title();
-        auto shown = full.substr(0, full.find(" - Inkscape"));
+        auto shown = full.substr(0, full.rfind(Inkscape::PROOF_TITLE_SUFFIX));
         // "name (CMYK)", "name (RGB, outline)": the note is the last bracket.
         auto at = shown.rfind(" (");
         name->set_text(at == Glib::ustring::npos ? shown : shown.substr(0, at));

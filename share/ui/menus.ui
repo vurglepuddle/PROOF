@@ -128,7 +128,7 @@
           <attribute name="icon">window-close</attribute>
         </item>
         <item>
-          <attribute name="label" translatable="yes">_Quit Inkscape</attribute>
+          <attribute name="label" translatable="yes">_Quit PROOF</attribute>
           <attribute name="action">app.quit</attribute>
           <attribute name="icon">application-exit</attribute>
           <attribute name="hidden-when">macos-menubar</attribute>
@@ -1378,7 +1378,7 @@
           <attribute name="action">win.help-url-donate</attribute>
         </item>
         <item>
-          <attribute name="label" translatable="yes">_About Inkscape</attribute>
+          <attribute name="label" translatable="yes">_About PROOF</attribute>
           <attribute name="action">app.about</attribute>
           <attribute name="icon">inkscape-logo</attribute>
           <attribute name="use-icon">True</attribute>

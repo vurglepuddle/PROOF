@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="220" viewBox="0 0 700 220">
+<title>PROOF</title>
+<desc>The banner of the start screen. proof-banner.png is this drawing, exported at 700 by 220.</desc>
+<defs>
+  <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+    <stop stop-color="#FFFFFF"/>
+    <stop offset="1" stop-color="#DCD9D1"/>
+  </linearGradient>
+  <linearGradient id="cobalt" x1="0" y1="0" x2="1" y2="1">
+    <stop stop-color="#5378FF"/><stop offset=".55" stop-color="#3155FF"/><stop offset="1" stop-color="#2441DF"/>
+  </linearGradient>
+</defs>
+<rect id="ground" width="700" height="220" fill="#14161C"/>
+<g id="mark" transform="translate(99.095 21.619) scale(.345238)">
+  <path id="stem" fill="url(#paper)" d="M104 88H304A108 108 0 0 0 304 304H204V424H104Z"/>
+  <path id="bowl" fill="url(#cobalt)" d="M304 88A108 108 0 0 1 304 304Z"/>
+</g>
+<g id="wordmark" transform="translate(285 90) scale(1.25)" fill="none" stroke="#F2F0E9" stroke-width="2.6" stroke-linejoin="round">
+  <path d="M0 32V0H16C30 0 30 18 16 18H0"/>
+  <path d="M48 32V0H64C78 0 78 18 64 18H48M64 18L77 32"/>
+  <path d="M124 16A15 15 0 1 1 94 16A15 15 0 1 1 124 16Z"/>
+  <path d="M174 16A15 15 0 1 1 144 16A15 15 0 1 1 174 16Z"/>
+  <path d="M198 32V0H224M198 16H220"/>
+</g>
+</svg>
