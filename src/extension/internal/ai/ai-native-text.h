@@ -17,6 +17,14 @@
 
 namespace Inkscape::Extension::Internal::AiNative {
 
+/// A pattern that paints type: which one, and where its tile lies.
+struct TextPattern
+{
+    std::string name;    ///< The pattern's name, as the records define it.
+    Geom::Affine matrix; ///< The pattern's own space to art space, as for a path's.
+    bool operator==(TextPattern const &) const = default;
+};
+
 struct TextStyle
 {
     std::string font; ///< Exact PostScript font name.
@@ -39,6 +47,12 @@ struct TextStyle
     bool small_caps = false;
     bool underline = false;
     bool strikethrough = false;
+    /// The fill or the stroke is a gradient by name. Illustrator doesn't draw a gradient on
+    /// type: the characters are black, which is what `fill` or `stroke` then says.
+    bool gradient = false;
+    /// The fill or the stroke is a pattern, by name. `fill` or `stroke` is then set too, to
+    /// the black the text document keeps beside the name, and isn't what is drawn.
+    std::optional<TextPattern> fill_pattern, stroke_pattern;
     /// Where the characters stand: 0 on the line, 1 superscript, 2 subscript. Illustrator
     /// makes those of the same font, smaller and moved, by what the document says
     /// (TextDocument::type). `size` and `baseline_shift` stay the type's own.
@@ -76,6 +90,10 @@ struct PointText
     std::vector<TextLine> lines;
     bool area = false;      ///< Area type.
     bool rtl = false;       ///< Its paragraphs read from right to left (Hebrew, Arabic).
+    /// It has letters of a script read from the right that Illustrator set from the left,
+    /// one after another as they were typed: it shows them backwards, and so are they set
+    /// here. Its paragraphs read from the left.
+    bool unordered = false;
     Geom::PathVector frame; ///< Area type: the frame's outline, in the layout's space.
     /// Area type: the text its frame is too small to show, a line feed for each line end.
     /// Illustrator doesn't draw it either.

@@ -733,6 +733,7 @@ template <> SPStyleEnum const *get_enums<SPBlendMode>() { return enum_blend_mode
 template <> SPStyleEnum const *get_enums<SPColorRendering>() { return enum_color_rendering; }
 template <> SPStyleEnum const *get_enums<SPCSSBaseline>() { return enum_baseline; }
 template <> SPStyleEnum const *get_enums<SPCSSDirection>() { return enum_direction; }
+template <> SPStyleEnum const *get_enums<SPCSSUnicodeBidi>() { return enum_unicode_bidi; }
 template <> SPStyleEnum const *get_enums<SPCSSDisplay>() { return enum_display; }
 template <> SPStyleEnum const *get_enums<SPCSSFontVariantAlternates>() { return enum_font_variant_alternates; }
 template <> SPStyleEnum const *get_enums<SPCSSTextAlign>() { return enum_text_align; }
@@ -3465,6 +3466,7 @@ template class SPIEnum<SPBlendMode>;
 template class SPIEnum<SPColorRendering>;
 template class SPIEnum<SPCSSBaseline>;
 template class SPIEnum<SPCSSDirection>;
+template class SPIEnum<SPCSSUnicodeBidi>;
 template class SPIEnum<SPCSSDisplay>;
 template class SPIEnum<SPCSSFontVariantAlternates>;
 template class SPIEnum<SPCSSTextAlign>;

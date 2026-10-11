@@ -927,7 +927,7 @@ TEST(AiNativeReader, UnsupportedFeaturesFailClosed)
     EXPECT_NE(read_error(records(layer("L", "(P) 0 0 1 1 0 0 0 1 1 0 0 p\n" + rect(0, 0, 1, 1) + "f\n"))).find("pattern fills"), std::string::npos);
     EXPECT_NE(read_error(records(layer("L", "%AI5_BeginPlace\n%AI5_EndPlace\n"))).find("placed files"), std::string::npos);
     EXPECT_NE(read_error(records(layer("L", "/SymbolInstance :\n(S) /String (SymbolName) ,\n;\n"))).find("symbols"), std::string::npos);
-    EXPECT_NE(read_error(records(layer("L", "0 g\n/Mesh X!\n%_2 /Version X#\n/End X!\n"))).find("`X!`"), std::string::npos);
+    EXPECT_NE(read_error(records(layer("L", "0 g\n/Mesh X!\n%_2 /Version X#\n/End X!\n"))).find("gradient meshes"), std::string::npos);
     // An opacity mask: its art is in the masked object's dictionary.
     std::string mask = "u\n0 g\n" + rect(0, 0, 9, 9) + "f\nU\n%_/ArtDictionary :\n%_/Mask :\n%_1 /Bool (Clipping) ,\n"
                        "%_0 /Bool (Inverted) ,\n%_0 /Bool (Disabled) ,\n%_X=\n%_0 g\n%_" + rect(0, 0, 5, 5) + "%_f\n%_;\n%_;\n";
@@ -936,6 +936,64 @@ TEST(AiNativeReader, UnsupportedFeaturesFailClosed)
     auto disabled = mask;
     disabled.replace(disabled.find("%_0 /Bool (Disabled)"), 20, "%_1 /Bool (Disabled)");
     read_ok(records(layer("L", disabled)));
+}
+
+TEST(AiNativeReader, AnEnvelopeIsWhatItDrewAndAMeshIsRefused)
+{
+    auto refused_for_mesh = [](std::string const &art) {
+        auto const e = read_error(records(layer("L", art)));
+        EXPECT_NE(e.find("gradient meshes"), std::string::npos) << e;
+        // The operators of a mesh are known ones now.
+        EXPECT_EQ(e.find("X#"), std::string::npos) << e;
+    };
+    // A gradient mesh is art that isn't read, wherever it is written, ended or not.
+    std::string const mesh = "/Mesh X!\n2 /Version X#\n/Cartesian /Type X#\n[3 1] /Size X#\n/E X#\n/End X!\n";
+    std::string hidden_mesh = "%_/Mesh X!\n%_2 /Version X#\n%_/Cartesian /Type X#\n%_[3 1] /Size X#\n%_/E X#\n%_/End X!\n";
+    refused_for_mesh("0 g\n" + mesh);
+    refused_for_mesh("%_0 g\n" + hidden_mesh);
+    refused_for_mesh("u\n0 g\n" + mesh + "U\n");
+    refused_for_mesh("0 g\n/Mesh X!\n2 /Version X#\n");
+    // An `X!` that begins no mesh is an operator nobody knows.
+    EXPECT_NE(read_error(records(layer("L", "0 g\n/Other X!\n"))).find("`X!`"), std::string::npos);
+    // On a layer that doesn't show it is left out, and said to be.
+    auto old = read_ok(records(layer("Old", "0 g\n" + mesh, "0 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb") +
+                               layer("New", "0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    ASSERT_EQ(old.layers.size(), 2u);
+    EXPECT_TRUE(old.layers[0].children.empty());
+    ASSERT_EQ(old.left_out.size(), 1u);
+    EXPECT_EQ(old.left_out[0], "gradient meshes");
+
+    // An envelope as Illustrator 2025 writes one. On %_ lines: a group with the mesh it
+    // distorts with, and in that group's dictionary the type it distorts. Then, plainly,
+    // what it drew, and the plug-in's name.
+    auto envelope = [&](std::string const &plugin) {
+        return "0 0 Xd\n6 () XW\n%_0 Ae\n%_u\n%_0 O\n%_0 g\n" + hidden_mesh + "%_\n%_0 0 Xd\n%_6 () XW\n%_U\n"
+               "%_/ArtDictionary :\n%_(Warp: Arc) /UnicodeString (DisplayString) ,\n%_X=\n%_0 Ae\n%_u\n"
+               "%_/AI11Text :\n%_0 /FreeUndo ,\n%_0 /FrameIndex ,\n%_7 /StoryIndex ,\n%_;\n%_\n%_0 0 Xd\n%_6 () XW\n%_U\n"
+               "%_9 () XW\n%_X+\n%_ (AIDeformArtKey) ,\n%_1 /Int (AIDeformStyle) ,\n%_;\n%_\n%_9 () XW\n"
+               "0 Ap\n0 A\n0 Xw\n0 Ae\nu\n0 Ae\nu\n0 O\n0 g\n" + rect(10, 10, 30, 20) + "f\nU\n9 () XW\nU\n9 () XW\n0 Ae\n(" +
+               plugin + ") 1 0 0 XP\n9 () XW\n";
+    };
+    auto doc = read_ok(records(layer("L", "0 g\n" + rect(0, 0, 5, 5) + "f\n" + envelope("Adobe Deform Plugin") +
+                                          "0 g\n" + rect(50, 0, 55, 5) + "f\n")));
+    ASSERT_EQ(doc.layers.size(), 1u);
+    auto const &kids = doc.layers[0].children;
+    // The path before it, what the envelope drew, the path after it: no mesh, and no type.
+    ASSERT_EQ(kids.size(), 3u);
+    EXPECT_EQ(kids[0].kind, Node::Kind::Path);
+    EXPECT_EQ(kids[2].kind, Node::Kind::Path);
+    EXPECT_EQ(kids[1].kind, Node::Kind::Group);
+    EXPECT_TRUE(kids[1].envelope);
+    EXPECT_TRUE(kids[1].drawn_look);
+    EXPECT_FALSE(kids[1].commented);
+    ASSERT_EQ(kids[1].children.size(), 1u);
+    ASSERT_EQ(kids[1].children[0].children.size(), 1u);
+    EXPECT_EQ(kids[1].children[0].children[0].kind, Node::Kind::Path);
+    EXPECT_EQ(doc.envelopes, 1u);
+    EXPECT_EQ(doc.drawn_looks, 0u);
+    EXPECT_FALSE(doc.texts);
+    // The same written by a plug-in this doesn't know: its mesh may be art.
+    refused_for_mesh(envelope("Some Other Plugin"));
 }
 
 TEST(AiNativeReader, ForeignObjectsAreRefusedNotDropped)

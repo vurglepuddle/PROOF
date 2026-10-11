@@ -159,6 +159,9 @@ public:
     /* CSS3 Text */
     /** text direction (svg1.1) */
     T<SPAttr::DIRECTION, SPIEnum<SPCSSDirection>> direction;
+    /** PROOF: whether `direction` overrides the way characters' own scripts read (CSS
+     *  Writing Modes 3). Not inherited: it holds for what the element contains. */
+    T<SPAttr::UNICODE_BIDI, SPIEnum<SPCSSUnicodeBidi>> unicode_bidi;
     /** Writing mode (svg1.1 10.7.2, CSS Writing Modes 3) */
     T<SPAttr::WRITING_MODE, SPIEnum<SPCSSWritingMode>> writing_mode;
     /** Text orientation (CSS Writing Modes 3) */

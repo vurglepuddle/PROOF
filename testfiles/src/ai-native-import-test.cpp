@@ -965,7 +965,14 @@ TEST_F(AiNativeImportTest, PointTextAlignedParagraphsKeepEditableAnchors)
     ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
     EXPECT_EQ(texts->stories[0]->lines.at(0).alignment, 0u);
     EXPECT_TRUE(Geom::are_near(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(51.2, 60), 1e-9));
-    auto bad = AN::read_text_document(text_setup(aligned_text_document(3)), Geom::Point(100, 50));
+    // A justified paragraph of point type has nothing to be justified to: its line is set
+    // from its left end, where its glyphs start.
+    auto justified = AN::read_text_document(text_setup(aligned_text_document(3)), Geom::Point(100, 50));
+    ASSERT_EQ(justified->stories.size(), 1u);
+    ASSERT_TRUE(justified->stories[0]) << justified->errors[0];
+    EXPECT_EQ(justified->stories[0]->lines.at(0).alignment, 0u);
+    // An alignment nobody knows refuses the story.
+    auto bad = AN::read_text_document(text_setup(aligned_text_document(7)), Geom::Point(100, 50));
     ASSERT_EQ(bad->stories.size(), 1u); EXPECT_FALSE(bad->stories[0]);
     auto data = aligned_text_document(2);
     auto const at = data.find("/1 4 /0"); ASSERT_NE(at, std::string::npos);
@@ -1589,9 +1596,10 @@ TEST_F(AiNativeImportTest, TextGetsItsFontBackOnceItIsInstalled)
     ASSERT_EQ(texts.size(), 1u);
     auto spans = elements(texts[0], "svg:tspan");
     ASSERT_EQ(spans.size(), 4u);
-    // Its own font again, with the rest of its style as it was.
+    // Its own font again, with the rest of its style as it was. On a machine where the font
+    // that stands in is this very font (Arial, without Myriad Pro), the declarations are the
+    // same ones as before: what says the text has its font is the specification beside them.
     EXPECT_EQ(attr(texts[0], "proof:font-missing"), "");
-    EXPECT_EQ(attr(texts[0], "style").find(stand_in->css), std::string::npos) << attr(texts[0], "style");
     EXPECT_NE(attr(texts[0], "style").find("-inkscape-font-specification"), std::string::npos) << attr(texts[0], "style");
     EXPECT_NE(attr(texts[0], "style").find("font-size:40px"), std::string::npos) << attr(texts[0], "style");
     EXPECT_NE(attr(texts[0], "style").find("fill:#ff0000"), std::string::npos) << attr(texts[0], "style");
@@ -2260,12 +2268,204 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
     auto bad = AN::read_text_document(text_setup(hebrew(" /35 2")), Geom::Point(100, 50));
     ASSERT_EQ(bad->stories.size(), 1u);
     EXPECT_FALSE(bad->stories[0]);
-    // So do such letters where Illustrator didn't put them in order: it shows them
-    // backwards, set from the left as typed, and here they would come out the right way.
+    // Where Illustrator didn't put such letters in order it shows them backwards, set from
+    // the left as they were typed. The story says so, and they are set that way here.
     auto backwards = AN::read_text_document(text_setup(hebrew(" /35 0", 0, false)), Geom::Point(100, 50));
     ASSERT_EQ(backwards->stories.size(), 1u);
-    EXPECT_FALSE(backwards->stories[0]);
-    EXPECT_NE(backwards->errors.at(0).find("read from the right"), std::string::npos) << backwards->errors.at(0);
+    ASSERT_TRUE(backwards->stories[0]) << backwards->errors.at(0);
+    EXPECT_TRUE(backwards->stories[0]->unordered);
+    EXPECT_FALSE(backwards->stories[0]->rtl);
+    EXPECT_FALSE(read->stories[0]->unordered);
+    EXPECT_FALSE(AN::same_drawing(*backwards->stories[0], *read->stories[0]));
+    // Nothing says how a paragraph read from the right sets them unordered.
+    auto odd = AN::read_text_document(text_setup(hebrew(" /35 1", 0, false)), Geom::Point(100, 50));
+    ASSERT_EQ(odd->stories.size(), 1u);
+    EXPECT_FALSE(odd->stories[0]);
+    EXPECT_NE(odd->errors.at(0).find("read from the right"), std::string::npos) << odd->errors.at(0);
+
+    // Where each letter of the line lies, as the layout counts them.
+    auto places = [&](std::string const &data, std::string *style, std::vector<std::string> *notes) {
+        std::vector<double> out;
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(data)));
+        EXPECT_TRUE(b);
+        if (!b) return out;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        EXPECT_EQ(texts.size(), 1u);
+        if (texts.empty()) return out;
+        if (style) *style = attr(texts[0], "style");
+        if (notes) *notes = b->notes;
+        b->document->ensureUpToDate();
+        auto *text = cast<SPText>(b->document->getObjectByRepr(texts[0]));
+        for (auto it = text->layout.begin(); it != text->layout.end(); it.nextCharacter()) {
+            out.push_back(text->layout.characterBoundingBox(it).midpoint().x());
+        }
+        return out;
+    };
+    std::vector<std::string> notes;
+    auto const as_typed = places(hebrew(" /35 0", 0, false), &text_style, &notes);
+    EXPECT_NE(text_style.find("direction:ltr;unicode-bidi:bidi-override;"), std::string::npos) << text_style;
+    ASSERT_EQ(as_typed.size(), 4u);
+    // The first letter typed is the leftmost, and so on.
+    EXPECT_TRUE(std::is_sorted(as_typed.begin(), as_typed.end())) << as_typed[0] << " " << as_typed[3];
+    EXPECT_TRUE(std::any_of(notes.begin(), notes.end(), [](std::string const &n) { return n.find("show backwards") != std::string::npos; }));
+    // In order, it is the rightmost; and nothing is said.
+    auto const in_order = places(hebrew(" /35 0"), &text_style, &notes);
+    EXPECT_EQ(text_style.find("unicode-bidi"), std::string::npos) << text_style;
+    ASSERT_EQ(in_order.size(), 4u);
+    EXPECT_TRUE(std::is_sorted(in_order.rbegin(), in_order.rend())) << in_order[0] << " " << in_order[3];
+    EXPECT_TRUE(std::none_of(notes.begin(), notes.end(), [](std::string const &n) { return n.find("show backwards") != std::string::npos; }));
+    // The same letters either way, the other way round.
+    EXPECT_NEAR(as_typed.back() - as_typed.front(), in_order.front() - in_order.back(), 0.5);
+
+    // A paragraph of point type that is justified has nothing to be justified to. Its line
+    // is set as its paragraph's last one is: from the left (3, and 6, justified all through),
+    // from the right (4) or about its middle (5). These letters lie where they lay.
+    for (auto const &[alignment, anchor] : {std::pair{3, "start"}, std::pair{6, "start"}}) {
+        auto const reference = build(" /35 0", &text_style, &span_style);
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(hebrew(" /35 0", alignment))));
+        ASSERT_TRUE(b) << alignment;
+        auto texts = elements(b->document->getReprRoot(), "svg:text");
+        ASSERT_EQ(texts.size(), 1u);
+        EXPECT_EQ(attr(elements(texts[0], "svg:tspan").at(0), "style"), std::string("text-anchor:") + anchor + ";") << alignment;
+        auto const drawn_here = drawn(b->document.get(), texts[0]);
+        ASSERT_TRUE(reference && drawn_here);
+        EXPECT_NEAR(drawn_here->left(), reference->left(), 0.01) << alignment;
+    }
+    // Justified area type is another matter: its lines are stretched to its frame.
+    auto justified_point = AN::read_text_document(text_setup(hebrew(" /35 0", 4)), Geom::Point(100, 50));
+    ASSERT_TRUE(justified_point->stories.at(0)) << justified_point->errors.at(0);
+    auto unknown = AN::read_text_document(text_setup(hebrew(" /35 0", 7)), Geom::Point(100, 50));
+    EXPECT_FALSE(unknown->stories.at(0));
+}
+
+TEST_F(AiNativeImportTest, TypePaintedByNameIsBlackForAGradientAndPatternedForAPattern)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // The document's styles, as Illustrator writes them among the records: a plain colour,
+    // a gradient and a pattern, each under a name a character's paint can give.
+    std::string const styles =
+        "%AI9_BeginArtStyles\n"
+        "/KnownStyle :\n(Anon plain) /Name ,\n/SimpleStyle :\n0 O\n0 0 0 1 k\n0 1 Xd\n/Paint ;\n /Def ;\n"
+        "/KnownStyle :\n(Anon gradient) /Name ,\n/SimpleStyle :\n0 O\nBb\n2 (Unnamed gradient 1) 0 0 0 1 1 0 0 1 0 0 1 Bg\n0 BB\n"
+        "0 1 Xd\n/Paint ;\n /Def ;\n"
+        "/KnownStyle :\n(Anon pattern) /Name ,\n/SimpleStyle :\n0 O\n(Dots) 0 0 1 1 0 0 0 0 0 [2 0 0 2 30 40] p\n0 1 Xd\n/Paint ;\n"
+        " /Def ;\n%AI9_EndArtStyles\n";
+    // Beside the name the text document keeps a colour: black, for a gradient or a pattern.
+    auto painted = [&](std::string const &name, bool stroke = false) {
+        std::string const paint = " << /99 /CAITextPaint /5 (" + name + ") /0 << /0 0 /1 [1 0] >> >>";
+        return text_document("(Hello\\r)", 6, font, "/1 40 " + (stroke ? "/57 true /54" + paint : "/56 true /53" + paint));
+    };
+    auto read = [&](std::string const &name, bool stroke = false) {
+        return AN::read_text_document(styles + text_setup(painted(name, stroke)), Geom::Point(100, 50));
+    };
+    for (auto const *name : {"Anon plain", "Anon nowhere"}) {
+        auto texts = read(name);
+        ASSERT_TRUE(texts->stories.at(0)) << texts->errors.at(0);
+        EXPECT_FALSE(texts->stories[0]->lines.at(0).runs.at(0).style.gradient) << name;
+    }
+    // A gradient isn't drawn on type: the characters are black in Illustrator.
+    for (bool stroke : {false, true}) {
+        auto texts = read("Anon gradient", stroke);
+        ASSERT_TRUE(texts->stories.at(0)) << texts->errors.at(0);
+        auto const &style = texts->stories[0]->lines.at(0).runs.at(0).style;
+        EXPECT_TRUE(style.gradient);
+        ASSERT_TRUE(stroke ? style.stroke : style.fill);
+    }
+    // A pattern is drawn: the story says which, and where its tile lies.
+    for (bool stroke : {false, true}) {
+        auto texts = read("Anon pattern", stroke);
+        ASSERT_TRUE(texts->stories.at(0)) << texts->errors.at(0);
+        auto const &style = texts->stories[0]->lines.at(0).runs.at(0).style;
+        EXPECT_FALSE(style.gradient);
+        auto const &pattern = stroke ? style.stroke_pattern : style.fill_pattern;
+        ASSERT_TRUE(pattern);
+        EXPECT_FALSE(stroke ? style.fill_pattern : style.stroke_pattern);
+        EXPECT_EQ(pattern->name, "Dots");
+        EXPECT_EQ(pattern->matrix, Geom::Affine(2, 0, 0, 2, 30, 40));
+    }
+    // One placed the way Illustrator 8 placed them isn't read, on type as on a path.
+    auto moved = styles;
+    moved.replace(moved.find("(Dots) 0 0 1 1"), 14, "(Dots) 5 0 1 1");
+    auto old = AN::read_text_document(moved + text_setup(painted("Anon pattern")), Geom::Point(100, 50));
+    EXPECT_FALSE(old->stories.at(0));
+    EXPECT_NE(old->errors.at(0).find("pattern"), std::string::npos) << old->errors.at(0);
+    // Nor is type painted with a pattern the file doesn't define: it is refused, not set in black.
+    {
+        std::string error;
+        auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), styles + text_setup(painted("Anon pattern"))), error);
+        ASSERT_TRUE(ai) << error;
+        EXPECT_FALSE(AN::build(*ai, error));
+        EXPECT_NE(error.find("pattern that isn't in the file"), std::string::npos) << error;
+    }
+
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), styles + text_setup(painted("Anon gradient"))));
+    ASSERT_TRUE(b);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(),
+                            [](std::string const &n) { return n.find("painted with a gradient") != std::string::npos; }));
+    auto plain = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), styles + text_setup(painted("Anon plain"))));
+    ASSERT_TRUE(plain);
+    EXPECT_TRUE(std::none_of(plain->notes.begin(), plain->notes.end(),
+                             [](std::string const &n) { return n.find("painted with a gradient") != std::string::npos; }));
+}
+
+TEST_F(AiNativeImportTest, DirectionOverridesTheWayLettersRead)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial, which has Hebrew, isn't installed";
+    // Where the layout puts each character of a line, in the order they were typed.
+    auto places = [&](std::string const &style, std::string const &content) {
+        std::vector<double> out;
+        auto doc = SPDocument::createNewDocFromMem(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='100'><text xml:space='preserve' "
+            "style='font-family:Arial;font-size:40px;" + style + "'><tspan x='300' y='60'>" + content + "</tspan></text></svg>");
+        EXPECT_TRUE(doc);
+        if (!doc) return out;
+        doc->ensureUpToDate();
+        auto *text = cast<SPText>(doc->getObjectByRepr(elements(doc->getReprRoot(), "svg:text").at(0)));
+        for (auto it = text->layout.begin(); it != text->layout.end(); it.nextCharacter()) {
+            out.push_back(text->layout.characterBoundingBox(it).midpoint().x());
+        }
+        return out;
+    };
+    auto rising = [](std::vector<double> const &v, std::size_t from, std::size_t to) {
+        return std::is_sorted(v.begin() + from, v.begin() + to);
+    };
+    auto falling = [](std::vector<double> const &v, std::size_t from, std::size_t to) {
+        return std::is_sorted(v.begin() + from, v.begin() + to, std::greater<>());
+    };
+    std::string const alef_to_dalet = "\xd7\x90\xd7\x91\xd7\x92\xd7\x93";
+    // Hebrew reads from the right by itself, also in a line that reads from the left.
+    auto v = places({}, alef_to_dalet);
+    ASSERT_EQ(v.size(), 4u);
+    EXPECT_TRUE(falling(v, 0, 4));
+    // Overridden, every letter follows the last the way the line reads.
+    v = places("unicode-bidi:bidi-override;", alef_to_dalet);
+    ASSERT_EQ(v.size(), 4u);
+    EXPECT_TRUE(rising(v, 0, 4));
+    v = places("direction:rtl;unicode-bidi:bidi-override;", "abcd");
+    ASSERT_EQ(v.size(), 4u);
+    EXPECT_TRUE(falling(v, 0, 4));
+    // The other values change nothing.
+    for (auto const *value : {"normal", "embed", "isolate", "plaintext"}) {
+        v = places(std::string("unicode-bidi:") + value + ";", alef_to_dalet);
+        ASSERT_EQ(v.size(), 4u);
+        EXPECT_TRUE(falling(v, 0, 4)) << value;
+    }
+    // It holds for what an element contains, down to one inside that says otherwise; and
+    // only there: letters of one script and one font are cut where it begins and ends.
+    v = places({}, "\xd7\x90\xd7\x91<tspan style='unicode-bidi:bidi-override'>\xd7\x92\xd7\x93<tspan style='fill:#ff0000'>"
+                   "\xd7\x94\xd7\x95</tspan></tspan>\xd7\x96\xd7\x97");
+    ASSERT_EQ(v.size(), 8u);
+    EXPECT_TRUE(falling(v, 0, 2));
+    EXPECT_TRUE(rising(v, 2, 6));
+    EXPECT_TRUE(falling(v, 6, 8));
+    v = places("unicode-bidi:bidi-override;", "\xd7\x90\xd7\x91<tspan style='unicode-bidi:normal'>\xd7\x92\xd7\x93</tspan>");
+    ASSERT_EQ(v.size(), 4u);
+    EXPECT_TRUE(rising(v, 0, 2));
+    EXPECT_TRUE(falling(v, 2, 4));
+    // The letters are the same ones, as wide.
+    auto width = [](std::vector<double> const &p) { return *std::max_element(p.begin(), p.end()) - *std::min_element(p.begin(), p.end()); };
+    EXPECT_NEAR(width(places({}, alef_to_dalet)), width(places("unicode-bidi:bidi-override;", alef_to_dalet)), 0.01);
 }
 
 TEST_F(AiNativeImportTest, LinesUnderAndThroughTypeStopAtTheLastLetter)
@@ -2315,6 +2515,65 @@ std::string pattern(std::string const &name, std::string const &box, std::string
 }
 
 } // namespace
+
+TEST_F(AiNativeImportTest, APatternPaintsTypeWhereItWouldPaintAPath)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto const tile = "0 g\n0 0 m 0 5 L 10 5 L 10 0 L 0 0 L\nf\n";
+    // A path and a text object painted with the same pattern, placed alike; the text names
+    // it through a style of the document's.
+    std::string const styles =
+        "%AI9_BeginArtStyles\n/KnownStyle :\n(Anon dots) /Name ,\n/SimpleStyle :\n0 O\n"
+        "(Dots) 0 0 1 1 0 0 0 0 0 [2 0 0 2 30 40] p\n0 1 Xd\n/Paint ;\n /Def ;\n%AI9_EndArtStyles\n";
+    auto const data = text_document("(Hello\\r)", 6, font,
+                                    "/1 40 /56 true /53 << /99 /CAITextPaint /5 (Anon dots) /0 << /0 0 /1 [1 0] >> >>");
+    auto b = make(records(layer("(Dots) 0 0 1 1 0 0 0 0 0 [2 0 0 2 30 40] p\n" + rect + "/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          pattern("Dots", "0 0 20 10", tile) + styles + text_setup(data)));
+    ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text");
+    auto paths = elements(b->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(texts.size(), 1u);
+    auto url = [](std::string const &style) {
+        auto const at = style.find("fill:url(#");
+        return at == std::string::npos ? std::string() : style.substr(at + 10, style.find(')', at) - at - 10);
+    };
+    auto const text_paint = url(attr(texts[0], "style"));
+    ASSERT_FALSE(text_paint.empty()) << attr(texts[0], "style");
+    // The path of the layer (the tile's own path is in the pattern).
+    std::string path_paint;
+    for (auto *p : paths) {
+        if (!url(attr(p, "style")).empty()) path_paint = url(attr(p, "style"));
+    }
+    ASSERT_FALSE(path_paint.empty());
+    EXPECT_NE(text_paint, path_paint);
+    auto matrix_of = [&](std::string const &id) {
+        auto *node = b->document->getObjectById(id) ? b->document->getObjectById(id)->getRepr() : nullptr;
+        Geom::Affine m;
+        EXPECT_TRUE(node);
+        if (node) {
+            EXPECT_FALSE(attr(node, "xlink:href").empty());
+            sp_svg_transform_read(attr(node, "patternTransform").c_str(), &m);
+        }
+        return m;
+    };
+    Geom::Affine text_matrix;
+    ASSERT_TRUE(sp_svg_transform_read(attr(texts[0], "transform").c_str(), &text_matrix));
+    // Through the text's own matrix, its pattern lies where the path's does.
+    EXPECT_TRUE(Geom::are_near(matrix_of(text_paint) * text_matrix, matrix_of(path_paint), 1e-6));
+    // And both use the one tile.
+    auto *text_pattern = b->document->getObjectById(text_paint)->getRepr();
+    auto *path_pattern = b->document->getObjectById(path_paint)->getRepr();
+    EXPECT_EQ(attr(text_pattern, "xlink:href"), attr(path_pattern, "xlink:href"));
+
+    // A pattern whose tile can't be read refuses the type it paints, as it does a path.
+    std::string error;
+    auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                               pattern("Dots", "0 0 4 4", "7 Qz\n") + styles + text_setup(data)), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("painted with a pattern that has"), std::string::npos) << error;
+}
 
 TEST_F(AiNativeImportTest, PatternFillsAreTilesPlacedPerObject)
 {

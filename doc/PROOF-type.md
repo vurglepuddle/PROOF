@@ -91,6 +91,13 @@ written:
 Each is a share of the type's size. Changing an attribute lays the document's
 text out again.
 
+`unicode-bidi:bidi-override` (and `isolate-override`) is known to the text
+layout since 2026-10-11: every character of the element is then set the way
+its `direction` says, whatever way its script reads. Hebrew that Illustrator
+set from the left as typed comes in with it, and shows as it does there. The
+property isn't inherited; it holds for what an element contains, down to one
+inside that says otherwise. The other values are read and change nothing.
+
 Text whose font isn't installed carries the font's PostScript name in
 `proof:font-missing` on the text or span whose style sets the font, and its
 style names no `-inkscape-font-specification`. Choosing a font, with Replace or

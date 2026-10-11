@@ -250,6 +250,108 @@ Font font_entry(Value const &entry)
     return out;
 }
 
+/// What a paint a character names is, when it isn't a plain colour.
+struct NamedPaint
+{
+    bool is_pattern = false; ///< A pattern; else a gradient.
+    /// For a pattern: which, and where. Nothing when it is placed in a way that isn't read.
+    std::optional<TextPattern> pattern;
+};
+
+/// The pattern a `(name) px py sx sy angle rf r k ka [a b c d tx ty] p` line places, when
+/// it is placed the way Illustrator 9 and later place one: by its matrix alone.
+std::optional<TextPattern> placed_pattern(std::string_view line)
+{
+    if (line.empty() || line.front() != '(') return {};
+    TextPattern out;
+    std::size_t at = 1;
+    for (; at < line.size() && line[at] != ')'; ++at) {
+        if (line[at] == '\\') {
+            // A parenthesis or a backslash in the name; anything else isn't taken.
+            if (at + 1 >= line.size() || (line[at + 1] != '(' && line[at + 1] != ')' && line[at + 1] != '\\')) return {};
+            ++at;
+        }
+        out.name.push_back(line[at]);
+    }
+    if (at >= line.size() || out.name.empty() || out.name.size() > 256) return {};
+    std::vector<double> numbers;
+    bool in_matrix = false, had_matrix = false;
+    std::vector<double> matrix;
+    for (++at; at < line.size();) {
+        while (at < line.size() && (line[at] == ' ' || line[at] == '\t')) ++at;
+        if (at >= line.size()) break;
+        if (line[at] == '[' || line[at] == ']') {
+            if ((line[at] == '[') == in_matrix || (line[at] == '[' && had_matrix)) return {};
+            in_matrix = line[at] == '[';
+            had_matrix = true;
+            ++at;
+            continue;
+        }
+        auto const end = std::min(line.find_first_of(" \t[]", at), line.size());
+        auto const word = std::string(line.substr(at, end - at));
+        at = end;
+        if (word == "p" || word == "P") break;
+        char *stop = nullptr;
+        double const value = g_ascii_strtod(word.c_str(), &stop);
+        if (stop != word.c_str() + word.size() || !std::isfinite(value)) return {};
+        (in_matrix ? matrix : numbers).push_back(value);
+    }
+    constexpr double AT_REST[] = {0, 0, 1, 1, 0, 0, 0, 0, 0};
+    if (in_matrix || matrix.size() != 6 || numbers.size() != 9) return {};
+    for (std::size_t i = 0; i < 9; ++i) {
+        if (std::abs(numbers[i] - AT_REST[i]) > 1e-9) return {};
+    }
+    out.matrix = Geom::Affine(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+    if (std::abs(out.matrix.det()) < 1e-12 || std::any_of(matrix.begin(), matrix.end(), [](double v) { return std::abs(v) > 1e9; })) return {};
+    return out;
+}
+
+/**
+ * The paints the records define by name that aren't a plain colour.
+ *
+ * A character's paint can name a style of the document's (`/5 (Anon …)` beside its
+ * colour). The styles are among the records, each a `/KnownStyle :` with its `/Name` and,
+ * in a `/SimpleStyle`, the operators that set its paint: `Bg` for a gradient, `p` or `P`
+ * for a pattern. For those two the colour the text document keeps beside the name is
+ * black, whatever the paint looks like. A pattern's line also says which pattern, and
+ * where its tile lies.
+ */
+std::map<std::string, NamedPaint> named_paints(std::string_view records)
+{
+    std::map<std::string, NamedPaint> out;
+    constexpr std::string_view BEGIN = "/KnownStyle :";
+    for (auto at = records.find(BEGIN); at != records.npos && out.size() < 65536; at = records.find(BEGIN, at)) {
+        at += BEGIN.size();
+        std::string name;
+        std::optional<NamedPaint> kind;
+        bool patterned = false;
+        // Line by line to the style's end; a style is a few lines long.
+        for (unsigned lines = 0; lines < 4096 && at < records.size(); ++lines) {
+            auto const end = std::min(records.find_first_of("\r\n", at), records.size());
+            auto line = records.substr(at, end - at);
+            at = end + 1;
+            if (line.substr(0, 2) == "%_") line.remove_prefix(2);
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+            while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.remove_suffix(1);
+            constexpr std::string_view NAME = ") /Name ,";
+            if (line == "/Def ;" || line.substr(0, BEGIN.size()) == BEGIN) break;
+            if (line.size() > NAME.size() + 1 && line.front() == '(' && line.substr(line.size() - NAME.size()) == NAME) {
+                name = std::string(line.substr(1, line.size() - NAME.size() - 1));
+            } else if (line.size() > 3 && line.substr(line.size() - 3) == " Bg") {
+                if (!kind) kind.emplace();
+            } else if (line.size() > 2 && (line.substr(line.size() - 2) == " p" || line.substr(line.size() - 2) == " P")) {
+                // A style has one paint: a second pattern in it is nothing this reads.
+                kind.emplace();
+                kind->is_pattern = true;
+                if (!patterned) kind->pattern = placed_pattern(line);
+                patterned = true;
+            }
+        }
+        if (kind && !name.empty() && name.size() <= 256) out[name] = *kind;
+    }
+    return out;
+}
+
 /// What a text document says for all its stories.
 struct Setup
 {
@@ -262,6 +364,8 @@ struct Setup
     /// For the document of type that appearances drew: what the document of typed text
     /// says, which is what the whole document is set by.
     TypeSettings const *document = nullptr;
+    /// The named paints of the records that aren't a plain colour (named_paints).
+    std::map<std::string, NamedPaint> const *paints = nullptr;
 };
 
 TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
@@ -335,6 +439,21 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
         out.position_size = setup.type.subscript_size;
     }
     auto paint = [&](char const *k, double &opacity) -> Color {
+        // A paint that names a style of the document's is that style's. Where that is a
+        // plain colour, it is the colour beside the name. A gradient isn't drawn on type:
+        // Illustrator sets the characters black, the colour that is kept for one. A
+        // pattern is drawn, and isn't read here.
+        if (auto const name = pick(k).dict.find("5"); name != pick(k).dict.end() && name->second.kind == Value::String && setup.paints) {
+            if (auto const named = setup.paints->find(name->second.string); named != setup.paints->end()) {
+                if (!named->second.is_pattern) {
+                    out.gradient = true;
+                } else if (!named->second.pattern) {
+                    throw Bad("type painted with a pattern placed in a way that isn't supported");
+                } else {
+                    (std::string_view(k) == "53" ? out.fill_pattern : out.stroke_pattern) = named->second.pattern;
+                }
+            }
+        }
         auto const &p = pick(k).get("0");
         auto kind = p.get("0").index(); auto const &values = p.get("1");
         auto const n = kind == 0 ? 2u : kind == 1 ? 4u : kind == 2 ? 5u : 0u;
@@ -502,21 +621,28 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
-    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; };
+    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool justified; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0;
     if (s.get("0").dict.count("5")) {
         for (auto const &paragraph : s.get("0").get("5").get("0").list) {
             auto const &p = paragraph.get("0").get("0").get("5");
-            auto const align = p.dict.count("0") ? p.get("0").index() : 0;
-            if (align > 2) throw Bad("justified paragraph alignment isn't supported yet");
+            // How its lines are aligned (0): 0 left, 1 right, 2 centred, and justified with
+            // the last line left (3), right (4), centred (5) or justified too (6).
+            auto align = p.dict.count("0") ? p.get("0").index() : 0;
+            if (align > 6) throw Bad("text has an unsupported paragraph alignment");
+            bool const justified = align > 2;
+            // A line of point type has no measure to be justified to: it is set as the last
+            // line of its paragraph would be, and one justified too from its left end.
+            if (justified && area) throw Bad("justified paragraph alignment isn't supported yet");
+            if (justified) align = align == 4 ? 1 : align == 5 ? 2 : 0;
             // The way it reads (35): 0 from the left, 1 from the right.
             auto const direction = p.dict.count("35") ? p.get("35").index() : 0;
             if (direction > 1) throw Bad("text has an unsupported paragraph direction");
             auto const count = paragraph.get("1").index();
             if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
             paragraph_units += count;
-            paragraphs.push_back({paragraph_units, unsigned(align), direction == 1});
+            paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, justified});
         }
         if (paragraphs.empty()) throw Bad("text has no paragraph runs");
         // A text object reads one way: its paragraphs are one to what sets them.
@@ -580,6 +706,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         if (laid_units > units) throw Bad("text runs or line layout don't cover the story");
     }
     std::size_t run = 0, line = 0, at_units = 0, paragraph = 0, line_end = area ? line_units[0] : 0;
+    bool in_order = false, as_typed = false;
     for (auto const *at = text.data(); at < text.data() + text.size();) {
         auto const cp = g_utf8_get_char(at); auto const *next = g_utf8_next_char(at);
         auto const count = cp > 0xffff ? 2u : 1u;
@@ -607,10 +734,19 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             if (!area) ++line;
         } else {
             if (line >= out.lines.size() || cp < 32) throw Bad("text line count or control character isn't supported");
-            // Hebrew, Arabic and the other scripts read from the right are put in order here
-            // whatever the document says, so they are only taken where Illustrator did too.
-            if (reads_from_the_right(cp) && !ordered[line]) {
-                throw Bad("letters read from the right that Illustrator set from the left, as typed, aren't supported yet");
+            // Hebrew, Arabic and the other scripts read from the right are put in order by
+            // one of Illustrator's two composers, which leaves what it worked out with the
+            // line. The other sets them from the left as they were typed: backwards. The
+            // story says which it was, to be set the same way; a story with both can't be.
+            if (reads_from_the_right(cp)) {
+                (ordered[line] ? in_order : as_typed) = true;
+                if (in_order && as_typed) {
+                    throw Bad("letters read from the right that Illustrator put in order in one line and not in another aren't supported yet");
+                }
+                // Nothing says how a paragraph that reads from the right sets them unordered.
+                if (as_typed && out.rtl) {
+                    throw Bad("letters read from the right that Illustrator set as typed in a paragraph read from the right aren't supported yet");
+                }
             }
             auto &pieces = out.lines[line].runs;
             if (pieces.empty() && !paragraphs.empty()) out.lines[line].alignment = paragraphs[paragraph].alignment;
@@ -621,6 +757,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         at_units += count; at = next;
     }
     if (at_units != units) throw Bad("text runs or line layout don't cover the story");
+    out.unordered = as_typed;
     if (!area && (line > out.lines.size() || (line + 1 != out.lines.size() && line != out.lines.size()))) {
         throw Bad("text runs or line layout don't cover the story");
     }
@@ -637,6 +774,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     // a space at its end doesn't).
     std::optional<unsigned> common;
     bool together = true;
+    bool const unsure = std::any_of(paragraphs.begin(), paragraphs.end(), [](Paragraph const &p) { return p.justified; });
     for (auto const &l : out.lines) {
         if (l.runs.empty()) continue;
         together = together && (!common || *common == l.alignment);
@@ -655,7 +793,15 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         auto const &found = segment_of(*lines[i]);
         if (!area) {
-            if (!found.dict.count("0")) throw Bad("aligned text has no explicit layout offset");
+            if (!found.dict.count("0")) {
+                // What says a justified paragraph's lines end at the right or the middle
+                // doesn't say where a line of point type starts: it stays at its start.
+                if (unsure) {
+                    together = false;
+                    break;
+                }
+                throw Bad("aligned text has no explicit layout offset");
+            }
             moves[i] = -offset_of(found).x();
             continue;
         }
@@ -691,12 +837,14 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
         if (!std::isfinite(center->x()) || !std::isfinite(center->y()) ||
             std::abs(center->x()) > 1e9 || std::abs(center->y()) > 1e9) throw Bad("invalid text template centre");
         auto const section = text_section(records);
+        auto const paints = named_paints(records);
         // The stories of one text document, each read on its own.
         auto read = [&](std::string const &data, std::vector<std::optional<PointText>> &stories_out,
                         std::vector<std::string> &errors, bool typed) {
             auto doc = Reader(data).root();
             Setup setup;
             if (!typed) setup.document = &out->type;
+            setup.paints = &paints;
             for (auto const &font : doc.get("0").get("1").get("0").list) setup.fonts.push_back(font_entry(font.get("0").get("0")));
             auto const &main = doc.get("1");
             if (auto const settings = main.dict.find("0"); settings != main.dict.end() && settings->second.kind == Value::Dictionary) {
@@ -746,7 +894,7 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
 
 bool same_drawing(PointText const &a, PointText const &b)
 {
-    if (a.empty != b.empty || a.rtl != b.rtl || a.lines.size() != b.lines.size()) return false;
+    if (a.empty != b.empty || a.rtl != b.rtl || a.unordered != b.unordered || a.lines.size() != b.lines.size()) return false;
     auto same_style = [](TextStyle const &s, TextStyle const &t) {
         return s.font == t.font && s.design == t.design && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&
                s.fill_opacity == t.fill_opacity && s.stroke_opacity == t.stroke_opacity &&
@@ -754,7 +902,8 @@ bool same_drawing(PointText const &a, PointText const &b)
                s.horizontal_scale == t.horizontal_scale && s.vertical_scale == t.vertical_scale &&
                s.baseline_shift == t.baseline_shift && s.kerning == t.kerning && s.ligatures == t.ligatures &&
                s.contextual == t.contextual && s.all_caps == t.all_caps && s.small_caps == t.small_caps &&
-               s.underline == t.underline && s.strikethrough == t.strikethrough && s.position == t.position;
+               s.underline == t.underline && s.strikethrough == t.strikethrough && s.position == t.position &&
+               s.gradient == t.gradient && s.fill_pattern == t.fill_pattern && s.stroke_pattern == t.stroke_pattern;
     };
     // Scaled and turned alike, and (below) each line in the same place on the art.
     if (!Geom::are_near(a.to_art.withoutTranslation(), b.to_art.withoutTranslation(), 1e-6)) return false;

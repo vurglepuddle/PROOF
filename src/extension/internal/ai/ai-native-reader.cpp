@@ -355,7 +355,7 @@ std::optional<Geom::Rect> four(std::string_view text)
 /// Operators that change nothing the reader keeps. PROOF additions from the census:
 /// Ar (output resolution), An (CS5, probably Align to Pixel Grid), XD (brush metadata).
 constexpr std::string_view IGNORED[] = {
-    "Ae", "AE", "Ap", "As", "Xd", "Xr", "XG", "Xh", "XH", "XF", "D", "X=", "X+", "Bc", "Xm", "XP", "Np", "TE",
+    "Ae", "AE", "Ap", "As", "Xd", "Xr", "XG", "Xh", "XH", "XF", "D", "X=", "X+", "Bc", "Xm", "Np", "TE",
     "TZ", "Xt", "Xi", "XI", "`", "LB2", "Lc", "Xv", "XV", "Xq", "XQ", "Xg", "Xn", "Bn", "gsave", "grestore",
     "showpage", "annotatepage", "Ar", "An", "XD", "Br", "BS",
 };
@@ -523,6 +523,8 @@ private:
     void art_dictionary(Obj const &o);
     void document(Obj const &o);
     void text_slot(Obj const &o);
+    bool mesh_marker(Values const &vals, bool hidden);
+    void plugin_object(Values const &vals, bool hidden);
     void layer_attrs(Values const &vals);
     void color(std::string_view w, Values const &vals);
     int ink_index(Named const &n, bool by_name);
@@ -577,6 +579,7 @@ private:
     bool _marked = false;
     std::size_t _nodes = 0;
     std::set<std::string> _unsupported, _unknown, _hidden_unread;
+    std::optional<bool> _mesh; ///< Inside a mesh (/Mesh X! … /End X!): whether it began on a %_ line.
     std::size_t _cmyk_colors = 0, _rgb_colors = 0;
     std::optional<bool> _color_model;
     bool _done = false;
@@ -1125,6 +1128,12 @@ void Reader::op(std::string_view w, bool hidden)
     else if (w == "To" || w == "TO" || w == "Tp" || w == "TP" || w == "Tx" || w == "TX" || w == "Tj" || w == "Tk") {
         unreadable("type in the legacy format");
     }
+    // A mesh, and what a plug-in made.
+    else if (w == "X!" && mesh_marker(vals, hidden)) {
+    } else if (w == "X#" && _mesh) {
+    } else if (w == "XP") {
+        plugin_object(vals, hidden);
+    }
     // Placed files: ` places the file, ~ ends it.
     else if (w == "`" && _place) {
         place_file(vals);
@@ -1411,6 +1420,69 @@ void Reader::end_obj()
     } else if (type == "SymbolInstance") {
         unreadable("symbols");
     }
+}
+
+/**
+ * `/Mesh X!` begins a mesh and `/End X!` ends it; everything between is its own (`X#`).
+ *
+ * A gradient mesh is art, and isn't read. An envelope keeps the mesh it distorts with the
+ * same way, where it is no art at all. Which one this is shows only later (plugin_object),
+ * so the mesh is kept as an object of its own until the records are read.
+ *
+ * @return whether the marker was one of the two.
+ */
+bool Reader::mesh_marker(Values const &vals, bool hidden)
+{
+    std::string_view name;
+    for (auto const &v : vals) {
+        if (v.kind == Value::Kind::Name) name = v.str;
+    }
+    if (name == "Mesh") {
+        _mesh = hidden;
+        return true;
+    }
+    if (name != "End" || !_mesh) return false;
+    bool const commented = *_mesh || hidden;
+    _mesh.reset();
+    // In a pattern's tile it only matters to what is painted with that pattern.
+    if (_pattern_unread) {
+        _pattern_unread->insert("a gradient mesh");
+        return true;
+    }
+    if (!_frames.empty()) add(new_node(Node::Kind::Mesh, _gs), commented);
+    return true;
+}
+
+/// Whether an object is nothing but meshes: one, or groups of them.
+static bool only_meshes(Node const &n)
+{
+    if (n.kind == Node::Kind::Mesh) return true;
+    return n.kind == Node::Kind::Group && !n.clipped &&
+           std::all_of(n.children.begin(), n.children.end(), [](Node const &k) { return only_meshes(k); });
+}
+
+/**
+ * `(a plug-in's name) … XP` ends an object that the plug-in made: what it was made from,
+ * written on %_ lines, then what the plug-in drew of it, written plainly.
+ *
+ * An envelope (Adobe Deform Plugin) has two things on its %_ lines: a group with the mesh
+ * it distorts with, and in that group's dictionary the object it distorts, type or art.
+ * Art in a dictionary is never kept. With the mesh gone too, what is left is the outlines
+ * the envelope drew, which is all Illustrator draws of it.
+ *
+ * Other plug-ins' objects are left as they have been read so far.
+ */
+void Reader::plugin_object(Values const &vals, bool hidden)
+{
+    if (hidden || _frames.empty() || last_text(vals).value_or("") != "Adobe Deform Plugin") return;
+    auto &kids = _frames.back().children;
+    if (kids.size() < 2) return;
+    auto const &drawn = kids[kids.size() - 1];
+    auto const &source = kids[kids.size() - 2];
+    if (drawn.commented || drawn.kind != Node::Kind::Group || !source.commented || !only_meshes(source)) return;
+    kids.erase(kids.end() - 2);
+    kids.back().drawn_look = true;
+    kids.back().envelope = true;
 }
 
 void Reader::text_slot(Obj const &o)
@@ -1985,6 +2057,17 @@ std::string join_and(std::set<std::string> const &items)
 
 Document Reader::finish()
 {
+    // A mesh that is still there is a gradient mesh, or an envelope's that wasn't made out:
+    // either way art that isn't read.
+    auto meshes = [&](auto &&self, std::vector<Node> &nodes, bool shown) -> void {
+        for (auto &n : nodes) self(self, n.children, shown && (n.kind != Node::Kind::Layer || n.visible));
+        auto const kept = std::remove_if(nodes.begin(), nodes.end(), [](Node const &n) { return n.kind == Node::Kind::Mesh; });
+        if (kept == nodes.end()) return;
+        nodes.erase(kept, nodes.end());
+        (shown ? _unsupported : _hidden_unread).insert("gradient meshes");
+    };
+    meshes(meshes, _doc.layers, true);
+    if (_mesh) _unsupported.insert("gradient meshes");
     if (!_unknown.empty()) {
         std::string ops;
         for (auto const &o : _unknown) ops += (ops.empty() ? "`" : ", `") + o + "`";
@@ -2127,10 +2210,16 @@ std::optional<Document> read(std::string_view records, std::string &error, Limit
     doc->commented_kept = count_commented(doc->layers);
     auto looks = [](auto &&self, std::vector<Node> const &nodes) -> std::size_t {
         std::size_t n = 0;
-        for (auto const &k : nodes) n += (k.drawn_look ? 1 : 0) + self(self, k.children);
+        for (auto const &k : nodes) n += (k.drawn_look && !k.envelope ? 1 : 0) + self(self, k.children);
         return n;
     };
     doc->drawn_looks = looks(looks, doc->layers);
+    auto envelopes = [](auto &&self, std::vector<Node> const &nodes) -> std::size_t {
+        std::size_t n = 0;
+        for (auto const &k : nodes) n += (k.envelope ? 1 : 0) + self(self, k.children);
+        return n;
+    };
+    doc->envelopes = envelopes(envelopes, doc->layers);
     return doc;
 }
 

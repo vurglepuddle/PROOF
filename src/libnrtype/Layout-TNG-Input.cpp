@@ -23,6 +23,7 @@
 #include "style-text.h"
 #include "svg/svg-length.h"
 #include "font-factory.h"
+#include "text-editing.h"
 #include "type-settings.h"
 
 
@@ -88,6 +89,19 @@ void Layout::appendText(Glib::ustring const &text,
     new_source->text_length = 0;
     new_source->laid_begin = text_begin;
     new_source->laid_end = text_end;
+    // PROOF: the property isn't inherited; it holds for what an element contains, down to
+    // one inside that says something else. So the nearest element that says anything decides.
+    for (auto const *holder = style; holder; ) {
+        if (holder->unicode_bidi.set) {
+            auto const how = holder->unicode_bidi.computed;
+            if (how == SP_CSS_UNICODE_BIDI_OVERRIDE || how == SP_CSS_UNICODE_BIDI_ISOLATE_OVERRIDE) {
+                new_source->bidi_override = holder->direction.computed == SP_CSS_DIRECTION_RTL ? 1 : 0;
+            }
+            break;
+        }
+        auto const *parent = holder->object ? holder->object->parent : nullptr;
+        holder = parent && is_part_of_text_subtree(parent) ? parent->style : nullptr;
+    }
     auto const transform = style->text_transform.computed;
     // A word can run on from the text before this one (a span in the middle of a word).
     bool word_start = true;

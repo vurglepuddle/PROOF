@@ -222,6 +222,9 @@ struct Node
         Image,
         Text,   ///< A text object; its characters are in the text document (story).
         Placed, ///< A placed (linked) file.
+        /// A mesh: of a gradient mesh, or the one an envelope distorts with. Only while the
+        /// records are read, to tell the two apart; none is in what read() returns.
+        Mesh,
     };
     Kind kind = Kind::Group;
     std::string name;
@@ -258,6 +261,9 @@ struct Node
     /// Group: an object with several fills or strokes, effects or a brush, read as
     /// its drawn look.
     bool drawn_look = false;
+    /// Group: what an envelope (Object > Envelope Distort) drew of the object it distorts.
+    /// It is a drawn look too. The object itself, type or art, isn't kept.
+    bool envelope = false;
     /// Read from %_ lines (Illustrator's own copy of an object).
     bool commented = false;
 };
@@ -303,6 +309,7 @@ struct Document
     /// %AI5_RulerUnits: 0 inches, 1 millimetres, 2 points, 3 picas, 4 centimetres, 6 pixels.
     std::optional<int> ruler_units;
     std::size_t drawn_looks = 0;
+    std::size_t envelopes = 0; ///< Objects an envelope distorts, read as what it drew.
     std::size_t commented_kept = 0; ///< Objects from %_ lines kept (not replaced by a drawn look).
     std::vector<std::string> left_out; ///< What hidden layers had that wasn't read.
     std::vector<std::string> warnings;

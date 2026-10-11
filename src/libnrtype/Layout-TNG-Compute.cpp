@@ -1081,6 +1081,14 @@ void  Layout::Calculator::_buildPangoItemizationForPara(ParagraphInfo *para) con
 
     TRACE(("itemizing para, first input %d\n", para->first_input_index));
 
+    // PROOF: the stretches of the paragraph under unicode-bidi:bidi-override, as bytes of
+    // its text, each with the way it is to be set (0 from the left, 1 from the right).
+    struct Override
+    {
+        int start, end, level;
+    };
+    std::vector<Override> overrides;
+
     PangoAttrList *attributes_list = pango_attr_list_new();
     for (unsigned input_index = para->first_input_index ; input_index < _flow._input_stream.size() ; input_index++) {
         if (_flow._input_stream[input_index]->Type() == CONTROL_CODE) {
@@ -1104,6 +1112,15 @@ void  Layout::Calculator::_buildPangoItemizationForPara(ParagraphInfo *para) con
             para->text.append(&*text_source->laid_begin.base(), text_source->text_length);     // build the combined text
 
             unsigned const end_index = para->text.bytes();
+
+            if (text_source->bidi_override >= 0 && end_index > start_index) {
+                if (!overrides.empty() && overrides.back().end == int(start_index) &&
+                    overrides.back().level == text_source->bidi_override) {
+                    overrides.back().end = end_index;
+                } else {
+                    overrides.push_back({int(start_index), int(end_index), text_source->bidi_override});
+                }
+            }
 
             // The following PangoAttributes shall apply only to this section of text, specified by start_index and
             // end_index
@@ -1152,6 +1169,29 @@ void  Layout::Calculator::_buildPangoItemizationForPara(ParagraphInfo *para) con
     }
 
     pango_attr_list_unref(attributes_list);
+
+    // PROOF: an item is cut where an override begins or ends, and what lies inside is set
+    // the override's way. Pango then shapes it that way, and the lines are put together by
+    // the items' levels as for any other text.
+    for (GList *current = pango_items_glist; current != nullptr && !overrides.empty(); current = current->next) {
+        auto *item = static_cast<PangoItem *>(current->data);
+        for (auto const &range : overrides) {
+            if (item->offset + item->length <= range.start || item->offset >= range.end) continue;
+            auto cut = [&](int byte) {
+                // The part before `byte` becomes an item of its own; `item` keeps the rest.
+                char const *text = para->text.data();
+                auto *before = pango_item_split(item, byte - item->offset, g_utf8_pointer_to_offset(text + item->offset, text + byte));
+                pango_items_glist = g_list_insert_before(pango_items_glist, current, before);
+                return before;
+            };
+            if (item->offset < range.start) cut(range.start);
+            if (item->offset + item->length > range.end) {
+                cut(range.end)->analysis.level = range.level;
+            } else {
+                item->analysis.level = range.level;
+            }
+        }
+    }
 
     // convert the GList to our vector<> and make the FontInstance for each PangoItem at the same time
     para->pango_items.reserve(g_list_length(pango_items_glist));

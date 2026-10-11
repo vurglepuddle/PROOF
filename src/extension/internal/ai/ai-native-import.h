@@ -39,6 +39,12 @@
  *                                  the document says (type-settings.h)
  *   underline, strikethrough       text-decoration-line on the span of the run
  *   a paragraph read from the right direction:rtl, each line anchored at the same end
+ *   letters read from the right    direction:ltr with unicode-bidi:bidi-override: set from
+ *   that Illustrator set as typed  the left one after another, as it shows them
+ *   type painted with a pattern    the pattern, placed as on a path; with a gradient, black,
+ *                                  as Illustrator draws it
+ *   an envelope                    group of the outlines it drew, marked proof:drawn-look;
+ *                                  what it distorts isn't kept
  *   superscript, subscript         font-variant-position:super or sub at the type's own
  *                                  size, which the text layout sets smaller and off the
  *                                  baseline by what the document says (type-settings.h)

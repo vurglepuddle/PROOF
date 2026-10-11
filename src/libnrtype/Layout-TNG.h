@@ -723,6 +723,11 @@ public:
         by what the document says. The style keeps the type's own size. */
         double position_size = 1.0;  ///< Their size, as a share of the style's.
         double position_shift = 0.0; ///< How far above the baseline, as a share of it; below when negative.
+        /** PROOF: unicode-bidi:bidi-override on the text's element or one that holds it. The
+        characters are then set one after another the way that element's direction says,
+        whatever way their script reads: 0 from the left, 1 from the right, -1 for no
+        override. Hebrew typed where nothing puts it in order comes out from the left. */
+        int bidi_override = -1;
         /// The size the character at this place in the source is set at, as a share of the style's.
         double sizeScale(unsigned char_index) const
         {

@@ -189,6 +189,17 @@ enum SPCSSDirection : std::uint_least8_t {
     SP_CSS_DIRECTION_RTL
 };
 
+// PROOF: unicode-bidi. The two overrides set every character the way `direction` says,
+// whatever way its script reads; the text layout knows those, and takes the rest as normal.
+enum SPCSSUnicodeBidi : std::uint_least8_t {
+    SP_CSS_UNICODE_BIDI_NORMAL,
+    SP_CSS_UNICODE_BIDI_EMBED,
+    SP_CSS_UNICODE_BIDI_ISOLATE,
+    SP_CSS_UNICODE_BIDI_OVERRIDE,
+    SP_CSS_UNICODE_BIDI_ISOLATE_OVERRIDE,
+    SP_CSS_UNICODE_BIDI_PLAINTEXT
+};
+
 enum SPCSSWritingMode : std::uint_least8_t {
     SP_CSS_WRITING_MODE_LR_TB,
     SP_CSS_WRITING_MODE_RL_TB,
@@ -550,6 +561,16 @@ static SPStyleEnum const enum_white_space[] = {
 static SPStyleEnum const enum_direction[] = {
     {"ltr", SP_CSS_DIRECTION_LTR},
     {"rtl", SP_CSS_DIRECTION_RTL},
+    {nullptr, -1}
+};
+
+static SPStyleEnum const enum_unicode_bidi[] = {
+    {"normal", SP_CSS_UNICODE_BIDI_NORMAL},
+    {"embed", SP_CSS_UNICODE_BIDI_EMBED},
+    {"isolate", SP_CSS_UNICODE_BIDI_ISOLATE},
+    {"bidi-override", SP_CSS_UNICODE_BIDI_OVERRIDE},
+    {"isolate-override", SP_CSS_UNICODE_BIDI_ISOLATE_OVERRIDE},
+    {"plaintext", SP_CSS_UNICODE_BIDI_PLAINTEXT},
     {nullptr, -1}
 };
 

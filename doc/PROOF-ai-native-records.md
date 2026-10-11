@@ -530,7 +530,11 @@ pattern editor's backing rectangle and the copies it adds along the edges
 ordinary paths. One file's PDF page has the same pattern as a tiling pattern,
 and its `/Matrix` is `p`'s matrix moved by the artboard's corner
 (`1164.12 −4995.58` against `3283.858 −6686.019` less `2119.739 −1690.435`):
-the matrix carries the pattern onto the art, with nothing else to apply. In
+the matrix carries the pattern onto the art. It places the tile from its
+lower-left corner, wherever the tile's box lies in the pattern's own space
+(found on 2026-10-11 from tiles that start at 5.76, 5.76; see "A second
+gauntlet" below. Until then the import placed the box at its own coordinates,
+which is the same thing only for a box that starts at 0,0). In
 PROOF the tile is a `<pattern>` holding the art in the tile's own space (its
 top-left corner at 0,0, y down), kept once and listed under the pattern's
 name; each object that paints with it gets a `<pattern>` of its own that
@@ -893,11 +897,9 @@ the name of that end changes (left is the end of a line read from the right).
 Illustrator has two composers. The one for these scripts puts the letters in
 order and leaves what it worked out in the segment's character count (key 15
 of `S`, its key 7). The other sets Hebrew from the left as it was typed, which
-shows it backwards. PROOF's layout always puts such letters in order, so they
-are taken only where Illustrator did too, and refuse the story otherwise. No
-sample of the backwards case has been seen: the rule comes from the three
-samples that are in order and from one corpus file without the data, which
-was on its page already.
+shows it backwards. A sample of the backwards case came with the second
+gauntlet and confirmed the rule; such a story is now set the way Illustrator
+shows it (below). Until then it was refused.
 
 No break (feature 52) changes nothing that is drawn and is not read.
 
@@ -958,6 +960,91 @@ not run again and stays at 802 of 879.
 **Not seen in a file.** Small caps and superscript on the same run (each makes
 the letters smaller in its turn here), and settings other than Illustrator's
 own. Both are covered by unit tests only.
+
+### A second gauntlet (2026-10-11)
+
+The user's gauntlet grew to 60 text objects: twelve instances of one font,
+every scale and tracking, stroked and outlined type, type painted with a
+gradient and with patterns, the four anti-aliasing settings, Hebrew set up for
+its direction and not, and type under an envelope. It was refused at the first
+of these to be met. It opens natively now, 0.27% from its page by lightness
+and 0.11% by colour at the check's size.
+
+**An envelope** (Object > Envelope Distort) is an object a plug-in made, ended
+by `(Adobe Deform Plugin) 1 0 0 XP`. Before that marker come, on `%_` lines, a
+group holding the mesh it distorts with, and in that group's dictionary the
+object it distorts (art between `X=` and `X+`, under `AIDeformArtKey`, beside
+the warp's settings); then, plainly, a group of what the envelope drew. Art in
+a dictionary was never kept. The mesh group is now dropped too, and the drawn
+group comes in as a drawn look. What was distorted, type or art, isn't kept:
+the document says so in a note.
+
+**A mesh** is `/Mesh X!`, lines of `X#`, `/End X!`. These were operators
+nobody knew; they are known now, and a mesh that is art (a gradient mesh)
+still refuses the file, under its own name. Only the mesh of an envelope,
+found as above, is left out without that. Eleven corpus files have gradient
+meshes; their reason reads "gradient meshes" where it listed the operators.
+
+**Justified paragraphs** are paragraph feature 0 at 3 to 6: justified with the
+last line left, right, centred, or justified too. A line of point type has no
+measure to be justified to, so it is set as that last line: from its left end
+for 3 and 6, from its right end or its middle for 4 and 5 where the layout
+says where that is, and from where its glyphs start otherwise. Justified area
+type is still refused: its lines are stretched to the frame.
+
+**Hebrew that isn't set up for its direction.** The sample is four Hebrew
+letters in a paragraph that reads from the left (feature 35 is 0), and its
+line's segment has a character count (key 15) with `/5 false` and no key 7:
+Illustrator's other composer set it, letter after letter from the left as
+typed, which shows the word backwards. The story is marked for it and comes in
+with `direction:ltr; unicode-bidi:bidi-override`, which the text layout now
+knows: the text is what was typed, and it shows as it does in Illustrator.
+Such letters in a paragraph that reads from the right, or put in order in one
+line and not in another, still refuse the story.
+
+**Paint by name.** A character's fill or stroke is a `/SimplePaint`, or a
+`/CAITextPaint` that names a style of the document's beside its colour:
+`/5 (Anon …)`. The styles are between `%AI9_BeginArtStyles` and
+`%AI9_EndArtStyles`, each a `/KnownStyle :` with its `/Name` and a
+`/SimpleStyle` whose operators set the paint: a colour, `Bg` for a gradient,
+`p` or `P` for a pattern. For a gradient or a pattern the colour kept beside
+the name is black, whatever the paint looks like.
+
+| The style's paint | Illustrator's page | Here |
+|---|---|---|
+| A colour | That colour | The colour beside the name, as before |
+| A gradient | Black: a gradient isn't drawn on type | Black, with a note that says why |
+| A pattern | The pattern | The pattern, placed by the style's matrix as on a path |
+
+Before this the gradient case was right by accident and the pattern case came
+in black without a word; the check let it through, since two words are a
+small part of a page.
+
+**Where a pattern's tile lies.** The page has the two patterns as tiling
+patterns whose cells run from 0,0 (`/BBox [0 0 28.8 28.8]`), under the very
+matrix the style gives (moved by the artboard's corner), and the art inside is
+moved to match: a dot the records have at 12.96, 12.96 in a tile box that
+starts at 5.76, 5.76 is at 7.2, 7.2 there. So the matrix places the tile from
+its lower-left corner. The import placed the box at its own coordinates, which
+put these tiles out of phase by the matrix times that corner. It is the same
+for a path's pattern, and corrected for both. No corpus file paints art on its
+layers with a pattern whose tile box starts elsewhere than 0,0, so none of
+them changes.
+
+**Anti-aliasing** (`/TextAntialiasing` in the text object, 0 to 4) is a hint
+for the screen and isn't read.
+
+**Looked at closer.** Drawn at 200 dpi and laid over the page, every object
+lies where the page has it, the dots of both patterns included. What differs:
+the Hebrew, drawn by another font; letter edges by a fraction of a pixel; and
+the black of the gradient-painted type, which the page has as a grey and
+Poppler draws darker than the black ink it is here.
+
+**Results.** The trial files are as far from their pages as before, to the
+last digit. Two corpus files hold anything these changes read: one with
+justified area type, on its page before and now, and one with letters read
+from the right, on its page for a picture that is gone. The corpus was not run
+again and stays at 802 of 879.
 
 ## Plan
 

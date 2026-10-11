@@ -124,6 +124,7 @@ class SPStylePropHelper {
 
         REGISTER_PROPERTY(SPAttr::WRITING_MODE, writing_mode, "writing-mode");
         REGISTER_PROPERTY(SPAttr::DIRECTION, direction, "direction");
+        REGISTER_PROPERTY(SPAttr::UNICODE_BIDI, unicode_bidi, "unicode-bidi");
         REGISTER_PROPERTY(SPAttr::TEXT_ORIENTATION, text_orientation, "text-orientation");
         REGISTER_PROPERTY(SPAttr::DOMINANT_BASELINE, dominant_baseline, "dominant-baseline");
         REGISTER_PROPERTY(SPAttr::BASELINE_SHIFT, baseline_shift, "baseline-shift");
@@ -255,7 +256,7 @@ SPStyle::SPStyle(SPDocument *document_in, SPObject *object_in) :
     // Unimplemented SVG 1.1: alignment-baseline, clip, clip-path, color-profile, cursor,
     // dominant-baseline, flood-color, flood-opacity, font-size-adjust,
     // glyph-orientation-horizontal, glyph-orientation-vertical, kerning, lighting-color,
-    // pointer-events, unicode-bidi
+    // pointer-events
 
     // 'font', 'font-size', and 'font-family' must come first as other properties depend on them
     // for calculated values (through 'em' and 'ex'). ('ex' is currently not read.)
@@ -303,6 +304,7 @@ SPStyle::SPStyle(SPDocument *document_in, SPObject *object_in) :
     text_transform(         SP_CSS_TEXT_TRANSFORM_NONE),
 
     direction(              SP_CSS_DIRECTION_LTR),
+    unicode_bidi(           SP_CSS_UNICODE_BIDI_NORMAL, false),
     writing_mode(           SP_CSS_WRITING_MODE_LR_TB),
     text_orientation(       SP_CSS_TEXT_ORIENTATION_MIXED),
     dominant_baseline(      SP_CSS_BASELINE_AUTO),
@@ -1509,6 +1511,7 @@ sp_css_attr_unset_text(SPCSSAttr *css)
     sp_repr_css_set_property(css, "word-spacing", nullptr);
     sp_repr_css_set_property(css, "text-transform", nullptr);
     sp_repr_css_set_property(css, "direction", nullptr);
+    sp_repr_css_set_property(css, "unicode-bidi", nullptr);
     sp_repr_css_set_property(css, "writing-mode", nullptr);
     sp_repr_css_set_property(css, "text-orientation", nullptr);
     sp_repr_css_set_property(css, "text-anchor", nullptr);

@@ -204,6 +204,16 @@ std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool 
                             fonts[name] = std::nullopt;
                         }
                     }
+                    for (auto const *used : {&run.style.fill_pattern, &run.style.stroke_pattern}) {
+                        if (!*used) continue;
+                        auto const pattern = std::find_if(ai.patterns.begin(), ai.patterns.end(),
+                                                          [&](Pattern const &p) { return p.name == (*used)->name; });
+                        if (pattern == ai.patterns.end()) {
+                            error = "type is painted with a pattern that isn't in the file";
+                        } else if (!pattern->unread.empty()) {
+                            error = "type is painted with a pattern that has " + pattern->unread;
+                        }
+                    }
                     auto const &font = fonts[name];
                     if (!font) {
                         error = "the font '" + name + "' isn't installed, and no font could be loaded in its place";
@@ -537,6 +547,10 @@ public:
     std::size_t overflowing_text = 0;
     std::size_t optical_kerning = 0;
     std::size_t substituted_text = 0;   ///< Text objects set in a font standing in for theirs.
+    /// Text objects with letters read from the right that are set from the left, as typed.
+    std::size_t unordered_text = 0;
+    /// Text objects painted with a gradient, which is black on type.
+    std::size_t gradient_text = 0;
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
     /// The text objects that show and are set by a font other than their own.
     std::vector<XML::Node *> substituted_shown;
@@ -662,13 +676,14 @@ void Builder::run()
         auto const images = images_left_out;
         auto const error = link_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
-                                       hidden_links_missing, substituted_text, glyphs_missing_text);
+                                       hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
+                                       gradient_text);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error;
         images_left_out = images;
         link_error = error;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
-                 substituted_text, glyphs_missing_text) = counts;
+                 substituted_text, glyphs_missing_text, unordered_text, gradient_text) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -714,6 +729,8 @@ XML::Node *Builder::made(Node const &n)
             return placed(n);
         case Node::Kind::Text:
             return text(n);
+        case Node::Kind::Mesh:
+            break; // None is in a document that was read.
     }
     return nullptr;
 }
@@ -755,9 +772,10 @@ XML::Node *Builder::text(Node const &n)
     // All Caps is the same: said for every run of a story that has any, and not otherwise.
     // So are small capitals, and superscript and subscript.
     bool features = false, optical = false, instances = false, capitals = false, small_capitals = false, stand_in = false;
-    bool positions = false;
+    bool positions = false, gradients = false;
     for (auto const &line : story.lines) for (auto const &run : line.runs) {
         positions = positions || run.style.position;
+        gradients = gradients || run.style.gradient;
         features = features || run.style.kerning == 0 || !run.style.ligatures || !run.style.contextual;
         optical = optical || run.style.kerning == 2;
         instances = instances || _text_fonts.at(run.style.font)->font.variable;
@@ -766,6 +784,7 @@ XML::Node *Builder::text(Node const &n)
         stand_in = stand_in || _text_fonts.at(run.style.font)->missing;
     }
     if (optical) ++optical_kerning;
+    if (gradients) ++gradient_text;
     if (stand_in) ++substituted_text;
     if (_glyphs_missing.count({n.text_proxy, *n.story})) {
         ++glyphs_missing_text;
@@ -785,8 +804,32 @@ XML::Node *Builder::text(Node const &n)
             if (!axes.empty()) element->setAttribute(FONT_MISSING_AXES_ATTRIBUTE, axes);
         }
     };
+    // A pattern on type is placed as on a path, in art space. The text has a matrix of its
+    // own, so the pattern is written for the space inside it.
+    std::vector<std::pair<TextPattern, std::string>> patterns;
+    auto patterned = [&](TextPattern const &used) {
+        for (auto const &[known, url] : patterns) {
+            if (known == used) return url;
+        }
+        Paint p;
+        p.kind = Paint::Kind::Pattern;
+        p.pattern_matrix = used.matrix;
+        for (std::size_t i = 0; i < _ai.patterns.size(); ++i) {
+            if (_ai.patterns[i].name == used.name) p.pattern = static_cast<int>(i);
+        }
+        auto const outer = std::exchange(_to_doc, story.to_art.inverse());
+        auto url = pattern(p);
+        _to_doc = outer;
+        patterns.emplace_back(used, url);
+        return url;
+    };
     auto parts = [&](auto const &s) {
-        auto color = [&](std::optional<Color> const &c) { Paint p; if (c) p.color = *c; return c ? paint(p) : std::string("none"); };
+        auto color = [&](std::optional<Color> const &c, std::optional<TextPattern> const &pattern) {
+            if (c && pattern) return patterned(*pattern);
+            Paint p;
+            if (c) p.color = *c;
+            return c ? paint(p) : std::string("none");
+        };
         std::string ligatures, kerning;
         if (features) {
             ligatures = std::string("font-variant-ligatures:") +
@@ -800,8 +843,8 @@ XML::Node *Builder::text(Node const &n)
         out.css = {
             font.css + (instances && !font.variable ? "font-variation-settings:normal;" : ""),
             // The type's own size: a superscript or subscript is drawn smaller by the layout.
-            "font-size:" + num(s.size) + ";", "fill:" + color(s.fill) + ";",
-            "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke) + ";",
+            "font-size:" + num(s.size) + ";", "fill:" + color(s.fill, s.fill_pattern) + ";",
+            "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke, s.stroke_pattern) + ";",
             "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
             "letter-spacing:" + num(s.set_size() * s.tracking / 1000.0) + ";", ligatures, kerning,
             capitals ? std::string("text-transform:") + (s.all_caps ? "uppercase" : "none") + ";" : std::string(),
@@ -820,6 +863,11 @@ XML::Node *Builder::text(Node const &n)
     }
     std::string common_style = "text-anchor:start;";
     if (story.rtl) common_style += "direction:rtl;";
+    // Letters read from the right that Illustrator set from the left, as typed: the same here.
+    if (story.unordered) {
+        common_style += "direction:ltr;unicode-bidi:bidi-override;";
+        ++unordered_text;
+    }
     common(e, n, common_style);
     if (base) {
         for (auto const &part : base->css) common_style += part;
@@ -1253,12 +1301,21 @@ std::string Builder::pattern_tile(int index)
     return _tiles[index] = id;
 }
 
-/// The pattern as one object places it: the tile's, with that object's matrix.
+/**
+ * The pattern as one object places it: the tile's, with that object's matrix.
+ *
+ * The matrix places the tile from its lower-left corner: that corner is the origin of what
+ * it carries onto the art, wherever the tile's box lies in the pattern's own space. (The
+ * PDF page of a file whose tiles start at 5.76, 5.76 has them as cells from 0,0 under the
+ * same matrix, with the art moved to match.)
+ */
 std::string Builder::pattern(Paint const &p)
 {
     if (p.pattern < 0 || p.pattern >= static_cast<int>(_ai.patterns.size())) return "none";
     auto const &pat = _ai.patterns[p.pattern];
-    Geom::Affine const m = tile_space(pat).inverse() * p.pattern_matrix * _to_doc;
+    // The tile's space (top-left corner at 0,0, y down) to one with its lower-left corner
+    // at 0,0 and y up, then onto the art.
+    Geom::Affine const m = Geom::Affine(1, 0, 0, -1, 0, pat.tile.height()) * p.pattern_matrix * _to_doc;
     if (!finite(m) || m.isSingular()) return "none";
     auto const tile = pattern_tile(p.pattern);
     auto e = create("svg:pattern");
@@ -1578,6 +1635,11 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         notes.push_back(count(ai.drawn_looks, "object", "objects") +
                         " with several fills or strokes, effects or a brush came in as groups of what they draw");
     }
+    if (ai.envelopes) {
+        notes.push_back(count(ai.envelopes, "object distorted by an envelope came in as the outlines it draws",
+                              "objects distorted by envelopes came in as the outlines they draw") +
+                        ": what was distorted, type or art, isn't kept");
+    }
     if (b.hidden_text) {
         notes.push_back(count(b.hidden_text, "text object", "text objects") +
                         " that don't show were left out: their story, style or exact font isn't supported");
@@ -1589,6 +1651,16 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     if (b.overflowing_text) {
         notes.push_back(count(b.overflowing_text, "text frame holds", "text frames hold") +
                         " more text than fits; what doesn't show is kept with the frame as plain text");
+    }
+    if (b.gradient_text) {
+        notes.push_back(count(b.gradient_text, "text object is", "text objects are") +
+                        " painted with a gradient, which Illustrator doesn't draw on type: the characters are "
+                        "black there, and here");
+    }
+    if (b.unordered_text) {
+        notes.push_back(count(b.unordered_text, "text object has", "text objects have") +
+                        " letters of a script read from the right that Illustrator set from the left, as they were "
+                        "typed: they are set that way here too, and show backwards");
     }
     if (b.optical_kerning) {
         notes.push_back(count(b.optical_kerning, "text object is", "text objects are") +
