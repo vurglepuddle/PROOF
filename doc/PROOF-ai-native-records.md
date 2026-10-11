@@ -1306,6 +1306,44 @@ with symbols, 10 for their type, 2 whose artboard and page counts differ, 2
 with an image that can't be read, 1 that can't be read.
 
 
+### Where type lies on the canvas (2026-10-11)
+
+Two of the files that drew differently seemed to have lost letters: an eye
+chart's, and STOP on a sign. The letters were there, as type, 74 points from
+where they belonged in one file and 40 in the other.
+
+A story's place is written in the coordinates of Illustrator's canvas, 16383
+points square with y down, and has to be carried into art space. The import
+took the middle of the canvas (8191.5, 8191.5) to be the document's centre
+(`%AI3_TemplateBox`). That holds while the artboard sits in the middle of the
+canvas. Once it has been moved, or resized from one side, it doesn't.
+
+The text section says where the art's 0,0 is on the canvas, in an entry of
+its own between the two text documents:
+
+```
+/AI11TextDocument : /ASCII85Decode ,
+%…~>
+7579 8587 /RulerOrigin ,
+;
+/AI11UndoFreeTextDocument : /ASCII85Decode ,
+```
+
+Art x is canvas x less the first number; art y is the second number less
+canvas y. In 764 of the 878 corpus files with records the entry agrees with
+the centre to a hundredth of a point (a 2025 file: centre 306.5, -396.5, entry
+7885 7795). In 114 it differs by a point or more. Most of those have no type
+that shows, which is why only a few were caught.
+
+`read_text_document` now places stories by the entry, and by the centre only
+when the section has none.
+
+**Results.** The 114 files, those still differing and the trial set, 162 in
+all, run again: the eye chart's file is native at 0.0%, the sign's file went
+from 2.7% to 2.1% (its letters are in place; other things differ), 8 native
+files are closer to their pages, 121 are the same, none is further and none is
+lost. **821 of 879** by count, 21 still drawing differently.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

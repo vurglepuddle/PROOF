@@ -5,6 +5,7 @@
 #include "ai-native-lexer.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -159,6 +160,9 @@ public:
 };
 
 /// The text documents' section of the records.
+/// The middle of Illustrator's canvas, on which the text document places its stories.
+constexpr double CANVAS_CENTRE = 8191.5;
+
 std::string_view text_section(std::string_view records)
 {
     auto start = records.find("%AI11_BeginTextDocument");
@@ -166,6 +170,45 @@ std::string_view text_section(std::string_view records)
     auto end = records.find("%AI11_EndTextDocument", start);
     if (end == records.npos) throw Bad("the text document doesn't end");
     return records.substr(start, end - start);
+}
+
+/**
+ * Where the art's 0,0 lies on the canvas the stories are placed on, when the text section
+ * says: `x y /RulerOrigin ,` after the document of what was typed. The canvas is 16383
+ * points square, y down.
+ */
+std::optional<Geom::Point> ruler_origin(std::string_view section)
+{
+    constexpr std::string_view name = "/RulerOrigin";
+    for (auto at = section.find(name); at != section.npos; at = section.find(name, at + name.size())) {
+        // The two numbers before the name, on its line. The packed documents' lines hold any
+        // characters: one that isn't two numbers and the name isn't this entry.
+        auto start = section.find_last_of("\r\n", at);
+        start = start == section.npos ? 0 : start + 1;
+        auto line = section.substr(start, at - start);
+        if (line.substr(0, 2) == "%_") line.remove_prefix(2);
+        double values[2];
+        int count = 0;
+        bool only_numbers = true;
+        while (!line.empty() && only_numbers) {
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+            if (line.empty()) break;
+            auto const end = line.find_first_of(" \t");
+            auto const word = line.substr(0, end);
+            double value = 0;
+            auto const [stop, ec] = std::from_chars(word.data(), word.data() + word.size(), value);
+            if (ec != std::errc() || stop != word.data() + word.size() || !std::isfinite(value) || count == 2) {
+                only_numbers = false;
+            } else {
+                values[count++] = value;
+            }
+            line.remove_prefix(end == line.npos ? line.size() : end);
+        }
+        if (only_numbers && count == 2 && std::abs(values[0]) < 1e9 && std::abs(values[1]) < 1e9) {
+            return Geom::Point(values[0], values[1]);
+        }
+    }
+    return {};
 }
 
 /// The ASCII85 block that starts at or after `from` in `section`, decoded; `from` is left
@@ -587,7 +630,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     PointText out;
     out.area = area;
     out.to_art = Geom::Affine(matrix[0], -matrix[1], matrix[2], -matrix[3],
-                              matrix[4] - 8191.5 + center.x(), 8191.5 + center.y() - matrix[5]);
+                              matrix[4] - CANVAS_CENTRE + center.x(), CANVAS_CENTRE + center.y() - matrix[5]);
     if (area) out.frame = frame_outline(frame.get("1").get("0"));
     // A frame nothing was typed in has no layout: there is nothing of it to draw.
     if (anchors.empty() && std::all_of(text.begin(), text.end(), [](char c) { return c == '\r' || c == '\n' || c == 3 || c == 0; })) {
@@ -833,10 +876,17 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
 {
     auto out = std::make_shared<TextDocument>();
     try {
+        auto const section = text_section(records);
+        // The stories lie on Illustrator's canvas, and the section says where the art's 0,0 is
+        // on it. Without that, the middle of the canvas is taken to be the document's centre,
+        // which holds for an artboard that was never moved or resized from one side: in one
+        // file in eight of those seen the two differ.
+        if (auto const origin = ruler_origin(section)) {
+            center = Geom::Point(CANVAS_CENTRE - origin->x(), origin->y() - CANVAS_CENTRE);
+        }
         if (!center) throw Bad("text has no template centre for placement");
         if (!std::isfinite(center->x()) || !std::isfinite(center->y()) ||
             std::abs(center->x()) > 1e9 || std::abs(center->y()) > 1e9) throw Bad("invalid text template centre");
-        auto const section = text_section(records);
         auto const paints = named_paints(records);
         // The stories of one text document, each read on its own.
         auto read = [&](std::string const &data, std::vector<std::optional<PointText>> &stories_out,

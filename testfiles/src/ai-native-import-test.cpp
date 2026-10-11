@@ -702,6 +702,33 @@ TEST_F(AiNativeImportTest, PointTextReadsUnicodeRunLengthsAndCanvasPlacement)
     ASSERT_TRUE(s.fill);
     EXPECT_EQ(s.fill->model, AN::Color::Model::Cmyk);
     EXPECT_EQ(s.fill->v, (std::array<double, 4>{0.25, 0.5, 0.75, 0.1}));
+
+    // The section's own ruler origin says where the art lies on the canvas, and counts
+    // before the document's centre. One that agrees with the centre changes nothing; one of
+    // an artboard that isn't in the middle of the canvas moves the type with it.
+    auto with_origin = [&](std::string const &entry) {
+        auto moved = data;
+        auto const end = moved.find("%AI11_EndTextDocument");
+        EXPECT_NE(end, std::string::npos);
+        moved.insert(end, entry);
+        return moved;
+    };
+    auto where = [](std::shared_ptr<AN::TextDocument const> const &document) {
+        EXPECT_TRUE(document->error.empty()) << document->error;
+        EXPECT_EQ(document->stories.size(), 1u);
+        if (document->stories.size() != 1 || !document->stories[0]) return Geom::Point(-1, -1);
+        return document->stories[0]->lines[0].origin * document->stories[0]->to_art;
+    };
+    EXPECT_TRUE(Geom::are_near(where(AN::read_text_document(with_origin("8091.5 8241.5 /RulerOrigin ,\n"), Geom::Point(100, 50))),
+                               Geom::Point(10, 60), 1e-6));
+    EXPECT_TRUE(Geom::are_near(where(AN::read_text_document(with_origin("8071.5 8251.5 /RulerOrigin ,\n"), Geom::Point(100, 50))),
+                               Geom::Point(30, 70), 1e-6));
+    EXPECT_TRUE(Geom::are_near(where(AN::read_text_document(with_origin("%_8071.5 8251.5 /RulerOrigin ,\n"), {})),
+                               Geom::Point(30, 70), 1e-6));
+    // What isn't two numbers and the name isn't that entry.
+    EXPECT_TRUE(Geom::are_near(where(AN::read_text_document(with_origin("(a) 1 2 /RulerOrigin ,\n"), Geom::Point(100, 50))),
+                               Geom::Point(10, 60), 1e-6));
+    EXPECT_FALSE(AN::read_text_document(data, {})->error.empty());
 }
 
 TEST_F(AiNativeImportTest, PointTextRefusesBrokenUnicodeFramesStylesAndEncodings)

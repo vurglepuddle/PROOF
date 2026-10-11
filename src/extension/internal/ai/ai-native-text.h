@@ -123,6 +123,13 @@ struct TextDocument
     std::vector<std::string> drawn_errors;
 };
 
+/**
+ * The text documents of `records`.
+ *
+ * Stories are placed on Illustrator's canvas. Where the art lies on it is what the text
+ * section's own `/RulerOrigin` says; `template_center` (the document's centre in art space,
+ * taken to be the middle of the canvas) stands in when the section doesn't say.
+ */
 std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
                                                       std::optional<Geom::Point> template_center);
 
