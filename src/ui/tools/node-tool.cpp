@@ -165,8 +165,10 @@ NodeTool::NodeTool(SPDesktop *desktop)
     sp_event_context_read(this, "live_outline");
     sp_event_context_read(this, "live_objects");
     sp_event_context_read(this, "show_path_direction");
-    sp_event_context_read(this, "show_transform_handles");
-    sp_event_context_read(this, "single_node_transform_handles");
+    // PROOF: no box with scale and skew handles around the selected anchors. Direct Selection
+    // has none in Illustrator, and while it showed, a click on a selected anchor switched the
+    // box's mode where it should have selected that anchor alone.
+    _selected_nodes->showTransformHandles(false, false);
     sp_event_context_read(this, "edit_clipping_paths");
     sp_event_context_read(this, "edit_masks");
 
@@ -297,14 +299,6 @@ void NodeTool::set(const Inkscape::Preferences::Entry& value) {
     } else if (entry_name == "show_path_direction") {
         this->show_path_direction = value.getBool();
         this->_multipath->showPathDirection(this->show_path_direction);
-    } else if (entry_name == "show_transform_handles") {
-        this->show_transform_handles = value.getBool(true);
-        this->_selected_nodes->showTransformHandles(
-            this->show_transform_handles, this->single_node_transform_handles);
-    } else if (entry_name == "single_node_transform_handles") {
-        this->single_node_transform_handles = value.getBool();
-        this->_selected_nodes->showTransformHandles(
-            this->show_transform_handles, this->single_node_transform_handles);
     } else if (entry_name == "edit_clipping_paths") {
         this->edit_clipping_paths = value.getBool();
         this->selection_changed(_desktop->getSelection());

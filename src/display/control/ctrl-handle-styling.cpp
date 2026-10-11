@@ -75,6 +75,7 @@ std::unordered_map<std::string, CanvasItemCtrlType> const ctrl_type_map = {
     {".proof-box-corner", CANVAS_ITEM_CTRL_TYPE_BOX_CORNER},
     {".proof-box-center", CANVAS_ITEM_CTRL_TYPE_BOX_CENTER},
     {".proof-box-radius", CANVAS_ITEM_CTRL_TYPE_BOX_RADIUS},
+    {".proof-node-handle", CANVAS_ITEM_CTRL_TYPE_NODE_HANDLE},
     {".inkscape-selection-rect", RUBBERBAND_RECT},
     {".inkscape-selection-lasso", RUBBERBAND_TOUCHPATH},
     {".inkscape-selection-path.selector", RUBBERBAND_TOUCHPATH_SELECT},

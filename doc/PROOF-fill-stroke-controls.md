@@ -6,6 +6,10 @@ in front; click either exposed square to activate it, or double-click to open
 the existing native paint editor. Mixed paints have an indicator rather than
 an averaged colour. Gradients retain their paint when the editor is opened.
 
+Each square is 20 px, about as large as a tool's icon, and the stroke's lies
+10 px down and right of the fill's: 30 px for the pair. Illustrator's are 18,
+10 and 28 beside tools of that size. (They were 32, 14 and 46 until 2026-10-11.)
+
 The picker sits immediately below the last visible tool, as requested, with
 unused sidebar space below it. The tool scroller propagates its natural height
 and does not expand; shorter windows retain scrolling for the tools. At the

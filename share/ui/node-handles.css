@@ -261,6 +261,37 @@ Notes:
     fill: #277fff;
 }
 
+/* PROOF Direct Selection: anchors about as large as the transform box's corners. Inkscape's
+   were half as large again, and larger still when selected. They keep their shapes: a diamond
+   for a corner, a square for a smooth anchor. At the default handle size a corner is 9 px
+   across, 11 px selected. */
+.inkscape-node-cusp {
+    scale: 2.0;
+    size-extra: 1px;
+    outline-width: 1px;
+}
+
+.inkscape-node-smooth,
+.inkscape-node-symmetrical {
+    scale: 1.5;
+    size-extra: 1px;
+    outline-width: 1px;
+}
+
+.inkscape-node-auto {
+    scale: 1.7;
+    size-extra: 1px;
+    outline-width: 1px;
+}
+
+/* The end of an anchor's Bezier handle: smaller than the anchor it belongs to */
+.proof-node-handle {
+    shape: "circle";
+    scale: 1.25;
+    size-extra: 1px;
+    outline-width: 1px;
+}
+
 .inkscape-center {
     shape: "plus";
     stroke-width: 1px;

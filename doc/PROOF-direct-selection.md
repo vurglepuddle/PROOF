@@ -37,11 +37,26 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
 - **Presentation:** Direct Selection shows the path and anchors without the
   dashed object bounding box. Stationary anchors from the selected path are
   supplied to snapping during a direct anchor drag.
+- **No box around selected anchors:** Inkscape's transformation handles for
+  selected nodes (scale, then rotate and skew) are not part of Direct Selection.
+  While they showed, a click on a selected anchor switched their mode where it
+  should have selected that anchor alone. The node toolbar's button and the
+  preference for single nodes are gone with them.
+- **Anchor size:** a corner anchor is a diamond 9 px across at the default
+  handle size and 11 px when selected, about the size of the transform box's
+  corner squares; a smooth anchor is a 7 px square. The end of a Bezier handle
+  is a smaller circle with a type of its own, `.proof-node-handle` in
+  `share/ui/node-handles.css`, so that the handles of other tools keep theirs.
 - **An object that goes:** a path's manipulator forgets its object when the
   object is released. The selection only reports what is selected, and a shape
   inside a clip or a mask is edited without being selected.
 
 ## Remaining scope
+
+Rounding any corner anchor with a widget, as Illustrator's Live Corners do, is
+not built. Until it is, a rectangle or an ellipse under Direct Selection shows
+its path anchors and not its corner radius or arc handles, which the owner
+wants back. Segments are not yet a selection of their own.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate

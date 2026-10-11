@@ -171,7 +171,7 @@ double Handle::_saved_length = 0.0;
 bool Handle::_drag_out = false;
 
 Handle::Handle(NodeSharedData const &data, Geom::Point const &initial_pos, Node *parent)
-    : ControlPoint(data.desktop, initial_pos, SP_ANCHOR_CENTER, Inkscape::CANVAS_ITEM_CTRL_TYPE_ROTATE,
+    : ControlPoint(data.desktop, initial_pos, SP_ANCHOR_CENTER, Inkscape::CANVAS_ITEM_CTRL_TYPE_NODE_HANDLE,
                    data.handle_group)
     , _handle_line(make_canvasitem<CanvasItemCurve>(data.handle_line_group))
     , _parent(parent)

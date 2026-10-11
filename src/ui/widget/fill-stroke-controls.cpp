@@ -26,8 +26,12 @@
 
 namespace Inkscape::UI::Widget {
 namespace {
-constexpr int tile = 32;
-constexpr int overlap = 14;
+// A tile is as large as a tool's icon and the pair a little larger than one tool, as in
+// Illustrator (Illustrator_reference/size_reference.png: 18 px tiles, 28 px the pair).
+constexpr int tile = 20;
+constexpr int overlap = 10;  // how far the stroke's tile lies down and right of the fill's
+constexpr double corner = 3; // a tile's corner radius
+constexpr double band = 5;   // width of the stroke tile's ring
 unsigned paint_session = 0;
 
 void rounded(Cairo::RefPtr<Cairo::Context> const &cr, double x, double y, double w, double h, double r)
@@ -66,6 +70,7 @@ FillStrokeControls::FillStrokeControls() : Gtk::Box(Gtk::Orientation::VERTICAL, 
     }
 
     _targets.set_size_request(tile + overlap, tile + overlap);
+    _targets.set_halign(Gtk::Align::CENTER); // The row of commands under it is wider.
     append(_targets);
     _fill.set_name("FillPaint");
     _stroke.set_name("StrokePaint");
@@ -294,8 +299,11 @@ void FillStrokeControls::draw(Cairo::RefPtr<Cairo::Context> const &cr, int width
     auto const &preview = _preview[fill ? 0 : 1];
     double w = width - 3, h = height - 3;
     cr->save();
-    rounded(cr, 1.5, 1.5, w, h, 5);
-    if (!fill) rounded(cr, 8.5, 8.5, w - 14, h - 14, 2);
+    auto outline = [&] {
+        rounded(cr, 1.5, 1.5, w, h, corner);
+        if (!fill) rounded(cr, 1.5 + band, 1.5 + band, w - 2 * band, h - 2 * band, corner / 2);
+    };
+    outline();
     cr->set_fill_rule(Cairo::Context::FillRule::EVEN_ODD);
     cr->clip();
     // Checkerboard remains visible under transparent paints, including a hollow stroke.
@@ -324,29 +332,29 @@ void FillStrokeControls::draw(Cairo::RefPtr<Cairo::Context> const &cr, int width
     auto foreground = get_color();
     cr->set_source_rgba(foreground.get_red(), foreground.get_green(), foreground.get_blue(), 1);
     cr->set_line_width(_fill_active == fill ? 2 : 1);
-    rounded(cr, 1.5, 1.5, w, h, 5);
-    if (!fill) rounded(cr, 8.5, 8.5, w - 14, h - 14, 2);
+    outline();
     cr->stroke();
     if (preview.kind == Preview::Kind::None) {
         cr->save();
-        rounded(cr, 1.5, 1.5, w, h, 5);
+        rounded(cr, 1.5, 1.5, w, h, corner);
         cr->clip();
         cr->set_source_rgb(0.95, 0.05, 0.05);
-        cr->set_line_width(4);
+        cr->set_line_width(2.5);
         cr->move_to(1, height - 1);
         cr->line_to(width - 1, 1);
         cr->stroke();
         cr->restore();
     } else if (preview.kind == Preview::Kind::Mixed || preview.kind == Preview::Kind::Other) {
+        // A dash for paints that differ; with two ticks under it, a paint the tile can't show.
         cr->set_source_rgba(foreground.get_red(), foreground.get_green(), foreground.get_blue(), 1);
-        cr->set_line_width(2);
-        cr->move_to(5, 5);
-        cr->line_to(width - 5, 5);
+        cr->set_line_width(1.5);
+        cr->move_to(4, 4.5);
+        cr->line_to(width - 4, 4.5);
         if (preview.kind == Preview::Kind::Other) {
-            cr->move_to(5, 3);
-            cr->line_to(5, 8);
-            cr->move_to(10, 3);
-            cr->line_to(10, 8);
+            cr->move_to(4.5, 3);
+            cr->line_to(4.5, 7);
+            cr->move_to(8.5, 3);
+            cr->line_to(8.5, 7);
         }
         cr->stroke();
     }

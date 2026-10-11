@@ -66,7 +66,6 @@ private:
 
     std::unique_ptr<UI::Widget::UnitTracker> _tracker;
 
-    std::unique_ptr<UI::SimplePrefPusher> _pusher_show_transform_handles;
     std::unique_ptr<UI::SimplePrefPusher> _pusher_show_handles;
     std::unique_ptr<UI::SimplePrefPusher> _pusher_show_outline;
     std::unique_ptr<UI::SimplePrefPusher> _pusher_edit_clipping_paths;
@@ -76,7 +75,6 @@ private:
 
     Gtk::ToggleButton *_show_helper_path_btn;
     Gtk::ToggleButton *_show_handles_btn;
-    Gtk::ToggleButton *_show_transform_handles_btn;
     Gtk::ToggleButton *_object_edit_mask_path_btn;
     Gtk::ToggleButton *_object_edit_clip_path_btn;
     Gtk::Button &_add_corners_btn;

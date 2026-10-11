@@ -69,6 +69,7 @@ enum CanvasItemCtrlType {
     CANVAS_ITEM_CTRL_TYPE_BOX_CORNER, // PROOF transform box corner
     CANVAS_ITEM_CTRL_TYPE_BOX_CENTER, // PROOF transform box centre mark
     CANVAS_ITEM_CTRL_TYPE_BOX_RADIUS, // PROOF corner radius handle
+    CANVAS_ITEM_CTRL_TYPE_NODE_HANDLE, // PROOF: the end of an anchor's Bezier handle
     // Rubberbands
     RUBBERBAND_RECT,
     RUBBERBAND_TOUCHPATH,

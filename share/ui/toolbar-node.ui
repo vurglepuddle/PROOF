@@ -408,19 +408,6 @@
       </object>
     </child>
     <child>
-      <object class="GtkToggleButton" id="_show_transform_handles_btn">
-        <property name="valign">center</property>
-        <property name="focusable">True</property>
-        <property name="focus-on-click">False</property>
-        <property name="tooltip-text" translatable="yes">Show transformation handles for selected nodes</property>
-        <property name="has-frame">False</property>
-        <property name="icon-name">node-transform</property>
-        <style>
-            <class name="priority1"/>
-        </style>
-      </object>
-    </child>
-    <child>
       <object class="GtkToggleButton" id="_object_edit_mask_path_btn">
         <property name="valign">center</property>
         <property name="focusable">True</property>

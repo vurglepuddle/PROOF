@@ -101,8 +101,6 @@ private:
     bool live_outline = false;
     bool live_objects = false;
     bool show_path_direction = false;
-    bool show_transform_handles = false;
-    bool single_node_transform_handles = false;
 
     Modifiers::Modifier *mod_move_no_snapping;
     Modifiers::Modifier *mod_node_invert;

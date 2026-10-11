@@ -61,7 +61,6 @@ NodeToolbar::NodeToolbar(Glib::RefPtr<Gtk::Builder> const &builder)
     , _nodes_lpeedit_btn{get_widget<Gtk::Button>(builder, "_nodes_lpeedit_btn")}
     , _show_helper_path_btn{&get_widget<Gtk::ToggleButton>(builder, "_show_helper_path_btn")}
     , _show_handles_btn{&get_widget<Gtk::ToggleButton>(builder, "_show_handles_btn")}
-    , _show_transform_handles_btn{&get_widget<Gtk::ToggleButton>(builder, "_show_transform_handles_btn")}
     , _object_edit_mask_path_btn{&get_widget<Gtk::ToggleButton>(builder, "_object_edit_mask_path_btn")}
     , _object_edit_clip_path_btn{&get_widget<Gtk::ToggleButton>(builder, "_object_edit_clip_path_btn")}
     , _add_corners_btn{get_widget<Gtk::Button>(builder, "_add_corners_btn")}
@@ -85,12 +84,6 @@ NodeToolbar::NodeToolbar(Glib::RefPtr<Gtk::Builder> const &builder)
     _pusher_show_handles = std::make_unique<SimplePrefPusher>(_show_handles_btn, "/tools/nodes/show_handles");
     _show_handles_btn->signal_toggled().connect(sigc::bind(sigc::mem_fun(*this, &NodeToolbar::on_pref_toggled),
                                                            _show_handles_btn, "/tools/nodes/show_handles"));
-
-    _pusher_show_transform_handles =
-        std::make_unique<SimplePrefPusher>(_show_transform_handles_btn, "/tools/nodes/show_transform_handles");
-    _show_transform_handles_btn->signal_toggled().connect(
-        sigc::bind(sigc::mem_fun(*this, &NodeToolbar::on_pref_toggled), _show_transform_handles_btn,
-                   "/tools/nodes/show_transform_handles"));
 
     _pusher_edit_masks = std::make_unique<SimplePrefPusher>(_object_edit_mask_path_btn, "/tools/nodes/edit_masks");
     _object_edit_mask_path_btn->signal_toggled().connect(sigc::bind(

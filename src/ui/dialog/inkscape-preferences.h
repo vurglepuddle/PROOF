@@ -257,7 +257,6 @@ protected:
     UI::Widget::PrefCheckButton _t_node_pathflash_selected;
     UI::Widget::PrefSpinButton  _t_node_pathflash_timeout;
     UI::Widget::PrefCheckButton _t_node_show_path_direction;
-    UI::Widget::PrefCheckButton _t_node_single_node_transform_handles;
     UI::Widget::PrefColorPicker _t_node_pathoutline_color;
     UI::Widget::PrefSpinButton  _t_node_delete_flat_corner;
 
