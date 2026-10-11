@@ -48,6 +48,24 @@ Inkscape's. First slice: 2026-10-11.
 Labels that changed have no translations yet. In another language they show in
 English until someone translates them.
 
+## What a new profile gets
+
+Someone who starts PROOF for the first time and clicks through gets PROOF, not
+Inkscape with PROOF's name on it. Nothing here depends on a launcher script.
+
+| What | PROOF's default | Where it is set |
+|---|---|---|
+| Keys | Illustrator's ("PROOF, Illustrator's keys") | `share/keys/default.xml`, the file read while none is chosen. It only includes `adobe-illustrator-cc2024.xml`, which begins from `inkscape.xml`, so there is one place to change a key |
+| Appearance on the start screen's setup tab | "PROOF": dark, one-colour icons | The first row of the list in `share/ui/inkscape-welcome.glade`, and `boot theme="proof"` in `src/preferences-skeleton.h` |
+| The command bar and the palette | Hidden | `window` `commands` and `panels` in the skeleton. View > Show/Hide brings them back |
+| Tools | 3D Box, Spiral, Mesh, Paint Bucket, Spray, Connector, Tweak and the LPE tool are not in the toolbox | `toolbox` `buttons` in the skeleton. Preferences > Interface > Toolbars brings them back |
+
+Inkscape's keys ("Inkscape default (inkscape.xml)") and its appearances
+("Colorful", "Classic Inkscape" and the others) are still in the lists.
+
+A profile made before this keeps what it has. A profile that chose no keymap
+now reads PROOF's keys underneath its own changes, where it read Inkscape's.
+
 ## Pictures
 
 | File | Use |
@@ -99,6 +117,4 @@ These are screen colours, not inks.
 
 - A version number of PROOF's own.
 - The executable's name.
-- The first-start setup tab still offers Inkscape's themes and keys by their
-  names.
 - Translations of the changed labels.

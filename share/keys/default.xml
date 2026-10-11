@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<keys name="PROOF, Illustrator's keys" xmlns:xi="http://www.w3.org/2001/XInclude">
+
+    <!--
+    PROOF: the keys the editor uses until another file is chosen, on the start screen or in
+    Preferences > Interface > Keyboard. They are Illustrator's.
+
+    This file holds no shortcut of its own, so that there is one place to change them:
+    adobe-illustrator-cc2024.xml, which in turn begins from inkscape.xml.
+    -->
+    <xi:include href="adobe-illustrator-cc2024.xml" />
+
+</keys>

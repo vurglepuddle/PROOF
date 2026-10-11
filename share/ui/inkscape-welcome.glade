@@ -150,6 +150,20 @@
     </columns>
     <data>
       <row>
+        <col id="0">proof</col>
+        <col id="1" translatable="yes">PROOF</col>
+        <col id="2">Adwaita</col>
+        <col id="3">multicolor</col>
+        <col id="4">0</col>
+        <col id="5">0</col>
+        <col id="6">0</col>
+        <col id="7">0</col>
+        <col id="8">0</col>
+        <col id="9">True</col>
+        <col id="10">False</col>
+        <col id="11">True</col>
+      </row>
+      <row>
         <col id="0">colorful</col>
         <col id="1" translatable="yes">Colorful</col>
         <col id="2">Default</col>

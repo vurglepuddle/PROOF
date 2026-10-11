@@ -651,7 +651,7 @@ void
 StartScreen::refresh_keys_warning()
 {
     auto prefs = Inkscape::Preferences::get();
-    auto current_file = prefs->getString("/options/kbshortcuts/shortcutfile", "inkscape.xml");
+    auto current_file = prefs->getString("/options/kbshortcuts/shortcutfile", "default.xml");
     auto &keys_warning = get_widget<Gtk::InfoBar>(build_welcome, "keys_warning");
     if (current_file != "inkscape.xml" && current_file != "default.xml") {
         keys_warning.set_visible(true);
@@ -679,7 +679,8 @@ StartScreen::enlist_keys()
     auto prefs = Inkscape::Preferences::get();
     auto current = prefs->getString("/options/kbshortcuts/shortcutfile");
     if (current.empty()) {
-        current = "inkscape.xml";
+        // PROOF: default.xml is what is read when no file is chosen, and it is PROOF's own keys.
+        current = "default.xml";
     }
     keys.set_active_id(current);
 }

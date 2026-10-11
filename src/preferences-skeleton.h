@@ -27,12 +27,12 @@ static char const preferences_skeleton[] =
 <inkscape version="1">
   <group id="window">
     <group id="menu"        state="1"/>
-    <group id="commands"    state="1"/>
+    <group id="commands"    state="0"/>
     <group id="snaptoolbox" state="1"/>
     <group id="toppanel"    state="1"/>
     <group id="toolbox"     state="1"/>
     <group id="statusbar"   state="1"/>
-    <group id="panels"      state="1"/>
+    <group id="panels"      state="0"/>
     <group id="rulers"      state="1"/>
     <group id="scrollbars"  state="1"/>
   </group>
@@ -398,7 +398,7 @@ static char const preferences_skeleton[] =
        unitType="2" />
     <group
        id="boot"
-       theme="colorful" />
+       theme="proof" />
   </group>
 
   <group
@@ -446,6 +446,13 @@ static char const preferences_skeleton[] =
        iconsize="16">
       <group
          id="buttons" 
+         show3DBox="0"
+         showSpiral="0"
+         showMesh="0"
+         showPaintBucket="0"
+         showSpray="0"
+         showConnector="0"
+         showTweak="0"
          showLPETool="0"/>
     </group>
     <group
