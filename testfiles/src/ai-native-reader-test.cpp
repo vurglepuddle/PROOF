@@ -1091,6 +1091,41 @@ TEST(AiNativeReader, UnsupportedFeaturesFailClosed)
     read_ok(records(layer("L", disabled)));
 }
 
+TEST(AiNativeReader, ClippedVectorOpacityMasksKeepTheirArtworkAndState)
+{
+    auto mask = [](std::string const &art, int clipping = 1, int inverted = 0, int disabled = 0) {
+        return "/ArtDictionary :\n/Mask :\n" + std::to_string(clipping) + " /Bool (Clipping) ,\n" +
+            std::to_string(inverted) + " /Bool (Inverted) ,\n" + std::to_string(disabled) +
+            " /Bool (Disabled) ,\nX=\n" + art + "X+\n(Art) ,\n; (AI9_Mask) ,\n;\n";
+    };
+    auto const shape = "0 g\n" + rect(0, 0, 40, 40) + "f\n";
+    auto const coverage = "u\n0.5 g\n" + rect(0, 0, 20, 40) + "f\nU\n";
+    auto doc = read_ok(records(layer("L", shape + mask(coverage) + shape)));
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 2u);
+    ASSERT_TRUE(kids[0].opacity_mask);
+    ASSERT_EQ(kids[0].opacity_mask->size(), 1u);
+    EXPECT_EQ(kids[0].opacity_mask->at(0).children[0].fill->color, Color::gray(0.5));
+    EXPECT_EQ(kids[1].fill->color, Color::gray(0));
+    EXPECT_FALSE(kids[1].opacity_mask);
+    // Empty active masks hide everything; disabled masks change nothing.
+    doc = read_ok(records(layer("L", shape + mask(""))));
+    ASSERT_TRUE(doc.layers[0].children[0].opacity_mask);
+    EXPECT_TRUE(doc.layers[0].children[0].opacity_mask->empty());
+    doc = read_ok(records(layer("L", shape + mask(coverage, 1, 0, 1))));
+    EXPECT_FALSE(doc.layers[0].children[0].opacity_mask);
+    for (auto const &unsupported : {mask(coverage, 0), mask(coverage, 1, 1),
+            mask("0 1 0 0 k\n" + rect(0, 0, 20, 40) + "f\n"),
+            mask("0 G 2 w\n" + rect(0, 0, 20, 40) + "S\n"),
+            mask("/AI11Text : 0 /StoryIndex , ;\n"),
+            mask(shape + mask(coverage))}) {
+        SCOPED_TRACE(unsupported);
+        EXPECT_NE(read_error(records(layer("L", shape + unsupported))).find("opacity masks"), std::string::npos);
+    }
+    // Masks on component paths cannot be flattened into a compound path's geometry.
+    EXPECT_NE(read_error(records(layer("L", "*u\n" + shape + mask(coverage) + "*U\n"))).find("opacity masks"), std::string::npos);
+}
+
 TEST(AiNativeReader, AnEnvelopeIsWhatItDrewAndAMeshIsRefused)
 {
     auto refused_for_mesh = [](std::string const &art) {

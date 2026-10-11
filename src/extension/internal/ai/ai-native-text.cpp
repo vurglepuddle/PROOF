@@ -723,11 +723,22 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     struct Run { std::size_t end; TextStyle style; };
     std::vector<Run> runs;
     std::size_t units = 0;
-    for (auto const &run : s.get("0").get("6").get("0").list) {
-        auto count = run.get("1").index();
-        if (!count || count > MAX_STORY * 2 - units) throw Bad("invalid text run length");
-        units += count;
-        runs.push_back({units, style(run.get("0").get("0").get("6"), defaults, setup)});
+    auto const &content = s.get("0");
+    if (!content.dict.count("6")) {
+        // A story with no character overrides has no run list. Illustrator uses the
+        // document's default character style for all its UTF-16 units, including ends.
+        // An explicitly present but broken run list must still fail below.
+        for (auto const *at = text.data(); at < text.data() + text.size(); at = g_utf8_next_char(at)) {
+            units += g_utf8_get_char(at) > 0xffff ? 2 : 1;
+        }
+        runs.push_back({units, style(defaults, defaults, setup)});
+    } else {
+        for (auto const &run : content.get("6").get("0").list) {
+            auto count = run.get("1").index();
+            if (!count || count > MAX_STORY * 2 - units) throw Bad("invalid text run length");
+            units += count;
+            runs.push_back({units, style(run.get("0").get("0").get("6"), defaults, setup)});
+        }
     }
     if (runs.empty()) throw Bad("text has no character runs");
     auto const hscale = runs[0].style.horizontal_scale, vscale = runs[0].style.vertical_scale;
@@ -776,6 +787,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         } else if (cp == '\r' || cp == 3 || cp == '\n') {
             if (!area) ++line;
         } else {
+            if (cp == '\t') throw Bad("text with tab stops isn't supported yet");
             if (line >= out.lines.size() || cp < 32) throw Bad("text line count or control character isn't supported");
             // Hebrew, Arabic and the other scripts read from the right are put in order by
             // one of Illustrator's two composers, which leaves what it worked out with the

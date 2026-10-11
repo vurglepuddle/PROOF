@@ -284,7 +284,7 @@ std::set<std::size_t> tiles(std::vector<Node> const &kids, std::size_t start, No
     std::map<Edge, std::vector<std::size_t>> users;
     for (std::size_t i = start; i < kids.size(); ++i) {
         auto const &n = kids[i];
-        if (n.kind != Node::Kind::Path || n.guide || !n.visible || n.stroke || !n.fill ||
+        if (n.kind != Node::Kind::Path || n.guide || !n.visible || n.stroke || !n.fill || n.opacity_mask ||
             n.fill->kind != Paint::Kind::Solid || n.transparency.opacity < 1.0 || n.transparency.blend != 0) {
             continue;
         }
@@ -585,6 +585,7 @@ private:
     XML::Node *text(Node const &n);
     void children(XML::Node *parent, std::vector<Node> const &kids, bool clipped);
     std::string clip_path(Node const &clip);
+    XML::Node *masked(XML::Node *art, std::vector<Node> const &mask);
     void common(XML::Node *e, Node const &n, std::string &style);
 
     Colors::Color process(Color const &c) const;
@@ -625,6 +626,8 @@ private:
     std::string _folder;       ///< The .ai file's folder, for linked pictures.
     std::size_t _hidden = 0;   ///< How many of the objects being built into don't show.
     std::size_t _in_tile = 0;  ///< How many pattern tiles are being built into.
+    bool _in_opacity_mask = false; ///< Greys are coverage, not black printing ink.
+    std::shared_ptr<Colors::Space::AnySpace> _mask_space;
 };
 
 Builder::Builder(Document const &ai, SPDocument *doc, TextCheck text, Source const &source)
@@ -707,6 +710,7 @@ XML::Node *Builder::node(Node const &n)
     bool const hidden = !n.visible;
     if (hidden) ++_hidden;
     auto *e = made(n);
+    if (e && n.opacity_mask) e = masked(e, *n.opacity_mask);
     if (hidden) --_hidden;
     return e;
 }
@@ -1027,6 +1031,43 @@ std::string Builder::clip_path(Node const &clip)
     return id;
 }
 
+XML::Node *Builder::masked(XML::Node *art, std::vector<Node> const &mask)
+{
+    if (!_mask_space) {
+        auto const profile = Colors::CMS::Profile::create_srgb();
+        auto &cms = _doc->getDocumentCMS();
+        auto const name = cms.attachProfileToDoc(*profile, ColorProfileStorage::HREF_DATA,
+                                                 Colors::RenderingIntent::RELATIVE_COLORIMETRIC);
+        _mask_space = cms.getSpace(name);
+    }
+    auto const id = unique("mask");
+    auto m = create("svg:mask");
+    m->setAttribute("id", id);
+    m->setAttribute("maskUnits", "userSpaceOnUse");
+    m->setAttribute("maskContentUnits", "userSpaceOnUse");
+    // A clipped mask is black outside its art. The union of its filled paths bounds
+    // all possible coverage (including clipping groups), without cropping to a page
+    // or guessing a margin around the object. Stroked/raster masks are refused above.
+    Geom::PathVector pv;
+    for (auto const &n : mask) outline(n, pv);
+    auto const bounds = (pv * _to_doc).boundsFast();
+    auto const box = bounds.value_or(Geom::Rect(Geom::Point(0, 0), Geom::Point(1, 1)));
+    m->setAttribute("x", num(box.left()));
+    m->setAttribute("y", num(box.top()));
+    m->setAttribute("width", num(box.width()));
+    m->setAttribute("height", num(box.height()));
+    _in_opacity_mask = true;
+    children(m, mask, false);
+    _in_opacity_mask = false;
+    append(_defs, m);
+    // An image or text can carry its own transform. A wrapper keeps both the mask
+    // and the already positioned artwork in the same document coordinates.
+    auto wrapper = create("svg:g");
+    wrapper->setAttribute("mask", "url(#" + id + ")");
+    append(wrapper, art);
+    return wrapper;
+}
+
 XML::Node *Builder::shape(Node const &n, Geom::PathVector const &pv)
 {
     if (pv.empty()) return nullptr;
@@ -1068,6 +1109,12 @@ XML::Node *Builder::shape(Node const &n, Geom::PathVector const &pv)
 
 Colors::Color Builder::process(Color const &c) const
 {
+    if (_in_opacity_mask) {
+        // The reader admits only neutral RGB, Gray, or K-only CMYK here. 100K in a
+        // mask means zero coverage, regardless of the document's print profile.
+        double const grey = c.model == Color::Model::Cmyk ? 1.0 - c.v[3] : c.v[0];
+        return Colors::Color(_mask_space, {grey, grey, grey});
+    }
     auto cmyk = [&](std::vector<double> v) {
         return _cmyk_space ? Colors::Color(_cmyk_space, std::move(v)) : Colors::Color(Type::CMYK, std::move(v));
     };

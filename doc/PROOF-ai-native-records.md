@@ -1344,6 +1344,48 @@ from 2.7% to 2.1% (its letters are in place; other things differ), 8 native
 files are closer to their pages, 121 are the same, none is further and none is
 lost. **821 of 879** by count, 21 still drawing differently.
 
+### Inherited character styles and clipped vector opacity masks (2026-10-11)
+
+A story can omit its character-run list when every character uses the
+document's default style. This is valid Illustrator data, previously rejected
+as an incomplete dictionary. The reader now inherits that style for the whole
+story, counting UTF-16 units including surrogate pairs and end markers. An
+explicitly present but malformed or empty list is still refused. Tabs are now
+reported as unsupported tab stops, separately from malformed line data.
+
+Opacity masks have a first, bounded implementation. An active `AI9_Mask` on
+an artwork dictionary is read when it is clipped, non-inverted and linked
+(or has no Linked flag), and consists of solid neutral vector fills. Gray,
+neutral RGB and K-only CMYK are coverage values. Their paths, compounds,
+ordinary groups, clipping and opacity become editable SVG mask artwork. Empty
+active masks hide their objects; disabled masks do nothing. The SVG mask uses
+document coordinates and its own wrapper so a text or image transform is not
+applied twice. Its region covers the mask artwork, including off-page art.
+
+Mask paint uses an embedded sRGB space. In a print document an untagged RGB
+grey can otherwise be converted to the document's CMYK profile and change
+coverage: 50% grey must remain 50%, and 100K must hide the object completely.
+This does not alter the colour policy of the artwork being masked.
+
+Other forms still cause PDF fallback: non-clipped or inverted masks, unlinked
+masks, raster/gradient/coloured/stroked mask art, text/symbol/foreign artwork
+inside a mask, nested masks, unsupported blend/knockout, masks on compound
+components or clipping paths, and masks on a styled source whose appearance
+replaces it. Mask dictionaries are inspected while opened, since the drawing
+operators can consume dictionary values before their outer dictionary closes.
+Unsupported contents must not silently turn into an empty mask. The normal
+visual gate and its 1% lightness / 2% colour limits are unchanged.
+
+Synthetic checks cover inherited styles versus explicit runs, supplementary
+Unicode, malformed lists, a text edit after SVG reopen, retained mask artwork
+and state, rejection of unsupported masks, an editable mask after SVG reopen,
+and mask rendering against independently authored PDF artwork (white, grey,
+K-only, black and empty masks, plus a scaled image with and without a mask).
+The final focused run passes 52 reader and
+80 importer tests, with one opt-in corpus case skipped in each suite. These
+save/edit checks concern SVG; they do not establish an Illustrator native-mask
+write/read round trip.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

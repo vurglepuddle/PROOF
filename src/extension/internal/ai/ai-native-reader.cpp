@@ -86,6 +86,8 @@ std::optional<std::string> last_text(Values const &vals)
 struct Obj
 {
     std::string type;
+    std::vector<Node> art; ///< Artwork inside a Mask dictionary, in art coordinates.
+    bool unsupported_mask_art = false; ///< Includes dictionaries consumed by drawing operators.
     /// Entries in order: the key (none in an array) and the values before it.
     std::vector<std::pair<std::optional<std::string>, Values>> entries;
     /// Values closed without a key.
@@ -1434,6 +1436,14 @@ void Reader::begin_obj(bool hidden)
         obj->type = _stack.back().str;
         _stack.pop_back();
     }
+    if (obj->type == "AI11Text" || obj->type == "SymbolInstance" ||
+        obj->type == "ForeignObject" || obj->type == "Mask") {
+        for (auto &frame : _frames) {
+            if (frame.kind == FrameKind::Obj && frame.obj->type == "Mask") {
+                frame.obj->unsupported_mask_art = true;
+            }
+        }
+    }
     Frame f;
     f.kind = FrameKind::Obj;
     f.obj = std::move(obj);
@@ -1450,14 +1460,30 @@ void Reader::end_obj()
     _frames.pop_back();
     close_obj(*f.obj, _stack, f.base);
     _obj_hidden = f.hidden;
-    // Art made inside a dictionary (type's paths, a mask's art) isn't kept.
+    // Only a mask's art is needed outside its dictionary. Type's outlines and other
+    // dictionary artwork remain metadata, not additional visible objects.
     _gs = f.gs;
     _after_object = f.after;
     auto const &type = f.obj->type;
     if (type == "Mask") {
-        // An opacity mask: its art is in the dictionary. Disabled ones change nothing.
+        f.obj->art = std::move(f.children);
         auto const disabled = f.obj->nums("Disabled");
-        if (disabled.empty() || disabled.back() != 1.0) unreadable("opacity masks");
+        bool const active = disabled.size() != 1 || disabled[0] != 1.0;
+        auto const clipped = f.obj->nums("Clipping"), inverted = f.obj->nums("Inverted"), linked = f.obj->nums("Linked");
+        if (active && (disabled.size() != 1 || disabled[0] != 0.0 ||
+                clipped.size() != 1 || clipped[0] != 1.0 || inverted.size() != 1 || inverted[0] != 0.0 ||
+                (!linked.empty() && (linked.size() != 1 || linked[0] != 1.0)))) {
+            unreadable("opacity masks outside the supported clipped greyscale vector subset");
+        }
+        // A text/symbol/nested mask can be a dictionary directly inside the mask,
+        // without a group frame. Such artwork must not become an empty mask.
+        // Remember them when opened: X+ and drawing operators consume unkeyed
+        // dictionary values, so checking the remaining entries would miss them.
+        if (active && f.obj->unsupported_mask_art) {
+            unreadable("opacity masks containing unsupported artwork dictionaries");
+        }
+        if ((_frames.empty() || _frames.back().kind != FrameKind::Obj) &&
+            (disabled.size() != 1 || disabled[0] != 1.0)) unreadable("opacity masks without an artwork dictionary");
     }
     if (type == "ForeignObject") {
         // Art of another format that Illustrator keeps as it came (from a placed or pasted
@@ -1558,6 +1584,14 @@ void Reader::text_slot(Obj const &o)
 void Reader::art_dictionary(Obj const &o)
 {
     auto *n = last_object();
+    for (auto const *item : o.items()) {
+        if (item->type != "Mask") continue;
+        auto const disabled = item->nums("Disabled");
+        if (disabled.size() == 1 && disabled[0] == 1.0) continue;
+        if (!n || n->kind == Node::Kind::Layer || item != o.obj("AI9_Mask")) {
+            unreadable("opacity masks without a supported object attachment");
+        }
+    }
     if (!n || n->kind == Node::Kind::Layer) return;
     std::optional<std::string> name = o.text("AIArtName");
     if (!name) {
@@ -1568,6 +1602,40 @@ void Reader::art_dictionary(Obj const &o)
     if (name && !name->empty()) n->name = *name;
     if (auto r = o.text("BBAccumRotation")) {
         if (auto v = parse_number(*r); v && *v != 0.0) n->box_rotation = *v;
+    }
+    if (auto const *mask = o.obj("AI9_Mask")) {
+        auto const disabled = mask->nums("Disabled");
+        if (disabled.size() == 1 && disabled[0] == 1.0) return;
+        auto const clipped = mask->nums("Clipping"), inverted = mask->nums("Inverted");
+        // Start with the form that maps exactly to an SVG luminance mask. Non-clipping
+        // masks have a white backdrop; inversion applies to that composite. Neither
+        // can be approximated by dropping a flag or reversing each individual shape.
+        bool const supported_flags = mask->type == "Mask" && disabled.size() == 1 && disabled[0] == 0.0 &&
+            clipped.size() == 1 && clipped[0] == 1.0 && inverted.size() == 1 && inverted[0] == 0.0;
+        auto grey = [](Paint const &p) {
+            if (p.kind != Paint::Kind::Solid || p.ink >= 0) return false;
+            auto const &c = p.color;
+            return c.model == Color::Model::Gray ||
+                (c.model == Color::Model::Cmyk && c.v[0] == 0 && c.v[1] == 0 && c.v[2] == 0) ||
+                (c.model == Color::Model::Rgb && c.v[0] == c.v[1] && c.v[1] == c.v[2]);
+        };
+        auto supported_art = [&](auto &&self, std::vector<Node> const &nodes) -> bool {
+            for (auto const &k : nodes) {
+                if ((k.kind != Node::Kind::Path && k.kind != Node::Kind::Compound && k.kind != Node::Kind::Group) ||
+                    k.opacity_mask || k.guide || k.stroke || (k.fill && !grey(*k.fill)) ||
+                    k.transparency.blend != 0 || k.transparency.knockout == 1 ||
+                    !self(self, k.children)) return false;
+            }
+            return true;
+        };
+        bool const in_compound = n->clipping || std::any_of(_frames.begin(), _frames.end(), [](Frame const &f) {
+            return f.kind == FrameKind::Compound;
+        });
+        if (!supported_flags || in_compound || !supported_art(supported_art, mask->art)) {
+            unreadable("opacity masks outside the supported clipped greyscale vector subset");
+        } else {
+            n->opacity_mask = mask->art;
+        }
     }
 }
 
@@ -1777,6 +1845,7 @@ void stories_in(Node const &n, std::vector<unsigned> &out)
 /// own either (no name, no transparency, not hidden, locked or clipped).
 bool only_type(Node const &n, bool plain)
 {
+    if (n.opacity_mask) return false;
     if (n.kind == Node::Kind::Text) return true;
     if (n.kind != Node::Kind::Group || n.children.empty()) return false;
     if (plain && (!n.transparency.is_default() || !n.visible || n.locked || !n.name.empty() || n.clipped)) return false;
@@ -1880,6 +1949,7 @@ void Reader::style_marker(Values const &vals, bool hidden)
     bool const nested = hidden;
     if (!object.commented || look.commented != nested || look.kind != Node::Kind::Group || look.clipped) return;
     Node obj = std::move(object);
+    if (obj.opacity_mask) unreadable("opacity masks on styled source objects");
     kids.pop_back();
     auto &l = kids.back();
     if (!nested) strip_commented(l);

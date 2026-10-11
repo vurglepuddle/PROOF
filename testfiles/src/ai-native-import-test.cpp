@@ -78,6 +78,12 @@ std::string records(std::string const &art, std::string const &setup = {}, bool 
            "%%EndSetup\n" + art + "%%PageTrailer\nshowpage\n%%EOF\n";
 }
 
+std::string vector_mask(std::string const &art)
+{
+    return "/ArtDictionary :\n/Mask :\n1 /Bool (Clipping) ,\n0 /Bool (Inverted) ,\n0 /Bool (Disabled) ,\n"
+           "X=\n" + art + "X+\n(Art) ,\n; (AI9_Mask) ,\n;\n";
+}
+
 std::string boards(int count)
 {
     std::string out = "%AI9_BeginDocumentData\n%_/Document :\n%_/Dictionary :\n%_/Array :\n";
@@ -126,6 +132,16 @@ std::string text_setup(std::string const &document)
     for (std::size_t at = 0; at < packed.size(); at += 71) lines += "%" + packed.substr(at, 71) + "\n";
     return "%AI3_TemplateBox: 100 50\n%AI11_BeginTextDocument\n%_/Binary :\n%_/ASCII85Decode ,\n" +
            lines + "%~>\n%_;\n%AI11_EndTextDocument\n";
+}
+
+// Illustrator omits this dictionary when the entire story has the default character style.
+std::string without_character_runs(std::string document)
+{
+    auto const start = document.find(" /6 << /0 [");
+    auto const end = document.find(" ] >> >> /1", start);
+    if (start == document.npos || end == document.npos) return {};
+    document.erase(start, end + std::string(" ] >>").size() - start);
+    return document;
 }
 
 // The two text documents as Illustrator 2025 writes them: what was typed, then the type
@@ -669,6 +685,34 @@ TEST_F(AiNativeImportTest, ACompoundPathWithItsPathsInAGroupIsPainted)
     EXPECT_EQ(std::count_if(d.begin(), d.end(), [](char c) { return c == 'm' || c == 'M'; }), 2) << d;
 }
 
+TEST_F(AiNativeImportTest, VectorOpacityMaskIsEditableAndSurvivesReopen)
+{
+    // The mask is in art coordinates and uses coverage, even in a CMYK document.
+    auto b = make(records(layer("0 0 0 1 k\n" + rect + vector_mask("0 0 0 0.5 k\n" + rect))));
+    ASSERT_TRUE(b);
+    auto masks = elements(b->document->getDefs()->getRepr(), "svg:mask"); ASSERT_EQ(masks.size(), 1u);
+    EXPECT_EQ(attr(masks[0], "maskUnits"), "userSpaceOnUse");
+    EXPECT_EQ(attr(masks[0], "x"), "10");
+    EXPECT_EQ(attr(masks[0], "y"), "40");
+    auto paths = elements(masks[0], "svg:path"); ASSERT_EQ(paths.size(), 1u);
+    auto *path = b->document->getObjectByRepr(paths[0]); ASSERT_TRUE(path);
+    EXPECT_EQ(path->style->fill.getColor().getSpace()->getComponentType(), Type::RGB);
+    EXPECT_EQ(path->style->fill.getColor().getValues(), (std::vector<double>{0.5, 0.5, 0.5}));
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto again = elements(reopened->getDefs()->getRepr(), "svg:mask"); ASSERT_EQ(again.size(), 1u);
+    auto edited = elements(again[0], "svg:path"); ASSERT_EQ(edited.size(), 1u);
+    auto const space = reopened->getObjectByRepr(edited[0])->style->fill.getColor().getSpace();
+    edited[0]->setAttribute("style", "fill:" + Colors::Color(space, {1, 1, 1}).toString(false));
+    reopened->ensureUpToDate();
+    auto saved = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(saved);
+    auto final_mask = elements(saved->getDefs()->getRepr(), "svg:mask"); ASSERT_EQ(final_mask.size(), 1u);
+    auto final_paths = elements(final_mask[0], "svg:path"); ASSERT_EQ(final_paths.size(), 1u);
+    EXPECT_EQ(saved->getObjectByRepr(final_paths[0])->style->fill.getColor().getValues(),
+              (std::vector<double>{1, 1, 1}));
+}
+
 TEST_F(AiNativeImportTest, VisibleTextRefusedHiddenTextNoted)
 {
     auto source = records(layer("/AI11Text :\n3 /StoryIndex ,\n;\n"));
@@ -761,6 +805,56 @@ TEST_F(AiNativeImportTest, PointTextRefusesBrokenUnicodeFramesStylesAndEncodings
     auto bad = text_setup(text_document());
     bad.replace(bad.find("~>"), 2, "~!");
     EXPECT_FALSE(AN::read_text_document(bad, Geom::Point(0, 0))->error.empty());
+}
+
+TEST_F(AiNativeImportTest, StoriesWithoutCharacterRunsUseDocumentDefaults)
+{
+    // Count UTF-16 units, including a supplementary character and the paragraph end.
+    for (auto const &document : {text_document(),
+             text_document("(\\376\\377\\000A\\330\\075\\336\\000\\000\\015)", 4)}) {
+        auto explicit_runs = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+        auto inherited = AN::read_text_document(text_setup(without_character_runs(document)), Geom::Point(100, 50));
+        ASSERT_EQ(inherited->stories.size(), 1u) << inherited->error;
+        ASSERT_TRUE(explicit_runs->stories[0]) << explicit_runs->errors[0];
+        ASSERT_TRUE(inherited->stories[0]) << inherited->errors[0];
+        EXPECT_TRUE(AN::same_drawing(*explicit_runs->stories[0], *inherited->stories[0]));
+    }
+    // A present but incomplete/empty run list is not a request to inherit defaults.
+    for (auto const &runs : {" /6 << >>", " /6 << /0 [] >>"}) {
+        auto document = without_character_runs(text_document());
+        document.insert(document.find(" >> /1 << /0 ["), runs);
+        auto bad = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+        ASSERT_EQ(bad->stories.size(), 1u);
+        EXPECT_FALSE(bad->stories[0]);
+    }
+    auto tabs = AN::read_text_document(text_setup(text_document("(A\\tB\\r)", 4)), Geom::Point(100, 50));
+    ASSERT_EQ(tabs->stories.size(), 1u);
+    EXPECT_FALSE(tabs->stories[0]);
+    EXPECT_NE(tabs->errors[0].find("tab stops"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, InheritedCharacterStyleRemainsEditableAfterReopen)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(without_character_runs(text_document("(Hello\\r)", 6, font))));
+    auto b = make(source); ASSERT_TRUE(b);
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto texts = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 1u);
+    ASSERT_TRUE(spans[0]->firstChild());
+    EXPECT_STREQ(spans[0]->firstChild()->content(), "Hello");
+    auto *text = reopened->getObjectByRepr(texts[0]);
+    EXPECT_EQ(text->style->fill.getColor().getValues(), (std::vector<double>{0.25, 0.5, 0.75, 0.1}));
+    spans[0]->firstChild()->setContent("Edited!");
+    reopened->ensureUpToDate();
+    auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(edited);
+    auto again = elements(elements(edited->getReprRoot(), "svg:text")[0], "svg:tspan");
+    ASSERT_EQ(again.size(), 1u);
+    EXPECT_STREQ(again[0]->firstChild()->content(), "Edited!");
 }
 
 TEST_F(AiNativeImportTest, PointTextBuildsEditableSvgAndSurvivesReopen)
@@ -3175,6 +3269,34 @@ TEST_F(AiNativeImportTest, PointTextVisiblePdfGlyphsAndDisplacedTextRefused)
         fixture(scaled_src, {"q 0.8 0 0 1.2 10 60 cm 0 g BT /F1 32 Tf 0 0 Td (Hello) Tj ET Q"},
                 "/MediaBox [0 0 200 100]", font), reason);
     ASSERT_TRUE(scaled) << reason;
+}
+
+TEST_F(AiNativeImportTest, VectorOpacityMasksMatchIndependentPdfArtwork)
+{
+    auto const half = std::string("10 20 m 10 60 L 50 60 L 50 20 L f\n");
+    for (auto const &paint : {"1 g\n", "0.5 g\n", "0 0 0 0.5 k\n", "0 g\n"}) {
+        auto const src = records(layer("0 0 0 0 0 0 0 Xa\n" + rect + vector_mask(paint + half)), {}, false);
+        auto const level = std::string(paint) == "1 g\n" ? "0" : std::string(paint) == "0 g\n" ? "1" : "0.5";
+        std::string reason;
+        auto good = Extension::Internal::open_ai_native(fixture(src, {std::string(level) + " g 10 20 40 40 re f"}), reason);
+        ASSERT_TRUE(good) << paint << reason;
+        // A missing mask would show the full black rectangle and must still be rejected.
+        EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(src, {"0 g 10 20 80 40 re f"}), reason));
+    }
+    auto const empty = records(layer("0 g\n" + rect + vector_mask("")), {}, false);
+    std::string reason;
+    EXPECT_TRUE(Extension::Internal::open_ai_native(fixture(empty, {""}), reason)) << reason;
+    // Raster placement has its own transform. The mask remains in art coordinates,
+    // so just the left half of a scaled black image survives. Enough source pixels
+    // keep the image's edge interpolation negligible against the flat PDF reference.
+    std::string image = "%AI5_BeginRaster\n() 1 XG\n/DeviceRGB XN\n[0.5 0 0 0.5 10 60] 0 0 80 80 80 80 8 3 0 0 1 0 0\n"
+                        "%%BeginData: 19204\nXI\n";
+    image += std::string(80 * 80 * 3, '\0') + "\n%%EndData\nXH\n%AI5_EndRaster\n";
+    EXPECT_TRUE(Extension::Internal::open_ai_native(
+        fixture(records(layer(image), {}, false), {"0 g 10 20 40 40 re f"}), reason)) << reason;
+    auto const masked_image = records(layer(image + vector_mask("1 g\n10 20 m 10 60 L 30 60 L 30 20 L f\n")), {}, false);
+    EXPECT_TRUE(Extension::Internal::open_ai_native(fixture(masked_image, {"0 g 10 20 20 40 re f"}), reason)) << reason;
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(masked_image, {"0 g 10 20 40 40 re f"}), reason));
 }
 
 TEST_F(AiNativeImportTest, TypeInAFontThatIsNotInstalledIsLeftOutOfTheComparison)
