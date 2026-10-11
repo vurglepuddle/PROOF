@@ -10,6 +10,8 @@ and grateful to the Inkscape community. PROOF is developed independently, with a
 cleaner workspace and a focus on precise color, practical editing, and dependable
 file exchange.
 
+![PROOF's window: a short tool strip on the left, a document in the middle, and the Properties, Stroke and Layers panels on the right](doc/screenshots/proof-workspace.png)
+
 ## What's changed
 
 - **A workspace focused on prepress.** Compact dark chrome, a reduced tool strip,
