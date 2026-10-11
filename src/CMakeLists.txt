@@ -303,6 +303,11 @@ if(WIN32)
   configure_file(inkscape.rc ${CMAKE_BINARY_DIR}/src/inkview.rc)
   configure_file(inkscape-manifest.xml ${CMAKE_BINARY_DIR}/src/inkview-manifest.xml)
   list(APPEND view_SRC ${CMAKE_BINARY_DIR}/src/inkview.rc)
+
+  # PROOF: the icon is compiled into the resources. Nothing said they depend on it, so a
+  # new icon left the executables with the old one until the objects were deleted by hand.
+  set_source_files_properties(${CMAKE_BINARY_DIR}/src/inkscape.rc ${CMAKE_BINARY_DIR}/src/inkview.rc
+                              PROPERTIES OBJECT_DEPENDS ${CMAKE_SOURCE_DIR}/share/branding/inkscape.ico)
 endif()
 
 # make executables for inkscape and inkview
