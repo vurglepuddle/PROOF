@@ -21,6 +21,7 @@
 #include "document-undo.h"
 #include "document.h"
 #include "io/split-path.h"
+#include "object/sp-image.h"
 #include "object/sp-object.h"
 #include "ui/icon-names.h"
 #include "xml/href-attribute-helper.h"
@@ -322,6 +323,8 @@ bool fixBrokenLinks(SPDocument *doc)
                     if ( ir->attribute( "sodipodi:absref" ) ) {
                         ir->removeAttribute("sodipodi:absref"); // Remove this attribute
                     }
+                    // PROOF: the file is found: what stood in for it has no more to do.
+                    ir->removeAttribute(SPImage::LINK_PREVIEW_ATTRIBUTE);
 
                     SPObject *updated = doc->getObjectByRepr(ir);
                     if (updated) {

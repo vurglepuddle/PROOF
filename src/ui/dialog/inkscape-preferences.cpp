@@ -1144,8 +1144,8 @@ void InkscapePreferences::initPageTools()
         // PROOF
         _font_missing_dialog.init(_("List fonts that aren't installed when a document opens"), "/options/font/missingdlg", true);
         _page_text.add_line( false, "", _font_missing_dialog, "", _("When a document from Illustrator names fonts that aren't installed, list them and the text set in another font meanwhile"));
-        _font_missing_highlight.init(_("Highlight text whose font isn't installed"), "/options/font/missinghighlight", true);
-        _page_text.add_line( false, "", _font_missing_highlight, "", _("Show a pink highlight on the canvas behind text that is set in another font because its own isn't installed. It is never exported or printed"));
+        _font_missing_highlight.init(_("Highlight what stands in for a missing font or picture"), "/options/font/missinghighlight", true);
+        _page_text.add_line( false, "", _font_missing_highlight, "", _("Show a pink highlight on the canvas behind text that is set in another font because its own isn't installed, and over what shows in place of a linked picture that can't be found. It is never exported or printed"));
         _font_sample.init("/tools/text/font_sample", true);
         _page_text.add_line( false, _("Font sample"), _font_sample, "", _("Change font preview sample text"), true);
 
@@ -3191,6 +3191,12 @@ void InkscapePreferences::initPageBitmaps()
     _bitmap_copy_res.init("/options/createbitmap/resolution", 1.0, 6000.0, 1.0, 1.0, Inkscape::Util::Quantity::convert(1, "in", "px"), true, false);
     _page_bitmaps.add_line( false, _("Resolution for Create Bitmap _Copy:"), _bitmap_copy_res, _("dpi"),
                             _("Resolution used by the Create Bitmap Copy command"), false);
+
+    // PROOF
+    _page_bitmaps.add_group_header( _("Links"));
+    _links_missing_dialog.init(_("List linked pictures that can't be found when a document opens"), "/options/links/missingdlg", true);
+    _page_bitmaps.add_line( true, "", _links_missing_dialog, "",
+                           _("When a document links to pictures whose files can't be found, list them and offer to link them again. File > Missing Links shows the list at any time"));
 
     _page_bitmaps.add_group_header( _("Import"));
     _bitmap_ask.init(_("Ask about linking and scaling when importing bitmap images"), "/dialogs/import/ask", true);

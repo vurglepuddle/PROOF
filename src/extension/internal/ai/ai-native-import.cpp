@@ -42,6 +42,7 @@
 #include "libnrtype/font-instance.h"
 #include "object/sp-defs.h"
 #include "object/sp-guide.h"
+#include "object/sp-image.h"
 #include "object/sp-item.h"
 #include "object/sp-namedview.h"
 #include "spot-ink.h"
@@ -556,9 +557,11 @@ public:
     std::vector<XML::Node *> substituted_shown;
     std::size_t knockouts = 0;
     std::size_t images_left_out = 0;
-    /// A linked picture that shows and can't be placed: why. The first one found.
+    /// A linked file that shows and can't be placed: why. The first one found.
     std::string link_error;
     std::size_t hidden_links_missing = 0;
+    /// The linked pictures that show and can't be found.
+    std::vector<MissingLink> missing_links;
 
 private:
     XML::Node *create(char const *name) { return _xml->createElement(name); }
@@ -619,6 +622,7 @@ private:
     std::set<StoryKey> _unsupported_hidden_text, _glyphs_missing, _substituted_shown;
     std::string _folder;       ///< The .ai file's folder, for linked pictures.
     std::size_t _hidden = 0;   ///< How many of the objects being built into don't show.
+    std::size_t _in_tile = 0;  ///< How many pattern tiles are being built into.
 };
 
 Builder::Builder(Document const &ai, SPDocument *doc, TextCheck text, Source const &source)
@@ -1293,7 +1297,9 @@ std::string Builder::pattern_tile(int index)
     auto const outer = std::exchange(_to_doc, tile_space(pat));
     auto const hidden = std::exchange(_hidden, 0);
     auto outer_guides = std::exchange(guides, {});
+    ++_in_tile;
     children(e, pat.art, false);
+    --_in_tile;
     guides = std::move(outer_guides);
     _hidden = hidden;
     _to_doc = outer;
@@ -1489,14 +1495,24 @@ XML::Node *Builder::placed(Node const &n)
     auto const names = decodings(p.path);
     auto const name = names.empty() ? std::string() : base_name(names.front());
     auto file = linked_file(p);
+    bool gone = false;
     if (file && !gdk_pixbuf_get_file_info(file->c_str(), nullptr, nullptr)) {
         // A file of another application's (Photoshop, PDF, EPS): nothing here draws it.
         if (!_hidden && link_error.empty()) link_error = "a linked file is of a kind PROOF can't show yet (" + name + ")";
         file.reset();
-    } else if (!file && !_hidden && link_error.empty()) {
-        link_error = "a linked picture can't be found (" + name + ")";
+    } else if (!file) {
+        gone = true;
+        if (!_hidden && link_error.empty()) {
+            if (names.empty()) {
+                link_error = "a linked picture's name can't be read";
+            } else if (_in_tile) {
+                // What a tile holds shows wherever its pattern paints: there is no one place
+                // to leave out of a comparison, or to point to.
+                link_error = "a linked picture in a pattern can't be found (" + name + ")";
+            }
+        }
     }
-    // One that doesn't show keeps its link as the document has it, to be found again later.
+    // One that can't be found keeps its link as the document has it, to be found again later.
     if (!file) {
         if (_hidden) ++hidden_links_missing;
         if (names.empty()) return nullptr;
@@ -1513,10 +1529,41 @@ XML::Node *Builder::placed(Node const &n)
     e->setAttribute("xlink:href", uri ? uri : file->c_str());
     g_free(uri);
     e->setAttribute("sodipodi:absref", *file);
+    if (gone) {
+        // The picture Illustrator keeps of it for this stands in its place here too.
+        bool preview = false;
+        if (p.preview.width > 0 && p.preview.height > 0) {
+            std::vector<std::uint8_t> const pixels(p.preview.pixels.begin(), p.preview.pixels.end());
+            if (auto const data = png(pixels, p.preview.width, p.preview.height, 4)) {
+                e->setAttribute(SPImage::LINK_PREVIEW_ATTRIBUTE, "data:image/png;base64," + base64(*data));
+                preview = true;
+            }
+        }
+        if (!_hidden && !_in_tile) {
+            MissingLink link;
+            link.name = name;
+            link.preview = preview;
+            for (unsigned i = 0; i < 4; ++i) link.box[i] = p.box.corner(i) * m;
+            missing_links.push_back(std::move(link));
+        }
+    }
     std::string style;
     common(e, n, style);
     if (!style.empty()) e->setAttribute("style", style);
     return e;
+}
+
+/// A file's name short enough for a note: its start and its end, with dots between.
+std::string shortened(std::string const &name, glong most = 48)
+{
+    if (!g_utf8_validate(name.c_str(), -1, nullptr)) return name;
+    auto const length = g_utf8_strlen(name.c_str(), -1);
+    if (length <= most) return name;
+    glong const head = most * 2 / 3, tail = most - head - 3;
+    auto const *start = name.c_str();
+    std::size_t const cut = g_utf8_offset_to_pointer(start, head) - start;
+    std::size_t const rest = g_utf8_offset_to_pointer(start, length - tail) - start;
+    return name.substr(0, cut) + "..." + name.substr(rest);
 }
 
 /// Guides from guide paths: each straight segment is a guide; curves have none.
@@ -1685,6 +1732,30 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         if (!bounds) continue;
         *bounds *= doc->getDocumentScale().inverse();
         built.substituted_type.push_back({bounds->corner(0), bounds->corner(1), bounds->corner(2), bounds->corner(3)});
+    }
+    if (!b.missing_links.empty()) {
+        auto const &links = b.missing_links;
+        // A few names say which; a document can link dozens, and one file many times.
+        std::vector<std::string> distinct;
+        std::size_t kept = 0;
+        for (auto const &link : links) {
+            kept += link.preview;
+            if (std::find(distinct.begin(), distinct.end(), link.name) == distinct.end()) distinct.push_back(link.name);
+        }
+        std::string names;
+        for (std::size_t i = 0; i < distinct.size() && i < 3; ++i) names += (i ? ", " : "") + shortened(distinct[i]);
+        if (distinct.size() > 3) names += " and " + std::to_string(distinct.size() - 3) + " more";
+        bool const one = links.size() == 1;
+        std::string shows;
+        if (!kept) {
+            shows = one ? "a marked box shows in its place" : "a marked box shows in the place of each";
+        } else {
+            shows = std::string("the small picture the document keeps of ") + (one ? "it" : "each") + " shows in its place";
+            if (kept < links.size()) shows += ", or a marked box where it keeps none,";
+        }
+        notes.push_back(count(links.size(), "linked picture can't", "linked pictures can't") + " be found (" + names +
+                        "): " + shows + " until it is linked again");
+        built.missing_links = links;
     }
     if (b.hidden_links_missing) {
         notes.push_back(count(b.hidden_links_missing, "linked picture that doesn't show wasn't",

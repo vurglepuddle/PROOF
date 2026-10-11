@@ -25,7 +25,9 @@ about the editor.
   installed has Illustrator's pink behind it on the canvas, line by line. It
   goes when the font is replaced, installed, or chosen by hand. It is drawn
   over the canvas only, so exports, prints and saved files never have it.
-  Preferences > Text switches it off.
+  Preferences > Text switches it off. What stands in for a linked picture that
+  can't be found has the same highlight
+  ([PROOF-links.md](PROOF-links.md)).
 - **Four Character buttons in the text toolbar:** All Caps, Small Caps,
   Superscript, Subscript. Each shows whether the selected text is that. All
   caps and small caps are one or neither, as are superscript and subscript.
@@ -118,8 +120,8 @@ font.
 
 ## Checks
 
-A live check in the workspace repository, `tools	ype-controls-check.py`, 25
-checks on `tests	ype-controls.svg` with the real mouse and keyboard: the
+A live check in the workspace repository, `tools\type-controls-check.py`, 25
+checks on `tests\type-controls.svg` with the real mouse and keyboard: the
 window at opening and from the menu, the highlight on stand-in type and on no
 other, Replace with its highlight and its saved style, Undo, and each of the
 four buttons with what it writes, how the text then measures on the canvas,

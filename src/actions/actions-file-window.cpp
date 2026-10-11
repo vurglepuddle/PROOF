@@ -27,6 +27,7 @@
 #include "print.h"
 #include "preferences.h"
 #include "ui/dialog/choose-file.h"
+#include "ui/dialog/link-missing.h"
 #include "ui/dialog/save-template-dialog.h"
 #include "ui/dialog/new-from-template.h"
 #include "ui/icon-names.h"
@@ -110,6 +111,13 @@ document_print(InkscapeWindow* win)
     }
 }
 
+// PROOF: the linked pictures whose files can't be found, and a file to link each to.
+void
+document_missing_links(InkscapeWindow* win)
+{
+    Inkscape::UI::Dialog::showMissingLinks(win->get_desktop());
+}
+
 void
 document_cleanup(InkscapeWindow* win)
 {
@@ -154,6 +162,7 @@ std::vector<std::vector<Glib::ustring>> raw_data_dialog_window =
     {"win.document-import",           N_("Import"),            SECTION,   N_("Import a bitmap or SVG image into this document")},
     {"win.document-print",            N_("Print"),             SECTION,   N_("Print document")},
     {"win.document-cleanup",          N_("Clean Up Document"), SECTION,   N_("Remove unused definitions (such as gradients or clipping paths) from the document")},
+    {"win.document-missing-links",    N_("Missing Links"),     SECTION,   N_("List the linked pictures whose files can't be found, and link them again")},
     {"win.document-close",            N_("Close"),             SECTION,   N_("Close document (unless last document)")},
     // clang-format on
 };
@@ -173,6 +182,7 @@ add_actions_file_window(InkscapeWindow* win)
     win->add_action( "document-import",             sigc::bind(sigc::ptr_fun(&document_import),            win));
     win->add_action( "document-print",              sigc::bind(sigc::ptr_fun(&document_print),             win));
     win->add_action( "document-cleanup",            sigc::bind(sigc::ptr_fun(&document_cleanup),           win));
+    win->add_action( "document-missing-links",      sigc::bind(sigc::ptr_fun(&document_missing_links),     win));
     win->add_action( "document-close",              sigc::bind(sigc::ptr_fun(&document_close),             win));
     // clang-format on
 

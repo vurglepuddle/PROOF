@@ -28,6 +28,7 @@
 #include "colors/document-colors.h"
 #include "colors/spaces/cms.h"
 #include "desktop-style.h"
+#include "display/cairo-utils.h"
 #include "display/control/font-highlight.h"
 #include "doc-per-case-test.h"
 #include "document.h"
@@ -2642,10 +2643,10 @@ TEST_F(AiNativeImportTest, PatternFillsAreTilesPlacedPerObject)
 
 namespace {
 
-/// A 4 x 2 picture written to `file`.
-void write_picture(std::string const &file)
+/// A picture written to `file`, 4 x 2 unless said.
+void write_picture(std::string const &file, int w = 4, int h = 2)
 {
-    auto *pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, false, 8, 4, 2);
+    auto *pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, false, 8, w, h);
     ASSERT_NE(pb, nullptr);
     gdk_pixbuf_fill(pb, 0x336699ff);
     EXPECT_TRUE(gdk_pixbuf_save(pb, file.c_str(), "png", nullptr, nullptr));
@@ -2663,11 +2664,51 @@ std::string escaped(std::string const &name)
     return out;
 }
 
+/// One pixel of the picture a document keeps of a linked one: alpha first.
+std::string argb(int a, int r, int g, int b)
+{
+    return {char(a), char(r), char(g), char(b)};
+}
+
+/// That picture, `pixels` its rows one after another.
+std::string kept_preview(int w, int h, std::string const &pixels)
+{
+    return "%AI17_Begin_Content_if_version_gt:24 5\n\n%AI26_BeginPlacedObjectPreview\n" + std::to_string(w) + " " +
+           std::to_string(h) + " " + std::to_string(w * 4) + " 32 17 " + pixels +
+           "\r\n%AI26_EndPlacedObjectPreview\n%AI17_End_Versioned_Content\n";
+}
+
+/// The pixels of a PNG in a data: address, as rows of red, green, blue, alpha.
+std::string pixels_of(std::string const &address, int &w, int &h)
+{
+    std::string out;
+    w = h = 0;
+    auto const at = address.find("base64,");
+    if (address.substr(0, 15) != "data:image/png;" || at == std::string::npos) return out;
+    gsize size = 0;
+    guchar *bytes = g_base64_decode(address.c_str() + at + 7, &size);
+    auto *loader = gdk_pixbuf_loader_new();
+    bool const ok = gdk_pixbuf_loader_write(loader, bytes, size, nullptr) && gdk_pixbuf_loader_close(loader, nullptr);
+    auto *pb = ok ? gdk_pixbuf_loader_get_pixbuf(loader) : nullptr;
+    if (pb && gdk_pixbuf_get_has_alpha(pb) && gdk_pixbuf_get_n_channels(pb) == 4) {
+        w = gdk_pixbuf_get_width(pb);
+        h = gdk_pixbuf_get_height(pb);
+        auto const *rows = gdk_pixbuf_get_pixels(pb);
+        for (int y = 0; y < h; ++y) {
+            out.append(reinterpret_cast<char const *>(rows) + y * gdk_pixbuf_get_rowstride(pb), w * 4);
+        }
+    }
+    g_object_unref(loader);
+    g_free(bytes);
+    return out;
+}
+
 /// A linked picture as Illustrator 2025 writes it, in the box 10..50 x 20..40 of the page.
-std::string linked(std::string const &file, std::string const &folder = {})
+/// `preview` is the picture the document keeps of it, if it keeps one.
+std::string linked(std::string const &file, std::string const &folder = {}, std::string const &preview = {})
 {
     return "%AI5_BeginPlace\n%%FileType: 1\n[1 0 0 -1 0 100] 10 20 50 40 4 4 0\n(" + escaped(file) + ")`\n"
-           "%%IncludeFile:" + file + "\n%AI17_Begin_Content_if_version_gt:24 12\n\n%AI28_BeginPlacedRelativePath\n(" +
+           "%%IncludeFile:" + file + "\n" + preview + "%AI17_Begin_Content_if_version_gt:24 12\n\n%AI28_BeginPlacedRelativePath\n(" +
            escaped(folder) + ")\n%AI28_EndPlacedRelativePath\n%AI17_Alternate_Content\n%AI17_End_Versioned_Content\n\n~\n"
            "%AI5_EndPlace\n%_/ArtDictionary :\n%_(Photo) /UnicodeString (AIArtName) ,\n%_;\n";
 }
@@ -2735,10 +2776,14 @@ TEST_F(AiNativeImportTest, LinkedPictureIsLookedForBesideTheDocument)
         auto ai = AN::read(records(layer(linked(elsewhere + name, relative))), error);
         ASSERT_TRUE(ai) << error;
         // Without the document's folder there is nowhere to look.
-        EXPECT_FALSE(AN::build(*ai, error));
-        EXPECT_NE(error.find("can't be found (" + name + ")"), std::string::npos) << error;
+        auto nowhere = AN::build(*ai, error);
+        ASSERT_TRUE(nowhere) << error;
+        ASSERT_EQ(nowhere->missing_links.size(), 1u);
+        EXPECT_EQ(nowhere->missing_links[0].name, name);
         auto b = AN::build(*ai, error, source);
         ASSERT_TRUE(b) << error;
+        EXPECT_TRUE(b->missing_links.empty());
+        EXPECT_TRUE(b->notes.empty());
         auto images = elements(b->document->getReprRoot(), "svg:image");
         ASSERT_EQ(images.size(), 1u);
         gchar *named = g_filename_from_uri(attr(images[0], "xlink:href").c_str(), nullptr, nullptr);
@@ -2748,31 +2793,213 @@ TEST_F(AiNativeImportTest, LinkedPictureIsLookedForBesideTheDocument)
     }
 }
 
-TEST_F(AiNativeImportTest, LinkedPictureMissingOrUnreadable)
+TEST_F(AiNativeImportTest, ALinkedPictureThatIsGoneKeepsItsLinkAndShowsWhatTheDocumentKeepsOfIt)
+{
+    // Four pixels by two: red, green, blue and a white that is half clear, over a row of one colour.
+    auto const rows = argb(255, 255, 0, 0) + argb(255, 0, 255, 0) + argb(255, 0, 0, 255) + argb(128, 255, 255, 255) +
+                      argb(255, 0x33, 0x66, 0x99) + argb(255, 0x33, 0x66, 0x99) + argb(255, 0x33, 0x66, 0x99) +
+                      argb(255, 0x33, 0x66, 0x99);
+    auto const gone = std::string("Q:\\Jobs\\gone.png");
+    std::string error;
+    auto ai = AN::read(records(layer("0 g\n" + rect + linked(gone, {}, kept_preview(4, 2, rows)))), error);
+    ASSERT_TRUE(ai) << error;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+
+    // The document says which picture, and where it lies.
+    ASSERT_EQ(b->missing_links.size(), 1u);
+    EXPECT_EQ(b->missing_links[0].name, "gone.png");
+    EXPECT_TRUE(b->missing_links[0].preview);
+    Geom::Rect box(b->missing_links[0].box[0], b->missing_links[0].box[0]);
+    for (auto const &corner : b->missing_links[0].box) box.expandTo(corner);
+    EXPECT_TRUE(Geom::are_near(box.min(), Geom::Point(10, 20), 1e-6)) << box.min();
+    EXPECT_TRUE(Geom::are_near(box.max(), Geom::Point(50, 40), 1e-6)) << box.max();
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("1 linked picture can't be found (gone.png)"), std::string::npos) << b->notes[0];
+    EXPECT_NE(b->notes[0].find("the small picture the document keeps of it shows in its place"), std::string::npos) << b->notes[0];
+
+    // The link is kept as it was written, and the kept picture beside it.
+    auto images = elements(b->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    EXPECT_EQ(attr(images[0], "sodipodi:absref"), gone);
+    EXPECT_NE(attr(images[0], "xlink:href").substr(0, 5), "data:");
+    EXPECT_NE(attr(images[0], "xlink:href").find("gone.png"), std::string::npos);
+    int w = 0, h = 0;
+    auto const kept = pixels_of(attr(images[0], SPImage::LINK_PREVIEW_ATTRIBUTE), w, h);
+    EXPECT_EQ(w, 4);
+    EXPECT_EQ(h, 2);
+    auto rgba = [](int r, int g, int bl, int a) { return std::string{char(r), char(g), char(bl), char(a)}; };
+    EXPECT_EQ(kept, rgba(255, 0, 0, 255) + rgba(0, 255, 0, 255) + rgba(0, 0, 255, 255) + rgba(255, 255, 255, 128) +
+                        rgba(0x33, 0x66, 0x99, 255) + rgba(0x33, 0x66, 0x99, 255) + rgba(0x33, 0x66, 0x99, 255) +
+                        rgba(0x33, 0x66, 0x99, 255));
+
+    // It shows that picture in the box the file's own lay in, and counts as missing.
+    b->document->ensureUpToDate();
+    auto *image = cast<SPImage>(b->document->getObjectByRepr(images[0]));
+    ASSERT_TRUE(image);
+    EXPECT_TRUE(image->missing);
+    EXPECT_TRUE(image->linkMissing());
+    ASSERT_NE(image->pixbuf, nullptr);
+    EXPECT_EQ(image->pixbuf->width(), 4);
+    EXPECT_EQ(image->pixbuf->height(), 2);
+    EXPECT_NE(image->linkedFile().find("gone.png"), std::string::npos) << image->linkedFile();
+    auto bounds = drawn(b->document.get(), images[0]);
+    ASSERT_TRUE(bounds);
+    EXPECT_TRUE(Geom::are_near(bounds->min(), Geom::Point(10, 20), 1e-6)) << bounds->min();
+    EXPECT_TRUE(Geom::are_near(bounds->max(), Geom::Point(50, 40), 1e-6)) << bounds->max();
+    EXPECT_EQ(sp_images_missing(b->document.get()), std::vector<SPImage *>{image});
+    auto const mark = Inkscape::Display::link_highlight_shape(image);
+    ASSERT_EQ(mark.size(), 4u);
+    EXPECT_EQ(mark[0], Geom::Point(10, 20));
+    EXPECT_EQ(mark[2], Geom::Point(50, 40));
+
+    // A long name is cut short in what is said, and whole in what is kept.
+    auto const wordy = std::string("Q:\\Jobs\\a picture with a name that goes on for a good deal longer than a note has room for.png");
+    ai = AN::read(records(layer(linked(wordy))), error);
+    ASSERT_TRUE(ai) << error;
+    auto named = AN::build(*ai, error);
+    ASSERT_TRUE(named) << error;
+    ASSERT_EQ(named->missing_links.size(), 1u);
+    EXPECT_EQ(named->missing_links[0].name, wordy.substr(8));
+    ASSERT_EQ(named->notes.size(), 1u);
+    EXPECT_NE(named->notes[0].find("(a picture with a name that goes ... room for.png)"), std::string::npos) << named->notes[0];
+
+    // A document that keeps no picture of it: a marked box, and it says so.
+    ai = AN::read(records(layer(linked(gone) + linked(gone))), error);
+    ASSERT_TRUE(ai) << error;
+    auto plain = AN::build(*ai, error);
+    ASSERT_TRUE(plain) << error;
+    ASSERT_EQ(plain->missing_links.size(), 2u);
+    EXPECT_FALSE(plain->missing_links[0].preview);
+    ASSERT_EQ(plain->notes.size(), 1u);
+    EXPECT_NE(plain->notes[0].find("2 linked pictures can't be found (gone.png): a marked box shows in the place of each"),
+              std::string::npos) << plain->notes[0];
+    images = elements(plain->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 2u);
+    EXPECT_TRUE(attr(images[0], SPImage::LINK_PREVIEW_ATTRIBUTE).empty());
+    plain->document->ensureUpToDate();
+    image = cast<SPImage>(plain->document->getObjectByRepr(images[0]));
+    ASSERT_TRUE(image);
+    EXPECT_TRUE(image->linkMissing());
+    EXPECT_NE(image->pixbuf, nullptr);
+
+    // In a pattern's tile it shows wherever the pattern paints, with no one place to leave
+    // out of a comparison: such a document is still refused. A pattern nothing paints with
+    // is taken out, as before.
+    auto const tile = pattern("Dots", "0 0 20 10", linked(gone));
+    ai = AN::read(records(layer("(Dots) 0 0 1 1 0 0 0 0 0 [1 0 0 1 0 0] p\n" + rect), tile), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("in a pattern can't be found (gone.png)"), std::string::npos) << error;
+    ai = AN::read(records(layer("0 g\n" + rect), tile), error);
+    ASSERT_TRUE(ai) << error;
+    auto unused = AN::build(*ai, error);
+    ASSERT_TRUE(unused) << error;
+    EXPECT_TRUE(unused->missing_links.empty());
+    EXPECT_TRUE(elements(unused->document->getReprRoot(), "svg:image").empty());
+}
+
+TEST_F(AiNativeImportTest, PicturesThatAreGoneAreLinkedAgainFromOneFolder)
+{
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    auto const in_folder = [&](char const *name) { return folder + G_DIR_SEPARATOR_S + name; };
+    write_picture(in_folder("a.png"));
+    write_picture(in_folder("b.png"));
+    write_picture(in_folder("tall.png"), 2, 4);
+    write_picture(in_folder("here.png"));
+    ASSERT_TRUE(g_file_set_contents(in_folder("notes.txt").c_str(), "not a picture", -1, nullptr));
+    auto const q = std::string("Q:\\Jobs\\");
+    auto const kept = kept_preview(1, 1, argb(255, 1, 2, 3));
+    std::string error;
+    auto ai = AN::read(records(layer(linked(q + "a.png", {}, kept) + linked(q + "b.png", {}, kept) + linked(q + "c.png") +
+                                     linked(in_folder("here.png")))),
+                       error);
+    ASSERT_TRUE(ai) << error;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    auto *doc = b->document.get();
+    auto missing = sp_images_missing(doc);
+    ASSERT_EQ(missing.size(), 3u);
+    EXPECT_EQ(b->missing_links.size(), 3u);
+    auto *a = missing[0];
+    EXPECT_NE(a->linkedFile().find("a.png"), std::string::npos);
+
+    // What isn't a picture links nothing.
+    EXPECT_EQ(sp_images_relink(a, in_folder("notes.txt")), 0u);
+    EXPECT_EQ(sp_images_relink(a, in_folder("nothing.png")), 0u);
+    EXPECT_EQ(sp_images_missing(doc).size(), 3u);
+
+    // One is linked by hand, and the other that has a file of its name there with it.
+    auto const gone_href = attr(a->getRepr(), "xlink:href"), gone_absref = attr(a->getRepr(), "sodipodi:absref");
+    auto const gone_preview = attr(a->getRepr(), SPImage::LINK_PREVIEW_ATTRIBUTE);
+    EXPECT_EQ(sp_images_relink(a, in_folder("a.png")), 2u);
+    missing = sp_images_missing(doc);
+    ASSERT_EQ(missing.size(), 1u);
+    EXPECT_NE(missing[0]->linkedFile().find("c.png"), std::string::npos);
+    EXPECT_FALSE(a->missing);
+    ASSERT_NE(a->pixbuf, nullptr);
+    EXPECT_EQ(a->pixbuf->width(), 4);
+    EXPECT_EQ(attr(a->getRepr(), "sodipodi:absref"), in_folder("a.png"));
+    EXPECT_EQ(a->linkedFile(), in_folder("a.png"));
+    EXPECT_TRUE(attr(a->getRepr(), SPImage::LINK_PREVIEW_ATTRIBUTE).empty());
+    // The same shape as the box it lay in: it fills it as before.
+    EXPECT_EQ(attr(a->getRepr(), "preserveAspectRatio"), "none");
+    EXPECT_TRUE(Inkscape::Display::link_highlight_shape(a).empty());
+
+    // Taken back, as Undo takes it: the kept picture shows again, and though it is of
+    // another shape than the file's, the box stays as it was.
+    a->getRepr()->setAttribute("xlink:href", gone_href);
+    a->getRepr()->setAttribute("sodipodi:absref", gone_absref);
+    a->getRepr()->setAttribute(SPImage::LINK_PREVIEW_ATTRIBUTE, gone_preview);
+    doc->ensureUpToDate();
+    EXPECT_TRUE(a->linkMissing());
+    ASSERT_NE(a->pixbuf, nullptr);
+    EXPECT_EQ(a->pixbuf->width(), 1);
+    EXPECT_EQ(attr(a->getRepr(), "width"), "40");
+    EXPECT_EQ(attr(a->getRepr(), "height"), "20");
+    EXPECT_EQ(sp_images_relink(a, in_folder("a.png")), 1u);
+    EXPECT_EQ(attr(a->getRepr(), "width"), "40");
+    EXPECT_EQ(attr(a->getRepr(), "height"), "20");
+    missing = sp_images_missing(doc);
+    ASSERT_EQ(missing.size(), 1u);
+
+    // A picture of another shape keeps its own, inside the box.
+    auto *c = missing[0];
+    EXPECT_EQ(Inkscape::Display::link_highlight_shape(c).size(), 4u);
+    EXPECT_EQ(sp_images_relink(c, in_folder("tall.png")), 1u);
+    EXPECT_EQ(attr(c->getRepr(), "preserveAspectRatio"), "xMidYMid");
+    EXPECT_EQ(attr(c->getRepr(), "width"), "40");
+    EXPECT_EQ(attr(c->getRepr(), "height"), "20");
+    EXPECT_TRUE(sp_images_missing(doc).empty());
+}
+
+TEST_F(AiNativeImportTest, LinkedPictureThatDoesNotShowOrCannotBeRead)
 {
     auto const folder = temporary_folder();
     ASSERT_FALSE(folder.empty());
     AN::Source source;
     source.folder = folder;
     std::string error;
-    // Not there: refused where it shows, kept as a link where it doesn't.
+    // Not there, in a layer that doesn't show: kept as a link, and noted as one that doesn't show.
     auto const gone = std::string("Q:\\Jobs\\gone.png");
     auto ai = AN::read(records(layer("0 g\n" + rect + linked(gone))), error);
     ASSERT_TRUE(ai) << error;
-    EXPECT_FALSE(AN::build(*ai, error, source));
-    EXPECT_NE(error.find("can't be found (gone.png)"), std::string::npos) << error;
     ai->layers[0].visible = false;
     auto hidden = AN::build(*ai, error, source);
     ASSERT_TRUE(hidden) << error;
+    EXPECT_TRUE(hidden->missing_links.empty());
     auto images = elements(hidden->document->getReprRoot(), "svg:image");
     ASSERT_EQ(images.size(), 1u);
     EXPECT_EQ(attr(images[0], "sodipodi:absref"), gone);
     ASSERT_EQ(hidden->notes.size(), 1u);
-    EXPECT_NE(hidden->notes[0].find("linked picture"), std::string::npos) << hidden->notes[0];
+    EXPECT_NE(hidden->notes[0].find("linked picture that doesn't show"), std::string::npos) << hidden->notes[0];
     // A hidden object in a layer that shows doesn't show either.
     ai->layers[0].visible = true;
     ai->layers[0].children.back().visible = false;
-    EXPECT_TRUE(AN::build(*ai, error, source)) << error;
+    hidden = AN::build(*ai, error, source);
+    ASSERT_TRUE(hidden) << error;
+    EXPECT_TRUE(hidden->missing_links.empty());
 
     // A file nothing here draws (Photoshop's, a PDF).
     auto const other = folder + G_DIR_SEPARATOR_S + "layout.psd";
@@ -2945,6 +3172,40 @@ TEST_F(AiNativeImportTest, TypeInAFontThatIsNotInstalledIsLeftOutOfTheComparison
     share = false;
     for (auto const &note : most->notes) share = share || note.find("wasn't compared with the page") != std::string::npos;
     EXPECT_TRUE(share);
+}
+
+TEST_F(AiNativeImportTest, ALinkedPictureThatIsGoneIsLeftOutOfTheComparison)
+{
+    // The page has the picture, mid grey, in its box. The records link a file that is gone,
+    // and keep a small red picture of it.
+    auto const gone = std::string("Q:\\Jobs\\gone.png");
+    std::string red;
+    for (int i = 0; i < 8; ++i) red += argb(255, 255, 0, 0);
+    auto const picture = linked(gone, {}, kept_preview(4, 2, red));
+    std::string const page = "0.5 g 10 60 40 20 re f";
+    std::string reason;
+    auto src = records(layer(picture));
+    auto good = Extension::Internal::open_ai_native(fixture(src, {page}), reason);
+    ASSERT_TRUE(good) << reason;
+    EXPECT_EQ(good->missing_links, std::vector<std::string>{"gone.png"});
+    bool noted = false, share = false;
+    for (auto const &note : good->notes) {
+        noted = noted || note.find("1 linked picture can't be found (gone.png)") != std::string::npos;
+        share = share || note.find("wasn't compared with the page") != std::string::npos;
+    }
+    EXPECT_TRUE(noted);
+    // A twenty-fifth of the artboard isn't much of it.
+    EXPECT_FALSE(share);
+    ASSERT_EQ(good->differences.size(), 1u);
+    EXPECT_LT(good->differences[0].lightness, 0.001);
+
+    // Only its box is left out. Art beside it that the page doesn't have still refuses,
+    auto extra = records(layer("0 g\n120 10 m 120 50 L 190 50 L 190 10 L 120 10 L\nf\n" + picture));
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(extra, {page}), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+    // and so does a page that has its picture somewhere else.
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(src, {"0.5 g 110 60 40 20 re f"}), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
 }
 
 TEST_F(AiNativeImportTest, MatchingPdfAcceptedAndStaleRecordsRefused)

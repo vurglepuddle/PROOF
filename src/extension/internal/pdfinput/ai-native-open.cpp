@@ -563,8 +563,12 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     AiNativeOpen result;
     result.missing_fonts = built->missing_fonts;
     // Type set by a font other than its own can't look like the page: where it lies isn't
-    // weighed, on either side.
-    auto const &unweighed = built->substituted_type;
+    // weighed, on either side. Nor is where a linked picture lies whose file is gone.
+    auto unweighed = built->substituted_type;
+    for (auto const &link : built->missing_links) {
+        result.missing_links.push_back(link.name);
+        unweighed.push_back(link.box);
+    }
     double most_unweighed = 0;
     std::size_t most_unweighed_board = 0;
     auto const doc_pages = doc->getPageManager().getPages();
@@ -692,9 +696,14 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
                                percent(std::max(d.lightness, d.colour)) + " of it");
     }
     if (most_unweighed > 0.25) {
+        std::string const what = built->missing_links.empty()
+                                     ? "type set in another font than its own"
+                                     : built->substituted_type.empty()
+                                           ? "linked pictures that can't be found"
+                                           : "type set in another font than its own or linked pictures that can't be found";
         result.notes.push_back("about " + percent(most_unweighed) + " of " +
                                (boards.size() > 1 ? "artboard " + std::to_string(most_unweighed_board + 1) : "the artboard") +
-                               " is type set in another font than its own, and wasn't compared with the page");
+                               " is " + what + ", and wasn't compared with the page");
     }
     for (auto &n : built->notes) result.notes.push_back(std::move(n));
     result.document = std::move(built->document);

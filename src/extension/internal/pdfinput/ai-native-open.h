@@ -16,6 +16,8 @@
  * Type whose font isn't installed is set in another font, as Illustrator sets it, and
  * can't look like the page: where it lies, on the page and in the document, is left out of
  * the comparison, and the notes say how much of an artboard that was when it is much.
+ * The same goes for a linked picture whose file is gone: the small picture the document
+ * keeps of it stands in its place, and its box is left out on both sides.
  *
  * When the records hold anything that isn't read, or the art draws differently from
  * the page, nothing is returned and the caller imports the page as before.
@@ -52,6 +54,8 @@ struct AiNativeOpen
     std::vector<AiPageDifference> differences; ///< Each artboard compared, in order.
     /// The fonts that aren't installed, by PostScript name: their type is set in another font.
     std::vector<std::string> missing_fonts;
+    /// The linked pictures that show and can't be found, by file name.
+    std::vector<std::string> missing_links;
     /// How long each part of opening took, in seconds: "records" (decoding them), "read",
     /// "build" (the document), "compare" (drawing it and the pages).
     std::vector<std::pair<std::string, double>> timings;

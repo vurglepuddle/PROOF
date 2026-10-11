@@ -75,6 +75,7 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `%AI5_BeginRaster`, `/Space XN`, `[m] … w h bits type alpha … XI`, `XH`, `N` | Embedded image. The samples stay in their colour space; CMYK is common. The image is an object once its samples are read: the `XH` and the `N` (which paints no path) after it don't end what follows an object, so its name and a `1 () XW` still reach it. | VectorCraft; the tail from the **second 2026-10-10 trial** |
 | `%AI3_BeginPattern: (name)`, `(name) llx lly urx ury`, the tile's art on `%_` lines, `E`, `%AI3_EndPattern` | Pattern. The box is the tile, in a space of the pattern's own (y up); art past it is cut off there. | **second 2026-10-10 trial**. VectorCraft skips the section. |
 | `(name) px py sx sy angle rf r k ka [a b c d tx ty] p` (`P` for a stroke) | Paint with a pattern. The matrix carries the pattern's space onto the art, the same space the paths are in. The nine numbers before it are how Illustrator 8 and older moved, scaled, turned, mirrored and slanted a pattern; later versions leave them at `0 0 1 1 0 0 0 0 0`. Like a colour, it stays the paint until another is set. | **second 2026-10-10 trial**; the matrix checked against a file's own PDF pattern |
+| `%AI26_BeginPlacedObjectPreview`, `w h row-bytes 32 17 ` and the rows, `%AI26_EndPlacedObjectPreview`, in a placed file's section | The small picture Illustrator keeps of a placed file, for when the file can't be found. See "A linked picture that is gone". | **2026-10-11** |
 | `%AI5_BeginPlace`, `%%FileType: n`, `[a b c d tx ty] llx lly urx ury … (path)` then `` ` ``, `%AI28_BeginPlacedRelativePath` `(folder)` `%AI28_EndPlacedRelativePath`, `~`, `%AI5_EndPlace` | Placed (linked) file. The box is where the picture lies in a space of its own whose y points down (its top edge is `lly`); the matrix carries that onto the art. The path is as the saving machine knew it; the folder is where the file was found from the document's own, empty when it is the same. | **second 2026-10-10 trial** |
 | `/AI11Text : /FreeUndo … /StoryIndex …` | Text object. Its text lives in `%AI11_BeginTextDocument`. The section holds two documents: `/AI11TextDocument`, what was typed, and `/AI11UndoFreeTextDocument`, the type appearances drew. With `FreeUndo` 1 the object is drawn type and its `StoryIndex` counts in the second: see "Type an appearance drew" below. | VectorCraft; the second document from the **second 2026-10-10 trial** |
 | `n Ar` | The old Attributes panel's output resolution (300, 800). No visual effect. | **census** |
@@ -520,7 +521,8 @@ from its own, then beside the document, as Illustrator looks. The name is
 tried in UTF-8, in the machine's own encoding and in Windows-1252. One that
 shows and can't be found, or isn't a picture (Photoshop, PDF), refuses the
 native import with its name; one that doesn't show keeps its link as written,
-with a note. A path on a network share is followed like any other, as
+with a note. (Since 2026-10-11 one that can't be found no longer refuses: see
+"A linked picture that is gone" below.) A path on a network share is followed like any other, as
 Illustrator follows it.
 
 **Patterns.** See the operator table. Illustrator CS and later write the tile
@@ -1045,6 +1047,100 @@ last digit. Two corpus files hold anything these changes read: one with
 justified area type, on its page before and now, and one with letters read
 from the right, on its page for a picture that is gone. The corpus was not run
 again and stays at 802 of 879.
+
+### A linked picture that is gone (2026-10-11)
+
+Four corpus files stayed on their pages because a picture they link to wasn't
+where they said. Illustrator opens such a document, says which files it can't
+find, and offers to replace them. PROOF now does the same.
+
+**The picture Illustrator keeps.** Since Illustrator 2022 a placed file's
+section holds a small picture of the file, after its placement and before `~`:
+
+```
+%AI17_Begin_Content_if_version_gt:24 5
+
+%AI26_BeginPlacedObjectPreview
+512 336 2048 32 17 <688128 bytes>
+%AI26_EndPlacedObjectPreview
+%AI17_End_Versioned_Content
+```
+
+| Number | Meaning |
+|---|---|
+| 1, 2 | Width and height in pixels |
+| 3 | Bytes to a row: four times the width in every file seen |
+| 4 | Bits to a pixel: 32 |
+| 5 | 17 in every file seen; not known what else it can be |
+
+One space follows the last number, then the rows, top row first, as bytes of
+any value, and a line end. Each pixel is alpha, red, green, blue. The colours
+aren't multiplied by the alpha: in the one picture of the corpus with pixels
+that are partly clear, 105 of 1,943 such pixels are brighter than their alpha.
+All 38 placed files in the corpus (six documents) have one. It is the picture
+as large as it lies on the art at 72 to an inch when that is small, and
+otherwise 512 or 256 pixels on its longer side or its width; which of the two
+wasn't worked out.
+
+The scanner used to pass this section over by looking for the marker that ends
+it. It goes by the count now, since the bytes can be anything, and falls back
+to looking for the marker when the marker doesn't follow the count. The reader
+keeps the picture with its placed file (`Placed::preview`, as red, green,
+blue, alpha). A picture that isn't 32 bits with that 17, or is cut short, or is
+over 2,048 pixels on a side, isn't kept, and the file is placed all the same.
+
+**A file that can't be found** no longer sends the document to its page. The
+picture is an `<image>` whose link stays as the document wrote it, with the
+kept picture beside it as a PNG in `proof:link-preview`. PROOF's picture object
+shows that in the file's place while the file can't be found, in the box the
+file's own picture lay in. A document that keeps no picture of it (Illustrator
+before 2022) gets Inkscape's marked box there. The editor lists such pictures
+when the document opens and links them again
+([PROOF-links.md](PROOF-links.md)).
+
+What stands in can't look like the page, which has the file's own picture at
+full size. So the box is left out of the visual check on both sides, as type
+set in a stand-in font is, and everything else is still compared.
+
+Still refused, where it shows:
+
+| Case | Why |
+|---|---|
+| A linked file that is there and isn't a picture that can be read (Photoshop, PDF, Illustrator) | Illustrator shows it and PROOF can't: the page has it |
+| A missing picture inside a pattern's tile | It shows wherever the pattern paints, so there is no one box to leave out of the check. A pattern nothing paints with is taken out, as before |
+| A link whose name can't be read in any of the three encodings tried | Nothing to look for or to show |
+
+A missing picture that doesn't show is kept as a link and counted in a note, as
+before; it now carries its kept picture too.
+
+**What the check can no longer see.** A box that is left out hides whatever
+else lies in it. One of the four files is a single picture over its whole
+artboard, so nothing of that artboard is compared, and the notes say so
+("about 100% of the artboard is linked pictures that can't be found, and
+wasn't compared with the page"). Comparing what stands in with the page at the
+kept picture's own resolution would close that; it isn't done.
+
+**Tests.** `ai-native-reader-test`: the count of a preview against bytes that
+spell its end marker, a count the marker doesn't follow, and the picture kept
+with its placed file or not kept when it is written another way.
+`ai-native-import-test`: a missing picture with and without a kept picture (the
+link, the PNG to the pixel, what the picture object shows, the note, a long
+name cut short in the note, a tile, a pattern nothing paints with); linking
+again from one folder, a file that isn't a picture, a picture of another shape,
+and a relink taken back; one that doesn't show; and one against an
+independently written PDF page (its box left out, art beside it still refused,
+a page with its picture elsewhere refused).
+
+**Results.** All four files open natively: two with nothing differing outside
+the boxes left out, the others 0.7% and 0.9% from their pages by lightness
+(the limit is 1.0%). Between them they have 10 missing pictures that show and
+14 that don't. Six corpus files place files at all, and those six are the only
+ones this round's changes can touch. The other two are on their pages for
+other reasons, as before. With the seventeen trial files they were run again:
+20 results are the same as last round to the last digit, notes included, and
+the four are gained. The corpus was not run whole and stands at **806 of 879**
+by that count.
+
 
 ## Plan
 

@@ -18,6 +18,8 @@
 #include "sp-item.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <glibmm/ustring.h>
 #include <2geom/pathvector.h>
@@ -47,6 +49,19 @@ public:
 
     std::shared_ptr<Inkscape::Pixbuf const> pixbuf;
     bool missing = true;
+
+    /// PROOF: on a linked picture, the small picture its document keeps of it, as a data:
+    /// address. It shows while the file can't be found, as it does in Illustrator.
+    static constexpr char const *LINK_PREVIEW_ATTRIBUTE = "proof:link-preview";
+
+    /// PROOF: whether this is a link to a file that can't be found or read.
+    bool linkMissing() const;
+    /// PROOF: the file a link names, as a file name where it is one; empty for a picture the
+    /// document holds itself.
+    std::string linkedFile() const;
+    /// PROOF: link to `file` (a file name in UTF-8) instead, in the box the picture lies in.
+    /// A picture of another shape keeps its own shape inside that box.
+    void relink(std::string const &file);
 
     void build(SPDocument *document, Inkscape::XML::Node *repr) override;
     void release() override;
@@ -80,5 +95,15 @@ private:
 /* Return duplicate of curve or NULL */
 void sp_embed_image(Inkscape::XML::Node *imgnode, Inkscape::Pixbuf *pb);
 void sp_embed_svg(Inkscape::XML::Node *image_node, std::string const &fn);
+
+/// PROOF: the linked pictures of `document` whose files can't be found or read, in its order.
+std::vector<SPImage *> sp_images_missing(SPDocument *document);
+/**
+ * PROOF: link `image` to `file`, and with it every other picture of its document that is
+ * missing and has a file of its own name in the same folder, as Illustrator looks for them.
+ *
+ * @return how many pictures were linked; 0 when `file` isn't a picture that can be read.
+ */
+unsigned sp_images_relink(SPImage *image, std::string const &file);
 
 #endif

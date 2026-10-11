@@ -174,6 +174,36 @@ TEST(AiNativeLexer, PlacedPreviewsAreSkipped)
     EXPECT_EQ(toks.back().view, "N");
 }
 
+TEST(AiNativeLexer, APlacedPreviewIsPassedOverByItsCount)
+{
+    // Eight pixels in one row of 32 bytes, which may be any bytes: here the marker that ends
+    // a preview. The section comes with its marker's comment.
+    auto const rows = "%AI26_EndPlacedObjectPreview\r\nAB"s;
+    ASSERT_EQ(rows.size(), 32u);
+    auto const src = "%AI26_BeginPlacedObjectPreview\r\n8 1 32 32 17 " + rows + "\r\n%AI26_EndPlacedObjectPreview\r\nN\r\n";
+    auto toks = all_tokens(src);
+    ASSERT_EQ(toks.size(), 2u);
+    EXPECT_EQ(toks[0].kind, Token::Kind::Comment);
+    EXPECT_EQ(toks[0].data, "8 1 32 32 17 " + rows + "\r\n");
+    EXPECT_EQ(toks.back().view, "N");
+    auto const head = preview_head(toks[0].data);
+    ASSERT_TRUE(head);
+    EXPECT_EQ(head->width, 8u);
+    EXPECT_EQ(head->height, 1u);
+    EXPECT_EQ(head->row_bytes, 32u);
+    EXPECT_EQ(head->bits, 32u);
+    EXPECT_EQ(head->kind, 17u);
+    EXPECT_EQ(head->size, 13u);
+    EXPECT_FALSE(preview_head("8 1 32 32"));
+    EXPECT_FALSE(preview_head("8 1 x 32 17 "));
+    EXPECT_FALSE(preview_head("8 1 12345678901 32 17 "));
+    // A count that the end marker doesn't follow isn't gone by: what comes after is still read.
+    toks = all_tokens("%AI26_BeginPlacedObjectPreview\n8 9 32 32 17 "s + rows.substr(30) + "\n%AI26_EndPlacedObjectPreview\nN\n" +
+                      std::string(400, ' '));
+    ASSERT_EQ(toks.size(), 2u);
+    EXPECT_EQ(toks.back().view, "N");
+}
+
 TEST(AiNativeLexer, StringsAndNumbers)
 {
     auto toks = all_tokens("(a(b)c\\101\\\nd) -3.5 .5 +2 1e-3 1x2 nan 1e999");
@@ -585,6 +615,54 @@ TEST(AiNativeReader, PlacedPictureKeepsItsLinkAndPlace)
     EXPECT_EQ(kids[1].kind, Node::Kind::Path);
     // The folder's string is not left for the path that follows.
     EXPECT_EQ(kids[1].path.size(), 1u);
+}
+
+namespace {
+
+/// The picture a document keeps of a placed file, as Illustrator 2022 and later write it.
+std::string preview(int w, int h, int row_bytes, std::string const &rows, int bits = 32, int kind = 17)
+{
+    return "%AI17_Begin_Content_if_version_gt:24 5\r\n\r\n%AI26_BeginPlacedObjectPreview\r\n" + std::to_string(w) + " " +
+           std::to_string(h) + " " + std::to_string(row_bytes) + " " + std::to_string(bits) + " " + std::to_string(kind) +
+           " " + rows + "\r\n%AI26_EndPlacedObjectPreview\r\n%AI17_End_Versioned_Content\r\n";
+}
+
+/// A placed file with what follows its placement.
+std::string placed_with(std::string const &more)
+{
+    return "%AI5_BeginPlace\n%%FileType: 1\n[2 0 0 -2 -100 300] 50 60 90 80 4 4 0\n(a.png)`\n%%IncludeFile:a.png\n\n" + more +
+           "~\n%AI5_EndPlace\n";
+}
+
+} // namespace
+
+TEST(AiNativeReader, PlacedPictureKeepsThePictureTheDocumentHasOfIt)
+{
+    // Two pixels by two, in rows of twelve bytes: alpha, red, green, blue, and four bytes
+    // that fill the row out.
+    auto const rows = "\xff\x10\x20\x30\x80\x40\x50\x60____"s + "\x00\x00\x00\x00\xff\xff\xfe\xfd____"s;
+    ASSERT_EQ(rows.size(), 24u);
+    auto doc = read_ok(records(layer("L", placed_with(preview(2, 2, 12, rows)) + "0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    ASSERT_EQ(doc.placed.size(), 1u);
+    auto const &kept = doc.placed[0].preview;
+    EXPECT_EQ(kept.width, 2);
+    EXPECT_EQ(kept.height, 2);
+    // Red, green, blue, alpha.
+    EXPECT_EQ(kept.pixels, "\x10\x20\x30\xff\x40\x50\x60\x80"s + "\x00\x00\x00\x00\xff\xfe\xfd\xff"s);
+    // The path after it is read as before.
+    ASSERT_EQ(doc.layers[0].children.size(), 2u);
+    EXPECT_EQ(doc.layers[0].children[1].kind, Node::Kind::Path);
+
+    // One written another way isn't guessed at, and one cut short isn't kept. The file is
+    // placed all the same.
+    for (auto const &other : {preview(2, 2, 12, rows, 24), preview(2, 2, 12, rows, 32, 3), preview(2, 3, 12, rows),
+                              preview(0, 2, 12, rows), preview(2, 2, 7, rows), std::string()}) {
+        auto plain = read_ok(records(layer("L", placed_with(other))));
+        ASSERT_EQ(plain.placed.size(), 1u);
+        EXPECT_EQ(plain.placed[0].preview.width, 0);
+        EXPECT_EQ(plain.placed[0].preview.height, 0);
+        EXPECT_TRUE(plain.placed[0].preview.pixels.empty());
+    }
 }
 
 TEST(AiNativeReader, PlacedPictureBehindALookAndOnHiddenLayers)

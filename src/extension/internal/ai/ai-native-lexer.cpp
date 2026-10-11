@@ -8,6 +8,7 @@
  */
 #include "ai-native-lexer.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -15,9 +16,11 @@
 namespace Inkscape::Extension::Internal::AiNative {
 namespace {
 
+constexpr std::string_view PREVIEW = "%AI26_BeginPlacedObjectPreview";
+
 /// Binary sections skipped whole: (begin, end) markers.
 constexpr std::array<std::pair<std::string_view, std::string_view>, 2> SKIPPED{{
-    {"%AI26_BeginPlacedObjectPreview", "%AI26_EndPlacedObjectPreview"},
+    {PREVIEW, "%AI26_EndPlacedObjectPreview"},
     {"%%BeginDocument", "%%EndDocument"},
 }};
 
@@ -85,6 +88,28 @@ std::optional<double> parse_number(std::string_view w)
         return {};
     }
     return value;
+}
+
+std::optional<PreviewHead> preview_head(std::string_view data)
+{
+    PreviewHead head;
+    std::size_t at = 0;
+    for (auto *value : {&head.width, &head.height, &head.row_bytes, &head.bits, &head.kind}) {
+        // Nine digits are more than any of them has, and can't overflow.
+        auto const *first = data.data() + at;
+        auto const *last = data.data() + std::min(data.size(), at + 9);
+        auto const [end, ec] = std::from_chars(first, last, *value);
+        if (ec != std::errc() || end == first) {
+            return {};
+        }
+        at = end - data.data();
+        if (at >= data.size() || data[at] != ' ') {
+            return {};
+        }
+        ++at;
+    }
+    head.size = at;
+    return head;
 }
 
 std::optional<std::string> hex_decode(std::string_view digits)
@@ -203,12 +228,38 @@ std::optional<Token> Lexer::special(std::string_view l)
 {
     for (auto const &[begin, end] : SKIPPED) {
         if (l.substr(0, begin.size()) == begin) {
-            auto const at = _src.find(end, _pos);
+            // What the section holds starts on the next line.
+            auto from = _pos;
+            if (_src.substr(from, 2) == "\r\n") {
+                from += 2;
+            } else if (from < _src.size() && is_eol(_src[from])) {
+                from += 1;
+            }
+            // A preview's rows are bytes of any value, and say how many they are: the marker
+            // that ends them is looked for after them. A count that the marker doesn't follow
+            // isn't one to go by.
+            auto search = from;
+            if (begin == PREVIEW) {
+                if (auto const head = preview_head(_src.substr(from))) {
+                    auto const rows = head->row_bytes * head->height;
+                    if (rows <= _src.size() - from - head->size) {
+                        auto after = from + head->size + rows;
+                        while (after < _src.size() && is_eol(_src[after])) {
+                            ++after;
+                        }
+                        if (_src.substr(after, end.size()) == end) {
+                            search = after;
+                        }
+                    }
+                }
+            }
+            auto const at = _src.find(end, search);
             _pos = at == std::string_view::npos ? _src.size() : at;
-            line();
             Token t;
             t.kind = Token::Kind::Comment;
             t.view = l.substr(1);
+            t.data = _src.substr(from, _pos - from);
+            line();
             return t;
         }
     }

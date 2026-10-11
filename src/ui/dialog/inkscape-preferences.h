@@ -497,6 +497,7 @@ protected:
     UI::Widget::PrefCheckButton _misc_bitmap_autoreload;
     UI::Widget::PrefSpinButton  _bitmap_copy_res;
     UI::Widget::PrefCheckButton _bitmap_ask;
+    UI::Widget::PrefCheckButton _links_missing_dialog; ///< PROOF
     UI::Widget::PrefCheckButton _svg_ask;
     UI::Widget::PrefCombo       _bitmap_link;
     UI::Widget::PrefCombo       _svg_link;

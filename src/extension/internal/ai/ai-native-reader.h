@@ -165,6 +165,19 @@ struct Image
 };
 
 /**
+ * The picture of a placed file that the document keeps beside its link
+ * (%AI26_BeginPlacedObjectPreview): what Illustrator shows while the file can't be found.
+ * It is small, 512 pixels at most on its longer side in the files seen.
+ */
+struct Preview
+{
+    int width = 0, height = 0; ///< Both 0 when the document keeps none.
+    /// Rows of width * 4 bytes, top row first: red, green, blue, and an alpha that the
+    /// colours aren't multiplied by.
+    std::string pixels;
+};
+
+/**
  * A placed file: a picture the document links to instead of holding (%AI5_BeginPlace).
  *
  * The file is named as the machine that saved the document knew it. Newer files also give
@@ -179,6 +192,7 @@ struct Placed
     std::string path;    ///< The file's bytes for the name, undecoded.
     std::string folder;  ///< %AI28_BeginPlacedRelativePath, undecoded.
     int file_type = -1;  ///< %%FileType.
+    Preview preview;
 };
 
 struct StrokeStyle

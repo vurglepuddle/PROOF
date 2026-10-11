@@ -88,6 +88,10 @@
           <attribute name="target">DocumentResources</attribute>
           <attribute name="icon">document-resources</attribute>
         </item>
+        <item>
+          <attribute name="label" translatable="yes">Missing _Links...</attribute>
+          <attribute name="action">win.document-missing-links</attribute>
+        </item>
       </section>
       <section>
         <item>

@@ -34,6 +34,7 @@
 #include "extension/internal/ai/ai-native-fonts.h"
 #include "inkscape-window.h"
 #include "inkscape.h"
+#include "link-missing.h"
 #include "object/sp-flowdiv.h"
 #include "object/sp-root.h"
 #include "object/sp-textpath.h"
@@ -424,32 +425,46 @@ void checkFontSubstitutions(SPDesktop *desktop)
     bool const show_substituted = prefs->getBool("/options/font/substitutedlg");
     auto const missing = prefs->getBool("/options/font/missingdlg", true) ? AiNative::missing_fonts(doc)
                                                                          : std::vector<AiNative::MissingFont>();
-    if (!show_substituted && missing.empty()) {
+    // PROOF: and so are the linked pictures whose files can't be found, first, as there.
+    if (!show_substituted && missing.empty() && !missingLinksToShow(doc)) {
         return;
     }
+    bool const show_missing = !missing.empty();
 
     // A document that opens into a new window comes through here before the window is on
     // screen, and a dialog shown then has nothing to be placed over: it came up in the corner
     // of the screen. It is shown once the window is there.
     auto const serial = doc->serial();
     auto tries = std::make_shared<int>(0);
-    Glib::signal_idle().connect([desktop, serial, show_substituted, tries] {
-        auto const &desktops = INKSCAPE.get_desktops();
-        if (std::find(desktops.begin(), desktops.end(), desktop) == desktops.end()) {
-            return false; // Closed meanwhile.
-        }
-        auto *document = desktop->getDocument();
-        if (!document || document->serial() != serial) {
+    Glib::signal_idle().connect([desktop, serial, show_substituted, show_missing, tries] {
+        // The window and the document it was opened for, while both are still there.
+        auto const shown = [desktop, serial]() -> SPDocument * {
+            auto const &desktops = INKSCAPE.get_desktops();
+            if (std::find(desktops.begin(), desktops.end(), desktop) == desktops.end()) {
+                return nullptr; // Closed meanwhile.
+            }
+            auto *document = desktop->getDocument();
+            return document && document->serial() == serial ? document : nullptr;
+        };
+        auto *document = shown();
+        if (!document) {
             return false;
         }
         auto const *window = desktop->getInkscapeWindow();
         if ((!window || !window->get_mapped()) && ++*tries < 500) {
             return true;
         }
+        if (missingLinksToShow(document)) {
+            showMissingLinks(desktop, true);
+            document = shown();
+            if (!document) {
+                return false;
+            }
+        }
         std::vector<SPItem *> list;
         Glib::ustring msg;
         if (show_substituted) std::tie(list, msg) = getFontReplacedItems(document);
-        if (msg.empty() && AiNative::missing_fonts(document).empty()) {
+        if (msg.empty() && !(show_missing && !AiNative::missing_fonts(document).empty())) {
             return false;
         }
         MissingFonts(desktop, std::move(list), msg, true).run();

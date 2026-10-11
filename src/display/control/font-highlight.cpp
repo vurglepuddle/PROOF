@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /** @file
- * PROOF: the pink highlight on type set in a stand-in font. See font-highlight.h.
+ * PROOF: the pink highlight on what stands in for a missing font or picture. See
+ * font-highlight.h.
  */
 #include "font-highlight.h"
+
+#include <cstring>
 
 #include <glibmm/main.h>
 
@@ -11,6 +14,7 @@
 #include "document.h"
 #include "extension/internal/ai/ai-native-fonts.h"
 #include "libnrtype/Layout-TNG.h"
+#include "object/sp-image.h"
 #include "object/sp-item.h"
 #include "text-editing.h"
 #include "xml/node.h"
@@ -54,9 +58,22 @@ std::vector<Geom::Point> font_highlight_shape(SPItem const *text)
     return out;
 }
 
+std::vector<Geom::Point> link_highlight_shape(SPItem const *picture)
+{
+    std::vector<Geom::Point> out;
+    auto const *image = cast<SPImage>(picture);
+    if (!image || !image->linkMissing()) return out;
+    auto const box = Geom::Rect::from_xywh(image->x.computed, image->y.computed, image->width.computed,
+                                           image->height.computed);
+    for (unsigned i = 0; i < 4; ++i) out.push_back(box.corner(i));
+    return out;
+}
+
 FontHighlight::FontHighlight(SPDesktop *desktop)
     : _desktop(desktop)
     , _attribute(g_quark_from_static_string(AiNative::FONT_MISSING_ATTRIBUTE))
+    , _href(g_quark_from_static_string("href"))
+    , _xlink_href(g_quark_from_static_string("xlink:href"))
 {
     auto *prefs = Preferences::get();
     _shown = prefs->getBool(PREFERENCE, true);
@@ -92,10 +109,11 @@ void FontHighlight::setDocument(SPDocument *document)
 
 void FontHighlight::notifyChildAdded(XML::Node &, XML::Node &child, XML::Node *)
 {
-    // What is pasted, placed or brought back by undo can hold such text.
+    // What is pasted, placed or brought back by undo can hold such text, or a picture.
     bool found = false;
     sp_repr_visit_descendants(&child, [&](XML::Node *node) {
-        found = found || node->attribute(AiNative::FONT_MISSING_ATTRIBUTE);
+        auto const *name = node->name();
+        found = found || node->attribute(AiNative::FONT_MISSING_ATTRIBUTE) || (name && !strcmp(name, "svg:image"));
         return !found;
     });
     if (found) scan_later();
@@ -103,8 +121,9 @@ void FontHighlight::notifyChildAdded(XML::Node &, XML::Node &child, XML::Node *)
 
 void FontHighlight::notifyAttributeChanged(XML::Node &, GQuark name, Util::ptr_shared, Util::ptr_shared)
 {
-    // The font was installed, or replaced: the name is gone. Or that was undone.
-    if (name == _attribute) scan_later();
+    // The font was installed, or replaced: the name is gone. Or that was undone. A link
+    // that changed may be one to a file that is there, or to one that isn't.
+    if (name == _attribute || name == _href || name == _xlink_href) scan_later();
 }
 
 void FontHighlight::scan_later()
@@ -122,17 +141,19 @@ void FontHighlight::scan()
     _scan.disconnect();
     _texts.clear();
     if (!_document || !_shown) return;
+    auto const watch = [this](SPItem *item) {
+        if (_texts.count(item)) return;
+        auto &entry = _texts[item];
+        // After each change the layout is the new one: the type may have moved, been
+        // edited, hidden, or given a font of its own. A picture may have moved or been found.
+        entry.modified = item->connectModified([this, item](SPObject *, unsigned) { draw(item); });
+        entry.released = item->connectRelease([this, item](SPObject *) { _texts.erase(item); });
+        draw(item);
+    };
     for (auto const &font : AiNative::missing_fonts(_document)) {
-        for (auto *text : font.texts) {
-            if (_texts.count(text)) continue;
-            auto &entry = _texts[text];
-            // After each change the layout is the new one: the type may have moved, been
-            // edited, hidden, or given a font of its own.
-            entry.modified = text->connectModified([this, text](SPObject *, unsigned) { draw(text); });
-            entry.released = text->connectRelease([this, text](SPObject *) { _texts.erase(text); });
-            draw(text);
-        }
+        for (auto *text : font.texts) watch(text);
     }
+    for (auto *picture : sp_images_missing(_document)) watch(picture);
 }
 
 void FontHighlight::draw(SPItem *text)
@@ -142,7 +163,7 @@ void FontHighlight::draw(SPItem *text)
     auto &quads = found->second.quads;
     std::vector<Geom::Point> corners;
     if (!text->isHidden(_desktop->dkey)) {
-        corners = font_highlight_shape(text);
+        corners = is<SPImage>(text) ? link_highlight_shape(text) : font_highlight_shape(text);
         auto const to_desktop = text->i2dt_affine();
         for (auto &corner : corners) corner *= to_desktop;
     }

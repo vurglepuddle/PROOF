@@ -17,6 +17,7 @@
 #include "sp-image.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <giomm/error.h>
@@ -32,6 +33,7 @@
 #include "display/cairo-utils.h"
 #include "display/drawing-image.h"
 #include "document.h"
+#include "object/sp-root.h"
 #include "object/uri.h"
 #include "path/path-curve.h"
 #include "preferences.h"
@@ -251,10 +253,16 @@ void SPImage::update(SPCtx *ctx, unsigned int flags) {
                            document->getDocumentBase(), svgdpi);
             if (!pb) {
                 missing = true;
-                // Passing in our previous size allows us to preserve the image's expected size.
-                auto broken_width = width._set ? width.computed : 640;
-                auto broken_height = height._set ? height.computed : 640;
-                pb = getBrokenImage(broken_width, broken_height);
+                // PROOF: what the document keeps of the picture stands in for it.
+                if (auto const *preview = getRepr()->attribute(LINK_PREVIEW_ATTRIBUTE)) {
+                    pb = readImage(preview, nullptr, nullptr, svgdpi);
+                }
+                if (!pb) {
+                    // Passing in our previous size allows us to preserve the image's expected size.
+                    auto broken_width = width._set ? width.computed : 640;
+                    auto broken_height = height._set ? height.computed : 640;
+                    pb = getBrokenImage(broken_width, broken_height);
+                }
             }
             else {
                 missing = false;
@@ -332,6 +340,14 @@ void SPImage::update(SPCtx *ctx, unsigned int flags) {
 
     // don't crash with missing xlink:href attribute
     if (!this->pixbuf) {
+        return;
+    }
+
+    // PROOF: what stands in for a file that can't be found isn't the picture, and has no say
+    // in the picture's box. (Below, a picture of another shape than the one before reshapes
+    // the box. A stand-in did too: undoing a relink put the kept picture back and then
+    // changed the width, as a change no Undo knew of.)
+    if (missing) {
         return;
     }
 
@@ -467,6 +483,8 @@ gchar* SPImage::description() const {
 
     char *ret = ( !pixbuf
                   ? g_strdup_printf(_("[bad reference]: %s"), href_desc)
+                  : linkMissing()
+                  ? g_strdup_printf(_("[file not found]: %s"), href_desc)
                   : g_strdup_printf(_("%d &#215; %d: %s"),
                                     pixbuf->width(),
                                     pixbuf->height(),
@@ -496,6 +514,108 @@ gchar* SPImage::description() const {
 
     g_free(href_desc);
     return ret;
+}
+
+bool SPImage::linkMissing() const
+{
+    return missing && href && *href && g_ascii_strncasecmp(href, "data:", 5) != 0;
+}
+
+std::string SPImage::linkedFile() const
+{
+    if (!href || !*href || g_ascii_strncasecmp(href, "data:", 5) == 0) {
+        return {};
+    }
+    try {
+        auto const uri = getURI();
+        if (uri.hasScheme("file")) {
+            return uri.toNativeFilename();
+        }
+    } catch (...) {
+        // Not an address a file name can be made of: the link as it is written.
+    }
+    if (auto const *absref = getRepr()->attribute("sodipodi:absref")) {
+        return absref;
+    }
+    return href;
+}
+
+void SPImage::relink(std::string const &file)
+{
+    auto *repr = getRepr();
+    int w = 0, h = 0;
+    bool const picture = gdk_pixbuf_get_file_info(file.c_str(), &w, &h) && w > 0 && h > 0;
+    gchar *uri = g_filename_to_uri(file.c_str(), nullptr, nullptr);
+    Inkscape::setHrefAttribute(*repr, uri ? uri : file.c_str());
+    g_free(uri);
+    repr->setAttribute("sodipodi:absref", file);
+    repr->removeAttribute(LINK_PREVIEW_ATTRIBUTE);
+    // The picture that was there filled its box. Another of the same shape fills it too; one
+    // of another shape would be pulled out of its own, and is fitted inside the box.
+    if (picture && width._set && height._set && width.computed > 0 && height.computed > 0 && aspect_set &&
+        aspect_align == SP_ASPECT_NONE) {
+        double const box = width.computed / height.computed, own = double(w) / h;
+        if (std::abs(own - box) > 0.01 * box) {
+            repr->setAttribute("preserveAspectRatio", "xMidYMid");
+        }
+    }
+}
+
+std::vector<SPImage *> sp_images_missing(SPDocument *document)
+{
+    std::vector<SPImage *> out;
+    if (!document || !document->getRoot()) {
+        return out;
+    }
+    document->ensureUpToDate();
+    auto visit = [&](auto const &self, SPObject *object) -> void {
+        if (auto *image = cast<SPImage>(object)) {
+            if (image->linkMissing()) {
+                out.push_back(image);
+            }
+            return;
+        }
+        for (auto &child : object->children) {
+            self(self, &child);
+        }
+    };
+    visit(visit, document->getRoot());
+    return out;
+}
+
+unsigned sp_images_relink(SPImage *image, std::string const &file)
+{
+    if (!image || !image->document || !gdk_pixbuf_get_file_info(file.c_str(), nullptr, nullptr)) {
+        return 0;
+    }
+    auto *document = image->document;
+    // Listed before anything changes: what is linked below is no longer missing.
+    auto const others = sp_images_missing(document);
+    image->relink(file);
+    unsigned count = 1;
+    gchar *folder = g_path_get_dirname(file.c_str());
+    for (auto *other : others) {
+        if (other == image) {
+            continue;
+        }
+        // The name alone, whichever kind of machine wrote the folders before it.
+        auto name = other->linkedFile();
+        if (auto const cut = name.find_last_of("/\\"); cut != std::string::npos) {
+            name.erase(0, cut + 1);
+        }
+        if (name.empty()) {
+            continue;
+        }
+        gchar *beside = g_build_filename(folder, name.c_str(), nullptr);
+        if (g_file_test(beside, G_FILE_TEST_IS_REGULAR) && gdk_pixbuf_get_file_info(beside, nullptr, nullptr)) {
+            other->relink(beside);
+            ++count;
+        }
+        g_free(beside);
+    }
+    g_free(folder);
+    document->ensureUpToDate();
+    return count;
 }
 
 Inkscape::DrawingItem* SPImage::show(Inkscape::Drawing &drawing, unsigned int /*key*/, unsigned int /*flags*/) {

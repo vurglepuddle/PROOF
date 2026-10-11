@@ -226,7 +226,8 @@ void ImageProperties::update(SPImage* image) {
             url.set_text(new_href);
         }
         url.set_sensitive(linked);
-        _embed.set_sensitive(linked && image->pixbuf);
+        // PROOF: what stands in for a file that can't be found isn't the picture to embed.
+        _embed.set_sensitive(linked && image->pixbuf && !image->missing);
 
         // aspect ratio
         bool aspect_none = false;
@@ -319,6 +320,10 @@ void ImageProperties::set_href(Glib::ustring const &href)
     }
 
     setHrefAttribute(*repr, href);
+    // PROOF: what was kept for the link before isn't this one's: the place its file was
+    // last seen in, and the picture that stands in for a file that can't be found.
+    repr->removeAttribute("sodipodi:absref");
+    repr->removeAttribute(SPImage::LINK_PREVIEW_ATTRIBUTE);
 
     // SPImage modifies size when href changes; trigger it now before undo concludes
     // TODO: this needs to be fixed in SPImage

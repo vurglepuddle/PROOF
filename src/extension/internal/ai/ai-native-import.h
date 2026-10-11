@@ -22,7 +22,8 @@
  *   embedded image                 image (PNG for the screen); CMYK samples kept in
  *                                  proof:samples as a CMYK TIFF
  *   placed (linked) picture        image linked to the same file, found where the document
- *                                  says it is or beside the document
+ *                                  says it is or beside the document; one that can't be found
+ *                                  keeps its link and shows as the document's own preview of it
  *   name, hidden, locked           label, display:none, sodipodi:insensitive
  *   transparency                   opacity, mix-blend-mode, isolation; knockout in proof:knockout
  *   turned box (BBAccumRotation)   proof:box-angle on paths
@@ -55,7 +56,9 @@
  * Type that shows and can't be set as it is (ai-native-text.h) refuses the file, and the
  * caller opens its page; such type that doesn't show is left out. A font that isn't
  * installed doesn't refuse it: as in Illustrator, another font sets the type until the
- * font is there, and the document says which fonts those are.
+ * font is there, and the document says which fonts those are. Nor does a linked picture
+ * whose file is gone: its link stays as it was written, the small picture Illustrator keeps
+ * of it stands in its place, and the document says which pictures those are.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_IMPORT_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_IMPORT_H
@@ -82,6 +85,15 @@ inline constexpr char const *TEXT_FRAME_ATTRIBUTE = "proof:text-frame";
 /// On area type whose frame is too small for its text: the text that doesn't show.
 inline constexpr char const *TEXT_OVERFLOW_ATTRIBUTE = "proof:text-overflow";
 
+/// A linked picture that shows and whose file can't be found.
+struct MissingLink
+{
+    std::string name; ///< The file's name, without its folder.
+    /// Where the picture lies: its four corners in the document's user units.
+    std::array<Geom::Point, 4> box;
+    bool preview = false; ///< Whether the document keeps a picture of it, which then shows there.
+};
+
 struct Built
 {
     std::unique_ptr<SPDocument> document;
@@ -96,6 +108,9 @@ struct Built
     /// both where Illustrator set that type and where it is set here. It can't look like the
     /// file's page there, and a comparison with the page leaves these out.
     std::vector<std::array<Geom::Point, 4>> substituted_type;
+    /// The linked pictures that show and can't be found, in the order met. What stands in
+    /// for one can't look like the page either, and a comparison leaves its box out.
+    std::vector<MissingLink> missing_links;
 };
 
 /// Where the records came from, for what they refer to outside themselves.
@@ -110,8 +125,8 @@ struct Source
  * Build the document of `ai`.
  *
  * @return the document, or nothing with the reason in `error` when it holds something
- *         the import can't place: type that shows and isn't supported, a linked picture
- *         that shows and can't be found or read.
+ *         the import can't place: type that shows and isn't supported, a linked file that
+ *         shows and isn't a picture that can be read.
  */
 std::optional<Built> build(Document const &ai, std::string &error, Source const &source = {});
 

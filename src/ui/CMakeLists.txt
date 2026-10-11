@@ -145,6 +145,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/find.cpp
 	dialog/font-collections-manager.cpp
 	dialog/font-substitution.cpp
+	dialog/link-missing.cpp
 	dialog/global-palettes.cpp
 	dialog/grid-arrange-tab.cpp
 	dialog/guides.cpp
@@ -391,6 +392,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/find.h
 	dialog/font-collections-manager.h
 	dialog/font-substitution.h
+	dialog/link-missing.h
 	dialog/global-palettes.h
 	dialog/grid-arrange-tab.h
 	dialog/guides.h

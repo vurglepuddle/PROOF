@@ -425,7 +425,43 @@ struct Placing
     bool hidden = false; ///< Written on %_ lines.
     int file_type = -1;
     std::optional<Placed> placed; ///< Once its placement (`) has been read.
+    Preview preview;
 };
+
+/// The longest side of a preview that is kept. Illustrator's own are 512 pixels at most.
+constexpr std::size_t PREVIEW_SIDE = 2048;
+
+/**
+ * A placed file's preview, from what its section holds: "width height row-bytes 32 17 " and
+ * then the rows, each pixel its alpha, red, green and blue. Every preview in the files seen
+ * has 32 bits to a pixel and that last number 17; one written another way isn't guessed at.
+ */
+Preview preview_of(std::string_view data)
+{
+    Preview out;
+    auto const head = preview_head(data);
+    if (!head || head->bits != 32 || head->kind != 17 || head->width < 1 || head->height < 1 ||
+        head->width > PREVIEW_SIDE || head->height > PREVIEW_SIDE || head->row_bytes < head->width * 4 ||
+        head->row_bytes > head->width * 4 + 64) {
+        return out;
+    }
+    data.remove_prefix(head->size);
+    if (data.size() < head->row_bytes * head->height) return out;
+    out.width = static_cast<int>(head->width);
+    out.height = static_cast<int>(head->height);
+    out.pixels.resize(head->width * head->height * 4);
+    auto *to = out.pixels.data();
+    for (std::size_t y = 0; y < head->height; ++y) {
+        auto const *from = data.data() + y * head->row_bytes;
+        for (std::size_t x = 0; x < head->width; ++x, from += 4, to += 4) {
+            to[0] = from[1];
+            to[1] = from[2];
+            to[2] = from[3];
+            to[3] = from[0];
+        }
+    }
+    return out;
+}
 
 bool finite(Geom::Affine const &m)
 {
@@ -494,7 +530,7 @@ private:
     }
 
     // comments
-    void comment(std::string_view c, bool hidden);
+    void comment(std::string_view c, bool hidden, std::string_view data);
     void skip_to(std::string_view end);
     void token(Token &t, bool hidden);
 
@@ -612,14 +648,14 @@ void Reader::token(Token &t, bool hidden)
         case Token::Kind::String: push(Value::string(std::move(t.string))); break;
         case Token::Kind::Name: push(Value::name(text_of(t.view))); break;
         case Token::Kind::Word: op(t.view, hidden); break;
-        case Token::Kind::Comment: comment(t.view, t.hidden); break;
+        case Token::Kind::Comment: comment(t.view, t.hidden, t.data); break;
         case Token::Kind::Data: image(t.view, hidden); break;
     }
 }
 
 // ---- comments --------------------------------------------------------------------------
 
-void Reader::comment(std::string_view c, bool hidden)
+void Reader::comment(std::string_view c, bool hidden, std::string_view data)
 {
     while (!c.empty() && (c.back() == '\r' || c.back() == '\n' || c.back() == ' ' || c.back() == '\t')) {
         c.remove_suffix(1);
@@ -647,6 +683,10 @@ void Reader::comment(std::string_view c, bool hidden)
         if (c.substr(0, 10) == "%FileType:") {
             auto const n = numbers_in(c.substr(10));
             if (!n.empty() && n[0] >= 0 && n[0] < 1000) _place->file_type = static_cast<int>(n[0]);
+            return;
+        }
+        if (m == "BeginPlacedObjectPreview") {
+            _place->preview = preview_of(data);
             return;
         }
         if (m == "EndPlacedRelativePath") {
@@ -1363,6 +1403,7 @@ void Reader::end_place()
     auto node = new_node(Node::Kind::Placed, _gs);
     node.transparency = _gs.transparency;
     node.placed = static_cast<int>(_doc.placed.size());
+    placing.placed->preview = std::move(placing.preview);
     _doc.placed.push_back(std::move(*placing.placed));
     add(std::move(node), placing.hidden);
 }

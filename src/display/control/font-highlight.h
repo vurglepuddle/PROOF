@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /** @file
- * PROOF: the pink highlight on type set in a font that stands in for one that isn't
- * installed, as Illustrator shows it.
+ * PROOF: the pink highlight on what stands in for something that is missing: type set in a
+ * font standing in for one that isn't installed, as Illustrator shows it, and what shows in
+ * place of a linked picture whose file can't be found.
  *
- * It is drawn over the canvas of one window, line by line where the type is. It is no part
- * of the drawing: nothing that is exported, printed or saved has it.
+ * It is drawn over the canvas of one window, line by line where the type is and over a
+ * picture's box. It is no part of the drawing: nothing that is exported, printed or saved
+ * has it.
  */
 #ifndef SEEN_INKSCAPE_DISPLAY_FONT_HIGHLIGHT_H
 #define SEEN_INKSCAPE_DISPLAY_FONT_HIGHLIGHT_H
@@ -34,6 +36,10 @@ namespace Display {
 /// line are one.
 std::vector<Geom::Point> font_highlight_shape(SPItem const *text);
 
+/// The box of a linked picture whose file can't be found: its four corners in its own
+/// coordinates. Nothing for any other object.
+std::vector<Geom::Point> link_highlight_shape(SPItem const *picture);
+
 class FontHighlight final : private XML::NodeObserver
 {
 public:
@@ -53,14 +59,15 @@ private:
         sigc::scoped_connection modified, released;
     };
 
-    // The document's XML says when text may have begun or stopped being set in such a font.
+    // The document's XML says when text may have begun or stopped being set in such a font,
+    // and when a picture's link changed.
     void notifyChildAdded(XML::Node &node, XML::Node &child, XML::Node *prev) override;
     void notifyAttributeChanged(XML::Node &node, GQuark name, Util::ptr_shared old_value,
                                 Util::ptr_shared new_value) override;
 
     void scan_later();
-    void scan();              ///< Finds the document's texts that have such type.
-    void draw(SPItem *text);  ///< Puts one text's highlight where its type now is.
+    void scan();              ///< Finds the document's texts that have such type, and such pictures.
+    void draw(SPItem *item);  ///< Puts one object's highlight where it now is.
 
     SPDesktop *_desktop;
     SPDocument *_document = nullptr;
@@ -70,6 +77,7 @@ private:
     bool _shown = true;
     PrefObserver _preference;
     GQuark _attribute;
+    GQuark _href, _xlink_href;
 };
 
 } // namespace Display

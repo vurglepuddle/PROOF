@@ -13,8 +13,8 @@
  *   and its image data there ("%_%AI5_BeginRaster", "%_%%BeginData: n").
  *   A "%" later in a line starts a comment that is skipped, except a gradient
  *   definition's "%_BS", "%_Bs" and "%_Br" ending a line: a hidden operator.
- * - The binary image data after "%%BeginData:" and "XI" is one data token, and
- *   placed-object previews are skipped whole.
+ * - The binary image data after "%%BeginData:" and "XI" is one data token. A placed file's
+ *   preview is passed over by the count of its rows, and comes with its marker's comment.
  *
  * Ported from VectorCraft's scanner (crates/eps/src/import/ai/lex.rs at 4cf912f),
  * Copyright (c) 2026 ArtCraft Team and the VectorCraft contributors, MIT licence;
@@ -46,7 +46,17 @@ struct Token
     double number = 0.0;
     std::string_view view;
     std::string string;
+    /// With the comment that begins a section passed over whole (a placed file's preview): what
+    /// the section holds, from the line after the marker to the marker that ends it.
+    std::string_view data;
     bool hidden = false; ///< Read from a "%_" line (comments and data after "%_" too).
+};
+
+/// The head of a placed file's preview, "width height row-bytes bits kind " before its rows.
+struct PreviewHead
+{
+    std::size_t width = 0, height = 0, row_bytes = 0, bits = 0, kind = 0;
+    std::size_t size = 0; ///< Of the head itself, the space that ends it included.
 };
 
 class Lexer
@@ -75,6 +85,9 @@ private:
     bool _hidden = false;
     std::size_t _hidden_from = 0; ///< Where the tokens of the current "%_" line start.
 };
+
+/// The head `data` starts with, or nothing when it doesn't start with one.
+std::optional<PreviewHead> preview_head(std::string_view data);
 
 /// A finite number token ("12", "-3.5", ".5", "1e-3"), or nothing.
 std::optional<double> parse_number(std::string_view word);
