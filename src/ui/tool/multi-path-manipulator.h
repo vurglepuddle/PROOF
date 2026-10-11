@@ -49,6 +49,7 @@ public:
     void setItems(std::set<ShapeRecord> const &);
     void clear() { _mmap.clear(); }
     void cleanup();
+    bool isReplacingItem() const { return _replacing_item; }
 
     void selectSubpaths();
     void shiftSelection(int dir);
@@ -127,6 +128,7 @@ private:
     Colors::Color _getOutlineColor(ShapeRole role, SPObject *object);
 
     MapType _mmap;
+    bool _replacing_item = false;
 
 public:
     PathSharedData const &_path_data;

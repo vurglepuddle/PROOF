@@ -296,6 +296,7 @@ void SPDesktopWidget::switchDesktop(SPDesktop *desktop)
     }
 
     _statusbar->set_desktop(_desktop);
+    tool_toolbox->setDesktop(_desktop);
 
     if (_desktop) {
         auto set_tool = [this] {

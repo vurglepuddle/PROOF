@@ -96,9 +96,12 @@ PaintPopoverManager::Registration PaintPopoverManager::register_button(Gtk::Menu
 
 void PaintPopoverManager::unregister_button(Gtk::MenuButton& btn, bool is_fill) {
     auto& data = is_fill ? _fill_data : _stroke_data;
+    btn.unset_create_popup_func();
     if (data.popover && data.popover->get_parent() == &btn) {
-        btn.unset_popover();
         data.clear_connections();
+        btn.unset_popover();
+        data.paint_switch->set_desktop(nullptr);
+        data.paint_switch->set_document(nullptr);
     }
 }
 

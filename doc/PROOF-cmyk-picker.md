@@ -4,6 +4,10 @@ Historical checkpoint: the assignment and profiled-picker limitations described
 below are addressed by the subsequent [document color management](PROOF-document-colors.md)
 work. The arithmetic preview remains available for explicitly unmanaged CMYK.
 
+The 2026-10-11 [tools-sidebar fill/stroke controls](PROOF-fill-stroke-controls.md)
+reuse this editor. Their native CMYK channel and live editing checks are recorded
+in that feature document.
+
 The reported 5/100/45/22 -> 0/100/42/26 drift is reproduced and fixed. It does
 not require FOGRA or any linked profile.
 

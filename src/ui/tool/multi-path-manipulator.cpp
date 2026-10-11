@@ -173,7 +173,7 @@ void MultiPathManipulator::setItems(std::set<ShapeRecord> const &s)
 
     // add newly selected items
     for (auto const &r : shapes) {
-        if (!(is<SPPath>(r.object) || is<LivePathEffectObject>(r.object))) {
+        if (!(is<SPPath>(r.object) || is<LivePathEffectObject>(r.object) || PathManipulator::canEditShape(r.object))) {
             continue;
         }
         auto newpm = std::make_shared<PathManipulator>(*this, r.object,

@@ -22,11 +22,17 @@
 #include <gtkmm/separator.h>
 
 #include "tool-toolbar.h"
+#include "desktop.h"
+#include "inkscape-application.h"
+#include "inkscape-window.h"
+#include "ui/tools/tool-base.h"
+#include "ui/widget/canvas.h"
 #include "actions/actions-tools.h" // Function to open tool preferences.
 #include "ui/builder-utils.h"
 #include "ui/controller.h"
 #include "ui/util.h"
 #include "ui/widget/generic/popover-menu.h"
+#include "ui/widget/fill-stroke-controls.h"
 #include "widgets/spw-utilities.h" // Find action target
 
 namespace Inkscape::UI::Toolbar {
@@ -35,17 +41,41 @@ ToolToolbar::ToolToolbar(InkscapeWindow *window)
     : _context_menu{makeContextMenu(window)}
 {
     set_name("ToolToolbar");
+    set_orientation(Gtk::Orientation::VERTICAL);
 
     auto builder = Inkscape::UI::create_builder("toolbar-tool.ui");
     auto &tool_toolbar = UI::get_widget<Gtk::ScrolledWindow>(builder, "tool-toolbar");
     tool_toolbar.set_halign(Gtk::Align::FILL);
+    tool_toolbar.set_vexpand(false);
+    tool_toolbar.set_propagate_natural_height(true);
 
     attachHandlers(builder, window);
 
     _popoverbin.setChild(&tool_toolbar);
     _popoverbin.setPopover(_context_menu.get());
     _popoverbin.set_hexpand(true);
+    _popoverbin.set_vexpand(false);
     append(_popoverbin);
+    _paint_controls = std::make_unique<UI::Widget::FillStrokeControls>();
+    append(*_paint_controls);
+    using Command = UI::Widget::FillStrokeControls::Command;
+    constexpr std::array names{"paint-toggle-target", "paint-swap", "paint-defaults", "paint-none"};
+    constexpr std::array commands{Command::ToggleTarget, Command::Swap, Command::Defaults, Command::None};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        _paint_actions[i] = Gio::SimpleAction::create(names[i]);
+        _paint_activated[i] = _paint_actions[i]->signal_activate().connect([this, command = commands[i]](auto const &) {
+            _paint_controls->execute(command);
+        });
+        _paint_actions[i]->set_enabled(false);
+        window->add_action(_paint_actions[i]);
+    }
+    _focus_changed = window->property_focus_widget().signal_changed().connect([this] { updatePaintActions(); });
+    InkscapeApplication::instance()->get_action_extra_data().add_data({
+        {"win.paint-toggle-target", N_("Switch fill/stroke target"), N_("Color"), N_("Activate the other paint target")},
+        {"win.paint-swap", N_("Swap fill and stroke"), N_("Color"), N_("Swap the selected paints or the drawing defaults")},
+        {"win.paint-defaults", N_("Default fill and stroke"), N_("Color"), N_("Set white fill and black stroke")},
+        {"win.paint-none", N_("No paint"), N_("Color"), N_("Remove paint from the active fill or stroke target")}
+    });
 
     // Hide/show buttons based on preferences.
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
@@ -53,7 +83,38 @@ ToolToolbar::ToolToolbar(InkscapeWindow *window)
     set_visible_buttons(tool_toolbar); // Must come after pack_start()
 }
 
-ToolToolbar::~ToolToolbar() = default;
+ToolToolbar::~ToolToolbar()
+{
+    _focus_changed.disconnect();
+    _tool_changed.disconnect();
+    _desktop_destroyed.disconnect();
+    // GtkApplicationWindow disposes its action map before destroying its children.
+    // The window owns the actions; only disconnect our callbacks here, without
+    // accessing that already disposed parent. Our RefPtrs keep the actions alive.
+    for (auto &connection : _paint_activated) connection.disconnect();
+    for (auto const &action : _paint_actions) action->set_enabled(false);
+    _paint_controls->setDesktop(nullptr);
+}
+
+void ToolToolbar::setDesktop(SPDesktop *desktop)
+{
+    _tool_changed.disconnect();
+    _desktop_destroyed.disconnect();
+    _desktop = desktop;
+    _paint_controls->setDesktop(desktop);
+    if (_desktop) {
+        _tool_changed = _desktop->connectEventContextChanged([this](auto, auto) { updatePaintActions(); });
+        _desktop_destroyed = _desktop->connectDestroy([this](auto) { setDesktop(nullptr); });
+    }
+    updatePaintActions();
+}
+
+void ToolToolbar::updatePaintActions()
+{
+    bool enabled = _desktop && _desktop->getCanvas()->has_focus() && _desktop->getTool() &&
+                   _desktop->getTool()->getPrefsPath() != "/tools/text";
+    for (auto const &action : _paint_actions) action->set_enabled(enabled);
+}
 
 void ToolToolbar::set_visible_buttons(Gtk::ScrolledWindow &tool_toolbar)
 {

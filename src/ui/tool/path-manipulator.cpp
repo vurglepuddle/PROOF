@@ -12,6 +12,8 @@
  */
 
 #include "display/control/canvas-item-bpath.h"
+#include "display/drawing-shape.h"
+#include "document.h"
 #include "helper/geom.h"
 #include "live_effects/lpe-powerstroke.h"
 #include "live_effects/lpe-bspline.h"
@@ -25,6 +27,15 @@
 #include "ui/widget/events/canvas-event.h"
 #include "path/splinefit/bezier-fit.h"
 #include "style.h"
+#include "selection.h"
+#include "svg/svg.h"
+#include "util/scope_exit.h"
+#include "xml/attribute-record.h"
+#include "xml/repr.h"
+
+#include <algorithm>
+#include <string_view>
+#include <unordered_set>
 
 namespace Inkscape::UI {
 
@@ -80,6 +91,14 @@ public:
             _pm->_externalChange(PATH_CHANGE_D);
         } else if (attr == path_transform) {
             _pm->_externalChange(PATH_CHANGE_TRANSFORM);
+        } else if (_pm->_shape_geometry &&
+                   (attr == g_quark_from_static_string("x") || attr == g_quark_from_static_string("y") ||
+                    attr == g_quark_from_static_string("width") || attr == g_quark_from_static_string("height") ||
+                    attr == g_quark_from_static_string("rx") || attr == g_quark_from_static_string("ry") ||
+                    attr == g_quark_from_static_string("cx") || attr == g_quark_from_static_string("cy") ||
+                    attr == g_quark_from_static_string("r") || attr == g_quark_from_static_string("points"))) {
+            cast<SPShape>(_pm->_path)->set_shape();
+            _pm->_externalChange(PATH_CHANGE_D);
         }
     }
 
@@ -103,7 +122,7 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
     , _lpe_key(std::move(lpe_key))
 {
     auto lpeobj = cast<LivePathEffectObject>(_path);
-    auto pathshadow = cast<SPPath>(_path);
+    auto pathshadow = cast<SPItem>(_path);
     if (!lpeobj) {
         _i2d_transform = pathshadow->i2dt_affine();
     } else {
@@ -133,10 +152,103 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
 
 PathManipulator::~PathManipulator()
 {
+    _restoreShapePreview();
     delete _dragpoint;
     delete _observer;
     _outline.reset();
     clear();
+}
+
+bool PathManipulator::canEditShape(SPObject const *item)
+{
+    auto shape = cast<SPShape>(item);
+    if (!shape || is<SPPath>(item) || shape->hasPathEffectRecursive() || shape->hasMarkers()) return false;
+    if (!shape->curveForEdit() || shape->curveForEdit()->empty()) return false;
+    auto repr = shape->getRepr();
+    auto name = std::string_view(repr->name());
+    if (name != "svg:rect" && name != "svg:circle" && name != "svg:ellipse" &&
+        name != "svg:polygon" && name != "svg:polyline") return false;
+    // Geometry animations cannot be transferred to a different SVG element.
+    for (auto child = repr->firstChild(); child; child = child->next()) {
+        if (child->type() != XML::NodeType::ELEMENT_NODE) continue;
+        auto name = std::string_view(child->name());
+        if (name != "svg:title" && name != "svg:desc" && name != "svg:metadata") return false;
+    }
+    return true;
+}
+
+bool PathManipulator::_shapeChanged() const
+{
+    if (!_shape_geometry) return false;
+    if (!_path || _subpaths.empty() || _shape_types != _createTypeString() || _shape_geometry->size() != _spcurve.size()) return true;
+    for (std::size_t i = 0; i < _spcurve.size(); ++i) {
+        if (!Geom::are_near((*_shape_geometry)[i], _spcurve[i], 1e-8)) return true;
+    }
+    return false;
+}
+
+void PathManipulator::_restoreShapePreview()
+{
+    if (!_shape_geometry || !_path) return;
+    auto shape = cast<SPShape>(_path);
+    if (auto drawing = cast<Inkscape::DrawingShape>(shape->get_arenaitem(_desktop->dkey))) {
+        if (auto curve = shape->curve()) drawing->setPath(std::make_shared<Geom::PathVector const>(*curve));
+    }
+}
+
+void PathManipulator::_convertShape()
+{
+    auto hold = shared_from_this();
+    auto old = cast<SPShape>(_path);
+    auto old_repr = old->getRepr();
+    auto parent = old_repr->parent();
+    auto position = old_repr->position();
+    auto document = old->document;
+    auto selection = _desktop->getSelection();
+    auto selected = selection->items_vector();
+    bool was_selected = std::find(selected.begin(), selected.end(), old) != selected.end();
+    auto repr = document->getReprDoc()->createElement("svg:path");
+    // Keep style, identity, transform, clip/mask, custom PROOF attributes and
+    // metadata verbatim. Only the primitive's geometry attributes are replaced.
+    static std::unordered_set<std::string_view> const geometry = {
+        "x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "points", "d", "sodipodi:type"
+    };
+    for (auto const &attr : old_repr->attributeList()) {
+        auto key = g_quark_to_string(attr.key);
+        if (!geometry.contains(key)) repr->setAttribute(key, attr.value);
+    }
+    for (auto child = old_repr->firstChild(); child; child = child->next()) {
+        auto copy = child->duplicate(document->getReprDoc());
+        repr->appendChild(copy);
+        GC::release(copy);
+    }
+    repr->setAttribute("d", sp_svg_write_path(_spcurve));
+    repr->setAttribute("sodipodi:nodetypes", _createTypeString());
+
+    auto &mpm = _multi_path_manipulator;
+    auto entry = std::find_if(mpm._mmap.begin(), mpm._mmap.end(),
+        [this](auto const &entry) { return entry.second.get() == this; });
+    std::optional<ShapeRecord> record;
+    if (entry != mpm._mmap.end()) record = entry->first;
+    auto previous = std::exchange(mpm._replacing_item, true);
+    scope_exit restore([&mpm, previous] { mpm._replacing_item = previous; });
+    _observer->block();
+    old->deleteObject(false);
+    parent->addChildAtPos(repr, position);
+    _path = document->getObjectByRepr(repr);
+    delete _observer;
+    _observer = new PathManipulatorObserver(this, repr);
+    _shape_geometry.reset();
+    _shape_types.clear();
+    if (record) {
+        mpm._mmap.erase(*record);
+        record->object = _path;
+        mpm._mmap.emplace(*record, hold);
+    }
+    // A child of a selected group/clip keeps that parent selection. Restore only
+    // the original direct selection of this item, without clearing other items.
+    if (was_selected) selection->add(_path);
+    GC::release(repr);
 }
 
 /** Handle motion events to update the position of the curve drag point. */
@@ -177,6 +289,13 @@ void PathManipulator::writeXML()
     if (!_live_outline)
         _updateOutline();
 
+    if (_shape_geometry) {
+        if (!_shapeChanged()) {
+            _restoreShapePreview();
+            return; // A click or cancelled drag keeps the original shape and XML.
+        }
+        if (!empty()) _convertShape();
+    }
     _setGeometry();
     if (!_path) {
         return;
@@ -1295,7 +1414,7 @@ void PathManipulator::_externalChange(unsigned type)
         _updateOutline();
         } break;
     case PATH_CHANGE_TRANSFORM: {
-        auto path = cast<SPPath>(_path);
+        auto path = cast<SPItem>(_path);
         if (path) {
             Geom::Affine i2d_change = _d2i_transform;
             _i2d_transform = path->i2dt_affine();
@@ -1444,6 +1563,11 @@ void PathManipulator::_createControlPointsFromGeometry()
             _subpath->begin()->setType(Node::parse_nodetype(*tsi++), false);
         }
     }
+    if (canEditShape(_path)) {
+        // Compare with the editable cubic/linear geometry, not the original arcs.
+        _shape_geometry = _spcurve;
+        _shape_types = _createTypeString();
+    }
 }
 
 //determines if the trace has a bspline effect and the number of steps that it takes
@@ -1470,7 +1594,7 @@ int PathManipulator::_bsplineGetSteps() const {
 
 // determines if the trace has bspline effect
 void PathManipulator::_recalculateIsBSpline(){
-    auto path = cast<SPPath>(_path);
+    auto path = cast<SPShape>(_path);
     if (path && path->hasPathEffect()) {
         Inkscape::LivePathEffect::Effect const *this_effect =
             path->getFirstPathEffectOfType(Inkscape::LivePathEffect::BSPLINE);
@@ -1599,7 +1723,7 @@ void PathManipulator::_createGeometryFromControlPoints(bool alert_LPE)
 }
 
 /** Construct a node type string to store in the sodipodi:nodetypes attribute. */
-std::string PathManipulator::_createTypeString()
+std::string PathManipulator::_createTypeString() const
 {
     // precondition: no single-node subpaths
     std::stringstream tstr;
@@ -1651,7 +1775,7 @@ void PathManipulator::_getGeometry()
 {
     using namespace Inkscape::LivePathEffect;
     auto lpeobj = cast<LivePathEffectObject>(_path);
-    auto path = cast<SPPath>(_path);
+    auto path = cast<SPShape>(_path);
     if (lpeobj) {
         Effect *lpe = lpeobj->get_lpe();
         if (lpe) {
@@ -1673,7 +1797,13 @@ void PathManipulator::_setGeometry()
     using namespace Inkscape::LivePathEffect;
     auto lpeobj = cast<LivePathEffectObject>(_path);
     auto path = cast<SPPath>(_path);
-    if (lpeobj) {
+    if (_shape_geometry) {
+        // A primitive rebuilds its SPShape curve from its attributes. Preview the
+        // staged path in the drawing instead, and replace XML only on commit.
+        if (auto drawing = cast<Inkscape::DrawingShape>(cast<SPItem>(_path)->get_arenaitem(_desktop->dkey))) {
+            drawing->setPath(std::make_shared<Geom::PathVector const>(_spcurve));
+        }
+    } else if (lpeobj) {
         // copied from nodepath.cpp
         // NOTE: if we are editing an LPE param, _path is not actually an SPPath, it is
         // a LivePathEffectObject. (mad laughter)

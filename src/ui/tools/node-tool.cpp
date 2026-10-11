@@ -175,9 +175,8 @@ NodeTool::NodeTool(SPDesktop *desktop)
 
     auto prefs = Preferences::get();
 
-    if (prefs->getBool("/tools/nodes/selcue")) {
-        this->enableSelectionCue();
-    }
+    // Direct Selection identifies the object by its path and anchors.
+    // Keep the bounding-box cue for the Selection tool only.
 
     if (prefs->getBool("/tools/nodes/gradientdrag")) {
         this->enableGrDrag();
@@ -358,6 +357,9 @@ void gather_items(NodeTool *nt, SPItem *base, SPObject *obj, Inkscape::UI::Shape
 
 void NodeTool::selection_changed(Inkscape::Selection *sel)
 {
+    // Replacing a primitive at commit temporarily releases it from Selection.
+    // Its existing manipulator is retargeted without destroying grabbed controls.
+    if (_multipath->isReplacingItem()) return;
     std::set<ShapeRecord> shapes;
 
     for (auto item : sel->items()) {
@@ -371,10 +373,11 @@ void NodeTool::selection_changed(Inkscape::Selection *sel)
     std::erase_if(_shape_editors, [&] (auto const &i) {
         ShapeRecord s;
         s.object = i.first;
-        return !shapes.contains(s);
+        return !shapes.contains(s) || PathManipulator::canEditShape(i.first);
     });
 
     for (auto const &r : shapes) {
+        if (PathManipulator::canEditShape(r.object)) continue;
         auto item = cast<SPItem>(r.object);
         auto [it, inserted] = _shape_editors.try_emplace(item);
         if (inserted) {
@@ -803,6 +806,9 @@ bool NodeTool::_directPress(ButtonPressEvent const &event)
         _selected_nodes->clear();
         _selected_nodes->insert(node);
         press.reference = node->position();
+    } else if (PathManipulator::canEditShape(item)) {
+        _selected_nodes->clear();
+        press.whole_items = true; // A fill drag keeps the live shape.
     } else if (!_selected_nodes->allPoints().empty()) {
         _selected_nodes->selectAll();
         if (auto nearest = _nodeNear(event.pos, Geom::infinity())) {
@@ -835,7 +841,11 @@ void NodeTool::_directDrag(MotionEvent const &event)
         _desktop->getSnapIndicator()->remove_snaptarget();
     } else if (!mod_move_no_snapping->active(event.modifiers)) {
         auto &m = _desktop->getNamedView()->snap_manager;
-        m.setupIgnoreSelection(_desktop, true);
+        std::vector<Inkscape::SnapCandidatePoint> unselected;
+        if (!press.whole_items) {
+            _selected_nodes->getUnselectedPoints(unselected);
+        }
+        m.setupIgnoreSelection(_desktop, true, &unselected);
         Inkscape::SnapCandidatePoint scp(press.reference + delta, Inkscape::SNAPSOURCE_NODE_CUSP);
         auto const sp = m.freeSnap(scp, Geom::OptRect(), false);
         m.unSetup();
