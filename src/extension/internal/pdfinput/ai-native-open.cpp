@@ -19,9 +19,12 @@
 #include <utility>
 
 #include <Catalog.h>
+#include <Dict.h>
 #include <GlobalParams.h>
+#include <Object.h>
 #include <PDFDoc.h>
 #include <Page.h>
+#include <Stream.h>
 #include <cairo.h>
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -62,6 +65,11 @@ constexpr double LONGEST_SIDE = 600.0;
 /// An artboard that differs is weighed again from pictures drawn this many times larger and
 /// averaged back down.
 constexpr int FINER = 4;
+/// From this share of what is allowed, an artboard is weighed that second way as well, and
+/// the better of the two counts. One that only just passes at first sight is mostly thin
+/// lines too: weighed once, it was reported at nearly the limit where a file a shade worse
+/// was reported at next to nothing.
+constexpr double FINER_FROM = 0.5;
 /// Pixels this far apart (of 255) in lightness, or in any channel, look different.
 constexpr int LIGHTNESS_STEP = 48;
 constexpr int COLOUR_STEP = 80;
@@ -443,6 +451,76 @@ struct Unref
 std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, bool keep_differing,
                                          std::string const &diagnostic_directory, AiNativeCache *cache);
 
+/// The largest profile taken from a file. Those in use are under three megabytes.
+constexpr std::size_t PROFILE_LIMIT = 32u << 20;
+
+/**
+ * The ICC profile a colour space is based on, when it is one for process colours of the
+ * document's model: the space itself, or what a spot colour falls back to. A Lab profile
+ * has three channels like an RGB one, so the profile's own header says which it is.
+ */
+std::string icc_profile(Object const &space, bool cmyk, int depth = 0)
+{
+    if (!space.isArray() || space.arrayGetLength() < 2 || depth > 2) return {};
+    auto const kind = space.arrayGet(0, 0);
+    if ((kind.isName("Separation") || kind.isName("DeviceN")) && space.arrayGetLength() >= 3) {
+        return icc_profile(space.arrayGet(2, 0), cmyk, depth + 1);
+    }
+    if (!kind.isName("ICCBased")) return {};
+    auto block = space.arrayGet(1, 0);
+    if (!block.isStream()) return {};
+    auto *stream = block.getStream();
+    auto const channels = stream->getDict() ? stream->getDict()->lookup("N") : Object();
+    if (!channels.isInt() || channels.getInt() != (cmyk ? 4 : 3)) return {};
+#if POPPLER_CHECK_VERSION(26, 0, 0)
+    if (!stream->rewind()) return {};
+#else
+    stream->reset();
+#endif
+    std::string bytes;
+    unsigned char buf[65536];
+    int got;
+    while ((got = stream->doGetChars(sizeof(buf), buf)) > 0) {
+        if (bytes.size() + got > PROFILE_LIMIT) {
+            bytes.clear();
+            break;
+        }
+        bytes.append(reinterpret_cast<char const *>(buf), got);
+    }
+    stream->close();
+    if (bytes.size() < 132 || bytes.compare(36, 4, "acsp") != 0 || bytes.compare(16, 4, cmyk ? "CMYK" : "RGB ") != 0) return {};
+    return bytes;
+}
+
+/**
+ * The document's own colour profile. Illustrator, saving with the profile embedded, draws
+ * every process colour of the page in a colour space based on it. Nothing when the pages
+ * name none (the document is then in the working space of whoever opens it), or name more
+ * than one, which Illustrator doesn't write and isn't guessed at.
+ */
+std::string document_profile(PDFDoc &pdf, bool cmyk)
+{
+    std::string found;
+    int const pages = std::min(pdf.getNumPages(), 16);
+    for (int number = 1; number <= pages; ++number) {
+        auto *page = pdf.getCatalog()->getPage(number);
+        auto *resources = page ? page->getResourceDict() : nullptr;
+        if (!resources) continue;
+        auto const spaces = resources->lookup("ColorSpace");
+        if (!spaces.isDict()) continue;
+        for (int i = 0; i < spaces.dictGetLength(); ++i) {
+            auto profile = icc_profile(spaces.dictGetVal(i), cmyk);
+            if (profile.empty()) continue;
+            if (found.empty()) {
+                found = std::move(profile);
+            } else if (found != profile) {
+                return {};
+            }
+        }
+    }
+    return found;
+}
+
 } // namespace
 
 std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, bool keep_differing,
@@ -508,11 +586,31 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         return {};
     }
     timed("read");
+    // The page: Poppler's core for its boxes and the document's profile, its glib side to
+    // draw it.
+    if (!globalParams) {
+        globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
+    }
+    auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(path.c_str());
+    if (!pdf || !pdf->isOk()) {
+        reason = "its PDF part can't be read to check the art against";
+        return {};
+    }
     AiNative::Source source;
     {
         gchar *folder = g_path_get_dirname(path.c_str());
         source.folder = folder;
         g_free(folder);
+    }
+    source.profile = document_profile(*pdf, ai->cmyk);
+    // An artboard the records only let one guess at lies where the page is.
+    if (ai->board_guessed) {
+        if (auto *first = pdf->getCatalog()->getPage(1)) {
+            auto const &trim = first->getTrimBox();
+            auto const &art = first->getArtBox();
+            AiNative::place_board_by_page(*ai, Geom::Rect(Geom::Point(trim.x1, trim.y1), Geom::Point(trim.x2, trim.y2)),
+                                          Geom::Rect(Geom::Point(art.x1, art.y1), Geom::Point(art.x2, art.y2)));
+        }
     }
     auto built = AiNative::build(*ai, error, source);
     ai.reset();
@@ -523,16 +621,6 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     timed("build");
     auto *doc = built->document.get();
     auto const &boards = built->artboards;
-
-    // The page: Poppler's core for its boxes, its glib side to draw it.
-    if (!globalParams) {
-        globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
-    }
-    auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(path.c_str());
-    if (!pdf || !pdf->isOk()) {
-        reason = "its PDF part can't be read to check the art against";
-        return {};
-    }
     GError *gerror = nullptr;
     gchar *absolute = g_canonicalize_filename(path.c_str(), nullptr);
     gchar *uri = g_filename_to_uri(absolute, nullptr, &gerror);
@@ -562,6 +650,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
 
     AiNativeOpen result;
     result.missing_fonts = built->missing_fonts;
+    result.profile = built->profile;
     // Type set by a font other than its own can't look like the page: where it lies isn't
     // weighed, on either side. Nor is where a linked picture lies whose file is gone.
     auto unweighed = built->substituted_type;
@@ -655,7 +744,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             return std::pair(difference, std::move(picture));
         };
         std::tie(d, native_picture) = weigh_art(page_picture, [&] { return view->draw(board, scale, w, h); });
-        if (difference_score(d) > 1.0) {
+        if (difference_score(d) > FINER_FROM) {
             // Lines thinner than a pixel are where the two renderers part: Poppler draws them
             // a whole pixel wide and on the pixel grid, the drawing as thin as they are. A
             // page of hairlines then seems to differ everywhere. Drawn FINER times larger and

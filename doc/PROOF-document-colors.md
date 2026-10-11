@@ -14,6 +14,14 @@ name in the title bar, for example `poster.svg (CMYK)`.
   profiles" policy does. Otherwise the working profile is assigned. Paint
   values are not rewritten. The document is not marked modified, and the
   profile is written the next time it is saved.
+- **An Illustrator file opens in its own profile** when it carries one
+  (since 2026-10-11): the profile is taken from the file's PDF part, where
+  Illustrator keeps it. A file that carries none is in the working profile,
+  as in Illustrator. See "The document's own colour profile" in
+  [PROOF-ai-native-records.md](PROOF-ai-native-records.md).
+- **100% black shows as its profile makes it**, a dark grey, like every other
+  colour: what Illustrator calls displaying all blacks accurately. There is no
+  setting that shows it as the screen's black.
 - **Don't color manage this document** is a mode without a profile and is
   respected on reopening.
 

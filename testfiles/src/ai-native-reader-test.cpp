@@ -299,6 +299,29 @@ TEST(AiNativeReader, GroupsCompoundsAndClipping)
     EXPECT_FALSE(kids[2].children[0].fill);
 }
 
+TEST(AiNativeReader, ACompoundPathTakesItsPaintFromPathsGroupedInsideIt)
+{
+    // A compound path with a style of its own: its paths are in a group inside it, with the
+    // style's marker after the group. The paint is the paths', not the group's.
+    std::string art = "*u\nu\n1 D\n0.2 g\n1 0.4 0 0 0 Xy\n" + rect(0, 0, 100, 100) + "f\n0 D\n" + rect(10, 10, 90, 90) +
+                      "f\nU\n9 () XW\n*U\n0 g\n0 1 0 0 0 Xy\n" + rect(0, 0, 5, 5) + "f\n";
+    auto doc = read_ok(records(layer("L", art)));
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 2u);
+    auto const &compound = kids[0];
+    EXPECT_EQ(compound.kind, Node::Kind::Compound);
+    ASSERT_TRUE(compound.fill);
+    EXPECT_FALSE(compound.stroke);
+    EXPECT_EQ(compound.transparency.blend, 1);
+    EXPECT_EQ(compound.transparency.opacity, 0.4);
+    // Both paths are still its outline.
+    ASSERT_EQ(compound.children.size(), 1u);
+    EXPECT_EQ(compound.children[0].kind, Node::Kind::Group);
+    EXPECT_EQ(compound.children[0].children.size(), 2u);
+    EXPECT_EQ(kids[1].kind, Node::Kind::Path);
+    EXPECT_TRUE(kids[1].transparency.is_default());
+}
+
 TEST(AiNativeReader, NamesStateAndTransparency)
 {
     std::string art = "1 Xw 1 A 0 g\n" + rect(0, 0, 10, 10) + "f\n";
@@ -335,6 +358,58 @@ TEST(AiNativeReader, ArtboardsAndSpace)
     // The first artboard's top-left corner is the document's origin, y down.
     EXPECT_EQ(Geom::Point(100, 500) * doc.to_doc, Geom::Point(0, 0));
     EXPECT_EQ(Geom::Point(400, 300) * doc.to_doc, Geom::Point(300, 200));
+}
+
+TEST(AiNativeReader, AnArtboardThatIsOnlyGuessedAtLiesWhereThePageIs)
+{
+    // No artboard list and no crop marks: a size and a centre. The centre is a fraction off
+    // where the art was drawn for, as in real files.
+    auto const written = [](std::string const &marks) {
+        return "%!PS-Adobe-3.0\n%%Creator: PROOF tests\n%%BoundingBox: 91 175 898 517\n"
+               "%%HiResBoundingBox: 91.1187 175.9609 897.0176 517\n%AI5_FileFormat 14.0\n%AI5_ArtSize: 920.9541 436.478\n"
+               "%AI3_TemplateBox: 496.1143 341.9014 496.1143 341.9014\n" + marks + "%AI9_ColorModel: 2\n%%EndComments\n"
+               "%%BeginProlog\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n" +
+               layer("L", "0 g\n" + rect(100, 200, 110, 210) + "f\n") + "%%PageTrailer\n%%Trailer\n%%EOF\n";
+    };
+    std::string error;
+    auto doc = read(written({}), error);
+    ASSERT_TRUE(doc) << error;
+    EXPECT_TRUE(doc->board_guessed);
+    ASSERT_EQ(doc->artboards.size(), 1u);
+    auto const guessed = doc->artboards[0].rect;
+    EXPECT_NEAR(guessed.width(), 920.9541, 1e-6);
+    // The page is as large, and has the art from 55.504, 52.038 of its corner.
+    Geom::Rect const page(Geom::Point(0, 0), Geom::Point(920.954, 436.478));
+    Geom::Rect const art(Geom::Point(55.504, 52.038), Geom::Point(861.403, 393.077));
+    auto moved = *doc;
+    EXPECT_TRUE(place_board_by_page(moved, page, art));
+    auto const placed = moved.artboards[0].rect;
+    EXPECT_NEAR(placed.left(), 91.1187 - 55.504, 1e-6);
+    EXPECT_NEAR(placed.top(), 175.9609 - 52.038, 1e-6);
+    EXPECT_NEAR(placed.width(), guessed.width(), 1e-9);
+    EXPECT_NEAR(placed.height(), guessed.height(), 1e-9);
+    // Under a point from the guess, and the art follows: the page's top left corner is 0,0.
+    EXPECT_LT(std::abs(placed.left() - guessed.left()), 1.0);
+    EXPECT_TRUE(Geom::are_near(Geom::Point(placed.left(), placed.bottom()) * moved.to_doc, Geom::Point(0, 0), 1e-9));
+
+    // Bounds of another height are other art, or cut by the page: that way stays as guessed.
+    moved = *doc;
+    Geom::Rect const cut(Geom::Point(55.504, 0), Geom::Point(861.403, 300));
+    EXPECT_TRUE(place_board_by_page(moved, page, cut));
+    EXPECT_NEAR(moved.artboards[0].rect.left(), 91.1187 - 55.504, 1e-6);
+    EXPECT_NEAR(moved.artboards[0].rect.top(), guessed.top(), 1e-9);
+    // A page of another size isn't this artboard's.
+    moved = *doc;
+    EXPECT_FALSE(place_board_by_page(moved, Geom::Rect(Geom::Point(0, 0), Geom::Point(612, 792)), art));
+    EXPECT_EQ(moved.artboards[0].rect, guessed);
+
+    // Crop marks say where the artboard is: nothing to correct.
+    auto marked = read(written("%AI3_Cropmarks: 30 120 950.9541 556.478\n"), error);
+    ASSERT_TRUE(marked) << error;
+    EXPECT_FALSE(marked->board_guessed);
+    auto const before = marked->artboards[0].rect;
+    EXPECT_FALSE(place_board_by_page(*marked, Geom::Rect(Geom::Point(0, 0), Geom::Point(920.9541, 436.478)), art));
+    EXPECT_EQ(marked->artboards[0].rect, before);
 }
 
 TEST(AiNativeReader, CropmarksWithoutArtboards)

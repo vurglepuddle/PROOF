@@ -3,7 +3,9 @@
  * PROOF: open an .ai file from Illustrator's own copy of its art.
  *
  * The records are read (ai-private-data.h, ai/ai-native-reader.h) and made into a
- * document (ai/ai-native-import.h). Then the safety net: every artboard of that
+ * document (ai/ai-native-import.h), in the colour profile the file's PDF part names for its
+ * process colours when it names one. An artboard that the records list nowhere, and whose
+ * place is a guess, is put where the PDF part's page lies. Then the safety net: every artboard of that
  * document is drawn and weighed against the file's PDF page for it, drawn by Poppler,
  * the page that every other application shows. Pixels are compared as seen on white,
  * by lightness and by colour, each allowed to match any pixel next to it, so that
@@ -56,6 +58,8 @@ struct AiNativeOpen
     std::vector<std::string> missing_fonts;
     /// The linked pictures that show and can't be found, by file name.
     std::vector<std::string> missing_links;
+    /// The document's own colour profile, by its description, when the file carries one.
+    std::string profile;
     /// How long each part of opening took, in seconds: "records" (decoding them), "read",
     /// "build" (the document), "compare" (drawing it and the pages).
     std::vector<std::pair<std::string, double>> timings;

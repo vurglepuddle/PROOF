@@ -319,6 +319,9 @@ struct Document
     std::shared_ptr<TextDocument const> texts; ///< Bounded point-type stories, when text slots occur.
     std::optional<Geom::Point> template_center; ///< Centre used by the text document's canvas.
     std::optional<Geom::Rect> bbox; ///< %%HiResBoundingBox, else %%BoundingBox (art space).
+    /// The records list no artboard and have no crop marks: the one artboard has the
+    /// document's size, and its place is a guess from the document's centre.
+    bool board_guessed = false;
     std::string creator_version;    ///< %%AI8_CreatorVersion.
     /// %AI5_RulerUnits: 0 inches, 1 millimetres, 2 points, 3 picas, 4 centimetres, 6 pixels.
     std::optional<int> ruler_units;
@@ -354,6 +357,24 @@ std::string xml_name(std::string_view id);
 
 /// Text from the records' bytes: UTF-8, else Windows-1252; UTF-16BE with a byte order mark.
 std::string text_of(std::string_view bytes);
+
+/**
+ * Put the one artboard of a document whose records list none where its page lies.
+ *
+ * Such a document (Illustrator CS3 and older, and files kept in that form) says how large
+ * it is and where its centre is, and the artboard guessed from those is often a fraction of
+ * a point from where the art was drawn for, and now and then far from it. The file's PDF
+ * part knows better: `page` is its page and `art` the bounds of the art on that page, both
+ * in the page's coordinates, and the records give the same bounds in art space
+ * (Document::bbox). Along each axis on which the two bounds are as large as each other,
+ * they are the same art, uncut by the page, and say where the page lies.
+ *
+ * Nothing changes for a document with listed artboards, one whose page isn't the size of
+ * its artboard, or along an axis on which the bounds differ.
+ *
+ * @return whether the artboard moved.
+ */
+bool place_board_by_page(Document &doc, Geom::Rect const &page, Geom::Rect const &art);
 
 } // namespace Inkscape::Extension::Internal::AiNative
 

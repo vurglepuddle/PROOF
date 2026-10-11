@@ -22,6 +22,7 @@
 #include <2geom/affine.h>
 #include <2geom/pathvector.h>
 
+#include "colors/cms/profile.h"
 #include "colors/color.h"
 #include "display/drawing-item.h"
 #include "display/drawing.h"
@@ -261,7 +262,7 @@ protected:
 // its own box; changing either half exercises the safety net rather than the parser.
 std::string fixture(std::string const &native, std::vector<std::string> const &contents,
                     std::string const &boxes = "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]",
-                    std::string const &font = {})
+                    std::string const &font = {}, std::string const &profile = {})
 {
     std::map<int, std::string> objects;
     objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -269,12 +270,20 @@ std::string fixture(std::string const &native, std::vector<std::string> const &c
     auto stream = [](std::string const &s) { return "<< /Length " + std::to_string(s.size()) + " >>\nstream\n" + s + "\nendstream"; };
     objects[3] = "<< /AIPrivateData1 4 0 R /NumBlock 1 /ContainerVersion 11 /CreatorVersion 16 /RoundtripVersion 16 >>";
     objects[4] = stream(native);
-    std::string resources = "<< >>";
+    std::string resources;
+    int next = 5 + int(contents.size()) * 2;
     if (!font.empty()) {
-        int const id = 5 + int(contents.size()) * 2;
+        int const id = next++;
         objects[id] = "<< /Type /Font /Subtype /Type1 /BaseFont /" + font + " /Encoding /WinAnsiEncoding >>";
-        resources = "<< /Font << /F1 " + std::to_string(id) + " 0 R >> >>";
+        resources += " /Font << /F1 " + std::to_string(id) + " 0 R >>";
     }
+    if (!profile.empty()) {
+        // The document's profile, as Illustrator embeds it: the space of the page's process colours.
+        int const id = next++;
+        objects[id] = "<< /N 4 /Length " + std::to_string(profile.size()) + " >>\nstream\n" + profile + "\nendstream";
+        resources += " /ColorSpace << /CS0 [/ICCBased " + std::to_string(id) + " 0 R] >>";
+    }
+    resources = "<<" + resources + " >>";
     for (std::size_t i = 0; i < contents.size(); ++i) {
         int const p = 5 + int(i) * 2;
         kids += std::to_string(p) + " 0 R ";
@@ -642,6 +651,22 @@ TEST_F(AiNativeImportTest, ClippingAndCompoundPaths)
     ASSERT_EQ(paths.size(), 2u);
     EXPECT_EQ(sp_svg_read_pathv(paths[1]->attribute("d")).size(), 2u);
     EXPECT_NE(attr(paths[1], "style").find("fill-rule:evenodd"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, ACompoundPathWithItsPathsInAGroupIsPainted)
+{
+    // As Illustrator writes a compound path that has a style of its own: a frame with a hole.
+    auto b = make(records(layer("*u\nu\n1 D\n0 0 0 1 k\n0 0 m 0 100 L 100 100 L 100 0 L 0 0 L\nf\n0 D\n"
+                                "20 20 m 80 20 L 80 80 L 20 80 L 20 20 L\nf\nU\n9 () XW\n*U\n")));
+    ASSERT_TRUE(b);
+    auto paths = elements(b->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    auto const style = attr(paths[0], "style");
+    EXPECT_EQ(style.find("fill:none"), std::string::npos) << style;
+    EXPECT_NE(style.find("fill:"), std::string::npos) << style;
+    // One path of two outlines.
+    auto const d = attr(paths[0], "d");
+    EXPECT_EQ(std::count_if(d.begin(), d.end(), [](char c) { return c == 'm' || c == 'M'; }), 2) << d;
 }
 
 TEST_F(AiNativeImportTest, VisibleTextRefusedHiddenTextNoted)
@@ -3206,6 +3231,98 @@ TEST_F(AiNativeImportTest, ALinkedPictureThatIsGoneIsLeftOutOfTheComparison)
     // and so does a page that has its picture somewhere else.
     EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(src, {"0.5 g 110 60 40 20 re f"}), reason));
     EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+}
+
+namespace {
+
+/// A CMYK profile of this machine other than PROOF's working one, with its bytes; nothing
+/// when there is no such profile.
+std::shared_ptr<Colors::CMS::Profile> another_cmyk_profile(std::string &bytes)
+{
+    auto const working = Colors::DocumentColors::workingProfile(Colors::Space::Type::CMYK);
+    if (!working) return nullptr;
+    for (auto const &profile : Colors::DocumentColors::profiles(Colors::Space::Type::CMYK)) {
+        if (!profile || profile->getPath().empty() || profile->getName() == working->getName()) continue;
+        gchar *data = nullptr;
+        gsize size = 0;
+        if (!g_file_get_contents(profile->getPath().c_str(), &data, &size, nullptr)) continue;
+        bytes.assign(data, size);
+        g_free(data);
+        return profile;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_F(AiNativeImportTest, TheDocumentHasItsOwnColourProfileWhenItsFileCarriesOne)
+{
+    std::string bytes;
+    auto const other = another_cmyk_profile(bytes);
+    if (!other) GTEST_SKIP() << "this machine has no second CMYK profile";
+    auto const working = Colors::DocumentColors::workingProfile(Colors::Space::Type::CMYK);
+    std::string error;
+    auto ai = AN::read(records(layer("0 0 0 1 k\n" + rect)), error);
+    ASSERT_TRUE(ai) << error;
+
+    // A file that carries none is in the working space of whoever opens it.
+    auto plain = AN::build(*ai, error);
+    ASSERT_TRUE(plain) << error;
+    EXPECT_TRUE(plain->profile.empty());
+    auto space = Colors::DocumentColors::assignedSpace(plain->document.get());
+    ASSERT_TRUE(space);
+    ASSERT_TRUE(space->getProfile());
+    EXPECT_EQ(space->getProfile()->getName(), working->getName());
+    auto paths = elements(plain->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    auto const working_black = attr(paths[0], "style");
+
+    // One that carries its own is shown by it: the document has that profile, and its
+    // black is what that profile makes of 100K.
+    AN::Source source;
+    source.profile = bytes;
+    auto own = AN::build(*ai, error, source);
+    ASSERT_TRUE(own) << error;
+    EXPECT_EQ(own->profile, other->getName());
+    space = Colors::DocumentColors::assignedSpace(own->document.get());
+    ASSERT_TRUE(space);
+    ASSERT_TRUE(space->getProfile());
+    EXPECT_EQ(space->getProfile()->getName(), other->getName());
+    paths = elements(own->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    auto const own_black = attr(paths[0], "style");
+    EXPECT_NE(own_black.find("icc-color(" + space->getName()), std::string::npos) << own_black;
+    EXPECT_NE(own_black, working_black);
+
+    // What isn't a profile, or is one of another colour model, is passed over.
+    source.profile = "not a profile";
+    auto bad = AN::build(*ai, error, source);
+    ASSERT_TRUE(bad) << error;
+    EXPECT_TRUE(bad->profile.empty());
+    ai = AN::read(records(layer("0 0 0 Xa\n" + rect), {}, false), error);
+    ASSERT_TRUE(ai) << error;
+    source.profile = bytes;
+    auto rgb = AN::build(*ai, error, source);
+    ASSERT_TRUE(rgb) << error;
+    EXPECT_TRUE(rgb->profile.empty());
+
+#if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
+    // From a file: the profile is the colour space of the page's process colours.
+    std::string reason;
+    auto src = records(layer("0 0 0 1 k\n" + rect));
+    std::string const page = "/CS0 cs 0 0 0 1 sc 10 20 80 40 re f";
+    auto opened = Extension::Internal::open_ai_native(
+        fixture(src, {page}, "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]", {}, bytes), reason);
+    ASSERT_TRUE(opened) << reason;
+    EXPECT_EQ(opened->profile, other->getName());
+    space = Colors::DocumentColors::assignedSpace(opened->document.get());
+    ASSERT_TRUE(space);
+    EXPECT_EQ(space->getProfile()->getName(), other->getName());
+    // And one whose page names none.
+    opened = Extension::Internal::open_ai_native(fixture(src, {"0 0 0 1 k 10 20 80 40 re f"}), reason);
+    ASSERT_TRUE(opened) << reason;
+    EXPECT_TRUE(opened->profile.empty());
+#endif
 }
 
 TEST_F(AiNativeImportTest, MatchingPdfAcceptedAndStaleRecordsRefused)

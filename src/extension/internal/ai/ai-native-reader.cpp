@@ -833,6 +833,20 @@ Node Reader::new_node(Node::Kind kind, GState const &gs)
     return n;
 }
 
+/// The first path among `nodes`, depth first, and in `group` the transparency of the
+/// nearest group it lies in that has any.
+Node const *first_path(std::vector<Node> const &nodes, Transparency &group)
+{
+    for (auto const &n : nodes) {
+        if (n.kind == Node::Kind::Path) return &n;
+        if (auto const *inner = first_path(n.children, group)) {
+            if (group.is_default()) group = n.transparency;
+            return inner;
+        }
+    }
+    return nullptr;
+}
+
 void Reader::end_container(std::string_view what, bool hidden)
 {
     FrameKind kind = what == "U" ? FrameKind::Group : what == "*U" ? FrameKind::Compound : FrameKind::Clip;
@@ -842,14 +856,19 @@ void Reader::end_container(std::string_view what, bool hidden)
     Node node;
     if (kind == FrameKind::Compound) {
         if (f.children.empty()) return;
-        auto const &first = f.children.front();
+        // Its paint is its first path's. A compound path with a style of its own has its
+        // paths in a group inside it (`*u u … U n () XW *U`): the first path is in there, and
+        // the group has no paint to give.
+        Transparency grouped;
+        auto const *path = first_path(f.children, grouped);
+        auto const &first = path ? *path : f.children.front();
         node = new_node(Node::Kind::Compound, f.gs);
         node.fill = first.fill;
         node.stroke = first.stroke;
         node.stroke_style = first.stroke_style;
         node.overprint_fill = first.overprint_fill;
         node.overprint_stroke = first.overprint_stroke;
-        node.transparency = first.transparency;
+        node.transparency = first.transparency.is_default() ? grouped : first.transparency;
         node.evenodd = first.evenodd;
         node.clipping = clipping;
         for (auto &k : f.children) {
@@ -2124,7 +2143,10 @@ Document Reader::finish()
     Geom::Point const top_left = first ? Geom::Point(first->left(), first->bottom()) : Geom::Point(0, 792);
     _doc.to_doc = Geom::Affine(1, 0, 0, -1, -top_left.x(), top_left.y());
     if (_doc.artboards.empty()) {
-        if (auto r = _cropmarks ? _cropmarks : sized_board()) _doc.artboards.push_back({"Artboard 1", *r});
+        if (auto r = _cropmarks ? _cropmarks : sized_board()) {
+            _doc.artboards.push_back({"Artboard 1", *r});
+            _doc.board_guessed = !_cropmarks;
+        }
     }
     _doc.bbox = _hires ? _hires : _bbox;
     if (_template_center) _doc.template_center = Geom::Point(_template_center->first, _template_center->second);
@@ -2136,6 +2158,35 @@ Document Reader::finish()
 } // namespace
 
 // ---- public ------------------------------------------------------------------------------
+
+bool place_board_by_page(Document &doc, Geom::Rect const &page, Geom::Rect const &art)
+{
+    if (!doc.board_guessed || doc.artboards.size() != 1 || !doc.bbox) return false;
+    auto const board = doc.artboards.front().rect;
+    auto const &bounds = *doc.bbox;
+    if (!sane(page) || !sane(art)) return false;
+    Geom::Point origin = board.min();
+    bool moved = false;
+    for (auto d : {Geom::X, Geom::Y}) {
+        // Another page than this artboard's says nothing about it.
+        if (std::abs(page.dimensions()[d] - board.dimensions()[d]) > 0.5) return false;
+    }
+    for (auto d : {Geom::X, Geom::Y}) {
+        // Bounds of another size are of other art (hidden art counts in one and not the
+        // other), or the page cut them: no telling where the page lies from those.
+        if (std::abs(art.dimensions()[d] - bounds.dimensions()[d]) > 0.05) continue;
+        double const at = bounds.min()[d] - (art.min()[d] - page.min()[d]);
+        if (!std::isfinite(at) || std::abs(at - origin[d]) < 1e-9) continue;
+        origin[d] = at;
+        moved = true;
+    }
+    if (!moved) return false;
+    auto const placed = Geom::Rect::from_xywh(origin, board.dimensions());
+    if (!sane(placed)) return false;
+    doc.artboards.front().rect = placed;
+    doc.to_doc = Geom::Affine(1, 0, 0, -1, -placed.left(), placed.bottom());
+    return true;
+}
 
 std::string text_of(std::string_view bytes)
 {

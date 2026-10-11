@@ -1142,6 +1142,170 @@ the four are gained. The corpus was not run whole and stands at **806 of 879**
 by that count.
 
 
+### The document's own colour profile, and how black shows (2026-10-11)
+
+The question was whether 100% black looks the same in PROOF as in Illustrator
+with its Appearance of Black set to "Display All Blacks Accurately", where
+100K is the dark grey its profile makes of it and not the black of the screen.
+
+**PROOF shows every colour by the document's profile**, 100K included: there
+is no rich-black display. That is Illustrator's "accurately". Both convert
+with the relative colorimetric intent and black point compensation unless told
+otherwise. So the two agree whenever they go by the same profile, and they did
+not always.
+
+**The profile was the wrong one for most files.** An import was given PROOF's
+working profile of its colour mode whatever the file said. Illustrator shows a
+document by the profile it was saved with. The records don't hold that profile
+or name it. It is in the file's PDF part: with the profile embedded,
+Illustrator draws every process colour of a page in a colour space based on
+it, listed among the page's resources:
+
+```
+/Resources << /ColorSpace << /CS0 [/ICCBased 50 0 R] /CS1 [/Separation /Ink [/ICCBased 50 0 R] ...] ... >>
+```
+
+| What the first page names | Files (of 879) |
+|---|---|
+| One CMYK profile | 588: U.S. Web Coated (SWOP) v2 533, Coated FOGRA27 31, Coated FOGRA39 20, Coated GRACoL 2006 3, ISO Coated v2 300% 1 |
+| An RGB profile and no CMYK one | 107: sRGB IEC61966-2.1 104, Adobe RGB (1998) 2, Generic RGB 1 |
+| Neither | 183 |
+| More than one profile of one colour model | none |
+| A PDF part that can't be read | 1 |
+
+A Lab profile ("Lab D50", 95 files) is there for spot inks defined in Lab. It
+has three channels like an RGB profile, and its own header says which it is.
+
+The opener now takes the profile from the PDF part before the document is
+built (`document_profile` in `ai-native-open.cpp`): the ICC stream a page's
+colour space is based on, directly or as what a spot colour falls back to,
+with as many channels as the document's mode and a header that says CMYK or
+RGB. The import assigns it (`Source::profile`); a file that names none is in
+the working space of whoever opens it, as in Illustrator, and one whose pages
+name two is left in the working space too.
+
+**What 100K is.** PROOF's value, and what Illustrator exported for the same
+files in the check of art beside the artboards:
+
+| Document's profile | PROOF | Illustrator |
+|---|---|---|
+| U.S. Web Coated (SWOP) v2 | 35, 31, 32 (`#231f20`) | 33, 31, 32 |
+| Coated GRACoL 2006 | 27, 26, 26 | 26, 26, 26 |
+
+Before this, a SWOP document's 100K was GRACoL's 27, 26, 26 on this machine,
+and every other colour of it was converted by GRACoL as well. A level or two
+remain between the two colour engines.
+
+Not done: Illustrator's other setting, "Display All Blacks as Rich Black";
+pictures with profiles of their own.
+
+### A compound path with its paths in a group (2026-10-11)
+
+A compound path that has a style of its own is written with its paths in a
+group inside it, and the style's marker after the group:
+
+```
+*u
+u
+1 D
+0.72 0.66 0.64 0.74 0.125 0.125 0.129 Xa
+… f
+0 D
+… f
+U
+9 () XW
+*U
+```
+
+The reader gave a compound path the paint of its first member. Here that is
+the group, which has none, so the whole shape came in with neither fill nor
+stroke: a character's trousers, a car's body, a desk. Where a shadow in
+Multiply lay over it, the shadow was all that showed. The paint is now that of
+the first path, however deep; a transparency the path lacks is taken from the
+group it lies in.
+
+50 corpus files have such a compound path (181 of them): 11 of the 36 that
+drew differently, 2 on their pages for other reasons, and 37 that passed the
+visual check with a shape missing, since a missing shape under one part in a
+hundred of an artboard passes.
+
+### An artboard the records only let one guess at (2026-10-11)
+
+A document from Illustrator CS3 or older, or kept in that form, lists no
+artboard. Its records give a size (`%AI5_ArtSize`) and a centre
+(`%AI3_TemplateBox`), and the reader makes the one artboard of those, with its
+left edge rounded down and its top edge rounded up. 196 of the 879 corpus
+files are like this.
+
+The guess is often not where the art was drawn for. The file's PDF part says
+where it is: its page is the artboard, and its `/ArtBox` gives the bounds of
+the art on that page, which the records give in art space
+(`%%HiResBoundingBox`). Where the two bounds are as large as each other they
+are the same art, and the page's corner follows:
+
+| The guess, against the page | Files (of 196) |
+|---|---|
+| The same (under 0.01 pt) | 63 |
+| Under 0.25 pt off | 13 |
+| 0.25 to 1 pt off | 83 |
+| 250 pt off | 1 |
+| The two bounds differ in size on one axis or both | 36 |
+
+So in 83 files the art lay a quarter to one point from where it belonged on
+its artboard, and 75 of them passed the visual check, which allows a pixel of
+play at about 0.6 pixels a point. For trimming to an artboard a point matters.
+
+`place_board_by_page` (in `ai-native-reader.cpp`, called by the opener before
+the document is built) moves such an artboard to where the page lies, along
+each axis on which the bounds agree to within 0.05 pt. An axis on which they
+differ stays as guessed: one of the bounds then counts art the other doesn't
+(hidden art), or the page cuts it. A document with listed artboards or crop
+marks isn't touched.
+
+### Two ways of weighing, earlier (2026-10-11)
+
+The visual check weighs an artboard that fails again from pictures drawn four
+times larger and averaged down, with thin lines kept a pixel wide on both
+sides, and takes the better result. An artboard that passed at first sight
+never got the second weighing, so a file of thin lines at 0.98% was reported
+as differing in 1% of it, where the same file a shade worse was weighed again
+and reported at 0.0%. After the profile change four files crossed that line
+downwards and looked as if they had got worse. From half of what is allowed
+(`FINER_FROM`), both weighings are now made. A file can't fail for it: the
+better of the two counts, as before.
+
+Lifting the blacks of both pictures to the document's 100K was tried for the
+files that differ by 1 to 2%, on the thought that Poppler draws grey-scale
+black as the screen's black where the import has the profile's dark grey. It
+changed none of them by more than 0.1% and was dropped.
+
+### Results of the three (2026-10-11)
+
+**Tests.** `ai-native-reader-test`: a compound path with its paths in a group,
+and an artboard put by its page (both axes, one axis, a page of another size,
+crop marks). `ai-native-import-test`: such a compound path painted, and a
+document's own profile from `Source::profile` and from a PDF page's colour
+space, with a profile of another colour model and bytes that are no profile
+passed over. Reader 51, import 76.
+
+**Corpus**, all 879 files, one worker, once, with the profile and the compound
+path changes and the missing pictures of the section before: **816 native, 63
+on their pages**, none lost. Against the 802 before the day's work: the four
+with missing pictures, and ten that drew differently (nine with such compound
+paths). 37 files that passed before had such a compound path and now draw the
+shape that was missing. The 208 files the artboard change can touch (the 196
+and those still differing) were then run again: 4 more native, among them the
+one whose artboard was 250 pt off, 72 closer to their pages, none lost.
+**820 of 879** by that count. The seventeen trial files, the gauntlet and
+`minion-check.ai` are native on the last build.
+
+What is left on its page, of 59: 22 that draw differently, 11 with gradient
+meshes, 7 with opacity masks (two of them with art kept in another format as
+well, one of those with symbols too), 3 with art kept in another format, 1
+with symbols, 10 for their type, 2 whose artboard and page counts differ, 2
+with an image that can't be read, 1 that can't be read.
+
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
@@ -1165,7 +1329,8 @@ by that count.
    that isn't installed is stood in for.
    Expand from confirmed root causes. Still to come: area type
    that flows again when edited (the frame and the overflow are kept for it),
-   type on a path, justified paragraphs, linked frames, source ICC profiles
-   and the remaining rendering families.
+   type on a path, justified paragraphs, linked frames and the remaining
+   rendering families. (The document's own ICC profile is read since
+   2026-10-11.)
 4. **Writer** extensions, in this order: gradients, images, text. They use the
    same tables, and the reader checks the writer's output alongside Illustrator.

@@ -31,6 +31,7 @@
 #include "box-frame.h"
 #include "colors/cms/profile.h"
 #include "colors/color.h"
+#include "colors/document-cms.h"
 #include "colors/document-colors.h"
 #include "colors/spaces/base.h"
 #include "colors/spaces/cms.h"
@@ -40,6 +41,7 @@
 #include "document.h"
 #include "libnrtype/font-factory.h"
 #include "libnrtype/font-instance.h"
+#include "object/color-profile.h"
 #include "object/sp-defs.h"
 #include "object/sp-guide.h"
 #include "object/sp-image.h"
@@ -1646,6 +1648,17 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     if (auto nv = doc->getNamedView()) nv->getRepr()->setAttribute("inkscape:document-units", unit);
 
     // The document's colour mode and profile come first: process colours are written in it.
+    // Its own profile when the file carries one, as Illustrator shows a document by the
+    // profile it was saved with: adopt() keeps a profile of the mode that is already there,
+    // and gives PROOF's working profile otherwise.
+    if (!source.profile.empty()) {
+        auto const profile = Colors::CMS::Profile::create_from_data(source.profile);
+        if (profile && profile->getColorSpace() == (ai.cmyk ? cmsSigCmykData : cmsSigRgbData)) {
+            doc->getDocumentCMS().attachProfileToDoc(*profile, ColorProfileStorage::HREF_DATA,
+                                                     Colors::DocumentColors::workingIntent());
+            built.profile = profile->getName();
+        }
+    }
     Colors::DocumentColors::adopt(doc.get(), ai.cmyk ? Type::CMYK : Type::RGB);
     // And how it sets superscripts, subscripts and small capitals, which its text is laid out by.
     if (ai.texts && ai.texts->error.empty()) ai.texts->type.write(doc.get());

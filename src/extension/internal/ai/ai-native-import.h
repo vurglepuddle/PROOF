@@ -52,6 +52,9 @@
  *   a font that isn't installed    the font that stands in for it (ai-native-fonts.h), and
  *                                  its own name kept in proof:font-missing
  *
+ * The document's colours are in its own profile when its file carries one (Source::profile),
+ * as Illustrator shows them, and in PROOF's working profile of the document's mode otherwise.
+ *
  * User units are points, as in the records; width and height use the file's ruler unit.
  * Type that shows and can't be set as it is (ai-native-text.h) refuses the file, and the
  * caller opens its page; such type that doesn't show is left out. A font that isn't
@@ -111,6 +114,9 @@ struct Built
     /// The linked pictures that show and can't be found, in the order met. What stands in
     /// for one can't look like the page either, and a comparison leaves its box out.
     std::vector<MissingLink> missing_links;
+    /// The document's own colour profile, by its description, when the file carried one and
+    /// the document has it; empty when the document has PROOF's working profile.
+    std::string profile;
 };
 
 /// Where the records came from, for what they refer to outside themselves.
@@ -119,6 +125,10 @@ struct Source
     /// The folder of the .ai file (a file name in UTF-8), or empty. Linked pictures that
     /// aren't where the document says are looked for there, as Illustrator does.
     std::string folder;
+    /// The document's own ICC profile, or empty. The records don't hold it: Illustrator
+    /// keeps it in the file's PDF part, as the colour space of its process colours. One of
+    /// another colour model than the document's is passed over.
+    std::string profile;
 };
 
 /**
