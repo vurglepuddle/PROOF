@@ -47,6 +47,7 @@ public:
     bool empty() const { return _mmap.empty(); }
     size_t size() const { return _mmap.size(); }
     void setItems(std::set<ShapeRecord> const &);
+    bool pressSegment(SPObject *item, Tools::ToolBase *tool, ButtonPressEvent const &event);
     void clear() { _mmap.clear(); }
     void cleanup();
     bool isReplacingItem() const { return _replacing_item; }

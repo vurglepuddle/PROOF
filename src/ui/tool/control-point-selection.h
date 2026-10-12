@@ -14,6 +14,9 @@
 #define INKSCAPE_UI_TOOL_CONTROL_POINT_SELECTION_H
 
 #include <unordered_set>
+#include <set>
+#include <functional>
+#include <utility>
 
 #include "node-types.h"
 #include "snap-candidate.h"
@@ -30,11 +33,13 @@ struct ButtonReleaseEvent;
 namespace UI {
 class TransformHandleSet;
 class SelectableControlPoint;
+class CurveDragPoint;
 
 class ControlPointSelection
     : public Manipulator
     , public sigc::trackable
 {
+    friend class CurveDragPoint;
 public:
     ControlPointSelection(SPDesktop *d, Inkscape::CanvasItemGroup *th_group);
     ~ControlPointSelection() override;
@@ -46,6 +51,13 @@ public:
     using size_type = set_type::size_type;
     using value_type = SelectableControlPoint*;
     using key_type = SelectableControlPoint*;
+    using Segment = std::pair<key_type, key_type>;
+    struct SegmentLess {
+        bool operator()(Segment const &a, Segment const &b) const {
+            auto less = std::less<key_type>{};
+            return less(a.first, b.first) || (a.first == b.first && less(a.second, b.second));
+        }
+    };
 
     // size
     bool empty() const { return _points.empty(); }
@@ -88,6 +100,18 @@ public:
     void invertSelection();
     void spatialGrow(SelectableControlPoint *origin, int dir);
 
+    // A segment has its own identity. Its endpoints participate in ordinary
+    // node movement, but do not replace independently selected anchors.
+    void selectSegment(key_type first, key_type second, bool add);
+    bool segmentSelected(key_type first, key_type second) const { return _segments.contains({first, second}); }
+    bool individuallySelected(key_type point) const { return _anchor_points.contains(point); }
+    bool segmentEditable(key_type first, key_type second) const {
+        return segmentSelected(first, second) || (individuallySelected(first) && individuallySelected(second));
+    }
+    bool hasSegments() const { return !_segments.empty(); }
+    void splitSegment(key_type first, key_type second, key_type inserted);
+    void reverseSegments(std::vector<Segment> const &segments);
+
     bool event(Inkscape::UI::Tools::ToolBase *tool, CanvasEvent const &event) override;
 
     void transform(Geom::Affine const &m);
@@ -111,6 +135,7 @@ public:
     // so this can be done in a massive group once the selection is finally changed.
     sigc::signal<void (std::vector<SelectableControlPoint *>, bool)> signal_selection_changed;
     sigc::signal<void (CommitEvent)> signal_commit;
+    sigc::signal<void ()> signal_segments_changed;
 
     void getOriginalPoints(std::vector<Inkscape::SnapCandidatePoint> &pts);
     void getUnselectedPoints(std::vector<Inkscape::SnapCandidatePoint> &pts);
@@ -123,6 +148,8 @@ private:
     // Previously they were connected to handlers when selecting, but this
     // creates problems when dragging a point that was not selected.
     void _pointGrabbed(SelectableControlPoint *);
+    bool _segmentUses(key_type point) const;
+    void _erasePointRaw(key_type point);
     void _pointDragged(Geom::Point &, MotionEvent const &);
     void _pointUngrabbed();
     bool _pointClicked(SelectableControlPoint *, ButtonReleaseEvent const &);
@@ -140,6 +167,9 @@ private:
     double _rotationRadius(Geom::Point const &);
 
     set_type _points;
+    set_type _anchor_points;
+    std::set<Segment, SegmentLess> _segments;
+    bool _segment_mutation = false;
 
     set_type _all_points;
     std::unordered_map<SelectableControlPoint *, Geom::Point> _original_positions;

@@ -54,9 +54,9 @@ private:
 
     static bool _drags_stroke;
     static bool _segment_was_degenerate;
-    // PROOF: a straight segment being moved whole, and where its ends started.
+    // PROOF: moving the selected endpoint union once, including shared anchors.
     static bool _moves_segment;
-    static Geom::Point _segment_start[2];
+    std::vector<std::pair<SelectableControlPoint *, Geom::Point>> _moving_points;
     static Geom::Point _stroke_drag_origin;
     void _insertNode(bool take_selection);
     void _moveSegment(Geom::Point &new_pos, MotionEvent const &event);

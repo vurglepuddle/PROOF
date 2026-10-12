@@ -188,6 +188,14 @@ void MultiPathManipulator::setItems(std::set<ShapeRecord> const &s)
     }
 }
 
+bool MultiPathManipulator::pressSegment(SPObject *item, Tools::ToolBase *tool, ButtonPressEvent const &event)
+{
+    for (auto const &[record, pm] : _mmap) {
+        if (record.object == item && pm->pressSegment(tool, event)) return true;
+    }
+    return false;
+}
+
 void MultiPathManipulator::selectSubpaths()
 {
     if (_selection.empty()) {

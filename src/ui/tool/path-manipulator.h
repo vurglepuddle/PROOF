@@ -117,6 +117,7 @@ public:
     void updatePath();
     void setControlsTransform(Geom::Affine const &);
     void hideDragPoint();
+    bool pressSegment(Tools::ToolBase *tool, ButtonPressEvent const &event);
     MultiPathManipulator &mpm() { return _multi_path_manipulator; }
 
     NodeList::iterator subdivideSegment(NodeList::iterator after, double t);
@@ -151,6 +152,9 @@ private:
     unsigned _deleteStretch(NodeList::iterator first, NodeList::iterator last, NodeDeleteMode mode);
     std::string _createTypeString() const;
     void _updateOutline();
+    void _updateSegmentHighlights();
+    void _queueSegmentHighlights();
+    bool _deleteSelectedSegments();
     //void _setOutline(Geom::PathVector const &);
     void _getGeometry();
     void _setGeometry();
@@ -173,7 +177,7 @@ private:
     void _removeNodesFromSelection();
     void _commit(Inkscape::Util::Internal::ContextString annotation);
     void _commit(Inkscape::Util::Internal::ContextString annotation, gchar const *key);
-    Geom::Coord _updateDragPoint(Geom::Point const &);
+    Geom::Coord _updateDragPoint(Geom::Point const &, bool snap = true);
     void _updateOutlineOnZoomChange();
     double _getStrokeTolerance();
     Handle *_chooseHandle(Node *n, int which);
@@ -188,6 +192,8 @@ private:
     std::unique_ptr<LiveCornerController> _corners;
     std::unique_ptr<EllipseArcController> _ellipse_arcs;
     CanvasItemPtr<Inkscape::CanvasItemBpath> _outline;
+    CanvasItemPtr<Inkscape::CanvasItemBpath> _segment_outline;
+    sigc::scoped_connection _segment_highlights_idle;
     CurveDragPoint *_dragpoint; // an invisible control point hovering over curve
     PathManipulatorObserver *_observer;
     Geom::Affine _d2i_transform; ///< desktop-to-item transform

@@ -17,6 +17,7 @@
 #include "ui/tool/transform-handle-set.h"
 #include "ui/tool/node.h"
 #include "ui/widget/events/canvas-event.h"
+#include <algorithm>
 
 namespace Inkscape {
 namespace UI {
@@ -73,6 +74,7 @@ ControlPointSelection::~ControlPointSelection()
 /** Add a control point to the selection. */
 std::pair<ControlPointSelection::iterator, bool> ControlPointSelection::insert(const value_type &x, bool notify, bool to_update)
 {
+    if (!_segment_mutation) _anchor_points.insert(x);
     iterator found = _points.find(x);
     if (found != _points.end()) {
         return std::pair<iterator, bool>(found, false);
@@ -97,12 +99,80 @@ std::pair<ControlPointSelection::iterator, bool> ControlPointSelection::insert(c
 void ControlPointSelection::erase(iterator pos, bool to_update)
 {
     SelectableControlPoint *erased = *pos;
-    _points_list.remove(*pos);
-    _points.erase(pos);
-    erased->updateState();
+    _anchor_points.erase(erased);
+    set_type candidates;
+    bool changed = false;
+    for (auto i = _segments.begin(); i != _segments.end();) {
+        if (i->first == erased || i->second == erased) {
+            candidates.insert(i->first); candidates.insert(i->second);
+            i = _segments.erase(i);
+            changed = true;
+        } else ++i;
+    }
+    _erasePointRaw(erased);
+    for (auto point : candidates) {
+        if (point != erased && !individuallySelected(point) && !_segmentUses(point)) _erasePointRaw(point);
+    }
     if (to_update) {
         _update();
     }
+    if (changed) signal_segments_changed.emit();
+}
+
+void ControlPointSelection::_erasePointRaw(key_type point)
+{
+    if (!_points.erase(point)) return;
+    _points_list.remove(point);
+    point->updateState();
+}
+
+bool ControlPointSelection::_segmentUses(key_type point) const
+{
+    return std::any_of(_segments.begin(), _segments.end(), [point](auto const &segment) {
+        return segment.first == point || segment.second == point;
+    });
+}
+
+void ControlPointSelection::selectSegment(key_type first, key_type second, bool add)
+{
+    if (!first || !second || first == second) return;
+    if (!add) clear();
+    Segment segment{first, second};
+    bool remove = add && _segments.erase(segment);
+    std::vector<key_type> changed;
+    if (remove) {
+        for (auto point : {first, second}) {
+            if (!individuallySelected(point) && !_segmentUses(point) && _points.contains(point)) {
+                _erasePointRaw(point);
+                changed.push_back(point);
+            }
+        }
+    } else {
+        _segments.insert(segment);
+        _segment_mutation = true;
+        for (auto point : {first, second}) {
+            if (insert(point, false, false).second) changed.push_back(point);
+        }
+        _segment_mutation = false;
+    }
+    _update();
+    if (!changed.empty()) signal_selection_changed.emit(changed, !remove);
+    signal_segments_changed.emit();
+}
+
+void ControlPointSelection::splitSegment(key_type first, key_type second, key_type inserted)
+{
+    if (!segmentSelected(first, second)) return;
+    selectSegment(first, second, true);
+    selectSegment(first, inserted, true);
+    selectSegment(inserted, second, true);
+}
+
+void ControlPointSelection::reverseSegments(std::vector<Segment> const &segments)
+{
+    for (auto const &segment : segments) _segments.erase(segment);
+    for (auto const &segment : segments) _segments.insert({segment.second, segment.first});
+    if (!segments.empty()) signal_segments_changed.emit();
 }
 ControlPointSelection::size_type ControlPointSelection::erase(const key_type &k, bool notify)
 {
@@ -118,8 +188,11 @@ ControlPointSelection::size_type ControlPointSelection::erase(const key_type &k,
 void ControlPointSelection::erase(iterator first, iterator last)
 {
     std::vector<SelectableControlPoint *> out(first, last);
-    while (first != last) {
-        erase(first++, false);
+    // Removing one segment endpoint can also remove an unused neighbouring
+    // endpoint. Iterate a copy instead of invalidated set iterators.
+    for (auto point : out) {
+        auto found = _points.find(point);
+        if (found != _points.end()) erase(found, false);
     }
     _update();
     signal_selection_changed.emit(out, false);
@@ -128,7 +201,11 @@ void ControlPointSelection::erase(iterator first, iterator last)
 /** Remove all points from the selection, making it empty. */
 void ControlPointSelection::clear()
 {
+    _anchor_points.clear();
+    bool had_segments = !_segments.empty();
+    _segments.clear();
     if (empty()) {
+        if (had_segments) signal_segments_changed.emit();
         return;
     }
 
@@ -141,6 +218,7 @@ void ControlPointSelection::clear()
 
     _update();
     signal_selection_changed.emit(out, false);
+    if (had_segments) signal_segments_changed.emit();
 }
 
 /** Select all points that this selection can contain. */

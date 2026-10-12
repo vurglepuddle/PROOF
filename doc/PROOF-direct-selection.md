@@ -56,8 +56,9 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
 [Live Corners](PROOF-live-corners.md) now adds corner widgets, numeric rounding
 and editable split anchors to supported paths and rectangles.
 [Ellipse arc controls](PROOF-ellipse-arcs.md) retain native arc editing alongside
-their anchors. Segments are not yet a selection of
-their own; anchor Align and widget angle visibility are also follow-up work.
+their anchors. [Independent segments](PROOF-segment-selection.md) add click and
+Shift selection, highlights, group movement and exact-edge deletion. Anchor
+Align and widget angle visibility remain follow-up work.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate

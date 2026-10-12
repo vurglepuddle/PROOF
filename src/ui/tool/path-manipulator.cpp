@@ -35,6 +35,7 @@
 #include "live-corner-controller.h"
 #include "ellipse-arc-controller.h"
 #include "object/sp-ellipse.h"
+#include <glibmm/main.h>
 
 #include <algorithm>
 #include <string_view>
@@ -148,6 +149,12 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
     _outline->set_visible(false);
     _outline->set_stroke(outline_color);
     _outline->set_fill(0x0, SP_WIND_RULE_NONZERO);
+    _segment_outline = make_canvasitem<Inkscape::CanvasItemBpath>(_multi_path_manipulator._path_data.outline_group);
+    _segment_outline->set_stroke(0x277fffff);
+    _segment_outline->set_stroke_width(3);
+    _segment_outline->set_fill(0x0, SP_WIND_RULE_NONZERO);
+    _segment_outline->set_visible(false);
+    _selection.signal_segments_changed.connect(sigc::mem_fun(*this, &PathManipulator::_queueSegmentHighlights));
 
     _selection.signal_update.connect(
         sigc::bind(sigc::mem_fun(*this, &PathManipulator::update), false));
@@ -171,7 +178,9 @@ PathManipulator::~PathManipulator()
     delete _dragpoint;
     delete _observer;
     _outline.reset();
+    _segment_outline.reset();
     clear();
+    _segment_highlights_idle.disconnect();
 }
 
 void PathManipulator::previewCorners(Geom::PathVector const &geometry)
@@ -356,6 +365,7 @@ void PathManipulator::update(bool alert_LPE)
 {
     _observer->block();
     _createGeometryFromControlPoints(alert_LPE);
+    _updateSegmentHighlights();
     _observer->unblock();
 }
 
@@ -446,7 +456,7 @@ void PathManipulator::insertNodes()
     for (auto & _subpath : _subpaths) {
         for (NodeList::iterator j = _subpath->begin(); j != _subpath->end(); ++j) {
             NodeList::iterator k = j.next();
-            if (k && j->selected() && k->selected()) {
+            if (k && _selection.segmentEditable(j.ptr(), k.ptr())) {
                 j = subdivideSegment(j, 0.5);
                 _selection.insert(j.ptr());
             }
@@ -503,7 +513,7 @@ void PathManipulator::insertNodeAtExtremum(ExtremumType extremum)
 
         for (NodeList::iterator first = _subpath->begin(); first != _subpath->end(); ++first) {
             NodeList::iterator second = first.next();
-            if (second && first->selected() && second->selected()) {
+            if (second && _selection.segmentEditable(first.ptr(), second.ptr())) {
                 add_or_replace_if_extremum(extremum_vector, extrvalue, sign * first->position()[dim], first, 0.);
                 add_or_replace_if_extremum(extremum_vector, extrvalue, sign * second->position()[dim], first, 1.);
                 if (first->front()->isDegenerate() && second->back()->isDegenerate()) {
@@ -885,10 +895,77 @@ void PathManipulator::breakNodes(bool new_nodes)
     }
 }
 
+// Remove exact selected edges, keeping every other edge and its original handles.
+// Rebuilding the surviving runs also handles multiple gaps in a closed subpath.
+bool PathManipulator::_deleteSelectedSegments()
+{
+    if (!_selection.hasSegments()) return false;
+    bool changed = false;
+    for (auto const &subpath : _subpaths) {
+        for (auto node = subpath->begin(); node != subpath->end(); ++node) {
+            if (node.next() && _selection.segmentSelected(node.ptr(), node.next().ptr())) changed = true;
+        }
+    }
+    if (!changed) return false;
+    hideDragPoint();
+    struct State { bool selected; NodeType type; };
+    std::vector<std::vector<State>> states;
+    Geom::PathBuilder builder;
+    auto state = [this](NodeList::iterator node) {
+        return State{_selection.individuallySelected(node.ptr()), node->type()};
+    };
+    for (auto const &subpath : _subpaths) {
+        std::vector<NodeList::iterator> edges;
+        for (auto node = subpath->begin(); node != subpath->end(); ++node) {
+            if (node.next()) edges.push_back(node);
+        }
+        auto deleted = [this](NodeList::iterator node) {
+            return _selection.segmentSelected(node.ptr(), node.next().ptr());
+        };
+        auto gap = std::find_if(edges.begin(), edges.end(), deleted);
+        if (subpath->closed() && gap != edges.end()) {
+            std::rotate(edges.begin(), std::next(gap), edges.end());
+        }
+        bool run = false;
+        for (auto node : edges) {
+            if (deleted(node)) { run = false; continue; }
+            if (!run) {
+                builder.moveTo(node->position());
+                states.push_back({state(node)});
+                run = true;
+            }
+            node->build_segment(builder, node.next().ptr());
+            states.back().push_back(state(node.next()));
+        }
+        if (subpath->closed() && gap == edges.end() && run) {
+            builder.closePath();
+            states.back().pop_back(); // Closing edge ends at the existing first node.
+        }
+    }
+    builder.flush();
+    _spcurve = builder.peek() * _getTransform().inverse();
+    if (_shape_geometry) _convertShape();
+    _createControlPointsFromGeometry();
+    std::size_t path_index = 0;
+    for (auto const &subpath : _subpaths) {
+        std::size_t node_index = 0;
+        for (auto node = subpath->begin(); node != subpath->end(); ++node, ++node_index) {
+            if (path_index >= states.size() || node_index >= states[path_index].size()) break;
+            auto const &saved = states[path_index][node_index];
+            node->setType(saved.type, false);
+            if (saved.selected) _selection.insert(node.ptr());
+        }
+        ++path_index;
+    }
+    _updateSegmentHighlights();
+    return true;
+}
+
 /** Delete selected nodes in the path, optionally substituting deleted segments with bezier curves
  * in a way that attempts to preserve the original shape of the curve. */
 void PathManipulator::deleteNodes(NodeDeleteMode delete_mode)
 {
+    _deleteSelectedSegments();
     if (_selection.empty()) return;
     hideDragPoint();
 
@@ -1077,6 +1154,10 @@ void PathManipulator::deleteSegments()
 /** Removes selected segments */
 void PathManipulator::_deleteSegments(bool delete_singles)
 {
+    if (_selection.hasSegments()) {
+        _deleteSelectedSegments();
+        return;
+    }
     if (_selection.empty()) return;
     hideDragPoint();
 
@@ -1154,18 +1235,22 @@ void PathManipulator::_deleteSegments(bool delete_singles)
  *                      will be reversed. Otherwise all subpaths will be reversed. */
 void PathManipulator::reverseSubpaths(bool selected_only)
 {
+    std::vector<ControlPointSelection::Segment> segments;
     for (auto & _subpath : _subpaths) {
-        if (selected_only) {
-            for (NodeList::iterator j = _subpath->begin(); j != _subpath->end(); ++j) {
-                if (j->selected()) {
-                    _subpath->reverse();
-                    break; // continue with the next subpath
+        bool reverse = !selected_only;
+        for (auto node = _subpath->begin(); node != _subpath->end(); ++node) {
+            if (node->selected()) reverse = true;
+        }
+        if (reverse) {
+            for (auto node = _subpath->begin(); node != _subpath->end(); ++node) {
+                if (node.next() && _selection.segmentSelected(node.ptr(), node.next().ptr())) {
+                    segments.emplace_back(node.ptr(), node.next().ptr());
                 }
             }
-        } else {
             _subpath->reverse();
         }
     }
+    _selection.reverseSegments(segments);
 }
 
 /** Make selected segments curves / lines. */
@@ -1175,7 +1260,7 @@ void PathManipulator::setSegmentType(SegmentType type)
     for (auto & _subpath : _subpaths) {
         for (NodeList::iterator j = _subpath->begin(); j != _subpath->end(); ++j) {
             NodeList::iterator k = j.next();
-            if (!(k && j->selected() && k->selected())) continue;
+            if (!(k && _selection.segmentEditable(j.ptr(), k.ptr()))) continue;
             switch (type) {
             case SEGMENT_STRAIGHT:
                 if (j->front()->isDegenerate() && k->back()->isDegenerate())
@@ -1357,6 +1442,13 @@ void PathManipulator::hideDragPoint()
     _dragpoint->setIterator(NodeList::iterator());
 }
 
+bool PathManipulator::pressSegment(Tools::ToolBase *tool, ButtonPressEvent const &event)
+{
+    if (empty()) return false;
+    _updateDragPoint(event.pos, false);
+    return _dragpoint->visible() && _dragpoint->_eventHandler(tool, event);
+}
+
 /** Insert a node in the segment beginning with the supplied iterator,
  * at the given time value */
 NodeList::iterator PathManipulator::subdivideSegment(NodeList::iterator first, double t)
@@ -1418,6 +1510,7 @@ NodeList::iterator PathManipulator::subdivideSegment(NodeList::iterator first, d
         first->front()->move(seg1[1]);
         second->back()->move(seg2[2]);
     }
+    _selection.splitSegment(first.ptr(), second.ptr(), inserted.ptr());
     return inserted;
 }
 
@@ -1468,26 +1561,35 @@ void PathManipulator::_externalChange(unsigned type)
     case PATH_CHANGE_D: {
         _getGeometry();
 
-        // ugly: stored offsets of selected nodes in a vector
-        // vector<bool> should be specialized so that it takes only 1 bit per value
-        std::vector<bool> selpos;
-        for (auto & _subpath : _subpaths) {
-            for (auto & j : *_subpath) {
-                selpos.push_back(j.selected());
+        struct SelectionState {
+            std::vector<bool> anchors;
+            std::vector<bool> segments;
+            bool closed;
+        };
+        std::vector<SelectionState> saved;
+        for (auto const &subpath : _subpaths) {
+            SelectionState state{{}, {}, subpath->closed()};
+            for (auto node = subpath->begin(); node != subpath->end(); ++node) {
+                state.anchors.push_back(_selection.individuallySelected(node.ptr()));
+                state.segments.push_back(node.next() && _selection.segmentSelected(node.ptr(), node.next().ptr()));
             }
+            saved.push_back(std::move(state));
         }
-        unsigned size = selpos.size(), curpos = 0;
-
         _createControlPointsFromGeometry();
-
-        for (auto & _subpath : _subpaths) {
-            for (NodeList::iterator j = _subpath->begin(); j != _subpath->end(); ++j) {
-                if (curpos >= size) goto end_restore;
-                if (selpos[curpos]) _selection.insert(j.ptr());
-                ++curpos;
+        std::size_t path_index = 0;
+        for (auto const &subpath : _subpaths) {
+            if (path_index >= saved.size()) break;
+            auto const &state = saved[path_index++];
+            bool const same_topology = subpath->size() == state.anchors.size() && subpath->closed() == state.closed;
+            std::size_t node_index = 0;
+            for (auto node = subpath->begin(); node != subpath->end(); ++node, ++node_index) {
+                if (node_index >= state.anchors.size()) break;
+                if (state.anchors[node_index]) _selection.insert(node.ptr());
+                if (same_topology && state.segments[node_index] && node.next()) {
+                    _selection.selectSegment(node.ptr(), node.next().ptr(), true);
+                }
             }
         }
-        end_restore:
 
         _updateOutline();
         } break;
@@ -1509,6 +1611,7 @@ void PathManipulator::_externalChange(unsigned type)
     default: break;
     }
     if (_ellipse_arcs) _ellipse_arcs->queueRefresh();
+    _queueSegmentHighlights();
 }
 
 Geom::Affine PathManipulator::_getTransform() const
@@ -1818,6 +1921,31 @@ std::string PathManipulator::_createTypeString() const
 }
 
 /** Update the path outline. */
+void PathManipulator::_queueSegmentHighlights()
+{
+    if (_segment_highlights_idle.connected()) return;
+    _segment_highlights_idle = Glib::signal_idle().connect([this] { _updateSegmentHighlights(); return false; });
+}
+
+void PathManipulator::_updateSegmentHighlights()
+{
+    if (!_segment_outline) return;
+    Geom::PathBuilder builder;
+    bool any = false;
+    if (_path) for (auto &subpath : _subpaths) {
+        for (auto node = subpath->begin(); node != subpath->end(); ++node) {
+            auto next = node.next();
+            if (!next || !_selection.segmentSelected(node.ptr(), next.ptr())) continue;
+            builder.moveTo(node->position());
+            node->build_segment(builder, next.ptr());
+            any = true;
+        }
+    }
+    builder.flush();
+    _segment_outline->set_bpath(builder.peek());
+    _segment_outline->set_visible(any);
+}
+
 void PathManipulator::_updateOutline()
 {
     if (!_show_outline) {
@@ -2014,6 +2142,7 @@ void PathManipulator::_selectionChangedM(std::vector<SelectableControlPoint *> p
         _selectionChanged(n, selected);
     }
     if (_corners) _corners->queueRefresh(true);
+    _queueSegmentHighlights();
 }
 
 void PathManipulator::_selectionChanged(SelectableControlPoint *p, bool selected)
@@ -2082,23 +2211,26 @@ void PathManipulator::_commit(Inkscape::Util::Internal::ContextString annotation
 
 /** Update the position of the curve drag point such that it is over the nearest
  * point of the path. */
-Geom::Coord PathManipulator::_updateDragPoint(Geom::Point const &evp)
+Geom::Coord PathManipulator::_updateDragPoint(Geom::Point const &evp, bool snap)
 {
-    auto &m = _desktop->getNamedView()->snap_manager;
-    m.setup(_desktop);
-    Inkscape::SnapCandidatePoint scp(_desktop->w2d(evp), Inkscape::SNAPSOURCE_OTHER_HANDLE);
-    Inkscape::SnappedPoint sp = m.freeSnap(scp, Geom::OptRect(), false);
-    m.unSetup();
+    auto point = _desktop->w2d(evp);
+    if (snap) {
+        auto &m = _desktop->getNamedView()->snap_manager;
+        m.setup(_desktop);
+        Inkscape::SnapCandidatePoint scp(point, Inkscape::SNAPSOURCE_OTHER_HANDLE);
+        point = m.freeSnap(scp, Geom::OptRect(), false).getPoint();
+        m.unSetup();
+    }
 
     Geom::Coord dist = HUGE_VAL;
 
     Geom::Affine to_desktop = _getTransform();
-    std::optional<Geom::PathVectorTime> pvp = _spcurve.nearestTime(sp.getPoint() * to_desktop.inverse());
+    std::optional<Geom::PathVectorTime> pvp = _spcurve.nearestTime(point * to_desktop.inverse());
     if (!pvp) return dist;
 
     Geom::Point nearest_pt_dt = _spcurve.pointAt(*pvp) * to_desktop;
     Geom::Point nearest_pt = _desktop->d2w(nearest_pt_dt);
-    dist = Geom::distance(_desktop->d2w(sp.getPoint()), nearest_pt);
+    dist = Geom::distance(_desktop->d2w(point), nearest_pt);
     double stroke_tolerance = _getStrokeTolerance();
 
     bool drag_point_updated = false;
@@ -2149,7 +2281,7 @@ double PathManipulator::_getStrokeTolerance()
             * _getTransform().descrim() // scale to desktop coords
             * _desktop->current_zoom(); // == _d2w.descrim() - scale to window coords
     }
-    return ret;
+    return std::max(2., ret);
 }
 
 } // namespace Inkscape::UI

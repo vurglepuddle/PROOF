@@ -28,7 +28,6 @@ namespace UI {
 bool CurveDragPoint::_drags_stroke = false;
 bool CurveDragPoint::_segment_was_degenerate = false;
 bool CurveDragPoint::_moves_segment = false;
-Geom::Point CurveDragPoint::_segment_start[2];
 
 CurveDragPoint::CurveDragPoint(PathManipulator &pm) :
     ControlPoint(pm._multi_path_manipulator._path_data.node_data.desktop, Geom::Point(), SP_ANCHOR_CENTER,
@@ -61,8 +60,11 @@ bool CurveDragPoint::grabbed(MotionEvent const &event)
     _moves_segment = straight && !_pm._isBSpline() && !(event.modifiers & GDK_ALT_MASK);
     if (_moves_segment) {
         _segment_was_degenerate = false;
-        _segment_start[0] = first->position();
-        _segment_start[1] = second->position();
+        if (!_pm._selection.segmentSelected(first.ptr(), second.ptr())) {
+            _pm._selection.selectSegment(first.ptr(), second.ptr(), event.modifiers & GDK_SHIFT_MASK);
+        }
+        _moving_points.clear();
+        for (auto point : _pm._selection) _moving_points.emplace_back(point, point->position());
         return false;
     }
 
@@ -157,14 +159,13 @@ void CurveDragPoint::dragged(Geom::Point &new_pos, MotionEvent const &event)
  */
 void CurveDragPoint::_moveSegment(Geom::Point &new_pos, MotionEvent const &event)
 {
-    NodeList::iterator second = first.next();
     Geom::Point const origin = _last_drag_origin();
 
     if (_is_drag_cancelled(event)) {
-        first->move(_segment_start[0]);
-        second->move(_segment_start[1]);
+        for (auto const &[point, start] : _moving_points) point->move(start);
+        for (auto const &[point, start] : _moving_points) point->fixNeighbors();
         new_pos = origin;
-        _pm.update();
+        _pm._selection.signal_update.emit();
         return;
     }
 
@@ -175,10 +176,12 @@ void CurveDragPoint::_moveSegment(Geom::Point &new_pos, MotionEvent const &event
         delta = Geom::Point::polar(angle, Geom::dot(delta, Geom::Point::polar(angle)));
     } else if (!Modifiers::Modifier::get(Modifiers::Type::MOVE_NO_SNAPPING)->active(event.modifiers)) {
         auto &m = _desktop->getNamedView()->snap_manager;
-        m.setup(_desktop, true, static_cast<SPItem *>(_pm._path));
+        std::vector<Inkscape::SnapCandidatePoint> unselected;
+        _pm._selection.getUnselectedPoints(unselected);
+        m.setupIgnoreSelection(_desktop, true, &unselected);
         std::optional<Inkscape::SnappedPoint> best;
         Geom::Point correction;
-        for (auto const &start : _segment_start) {
+        for (auto const &[point, start] : _moving_points) {
             Inkscape::SnapCandidatePoint scp(start + delta, Inkscape::SNAPSOURCE_NODE_CUSP);
             auto sp = m.freeSnap(scp, Geom::OptRect(), false);
             if (sp.getSnapped() && (!best || sp.getSnapDistance() < best->getSnapDistance())) {
@@ -193,17 +196,23 @@ void CurveDragPoint::_moveSegment(Geom::Point &new_pos, MotionEvent const &event
         }
     }
 
-    first->move(_segment_start[0] + delta);
-    second->move(_segment_start[1] + delta);
+    for (auto const &[point, start] : _moving_points) point->move(start + delta);
+    for (auto const &[point, start] : _moving_points) point->fixNeighbors();
     new_pos = origin + delta;
-    _pm.update();
+    _pm._selection.signal_update.emit();
 }
 
 void CurveDragPoint::ungrabbed(ButtonReleaseEvent const *)
 {
+    _desktop->getSnapIndicator()->remove_snaptarget();
     _pm._updateDragPoint(_desktop->d2w(position()));
-    _pm._commit(_moves_segment ? RC_("Undo", "Move segment") : RC_("Undo", "Drag curve"));
+    if (_moves_segment) {
+        _pm._selection._updateBounds();
+        _pm._selection.signal_commit.emit(COMMIT_MOUSE_MOVE);
+    }
+    else _pm._commit(RC_("Undo", "Drag curve"));
     _moves_segment = false;
+    _moving_points.clear();
     _pm._selection.restoreTransformHandles();
 }
 
@@ -223,22 +232,7 @@ bool CurveDragPoint::clicked(ButtonReleaseEvent const &event)
         return true;
     }
 
-    if (add_to) {
-        // if both nodes of the segment are selected, deselect;
-        // otherwise add to selection
-        if (first->selected() && second->selected())  {
-            _pm._selection.erase(first.ptr());
-            _pm._selection.erase(second.ptr());
-        } else {
-            _pm._selection.insert(first.ptr());
-            _pm._selection.insert(second.ptr());
-        }
-    } else {
-        // without Shift, take selection
-        _pm._selection.clear();
-        _pm._selection.insert(first.ptr(), false, false);
-        _pm._selection.insert(second.ptr());
-    }
+    _pm._selection.selectSegment(first.ptr(), second.ptr(), add_to);
     return true;
 }
 

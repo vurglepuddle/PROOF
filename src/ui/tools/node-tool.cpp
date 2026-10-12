@@ -778,7 +778,7 @@ Inkscape::UI::SelectableControlPoint *NodeTool::_nodeNear(Geom::Point const &win
  */
 bool NodeTool::_directPress(ButtonPressEvent const &event)
 {
-    if (event.modifiers & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK)) {
+    if (event.modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK)) {
         return false;
     }
     auto item = sp_event_context_find_item(_desktop, event.pos, false, true);
@@ -787,7 +787,11 @@ bool NodeTool::_directPress(ButtonPressEvent const &event)
     }
 
     auto selection = _desktop->getSelection();
-    if (selection->single() != item) {
+    bool const add = event.modifiers & GDK_SHIFT_MASK;
+    bool const added_item = add && !selection->includes(item);
+    if (added_item) {
+        selection->add(item);
+    } else if (!add && selection->single() != item) {
         selection->set(item); // Builds the anchors at once.
     }
 
@@ -798,13 +802,20 @@ bool NodeTool::_directPress(ButtonPressEvent const &event)
 
     auto const tolerance = Preferences::get()->getIntLimited("/options/grabsensitivity/value", 8, 1, 100);
     if (auto node = _nodeNear(event.pos, tolerance)) {
-        _selected_nodes->clear();
-        _selected_nodes->insert(node);
+        if (!add) _selected_nodes->clear();
+        if (add && node->selected()) _selected_nodes->erase(node);
+        else _selected_nodes->insert(node);
         press.reference = node->position();
+    } else if (_multipath->pressSegment(item, this, event)) {
+        return true;
+    } else if (add) {
+        if (added_item) selection->remove(item);
+        return false;
     } else if (PathManipulator::canEditShape(item)) {
         _selected_nodes->clear();
         press.whole_items = true; // A fill drag keeps the live shape.
     } else if (!_selected_nodes->allPoints().empty()) {
+        _selected_nodes->clear();
         _selected_nodes->selectAll();
         if (auto nearest = _nodeNear(event.pos, Geom::infinity())) {
             press.reference = nearest->position();
