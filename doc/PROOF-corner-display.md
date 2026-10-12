@@ -14,7 +14,8 @@ The limit measures the angle between the incoming and outgoing corner tangents
 after the live-corner frame and object transform. A nonuniform scale can therefore
 change which corners are visible. Corners at the limit remain visible. Existing
 selection and crowding rules still apply; this does not expand the geometry that
-Live Corners supports or change its per-object grouping.
+Live Corners supports. [Corner groups](PROOF-corner-groups.md) subsequently extend
+selected-widget editing across objects.
 
 Preference changes queue an idle widget refresh. An active corner drag or popup
 keeps its controls until the edit finishes, then applies the display setting.

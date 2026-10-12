@@ -53,7 +53,8 @@ This first implementation uses the ordinary path/shape support of
 existing editors. Stars, spirals and geometry animations also retain their
 existing editors. More than 100 visible corners on one object suppresses the
 widgets to avoid crowding; selecting fewer anchors reveals their widgets.
-Selected widgets are grouped within an object.
+[Selected widget groups](PROOF-corner-groups.md) now work across objects, with
+one displayed amount, a shared geometric limit and one Undo step.
 
 Straight-sided rounds use the standard cubic approximation to a circle.
 Corners between curved sides use trimmed side portions and a cubic fitted to

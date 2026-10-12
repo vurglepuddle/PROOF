@@ -68,6 +68,41 @@ TEST(LiveCorners, DisplayAngleRejectsCollapsedGeometry)
     EXPECT_FALSE(model.displayAngle(Corner{100, 100}, Geom::identity()));
 }
 
+TEST(LiveCorners, SharedRadiusUsesDisplayedUnitsAndEveryObjectsLimit)
+{
+    auto first = rectangle();
+    auto second = Model::fromPath(sp_svg_read_pathv("M0,0 H110 V50 H0 Z"));
+    std::vector<RadiusGroup> groups{{&first, {0, 1, 2, 3}, 1}, {&second, {0, 1, 2, 3}, 2}};
+    EXPECT_DOUBLE_EQ(setSharedRadius(groups, 24), 24);
+    EXPECT_DOUBLE_EQ(first.corners[0].radius, 24);
+    EXPECT_DOUBLE_EQ(second.corners[0].radius, 12);
+    auto applied = setSharedRadius(groups, 100);
+    EXPECT_NEAR(applied, 50, .001);
+    for (auto const &corner : first.corners) EXPECT_NEAR(corner.radius, applied, 1e-8);
+    for (auto const &corner : second.corners) EXPECT_NEAR(corner.radius * 2, applied, 1e-8);
+}
+
+TEST(LiveCorners, SharedRadiusRetainsUnchosenCornersAndRejectsInvalidScale)
+{
+    auto first = rectangle();
+    auto second = Model::fromPath(sp_svg_read_pathv("M0,0 H120 L200,80 H80 Z"));
+    first.setRadius({1}, 18);
+    second.corners[2].rounding = Rounding::Relative;
+    std::vector<RadiusGroup> groups{{&first, {0}, 1}, {&second, {2}, 2}};
+    EXPECT_DOUBLE_EQ(setSharedRadius(groups, 20), 20);
+    EXPECT_DOUBLE_EQ(first.corners[1].radius, 18);
+    EXPECT_DOUBLE_EQ(second.corners[0].radius, 0);
+    EXPECT_DOUBLE_EQ(second.corners[2].radius, 10);
+    // At this acute corner Relative cut length has a different geometric
+    // maximum from Absolute radius; the rectangle is the shared limiter.
+    EXPECT_NEAR(setSharedRadius(groups, 300), 120, .001);
+    auto before_first = first.write(), before_second = second.write();
+    groups[1].display_scale = 0;
+    EXPECT_DOUBLE_EQ(setSharedRadius(groups, 30), 0);
+    EXPECT_EQ(first.write(), before_first);
+    EXPECT_EQ(second.write(), before_second);
+}
+
 TEST(LiveCorners, OneAndThreeCornerSelectionsKeepTheOtherCornersSharp)
 {
     for (auto selected : {std::vector<std::size_t>{0}, {0, 1, 2}}) {

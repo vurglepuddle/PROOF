@@ -42,6 +42,8 @@ private:
     void open(std::size_t corner, Geom::Point const &at);
     void applyFields();
     void commit();
+    std::vector<LiveCornerController *> groupControllers();
+    double updateGroupRadius(double displayed_amount);
     Geom::Point widgetPosition(std::size_t corner) const;
     double displayScale() const;
 
@@ -54,6 +56,9 @@ private:
     bool _dragging = false, _cancelled = false, _updating = false;
     std::unique_ptr<CornerDisplayPreferences> _display;
     double _start_radius = 0;
+    LiveCornerController *_leader = nullptr;
+    // Only peers are retained; owning our own PM would create a cycle.
+    std::vector<std::shared_ptr<PathManipulator>> _peers;
     sigc::scoped_connection _refresh_idle;
     CanvasItemPtr<Inkscape::CanvasItemBpath> _limit_preview;
 

@@ -65,5 +65,13 @@ private:
     Rendered build() const;
 };
 
+struct RadiusGroup {
+    Model *model;
+    std::vector<std::size_t> corners;
+    double display_scale;
+};
+// Models are distinct. Apply one displayed amount, limited by every group.
+double setSharedRadius(std::vector<RadiusGroup> const &groups, double requested);
+
 } // namespace Inkscape::UI::LiveCorners
 #endif

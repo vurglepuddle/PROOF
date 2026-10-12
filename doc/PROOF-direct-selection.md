@@ -61,6 +61,8 @@ Shift selection, highlights, group movement and exact-edge deletion.
 [Align and distribution](PROOF-anchor-alignment.md) now refresh bounds and
 neighboring handles after editing selected anchors. [Corner widget display](PROOF-corner-display.md)
 adds View visibility and a transformed-angle limit in Node Preferences.
+[Corner groups](PROOF-corner-groups.md) now apply selected radius/type edits
+across objects with one shared limit and one document Undo step.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate

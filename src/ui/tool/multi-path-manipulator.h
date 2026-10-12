@@ -143,6 +143,7 @@ private:
     bool _live_objects;
 
     friend class PathManipulator;
+    friend class LiveCornerController;
 };
 
 } // namespace UI

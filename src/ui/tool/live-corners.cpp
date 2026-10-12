@@ -278,6 +278,25 @@ double Model::setRadius(std::vector<std::size_t> const &selected, double request
     return maximum;
 }
 
+double setSharedRadius(std::vector<RadiusGroup> const &groups, double requested)
+{
+    if (groups.empty() || !std::isfinite(requested)) return 0;
+    for (auto const &group : groups) {
+        if (!group.model || !std::isfinite(group.display_scale) || group.display_scale <= 0) return 0;
+    }
+    std::vector<Model> before;
+    for (auto const &group : groups) before.push_back(*group.model);
+    double applied = std::max(0., requested);
+    for (auto const &group : groups) {
+        applied = std::min(applied, group.model->setRadius(group.corners, requested / group.display_scale) * group.display_scale);
+    }
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        *groups[i].model = std::move(before[i]);
+        groups[i].model->setRadius(groups[i].corners, applied / groups[i].display_scale);
+    }
+    return applied;
+}
+
 bool Model::reconcile(Geom::PathVector const &edited)
 {
     auto rendered = build();

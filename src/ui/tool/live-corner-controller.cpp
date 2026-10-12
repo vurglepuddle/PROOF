@@ -14,6 +14,7 @@
 #include "object/sp-rect.h"
 #include "object/sp-namedview.h"
 #include "path-manipulator.h"
+#include "multi-path-manipulator.h"
 #include "preferences.h"
 #include "ui/icon-names.h"
 #include "ui/tools/tool-base.h"
@@ -141,6 +142,7 @@ LiveCornerController::LiveCornerController(PathManipulator &pm) : _pm(pm)
 
 LiveCornerController::~LiveCornerController()
 {
+    if (_leader) _leader->finish(true);
     _display.reset();
     _refresh_idle.disconnect();
     _updating = true;
@@ -250,6 +252,16 @@ void LiveCornerController::choose(std::size_t c, bool add)
     if (add) {
         if (!_selected.erase(c)) _selected.insert(c);
     } else {
+        // Keep a selected group when its member is double-clicked for Corners.
+        if (_selected.contains(c)) return;
+        for (auto const &entry : _pm._multi_path_manipulator._mmap) {
+            auto peer = entry.second->_corners.get();
+            if (!peer || peer == this) continue;
+            peer->_selected.clear();
+            for (std::size_t i = 0; i < peer->_widgets.size(); ++i) {
+                peer->_widgets[i]->display(peer->widgetPosition(peer->_shown[i]), false);
+            }
+        }
         _selected.clear();
         _selected.insert(c);
     }
@@ -265,21 +277,73 @@ std::vector<std::size_t> LiveCornerController::targets(std::size_t c) const
 
 void LiveCornerController::begin(std::size_t c)
 {
-    _refresh_idle.disconnect();
-    _before = _model;
-    _editing = targets(c);
+    bool explicit_selection = false;
+    for (auto const &entry : _pm._multi_path_manipulator._mmap) {
+        if (auto peer = entry.second->_corners.get()) explicit_selection |= !peer->_selected.empty();
+    }
+    bool group = !explicit_selection || _selected.contains(c);
+    _peers.clear();
+    if (group) {
+        for (auto const &entry : _pm._multi_path_manipulator._mmap) {
+            auto peer = entry.second->_corners.get();
+            if (!peer || peer == this) continue;
+            auto chosen = explicit_selection ? std::vector<std::size_t>(peer->_selected.begin(), peer->_selected.end()) : peer->_shown;
+            if (chosen.empty()) continue;
+            _peers.push_back(entry.second);
+            peer->_editing = std::move(chosen);
+        }
+    }
+    _editing = group ? targets(c) : std::vector<std::size_t>{c};
+    if (_editing.empty()) _editing.push_back(c);
+    for (auto peer : groupControllers()) {
+        peer->_refresh_idle.disconnect();
+        peer->_before = peer->_model;
+        peer->_dragging = true;
+        peer->_cancelled = false;
+        peer->_leader = this;
+    }
     _start_radius = _model.corners[c].radius;
-    _dragging = true;
-    _cancelled = false;
+}
+
+std::vector<LiveCornerController *> LiveCornerController::groupControllers()
+{
+    std::vector<LiveCornerController *> result{this};
+    for (auto const &pm : _peers) if (pm->_corners) result.push_back(pm->_corners.get());
+    return result;
+}
+
+double LiveCornerController::updateGroupRadius(double displayed_amount)
+{
+    auto peers = groupControllers();
+    std::vector<RadiusGroup> groups;
+    for (auto peer : peers) groups.push_back({&peer->_model, peer->_editing, peer->displayScale()});
+    double applied = setSharedRadius(groups, displayed_amount);
+    bool limit = displayed_amount > applied + 1e-5;
+    for (auto peer : peers) {
+        peer->_points = peer->_model.nodePoints();
+        for (std::size_t i = 0; i < peer->_widgets.size(); ++i) {
+            peer->_widgets[i]->display(peer->widgetPosition(peer->_shown[i]), peer->_selected.contains(peer->_shown[i]), limit);
+        }
+        if (limit) {
+            if (!peer->_limit_preview) peer->_limit_preview = make_canvasitem<Inkscape::CanvasItemBpath>(peer->_pm._desktop->getCanvasTemp());
+            peer->_limit_preview->set_stroke(0xe53935ff);
+            peer->_limit_preview->set_bpath(peer->_model.roundedCurves(peer->_editing) * peer->_pm._getTransform());
+        } else peer->_limit_preview.reset();
+        peer->_pm.previewCorners(peer->_model.render());
+    }
+    return applied;
 }
 
 Geom::Point LiveCornerController::drag(std::size_t c, Geom::Point const &delta, bool cancelled)
 {
     if (cancelled) {
         _cancelled = true;
-        _model = _before;
-        _points = _model.nodePoints();
-        _limit_preview.reset();
+        for (auto peer : groupControllers()) {
+            peer->_model = peer->_before;
+            peer->_points = peer->_model.nodePoints();
+            peer->_limit_preview.reset();
+            peer->_pm.previewCorners(peer->_pm._spcurve);
+        }
     }
     else {
         auto info = _before.geometry(_before.corners[c]);
@@ -288,32 +352,35 @@ Geom::Point LiveCornerController::drag(std::size_t c, Geom::Point const &delta, 
         double amount = _start_radius + Geom::dot(local_delta, info->direction) *
             (_model.corners[c].rounding == Rounding::Relative ? 1 : std::tan(info->angle / 2)) /
             std::cos(info->angle / 2);
-        _model = _before;
-        double applied = _model.setRadius(_editing, amount);
-        _points = _model.nodePoints();
-        bool limit = amount > applied + 1e-5;
-        for (std::size_t i = 0; i < _widgets.size(); ++i) _widgets[i]->display(widgetPosition(_shown[i]), _selected.contains(_shown[i]), limit);
-        if (limit) {
-            if (!_limit_preview) _limit_preview = make_canvasitem<Inkscape::CanvasItemBpath>(_pm._desktop->getCanvasTemp());
-            _limit_preview->set_stroke(0xe53935ff);
-            _limit_preview->set_bpath(_model.roundedCurves(_editing) * _pm._getTransform());
-        } else _limit_preview.reset();
+        for (auto peer : groupControllers()) peer->_model = peer->_before;
+        updateGroupRadius(amount * displayScale());
     }
-    _pm.previewCorners(_model.render());
     return widgetPosition(c);
 }
 
 void LiveCornerController::finish(bool cancelled)
 {
     if (!_dragging) return;
-    _limit_preview.reset();
-    if (cancelled || _cancelled) {
-        _model = _before;
-        _pm.previewCorners(_pm._spcurve);
-    } else if (_model.write() != _before.write()) commit();
-    _dragging = false;
-    _editing.clear();
-    queueRefresh();
+    auto peers = groupControllers();
+    bool changed = false;
+    for (auto peer : peers) {
+        peer->_limit_preview.reset();
+        if (cancelled || _cancelled) {
+            peer->_model = peer->_before;
+            if (peer->_pm._path) peer->_pm.previewCorners(peer->_pm._spcurve);
+        } else if (peer->_pm._path && peer->_model.write() != peer->_before.write()) {
+            peer->commit();
+            changed = true;
+        }
+    }
+    if (changed) DocumentUndo::done(_pm._desktop->getDocument(), RC_("Undo", "Edit live corners"), INKSCAPE_ICON("tool-node-editor"));
+    for (auto peer : peers) {
+        peer->_dragging = false;
+        peer->_leader = nullptr;
+        peer->_editing.clear();
+        peer->queueRefresh();
+    }
+    _peers.clear();
 }
 
 void LiveCornerController::commit()
@@ -337,13 +404,14 @@ void LiveCornerController::commit()
         }
     }
     _pm.commitCorners(_model.render(), _model.write(), restored);
-    DocumentUndo::done(_pm._desktop->getDocument(), RC_("Undo", "Edit live corners"), INKSCAPE_ICON("tool-node-editor"));
 }
 
 void LiveCornerController::cycle(std::size_t c)
 {
     begin(c);
-    for (auto i : _editing) _model.corners[i].style = Style((int(_model.corners[i].style) + 1) % 3);
+    for (auto peer : groupControllers()) {
+        for (auto i : peer->_editing) peer->_model.corners[i].style = Style((int(peer->_model.corners[i].style) + 1) % 3);
+    }
     finish();
 }
 
@@ -373,16 +441,16 @@ void LiveCornerController::applyFields()
     _updating = true;
     _radius.update();
     _updating = false;
-    for (auto c : _editing) {
-        _model.corners[c].style = Style(_type.get_selected());
-        _model.corners[c].rounding = Rounding(_rounding.get_selected());
+    for (auto peer : groupControllers()) {
+        for (auto c : peer->_editing) {
+            peer->_model.corners[c].style = Style(_type.get_selected());
+            peer->_model.corners[c].rounding = Rounding(_rounding.get_selected());
+        }
     }
-    auto amount = _model.setRadius(_editing, _radius.get_value() / displayScale());
-    _points = _model.nodePoints();
+    auto amount = updateGroupRadius(_radius.get_value());
     _updating = true;
-    _radius.set_value(amount * displayScale());
+    _radius.set_value(amount);
     _updating = false;
-    _pm.previewCorners(_model.render());
 }
 
 void LiveCornerController::updateMetadata()
@@ -412,6 +480,7 @@ void LiveCornerController::captureNativeCorners()
 
 void LiveCornerController::pathReleased()
 {
+    if (_leader) _leader->finish(true);
     _limit_preview.reset();
     _dragging = false;
     _editing.clear();
