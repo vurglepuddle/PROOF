@@ -14,6 +14,7 @@
 #include "object/sp-rect.h"
 #include "object/sp-namedview.h"
 #include "path-manipulator.h"
+#include "preferences.h"
 #include "ui/icon-names.h"
 #include "ui/tools/tool-base.h"
 #include "ui/widget/canvas.h"
@@ -23,6 +24,16 @@
 
 namespace Inkscape::UI {
 using namespace LiveCorners;
+
+class CornerDisplayPreferences {
+public:
+    Pref<bool> visible{show_widgets_preference, true};
+    Pref<double> maximum_angle{maximum_angle_preference, 180, 0, 180};
+    explicit CornerDisplayPreferences(std::function<void()> changed) {
+        visible.action = changed;
+        maximum_angle.action = std::move(changed);
+    }
+};
 
 class LiveCornerWidget final : public ControlPoint {
 public:
@@ -124,11 +135,13 @@ LiveCornerController::LiveCornerController(PathManipulator &pm) : _pm(pm)
         return true;
     }, false);
     _popup.add_controller(keys);
+    _display = std::make_unique<CornerDisplayPreferences>([this] { queueRefresh(); });
     queueRefresh();
 }
 
 LiveCornerController::~LiveCornerController()
 {
+    _display.reset();
     _refresh_idle.disconnect();
     _updating = true;
     if (_dragging && _pm._path) _pm.previewCorners(_pm._spcurve);
@@ -180,9 +193,18 @@ void LiveCornerController::refresh()
         }
     }
     _points = _model.nodePoints();
+    if (!_display->visible) {
+        _shown.clear();
+        _widgets.clear();
+        return;
+    }
     bool any = !_pm._selection.empty();
     std::vector<std::size_t> shown;
     for (std::size_t c = 0; c < _model.corners.size(); ++c) {
+        if (_display->maximum_angle < 180) {
+            auto angle = _model.displayAngle(_model.corners[c], _model.frame * _pm._getTransform());
+            if (!angle || *angle > _display->maximum_angle * M_PI / 180 + 1e-8) continue;
+        }
         bool show = !any;
         for (auto point : _points[c]) {
             point *= _pm._getTransform();

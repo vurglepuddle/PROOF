@@ -18,6 +18,7 @@ namespace Inkscape::UI {
 class PathManipulator;
 class LiveCornerWidget;
 class ControlPoint;
+class CornerDisplayPreferences;
 
 // The widgets have a lifetime independent of the editable node list, so that
 // expanding a corner does not destroy the widget which owns the current grab.
@@ -51,6 +52,7 @@ private:
     std::vector<std::size_t> _shown, _editing;
     std::set<std::size_t> _selected;
     bool _dragging = false, _cancelled = false, _updating = false;
+    std::unique_ptr<CornerDisplayPreferences> _display;
     double _start_radius = 0;
     sigc::scoped_connection _refresh_idle;
     CanvasItemPtr<Inkscape::CanvasItemBpath> _limit_preview;

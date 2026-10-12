@@ -10,6 +10,8 @@
 namespace Inkscape::UI::LiveCorners {
 
 inline constexpr char attribute[] = "inkscape:live-corners";
+inline constexpr char show_widgets_preference[] = "/tools/nodes/show_corner_widgets";
+inline constexpr char maximum_angle_preference[] = "/tools/nodes/maximum_corner_angle";
 enum class Style { Round, Inverted, Chamfer };
 enum class Rounding { Absolute, Relative };
 
@@ -38,6 +40,7 @@ public:
     static std::optional<Model> read(char const *text);
     std::string write() const;
     std::optional<Geometry> geometry(Corner const &corner) const;
+    std::optional<double> displayAngle(Corner const &corner, Geom::Affine const &transform) const;
     Geom::PathVector render() const;
     Geom::PathVector roundedCurves(std::vector<std::size_t> const &selected) const;
     // Preserve intact corners on a normal node edit; bake only damaged ones.

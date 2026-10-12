@@ -22,6 +22,9 @@
 #include <gtkmm/applicationwindow.h>
 
 #include <sigc++/scoped_connection.h>
+#include <vector>
+
+#include "preferences.h"
 
 namespace Gtk { class Box; }
 
@@ -51,6 +54,10 @@ public:
 
     void setActiveTab(SPDesktop *desktop);
 
+    // Release action preference callbacks before GtkWindow tears down its
+    // action group, even if a menu still retains one of the actions.
+    void addPreferenceObserver(Inkscape::PrefObserver observer) { _preference_observers.push_back(std::move(observer)); }
+
 private:
     InkscapeApplication *_app = nullptr;
     SPDocument*          _document = nullptr;
@@ -62,6 +69,7 @@ private:
 
     sigc::scoped_connection _toplevel_state_connection;
     Gdk::Toplevel::State _old_toplevel_state{};
+    std::vector<Inkscape::PrefObserver> _preference_observers;
 
     void on_realize() override;
     Glib::RefPtr<Gdk::Toplevel const> get_toplevel() const;

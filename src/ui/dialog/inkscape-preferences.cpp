@@ -83,6 +83,7 @@
 #include "ui/themes.h"
 #include "ui/tool/manipulator.h"
 #include "ui/tool/path-manipulator.h"
+#include "ui/tool/live-corners.h"
 #include "ui/toolbar/tool-toolbar.h"
 #include "ui/toolbar/toolbar-constants.h"
 #include "ui/util.h"
@@ -1029,6 +1030,13 @@ void InkscapePreferences::initPageTools()
     _page_node.add_line( true, "", _t_node_pathflash_selected, "", _("Show temporary outline even when a path is selected for editing"));
     _t_node_pathflash_timeout.init("/tools/nodes/pathflash_timeout", 0, 10000.0, 100.0, 100.0, 1000.0, true, false);
     _page_node.add_line( false, _("_Flash time:"), _t_node_pathflash_timeout, "ms", _("Specifies how long the path outline will be visible after a mouse-over (in milliseconds); specify 0 to have the outline shown until mouse leaves the path"), false);
+    _page_node.add_group_header(_("Corner widgets"));
+    _t_node_show_corner_widgets.init(_("Show corner widgets"), UI::LiveCorners::show_widgets_preference, true);
+    _page_node.add_line(true, "", _t_node_show_corner_widgets, "", _("Show corner controls while editing paths with Direct Selection"));
+    _t_node_maximum_corner_angle.init(UI::LiveCorners::maximum_angle_preference, 0, 180, 1, 5, 180, false, false);
+    _page_node.add_line(true, _("Hide widgets for angles above:"), _t_node_maximum_corner_angle, _("degrees"),
+                        _("Hide corner controls above this displayed angle; 180 degrees allows every valid corner"), false);
+
     _page_node.add_group_header(_("Editing preferences"));
     _t_node_delete_flat_corner.init("/tools/node/flat-cusp-angle", 0, 180, 1, 5, 135, false, false);
     _page_node.add_line(true, _("Cusp considered flat for deletion:"), _t_node_delete_flat_corner, "degrees or more", _("Preserve shape when deleting flat nodes.\nInsert segments for sharp ones."), false);

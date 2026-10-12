@@ -251,6 +251,8 @@ protected:
     UI::Widget::PrefCheckButton _t_cvg_keep_objects;
     UI::Widget::PrefCheckButton _t_cvg_convert_whole_groups;
     UI::Widget::PrefCheckButton _t_node_show_outline;
+    UI::Widget::PrefCheckButton _t_node_show_corner_widgets;
+    UI::Widget::PrefSpinButton _t_node_maximum_corner_angle;
     UI::Widget::PrefCheckButton _t_node_live_outline;
     UI::Widget::PrefCheckButton _t_node_live_objects;
     UI::Widget::PrefCheckButton _t_node_pathflash_enabled;

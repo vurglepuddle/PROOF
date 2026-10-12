@@ -59,8 +59,8 @@ and editable split anchors to supported paths and rectangles.
 their anchors. [Independent segments](PROOF-segment-selection.md) add click and
 Shift selection, highlights, group movement and exact-edge deletion.
 [Align and distribution](PROOF-anchor-alignment.md) now refresh bounds and
-neighboring handles after editing selected anchors. Widget angle visibility
-remains follow-up work.
+neighboring handles after editing selected anchors. [Corner widget display](PROOF-corner-display.md)
+adds View visibility and a transformed-angle limit in Node Preferences.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate

@@ -104,6 +104,22 @@ std::optional<Geometry> Model::geometry(Corner const &corner) const
                     std::min(incoming.length(), outgoing.length()) * std::tan(angle / 2)};
 }
 
+std::optional<double> Model::displayAngle(Corner const &corner, Geom::Affine const &transform) const
+{
+    if (!geometry(corner)) return {};
+    auto const &path = source[corner.path];
+    auto const n = count(path);
+    auto const &incoming = path[(corner.node + n - 1) % n];
+    auto const &outgoing = path[corner.node];
+    auto anchor = outgoing.initialPoint();
+    auto at = anchor * transform;
+    auto a = (anchor - incoming.unitTangentAt(1)) * transform - at;
+    auto b = (anchor + outgoing.unitTangentAt(0)) * transform - at;
+    auto const length_a = Geom::L2(a), length_b = Geom::L2(b);
+    if (!std::isfinite(length_a) || !std::isfinite(length_b) || length_a < epsilon || length_b < epsilon) return {};
+    return std::acos(std::clamp(Geom::dot(a / length_a, b / length_b), -1., 1.));
+}
+
 Model::Rendered Model::build() const
 {
     Rendered result;

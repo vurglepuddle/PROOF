@@ -587,6 +587,10 @@
         <attribute name="label" translatable="yes">G_uides</attribute>
         <attribute name="action">doc.show-all-guides</attribute>
       </item>
+      <item>
+        <attribute name="label" translatable="yes">Corner _Widgets</attribute>
+        <attribute name="action">win.canvas-corner-widgets</attribute>
+      </item>
       <section>
         <submenu id="display-show-hide">
           <attribute name="label" translatable="yes">Sh_ow/Hide</attribute>

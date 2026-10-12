@@ -45,6 +45,29 @@ TEST(LiveCorners, FullRectangleGetsFourEditableQuarterRounds)
     EXPECT_TRUE(path[0].closed());
 }
 
+TEST(LiveCorners, DisplayAngleFollowsNonuniformTransforms)
+{
+    auto model = Model::fromPath(sp_svg_read_pathv("M0,0 H120 L200,80 H80 Z"));
+    ASSERT_EQ(model.corners.size(), 4);
+    auto acute = model.displayAngle(model.corners[0], Geom::identity());
+    ASSERT_TRUE(acute);
+    EXPECT_NEAR(*acute, M_PI / 4, 1e-8);
+    auto transform = Geom::Scale(2, .5) * Geom::Rotate(.4) * Geom::Translate(42, -17);
+    auto scaled_acute = model.displayAngle(model.corners[0], transform);
+    auto scaled_obtuse = model.displayAngle(model.corners[1], transform);
+    ASSERT_TRUE(scaled_acute);
+    ASSERT_TRUE(scaled_obtuse);
+    EXPECT_NEAR(*scaled_acute, std::atan(.25), 1e-8);
+    EXPECT_NEAR(*scaled_obtuse, M_PI - std::atan(.25), 1e-8);
+}
+
+TEST(LiveCorners, DisplayAngleRejectsCollapsedGeometry)
+{
+    auto model = rectangle();
+    EXPECT_FALSE(model.displayAngle(model.corners[0], Geom::Scale(0, 0)));
+    EXPECT_FALSE(model.displayAngle(Corner{100, 100}, Geom::identity()));
+}
+
 TEST(LiveCorners, OneAndThreeCornerSelectionsKeepTheOtherCornersSharp)
 {
     for (auto selected : {std::vector<std::size_t>{0}, {0, 1, 2}}) {

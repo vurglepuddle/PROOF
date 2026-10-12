@@ -59,8 +59,9 @@ Straight-sided rounds use the standard cubic approximation to a circle.
 Corners between curved sides use trimmed side portions and a cubic fitted to
 their endpoint tangents; their numeric radius is an approximation. Exact
 offset-circle intersection for arbitrary curves remains follow-up work.
-Ellipse arc handles, explicit segment selection, anchor Align and widget angle
-visibility controls are separate remaining items in the owner's brief.
+[Ellipse arc handles](PROOF-ellipse-arcs.md), [explicit segment selection](PROOF-segment-selection.md),
+[anchor Align](PROOF-anchor-alignment.md) and [widget visibility/angle limits](PROOF-corner-display.md)
+are implemented as separate features from the owner's brief.
 
 ## Implementation and checks
 

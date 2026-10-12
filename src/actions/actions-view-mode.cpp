@@ -14,6 +14,7 @@
 
 #include <giomm.h>
 #include <glibmm/i18n.h>
+#include <memory>
 
 #include "actions-view-mode.h"
 #include "actions-helper.h"
@@ -21,6 +22,8 @@
 #include "desktop.h"
 #include "inkscape-application.h"
 #include "inkscape-window.h"
+#include "preferences.h"
+#include "ui/tool/live-corners.h"
 
 #include "object/sp-namedview.h"
 
@@ -28,6 +31,14 @@
 #include "ui/widget/canvas.h"
 
 #include "ui/widget/desktop-widget.h"
+
+// Corner widget visibility is shared by every document window.
+void canvas_corner_widgets_toggle()
+{
+    auto prefs = Inkscape::Preferences::get();
+    auto const path = Inkscape::UI::LiveCorners::show_widgets_preference;
+    prefs->setBool(path, !prefs->getBool(path, true));
+}
 
 // Helper function to set state.
 void
@@ -285,6 +296,7 @@ std::vector<std::vector<Glib::ustring>> raw_data_view_mode =
     {"win.canvas-tool-control-bar",  N_("Tool Controls Bar"),       SECTION, N_("Show or hide the Tool Controls bar")},
     {"win.canvas-toolbox",           N_("Toolbox"),                 SECTION, N_("Show or hide the main toolbox (on the left)")},
     {"win.canvas-rulers",            N_("Rulers"),                  SECTION, N_("Show or hide the canvas rulers")},
+    {"win.canvas-corner-widgets",    N_("Corner Widgets"),          SECTION, N_("Show or hide Direct Selection corner widgets")},
     {"win.canvas-scroll-bars",       N_("Scroll bars"),             SECTION, N_("Show or hide the canvas scrollbars")},
     {"win.canvas-palette",           N_("Palette"),                 SECTION, N_("Show or hide the color palette")},
     {"win.canvas-statusbar",         N_("Statusbar"),               SECTION, N_("Show or hide the statusbar (at the bottom of the window)")},
@@ -328,6 +340,8 @@ add_actions_view_mode(InkscapeWindow* win)
     win->add_action_bool(          "canvas-tool-control-bar",       sigc::bind(sigc::ptr_fun(&canvas_tool_control_bar_toggle),     win), toppanel_toggle);
     win->add_action_bool(          "canvas-toolbox",                sigc::bind(sigc::ptr_fun(&canvas_toolbox_toggle),              win), toolbox_toggle);
     win->add_action_bool(          "canvas-rulers",                 sigc::bind(sigc::ptr_fun(&canvas_rulers_toggle),               win), rulers_toggle);
+    win->add_action_bool(          "canvas-corner-widgets",         sigc::ptr_fun(&canvas_corner_widgets_toggle),
+                                  prefs->getBool(Inkscape::UI::LiveCorners::show_widgets_preference, true));
     win->add_action_bool(          "canvas-scroll-bars",            sigc::bind(sigc::ptr_fun(&canvas_scroll_bars),                 win), scrollbars_toggle);
     win->add_action_bool(          "canvas-palette",                sigc::bind(sigc::ptr_fun(&canvas_palette_toggle),              win), palette_toggle);
     win->add_action_bool(          "canvas-statusbar",              sigc::bind(sigc::ptr_fun(&canvas_statusbar_toggle),            win), statusbar_toggle);
@@ -340,6 +354,17 @@ add_actions_view_mode(InkscapeWindow* win)
 
     win->add_action(               "canvas-command-palette",        sigc::bind(sigc::ptr_fun(&canvas_command_palette),             win));
     // clang-format on
+
+    // Keep every window's checked menu item synchronized with the global
+    // preference. The C++ window owns the observer so it is removed before
+    // GtkWindow's action group is disposed, including actions held by menus.
+    auto corner_action = std::dynamic_pointer_cast<Gio::SimpleAction>(win->lookup_action("canvas-corner-widgets"));
+    auto corner_gaction = corner_action->gobj();
+    auto corner_observer = prefs->createObserver(Inkscape::UI::LiveCorners::show_widgets_preference,
+        [corner_gaction](Inkscape::Preferences::Entry const &entry) {
+            g_simple_action_set_state(corner_gaction, g_variant_new_boolean(entry.getBool(true)));
+        });
+    win->addPreferenceObserver(std::move(corner_observer));
 
     auto app = InkscapeApplication::instance();
     if (!app) {
