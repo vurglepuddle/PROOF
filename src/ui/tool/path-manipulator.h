@@ -41,6 +41,8 @@ class Node;
 class Handle;
 class LiveCornerController;
 class LiveCornerWidget;
+class EllipseArcController;
+class EllipseArcPoint;
 
 struct PathSharedData
 {
@@ -130,6 +132,7 @@ public:
     void previewCorners(Geom::PathVector const &geometry);
     void commitCorners(Geom::PathVector const &geometry, std::string const &metadata,
                        std::vector<Geom::Point> const &selected_points);
+    void refreshEllipseGeometry(bool write);
 
 private:
     using Subpath = NodeList;
@@ -183,6 +186,7 @@ private:
     std::optional<Geom::PathVector> _shape_geometry;
     std::string _shape_types;
     std::unique_ptr<LiveCornerController> _corners;
+    std::unique_ptr<EllipseArcController> _ellipse_arcs;
     CanvasItemPtr<Inkscape::CanvasItemBpath> _outline;
     CurveDragPoint *_dragpoint; // an invisible control point hovering over curve
     PathManipulatorObserver *_observer;
@@ -203,6 +207,8 @@ private:
     friend class Handle;
     friend class LiveCornerController;
     friend class LiveCornerWidget;
+    friend class EllipseArcController;
+    friend class EllipseArcPoint;
 };
 
 } // namespace UI

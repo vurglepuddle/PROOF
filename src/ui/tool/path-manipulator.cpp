@@ -33,6 +33,8 @@
 #include "xml/attribute-record.h"
 #include "xml/repr.h"
 #include "live-corner-controller.h"
+#include "ellipse-arc-controller.h"
+#include "object/sp-ellipse.h"
 
 #include <algorithm>
 #include <string_view>
@@ -100,7 +102,11 @@ public:
                     attr == g_quark_from_static_string("width") || attr == g_quark_from_static_string("height") ||
                     attr == g_quark_from_static_string("rx") || attr == g_quark_from_static_string("ry") ||
                     attr == g_quark_from_static_string("cx") || attr == g_quark_from_static_string("cy") ||
-                    attr == g_quark_from_static_string("r") || attr == g_quark_from_static_string("points"))) {
+                    attr == g_quark_from_static_string("r") || attr == g_quark_from_static_string("points") ||
+                    attr == g_quark_from_static_string("sodipodi:cx") || attr == g_quark_from_static_string("sodipodi:cy") ||
+                    attr == g_quark_from_static_string("sodipodi:rx") || attr == g_quark_from_static_string("sodipodi:ry") ||
+                    attr == g_quark_from_static_string("sodipodi:start") || attr == g_quark_from_static_string("sodipodi:end") ||
+                    attr == g_quark_from_static_string("sodipodi:arc-type") || attr == g_quark_from_static_string("sodipodi:open"))) {
             cast<SPShape>(_pm->_path)->set_shape();
             _pm->_externalChange(PATH_CHANGE_D);
         }
@@ -154,10 +160,12 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
     _recalculateIsBSpline();
     _createControlPointsFromGeometry();
     _corners = std::make_unique<LiveCornerController>(*this);
+    _ellipse_arcs = std::make_unique<EllipseArcController>(*this);
 }
 
 PathManipulator::~PathManipulator()
 {
+    _ellipse_arcs.reset();
     _corners.reset();
     _restoreShapePreview();
     delete _dragpoint;
@@ -207,7 +215,7 @@ bool PathManipulator::canEditShape(SPObject const *item)
     if (!shape->curveForEdit() || shape->curveForEdit()->empty()) return false;
     auto repr = shape->getRepr();
     auto name = std::string_view(repr->name());
-    if (name != "svg:rect" && name != "svg:circle" && name != "svg:ellipse" &&
+    if (!is<SPGenericEllipse>(item) && name != "svg:rect" && name != "svg:circle" && name != "svg:ellipse" &&
         name != "svg:polygon" && name != "svg:polyline") return false;
     // Geometry animations cannot be transferred to a different SVG element.
     for (auto child = repr->firstChild(); child; child = child->next()) {
@@ -216,6 +224,17 @@ bool PathManipulator::canEditShape(SPObject const *item)
         if (name != "svg:title" && name != "svg:desc" && name != "svg:metadata") return false;
     }
     return true;
+}
+
+void PathManipulator::refreshEllipseGeometry(bool write)
+{
+    if (!_path) return;
+    if (write) {
+        _observer->block();
+        _path->updateRepr();
+        _observer->unblock();
+    }
+    _externalChange(PATH_CHANGE_D);
 }
 
 bool PathManipulator::_shapeChanged() const
@@ -245,6 +264,7 @@ void PathManipulator::_watchPath()
         _path = nullptr;
         _shape_geometry.reset();
         if (_corners && !_multi_path_manipulator.isReplacingItem()) _corners->pathReleased();
+        if (_ellipse_arcs) _ellipse_arcs->pathReleased();
     });
 }
 
@@ -264,7 +284,9 @@ void PathManipulator::_convertShape()
     // Keep style, identity, transform, clip/mask, custom PROOF attributes and
     // metadata verbatim. Only the primitive's geometry attributes are replaced.
     static std::unordered_set<std::string_view> const geometry = {
-        "x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "points", "d", "sodipodi:type"
+        "x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "points", "d", "sodipodi:type",
+        "sodipodi:cx", "sodipodi:cy", "sodipodi:rx", "sodipodi:ry", "sodipodi:start", "sodipodi:end",
+        "sodipodi:open", "sodipodi:arc-type"
     };
     for (auto const &attr : old_repr->attributeList()) {
         auto key = g_quark_to_string(attr.key);
@@ -1323,6 +1345,7 @@ void PathManipulator::setControlsTransform(Geom::Affine const &tnew)
         }
     }
     _createGeometryFromControlPoints();
+    if (_ellipse_arcs) _ellipse_arcs->queueRefresh();
 }
 
 /** Hide the curve drag point until the next motion event.
@@ -1485,6 +1508,7 @@ void PathManipulator::_externalChange(unsigned type)
         } break;
     default: break;
     }
+    if (_ellipse_arcs) _ellipse_arcs->queueRefresh();
 }
 
 Geom::Affine PathManipulator::_getTransform() const
@@ -2109,6 +2133,7 @@ void PathManipulator::_updateOutlineOnZoomChange()
 {
     if (_show_path_direction) _updateOutline();
     if (_corners) _corners->queueRefresh();
+    if (_ellipse_arcs) _ellipse_arcs->queueRefresh();
 }
 
 /** Compute the radius from the edge of the path where clicks should initiate a curve drag
