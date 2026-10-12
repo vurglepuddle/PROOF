@@ -57,8 +57,10 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
 and editable split anchors to supported paths and rectangles.
 [Ellipse arc controls](PROOF-ellipse-arcs.md) retain native arc editing alongside
 their anchors. [Independent segments](PROOF-segment-selection.md) add click and
-Shift selection, highlights, group movement and exact-edge deletion. Anchor
-Align and widget angle visibility remain follow-up work.
+Shift selection, highlights, group movement and exact-edge deletion.
+[Align and distribution](PROOF-anchor-alignment.md) now refresh bounds and
+neighboring handles after editing selected anchors. Widget angle visibility
+remains follow-up work.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate

@@ -359,6 +359,8 @@ void ControlPointSelection::align(Geom::Dim2 axis, AlignTargetNode target)
         pos[d] = new_coord;
         _point->move(pos);
     }
+    for (auto point : _points) point->fixNeighbors();
+    _update();
 }
 
 /** Equdistantly distribute control points by moving them in the specified dimension. */
@@ -390,6 +392,8 @@ void ControlPointSelection::distribute(Geom::Dim2 d)
         pos[d] = start + num * step;
         i->second->move(pos);
     }
+    for (auto point : _points) point->fixNeighbors();
+    _update();
 }
 
 /** Get the bounds of the selection.
