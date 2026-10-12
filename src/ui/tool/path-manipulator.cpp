@@ -32,6 +32,7 @@
 #include "util/scope_exit.h"
 #include "xml/attribute-record.h"
 #include "xml/repr.h"
+#include "live-corner-controller.h"
 
 #include <algorithm>
 #include <string_view>
@@ -91,6 +92,9 @@ public:
             _pm->_externalChange(PATH_CHANGE_D);
         } else if (attr == path_transform) {
             _pm->_externalChange(PATH_CHANGE_TRANSFORM);
+            if (_pm->_corners) _pm->_corners->queueRefresh();
+        } else if (attr == g_quark_from_static_string(LiveCorners::attribute)) {
+            if (_pm->_corners) _pm->_corners->queueRefresh();
         } else if (_pm->_shape_geometry &&
                    (attr == g_quark_from_static_string("x") || attr == g_quark_from_static_string("y") ||
                     attr == g_quark_from_static_string("width") || attr == g_quark_from_static_string("height") ||
@@ -149,15 +153,51 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
     //Define if the path is BSpline on construction
     _recalculateIsBSpline();
     _createControlPointsFromGeometry();
+    _corners = std::make_unique<LiveCornerController>(*this);
 }
 
 PathManipulator::~PathManipulator()
 {
+    _corners.reset();
     _restoreShapePreview();
     delete _dragpoint;
     delete _observer;
     _outline.reset();
     clear();
+}
+
+void PathManipulator::previewCorners(Geom::PathVector const &geometry)
+{
+    if (auto shape = cast<SPShape>(_path)) {
+        if (auto drawing = cast<Inkscape::DrawingShape>(shape->get_arenaitem(_desktop->dkey))) {
+            drawing->setPath(std::make_shared<Geom::PathVector const>(geometry));
+        }
+        if (_show_outline) _outline->set_bpath(geometry * _getTransform());
+    }
+}
+
+void PathManipulator::commitCorners(Geom::PathVector const &geometry, std::string const &metadata,
+                                    std::vector<Geom::Point> const &selected_points)
+{
+    if (!_path) return;
+    _spcurve = geometry;
+    if (_shape_geometry && _shapeChanged()) _convertShape();
+    _setGeometry();
+    _observer->block();
+    auto repr = _path->getRepr();
+    _path->updateRepr();
+    repr->setAttribute(LiveCorners::attribute, metadata.empty() ? nullptr : metadata.c_str());
+    repr->setAttribute(_nodetypesKey(), nullptr);
+    _observer->unblock();
+    _createControlPointsFromGeometry();
+    for (auto &subpath : _subpaths) {
+        for (auto node = subpath->begin(); node != subpath->end(); ++node) {
+            if (std::any_of(selected_points.begin(), selected_points.end(), [&](auto const &point) {
+                return Geom::are_near(node->position(), point, 1e-5);
+            })) _selection.insert(node.ptr());
+        }
+    }
+    _updateOutline();
 }
 
 bool PathManipulator::canEditShape(SPObject const *item)
@@ -204,11 +244,13 @@ void PathManipulator::_watchPath()
     _path_released = _path->connectRelease([this] (SPObject *) {
         _path = nullptr;
         _shape_geometry.reset();
+        if (_corners && !_multi_path_manipulator.isReplacingItem()) _corners->pathReleased();
     });
 }
 
 void PathManipulator::_convertShape()
 {
+    if (_corners) _corners->captureNativeCorners();
     auto hold = shared_from_this();
     auto old = cast<SPShape>(_path);
     auto old_repr = old->getRepr();
@@ -320,6 +362,7 @@ void PathManipulator::writeXML()
 
     _observer->block();
     if (!empty()) {
+        if (_corners) _corners->updateMetadata();
         _path->updateRepr();
         node->setAttribute(_nodetypesKey(), _createTypeString());
     } else {
@@ -1580,6 +1623,7 @@ void PathManipulator::_createControlPointsFromGeometry()
         _shape_geometry = _spcurve;
         _shape_types = _createTypeString();
     }
+    if (_corners) _corners->queueRefresh();
 }
 
 //determines if the trace has a bspline effect and the number of steps that it takes
@@ -1945,6 +1989,7 @@ void PathManipulator::_selectionChangedM(std::vector<SelectableControlPoint *> p
     for (auto & n : pvec) {
         _selectionChanged(n, selected);
     }
+    if (_corners) _corners->queueRefresh(true);
 }
 
 void PathManipulator::_selectionChanged(SelectableControlPoint *p, bool selected)
@@ -2063,6 +2108,7 @@ Geom::Coord PathManipulator::_updateDragPoint(Geom::Point const &evp)
 void PathManipulator::_updateOutlineOnZoomChange()
 {
     if (_show_path_direction) _updateOutline();
+    if (_corners) _corners->queueRefresh();
 }
 
 /** Compute the radius from the edge of the path where clicks should initiate a curve drag

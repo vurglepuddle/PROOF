@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" x="-3" y="-3">
+  <style>@import './cursors.css';</style>
+  <path d="M5,5 17,13 13.5,14 12,18Z" fill="#808080" stroke="white" stroke-width="3"/>
+  <path d="M5,5 17,13 13.5,14 12,18Z" fill="#808080" stroke="black" stroke-width="1"/>
+  <path d="M17,27 C17,20 21,17 28,17" fill="none" stroke="white" stroke-width="3"/>
+  <path d="M17,27 C17,20 21,17 28,17" fill="none" stroke="#277fff" stroke-width="1.5"/>
+</svg>

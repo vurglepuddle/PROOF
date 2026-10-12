@@ -37,6 +37,7 @@
 #include "ui/tool/curve-drag-point.h"
 #include "ui/tool/multi-path-manipulator.h"
 #include "ui/tool/path-manipulator.h"
+#include "ui/tool/live-corner-controller.h"
 #include "ui/tool/selectable-control-point.h"
 #include "ui/icon-names.h"
 #include "util/units.h"
@@ -962,7 +963,10 @@ void NodeTool::mouseover_changed(Inkscape::UI::ControlPoint *p) {
 
     CurveDragPoint *cdp = dynamic_cast<CurveDragPoint*>(p);
 
-    if (cdp && !this->cursor_drag) {
+    if (isLiveCorner(p)) {
+        this->set_cursor("node-corner.svg");
+        this->cursor_drag = true;
+    } else if (cdp) {
         this->set_cursor("node-mouseover.svg");
         this->cursor_drag = true;
     } else if (!cdp && this->cursor_drag) {

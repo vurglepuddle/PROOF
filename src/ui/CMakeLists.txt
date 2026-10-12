@@ -81,6 +81,8 @@ target_sources(inkscape_base PRIVATE
 	toolbar/snap-toolbar.cpp
 	toolbar/toolbars.cpp
 
+	tool/live-corners.cpp
+	tool/live-corner-controller.cpp
 	tools/arc-tool.cpp
 	tools/box3d-tool.cpp
 	tools/calligraphic-tool.cpp

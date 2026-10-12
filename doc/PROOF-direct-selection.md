@@ -53,10 +53,10 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
 
 ## Remaining scope
 
-Rounding any corner anchor with a widget, as Illustrator's Live Corners do, is
-not built. Until it is, a rectangle or an ellipse under Direct Selection shows
-its path anchors and not its corner radius or arc handles, which the owner
-wants back. Segments are not yet a selection of their own.
+[Live Corners](PROOF-live-corners.md) now adds corner widgets, numeric rounding
+and editable split anchors to supported paths and rectangles. Ellipses still
+need their native arc handles restored. Segments are not yet a selection of
+their own; anchor Align and widget angle visibility are also follow-up work.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate
@@ -75,6 +75,8 @@ those three primitives still need individual live acceptance cases.
 - Ordinary-shape staging/conversion is in `PathManipulator` in
   `src/ui/tool/path-manipulator.cpp`; `MultiPathManipulator` retains its live
   manipulator while the replacement object is installed.
+- [Control point grab ownership](PROOF-control-point-grabs.md) ensures deleting
+  idle corner widgets during a node drag does not cancel its active grab.
 
 ## Verification
 
