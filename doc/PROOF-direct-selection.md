@@ -64,8 +64,9 @@ adds View visibility and a transformed-angle limit in Node Preferences.
 
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate
-handling. Circle, polygon and polyline support uses the same staging code;
-those three primitives still need individual live acceptance cases.
+handling. [Circle, polygon and polyline](PROOF-native-primitives.md) use the same
+staging code and now have individual live acceptance: 28/28 on the tested
+Windows setup, including transformed open polylines and child metadata.
 
 ## Implementation
 
