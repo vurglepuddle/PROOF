@@ -21,6 +21,10 @@
 
 namespace Inkscape::UI {
 
+namespace {
+ControlPoint *grab_owner = nullptr;
+}
+
 ControlPoint *ControlPoint::mouseovered_point = nullptr;
 
 sigc::signal<void (ControlPoint*)> ControlPoint::signal_mouseover_change;
@@ -59,9 +63,9 @@ ControlPoint::~ControlPoint()
     // If this point is being deleted (e.g. by LPE Update) 
     // while it holds the mouse grab,
     // Otherwise, Inkscape thinks we are still dragging.
-    if (_event_grab) {
-        _canvas_item_ctrl->ungrab();
-        
+    if (grab_owner == this) {
+        if (_event_grab) _canvas_item_ctrl->ungrab();
+        grab_owner = nullptr;
         _event_grab = false;
         _drag_initiated = false;
     }
@@ -191,6 +195,7 @@ bool ControlPoint::_eventHandler(Tools::ToolBase *tool, CanvasEvent const &event
                 // route all events to this handler
                 _canvas_item_ctrl->grab(grab_event_mask); // cursor is null
                 _event_grab = true;
+                grab_owner = this;
                 _setState(STATE_CLICKED);
                 ret = true;
             } else {
@@ -249,6 +254,7 @@ bool ControlPoint::_eventHandler(Tools::ToolBase *tool, CanvasEvent const &event
             _canvas_item_ctrl->ungrab();
             _setMouseover(this, event.modifiers);
             _event_grab = false;
+            grab_owner = nullptr;
 
             if (_drag_initiated) {
                 // it is the end of a drag
@@ -306,6 +312,7 @@ bool ControlPoint::_eventHandler(Tools::ToolBase *tool, CanvasEvent const &event
             _canvas_item_ctrl->ungrab();
             _clearMouseover(); // this will also reset state to normal
             _event_grab = false;
+            grab_owner = nullptr;
             _drag_initiated = false;
 
             ungrabbed(nullptr); // ungrabbed handlers can handle a NULL event
@@ -413,6 +420,7 @@ void ControlPoint::transferGrab(ControlPoint *prev_point, MotionEvent const &eve
 {
     if (!_event_grab) return;
 
+    grab_owner = this;
     grabbed(event);
     prev_point->_canvas_item_ctrl->ungrab();
     _canvas_item_ctrl->grab(grab_event_mask); // cursor is null
