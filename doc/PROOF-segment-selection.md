@@ -14,6 +14,11 @@ endpoint union, including other objects, with one Undo step. Shift constrains it
 angle. Alt-drag bends a straight edge; a curved edge retains its native Bezier
 reshaping behavior. Escape restores a staged straight-edge group drag.
 
+Alt bending resolves the selected object's segment at the actual press position,
+so a preceding pointer move need not have refreshed the invisible hover control.
+The owner's Windows 10 review passes 30/30, including an exact one-step Undo
+after an Alt bend with the pointer deliberately parked away beforehand.
+
 Insert, insert-at-extremum, and line/curve commands act on explicit segments or
 on pairs of independently selected anchors. They do not infer an intervening
 segment from the endpoint union of unrelated selected edges. Delete cuts exact

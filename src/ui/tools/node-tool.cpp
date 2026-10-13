@@ -778,12 +778,21 @@ Inkscape::UI::SelectableControlPoint *NodeTool::_nodeNear(Geom::Point const &win
  */
 bool NodeTool::_directPress(ButtonPressEvent const &event)
 {
-    if (event.modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK)) {
+    if (event.modifiers & GDK_CONTROL_MASK) {
         return false;
     }
     auto item = sp_event_context_find_item(_desktop, event.pos, false, true);
     if (!item) {
         return false;
+    }
+
+    if (event.modifiers & GDK_ALT_MASK) {
+        // Resolve Alt bending from the press position as well. The invisible
+        // curve control can still be at the previous hover position when GTK
+        // delivers a press after motion; relying on that control loses the drag.
+        auto const tolerance = Preferences::get()->getIntLimited("/options/grabsensitivity/value", 8, 1, 100);
+        if (_nodeNear(event.pos, tolerance)) return false;
+        return _multipath->pressSegment(item, this, event);
     }
 
     auto selection = _desktop->getSelection();
