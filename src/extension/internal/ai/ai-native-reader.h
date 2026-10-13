@@ -270,6 +270,9 @@ struct Node
     bool overprint_fill = false;
     bool overprint_stroke = false;
     bool clipping = false; ///< A clipping path (W).
+    /// Group: made by the reader in a group that has more than one clipping path, to hold
+    /// what the next of them clips. The paths clip together, one group in the other.
+    bool clip_chain = false;
     bool guide = false;
 
     int image = -1; ///< Image: index into Document::images.

@@ -923,16 +923,29 @@ void Reader::end_container(std::string_view what, bool hidden)
         // besides. The path clips all of the group, and its own paint lies under all of it,
         // as a clipping path's does. Left in its group it would clip nothing and paint on top.
         if (kind == FrameKind::Clip && f.clips.empty()) {
+            // Nothing but clipping paths: one, or several, each in the group of the one before.
             auto wraps = [](Node const &n) {
-                return n.kind == Node::Kind::Group && n.clipped && n.children.size() == 1 && !n.opacity_mask;
+                if (n.kind != Node::Kind::Group || !n.clipped || n.opacity_mask) return false;
+                for (auto const *g = &n;;) {
+                    if (g->children.size() == 1) return true;
+                    if (g->children.size() != 2 || !g->children[1].clip_chain) return false;
+                    g = &g->children[1];
+                }
             };
             if (std::count_if(f.children.begin(), f.children.end(), wraps) == 1) {
-                auto const at = std::find_if(f.children.begin(), f.children.end(), wraps);
-                Node clip = std::move(at->children.front());
-                if (clip.name.empty()) clip.name = at->name;
-                clip.commented = at->commented;
-                *at = std::move(clip);
-                f.clips.push_back(static_cast<std::size_t>(at - f.children.begin()));
+                auto at = std::find_if(f.children.begin(), f.children.end(), wraps);
+                auto const index = static_cast<std::size_t>(at - f.children.begin());
+                Node wrapper = std::move(*at);
+                std::vector<Node> clips;
+                for (auto *g = &wrapper; g; g = g->children.size() == 2 ? &g->children[1] : nullptr) {
+                    clips.push_back(std::move(g->children.front()));
+                }
+                if (clips.front().name.empty()) clips.front().name = wrapper.name;
+                for (auto &c : clips) c.commented = wrapper.commented;
+                f.children.erase(at);
+                for (std::size_t i = 0; i < clips.size(); ++i) f.clips.push_back(index + i);
+                f.children.insert(f.children.begin() + index, std::make_move_iterator(clips.begin()),
+                                  std::make_move_iterator(clips.end()));
             }
         }
         // A group with a clipping path (q ... Q, or a W path in a group) is a clipping group.
@@ -982,12 +995,21 @@ std::pair<std::vector<Node>, bool> Reader::clip_first(std::vector<Node> kids, st
         }
         out.push_back(std::move(one));
     } else {
-        Node compound;
-        compound.kind = Node::Kind::Compound;
-        compound.clipping = true;
-        compound.evenodd = clip.front().evenodd;
-        compound.children = std::move(clip);
-        out.push_back(std::move(compound));
+        // Several clipping paths in one group clip together: what shows is where all of
+        // them let it through, as with one clip set after another on a page. (A clipping
+        // path of several pieces is a compound path, and is one of them.) The first clips
+        // the group, and each of the others a group of its own inside the one before.
+        for (std::size_t i = clip.size(); i-- > 1;) {
+            Node inner;
+            inner.kind = Node::Kind::Group;
+            inner.clipped = true;
+            inner.clip_chain = true;
+            inner.children.push_back(std::move(clip[i]));
+            for (auto &n : rest) inner.children.push_back(std::move(n));
+            rest.clear();
+            rest.push_back(std::move(inner));
+        }
+        out.push_back(std::move(clip.front()));
     }
     for (auto &n : rest) out.push_back(std::move(n));
     return {std::move(out), true};

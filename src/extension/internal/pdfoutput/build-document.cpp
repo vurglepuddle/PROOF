@@ -148,7 +148,7 @@ Document::item_to_transparency_group(SPItem const *item, SPStyle const *context_
     }
 
     // Draw item on a group so a mask, blend-mode, used-by-clone or opacity can be applied to it globally.
-    auto group_ctx = PdfBuilder::GroupContext(*this, *bbox, is_soft_mask);
+    auto group_ctx = PdfBuilder::GroupContext(*this, *bbox, is_soft_mask, is_soft_mask || is_isolated(item));
     group_ctx.set_matrix(tr);
     group_ctx.paint_item(item, Geom::identity(), context_style);
 

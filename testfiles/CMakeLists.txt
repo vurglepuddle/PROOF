@@ -71,6 +71,7 @@ set(TEST_SOURCES
     ai-native-reader-test
     ai-native-import-test
     box-frame-test
+    clip-blend-test
     live-corners-test
     cmyk-picker-test
     colors/cms-system-test

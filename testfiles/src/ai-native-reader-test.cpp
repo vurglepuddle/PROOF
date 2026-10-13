@@ -349,6 +349,35 @@ TEST(AiNativeReader, AClippingPathInAGroupOfItsOwnClipsTheGroupItEnds)
     ASSERT_TRUE(framed.children[0].stroke);
     EXPECT_DOUBLE_EQ(framed.children[0].stroke_style.width, 1.5);
 
+    // Two clipping paths that aren't the same path clip together: the second clips a group
+    // of its own inside the first one's, and what shows is where both let it through.
+    doc = read_ok(records(layer("L", "q\n0 g\n" + rect(0, 0, 100, 100) + "f\n" + rect(0, 0, 60, 60) + "h\nW\nn\n" +
+                                         rect(40, 40, 100, 100) + "h\nW\nn\nQ\n9 () XW\n")));
+    auto const &both = doc.layers[0].children[0];
+    EXPECT_TRUE(both.clipped);
+    ASSERT_EQ(both.children.size(), 2u);
+    EXPECT_TRUE(both.children[0].clipping);
+    EXPECT_EQ(both.children[0].path.boundsFast()->max(), Geom::Point(60, 60));
+    auto const &second = both.children[1];
+    EXPECT_EQ(second.kind, Node::Kind::Group);
+    EXPECT_TRUE(second.clipped);
+    EXPECT_TRUE(second.clip_chain);
+    ASSERT_EQ(second.children.size(), 2u);
+    EXPECT_TRUE(second.children[0].clipping);
+    EXPECT_EQ(second.children[0].path.boundsFast()->min(), Geom::Point(40, 40));
+    EXPECT_TRUE(second.children[1].fill);
+    // The same two in a group of their own at the end of the clip group clip all of it.
+    doc = read_ok(records(layer("L", "q\n0 g\n" + rect(0, 0, 100, 100) + "f\nu\n" + rect(0, 0, 60, 60) + "h\nW\nn\n" +
+                                         rect(40, 40, 100, 100) + "h\nW\nn\nU\n9 () XW\nQ\n9 () XW\n")));
+    auto const &wrapped = doc.layers[0].children[0];
+    EXPECT_TRUE(wrapped.clipped);
+    ASSERT_EQ(wrapped.children.size(), 2u);
+    EXPECT_TRUE(wrapped.children[0].clipping);
+    ASSERT_EQ(wrapped.children[1].children.size(), 2u);
+    EXPECT_TRUE(wrapped.children[1].clip_chain);
+    EXPECT_TRUE(wrapped.children[1].children[0].clipping);
+    EXPECT_TRUE(wrapped.children[1].children[1].fill);
+
     // A clipping group with a clipping path of its own keeps such a group as it is.
     doc = read_ok(records(layer("L", "q\n" + rect(0, 0, 50, 50) + "h\nW\nn\nu\n1 0 0 0 k\n" + rect(0, 0, 40, 40) +
                                          "h\nW\nf\nU\n0 g\n" + rect(0, 0, 5, 5) + "f\nQ\n")));

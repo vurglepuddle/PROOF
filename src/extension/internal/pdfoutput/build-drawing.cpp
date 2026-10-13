@@ -81,7 +81,35 @@ bool DrawContext::should_rasterize(SPObject const &object, bool recursive)
     return false;
 }
 
-GroupContext::GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_mask)
+/**
+ * PROOF: whether what an item holds blends only inside the item.
+ *
+ * Every group is written as a transparency group of its own. Isolated, such a group starts
+ * from nothing, and a shape in it that is set to Multiply darkens only what else is in the
+ * group: in a layer or a plain group it comes out as its own flat colour, and prints so.
+ * A group is isolated on the canvas only when it has opacity, a blend mode, a mask or a
+ * filter of its own, or is told to be (`isolation`). A plain group, a layer and a group
+ * with only a clipping path aren't, and neither are they here: what is in them blends with
+ * what lies under them, as it shows, and as in Illustrator.
+ */
+bool is_isolated(SPItem const *item)
+{
+    if (!is<SPGroup>(item)) {
+        // A shape, a clone, text or a picture has nothing in it that looks under itself.
+        return true;
+    }
+    auto const *style = item->style;
+    if (!style) {
+        return true;
+    }
+    return style->opacity.as_double() < 1.0
+        || (style->mix_blend_mode.set && style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL)
+        || style->isolation.value == SP_CSS_ISOLATION_ISOLATE
+        || item->getMaskObject()
+        || item->isFiltered();
+}
+
+GroupContext::GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_mask, bool isolate)
     : DrawContext(doc,
                   doc.generator().new_transparency_group_context(
                       // CapyPDF is very strict about clipping regions being valid. We want to
@@ -98,7 +126,7 @@ GroupContext::GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_m
     } else {
         // Do groups have a color space?
     }
-    props.set_I(true);  // Isolate from the document
+    props.set_I(isolate);
     props.set_K(false); // Do not knock out
     _ctx.set_transparency_group_properties(props);
 }

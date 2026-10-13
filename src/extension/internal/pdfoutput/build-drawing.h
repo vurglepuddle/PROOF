@@ -81,10 +81,13 @@ private:
     bool _soft_mask = false;
 };
 
+bool is_isolated(SPItem const *item);
+
 class GroupContext : public DrawContext
 {
 public:
-    GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_mask = false);
+    /// @param isolate Whether what is in the group blends only inside it (see is_isolated()).
+    GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_mask = false, bool isolate = true);
 
 private:
 };

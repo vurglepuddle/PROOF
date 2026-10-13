@@ -835,6 +835,75 @@ unsigned DrawingItem::render(DrawingContext &dc, RenderContext &rc, Geom::IntRec
         return _renderItem(dc, rc, *carea, flags & ~RENDER_FILTER_BACKGROUND, stop_at);
     }
 
+    // PROOF: a clipping path alone doesn't isolate what it clips. Where a clipped group holds
+    // something with a blend mode, that blends with what lies under the group, as it does
+    // without the clipping path, and as in Illustrator and in PDF: a shadow set to Multiply
+    // inside a clipping mask darkens the art under the mask. Drawn onto an empty surface it
+    // would blend with nothing and come out as its own flat colour. So the surface starts
+    // as a copy of what is under the group, the group is drawn onto that, and the result
+    // replaces what was there where the clipping path lets it through. A group that is
+    // isolated for another reason (opacity, a mask, a filter, a blend mode of its own,
+    // isolation) is drawn as before, and so is one that holds no such blend.
+    bool const clip_without_isolation =
+           _clip && !_mask && !(_filter && render_filters) && !hasOpacity()
+        && _blend_mode == SP_CSS_BLEND_NORMAL && _isolation != SP_CSS_ISOLATION_ISOLATE
+        && !_cache && _contains_unisolated_blend;
+
+    if (clip_without_isolation) {
+        // Where the clipping path lets through.
+        DrawingSurface coverage(*carea, device_scale);
+        {
+            DrawingContext cct(coverage);
+            cairo_set_antialias(cct.raw(), cairo_get_antialias(dc.raw()));
+            cct.setSource(0, 0, 0, 1);
+            cct.setOperator(CAIRO_OPERATOR_SOURCE);
+            cct.paint();
+            cct.pushGroup();
+            _clip->clip(cct, rc, *carea);
+            cct.popGroupToSource();
+            cct.setOperator(CAIRO_OPERATOR_IN);
+            cct.paint();
+        }
+
+        // What is under the group. User space is the same in both contexts, so the matrix
+        // of the one we draw to carries it to that surface's own space.
+        DrawingSurface backdrop(*carea, device_scale);
+        DrawingContext bct(backdrop);
+        cairo_set_antialias(bct.raw(), cairo_get_antialias(dc.raw()));
+        {
+            cairo_matrix_t to_target;
+            cairo_get_matrix(dc.raw(), &to_target);
+            auto *under = cairo_pattern_create_for_surface(dc.rawTarget());
+            cairo_pattern_set_matrix(under, &to_target);
+            cairo_pattern_set_filter(under, CAIRO_FILTER_NEAREST);
+            cairo_set_source(bct.raw(), under);
+            cairo_pattern_destroy(under);
+            bct.setOperator(CAIRO_OPERATOR_SOURCE);
+            bct.paint();
+            bct.setOperator(CAIRO_OPERATOR_OVER);
+            bct.setSource(0, 0, 0, 0);
+        }
+
+        apply_antialias(bct, antialias);
+        auto const result = _renderItem(bct, rc, *carea, flags, stop_at);
+
+        // Through the clipping path: what was there, less its share, plus the group's share.
+        {
+            DrawingContext::Save save(dc);
+            dc.rectangle(*carea);
+            dc.clip();
+            auto const origin = coverage.origin();
+            dc.setSource(0, 0, 0, 1);
+            dc.setOperator(CAIRO_OPERATOR_DEST_OUT);
+            cairo_mask_surface(dc.raw(), coverage.raw(), origin.x(), origin.y());
+            dc.setSource(&backdrop);
+            dc.setOperator(CAIRO_OPERATOR_ADD);
+            cairo_mask_surface(dc.raw(), coverage.raw(), origin.x(), origin.y());
+        }
+        dc.setSource(0, 0, 0, 0);
+        return result;
+    }
+
     DrawingSurface intermediate(*carea, device_scale);
     DrawingContext ict(intermediate);
     cairo_set_antialias(ict.raw(), cairo_get_antialias(dc.raw())); // propagate antialias setting
