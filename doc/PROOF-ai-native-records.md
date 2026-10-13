@@ -1386,6 +1386,48 @@ The final focused run passes 52 reader and
 save/edit checks concern SVG; they do not establish an Illustrator native-mask
 write/read round trip.
 
+### Named paragraph-style resolution (2026-10-13)
+
+A paragraph run's `/0 /0` can be a numeric reference instead of an inline
+definition. Its resource is the text document's `/0 /6 /0` array; each entry's
+`/0` holds a definition, `/5` its sparse paragraph properties, and optional
+`/6` the parent style index. Resolution follows the parent chain, then the
+main dictionary's `/3` paragraph defaults. Invalid indices, missing resources,
+cycles and chains beyond 64 definitions refuse the story. A per-story work
+budget bounds both inherited layers and resolved character runs.
+
+Paragraph property `/32` carries character defaults. Explicit character-run
+properties win over the nearest paragraph definition, its ancestors and the
+document paragraph defaults, with main `/2` character defaults last. Omitted
+character runs inherit that chain. A run crossing paragraphs is split at their
+UTF-16 boundaries; cuts through surrogate pairs, malformed lists and unsupported
+inherited features still refuse reconstruction. Recorded line origins and
+existing alignment/direction and character-scale restrictions remain in force.
+The typed and appearance-drawn text documents resolve their own resources.
+
+Accepted text remains editable SVG text, with inherited font, paint and run
+formatting. Named paragraph-style definitions and links are expanded inline;
+the importer reports this loss and the workspace classifies it as partial
+native reconstruction. An SVG save/edit/reopen check verifies editable content
+and inherited CMYK paint. This does not implement named-style editing or a
+native Illustrator style write/read round trip.
+
+All six new synthetic cases pass, together with the existing native suites:
+86 importer and 52 reader cases, with one opt-in corpus case skipped in each.
+The six-file text/spot/image smoke set keeps its native acceptances. Three of
+the four affected development files now import natively; the fourth gets past
+paragraph parsing but retains PDF fallback for a 22.0% lightness / 21.3% colour
+disagreement on its first artboard. The 1% lightness / 2% colour limits are
+unchanged; no unseen holdout is claimed for these already examined files.
+
+The complete 879-file development regression rises from 821 to 824 native
+acceptances, with 55 PDF fallbacks, zero lost acceptances, errors or changed
+source hashes. Of the native results, 439 are partial reconstruction and 385
+remain unverified for complete editability. The new loss report moves 22
+previously native files into the partial category; these retain acceptance.
+The local evidence is `artifacts/ai-native-workbench/round11/corpus-final/` in
+the workspace. Artwork, paths and generated reports remain outside Git.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

@@ -144,6 +144,25 @@ std::string without_character_runs(std::string document)
     return document;
 }
 
+// Independent paragraph resources and run declarations. Names/IDs are arbitrary;
+// the style index, sparse properties and parent link are what the reader resolves.
+std::string with_paragraphs(std::string document, std::string const &definitions,
+                            std::string const &runs, std::string const &defaults = {})
+{
+    auto at = document.find("/8 <<");
+    if (!definitions.empty()) document.insert(at, "/6 << /0 [ " + definitions + " ] >> ");
+    if (!runs.empty()) {
+        at = document.find(" /6 << /0 [", document.find("/1 << /1 ["));
+        if (at == document.npos) at = document.find(" >> /1 << /0 [");
+        document.insert(at, " /5 << /0 [ " + runs + " ] >>");
+    }
+    if (!defaults.empty()) {
+        at = document.rfind("/2 << /0 0 /1 12");
+        document.insert(at, "/3 << " + defaults + " >> ");
+    }
+    return document;
+}
+
 // The two text documents as Illustrator 2025 writes them: what was typed, then the type
 // that appearances drew.
 std::string text_setup(std::string const &typed, std::string const &drawn)
@@ -855,6 +874,160 @@ TEST_F(AiNativeImportTest, InheritedCharacterStyleRemainsEditableAfterReopen)
     auto again = elements(elements(edited->getReprRoot(), "svg:text")[0], "svg:tspan");
     ASSERT_EQ(again.size(), 1u);
     EXPECT_STREQ(again[0]->firstChild()->content(), "Edited!");
+}
+
+TEST_F(AiNativeImportTest, NamedParagraphStylesKeepAlignmentAndDrawing)
+{
+    for (unsigned alignment : {1u, 2u}) {
+        auto inline_document = aligned_text_document(alignment);
+        auto named = inline_document;
+        std::string const declaration = "/0 << /0 << /5 << /0 " + std::to_string(alignment) + " >> >> >>";
+        auto const at = named.find(declaration); ASSERT_NE(at, named.npos);
+        named.replace(at, declaration.size(), "/0 << /0 1 >>");
+        named = with_paragraphs(named, "<< /0 << /0 (Base) /5 << /0 0 >> >> >> "
+            "<< /0 << /0 (Child) /6 0 /5 << /0 " + std::to_string(alignment) + " >> >> >>", {});
+        auto a = AN::read_text_document(text_setup(inline_document), Geom::Point(100, 50));
+        auto b = AN::read_text_document(text_setup(named), Geom::Point(100, 50));
+        ASSERT_EQ(b->stories.size(), 1u) << b->error;
+        ASSERT_TRUE(b->stories[0]) << b->errors[0]; ASSERT_TRUE(a->stories[0]);
+        EXPECT_TRUE(b->stories[0]->paragraph_styles_expanded);
+        EXPECT_FALSE(a->stories[0]->paragraph_styles_expanded);
+        EXPECT_EQ(b->stories[0]->lines[0].alignment, alignment);
+        EXPECT_TRUE(AN::same_drawing(*a->stories[0], *b->stories[0]));
+    }
+}
+
+TEST_F(AiNativeImportTest, ParagraphStylesInheritSparseCharacterDefaultsAndOverrides)
+{
+    std::string const definitions =
+        "<< /0 << /5 << /35 1 /32 << /1 18 /8 100 /16 1 /18 false "
+        "/53 << /0 << /0 0 /1 [1 0] >> >> >> >> >> >> "
+        "<< /0 << /6 0 /5 << /32 << /1 24 >> >> >> >> "
+        "<< /0 << /6 1 /5 << /35 0 /32 << /8 150 >> >> >> >>";
+    std::string const runs = "<< /1 6 /0 << /0 2 >> >>";
+    auto document = with_paragraphs(without_character_runs(text_document()), definitions, runs);
+    auto inherited = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+    ASSERT_EQ(inherited->stories.size(), 1u) << inherited->error;
+    ASSERT_TRUE(inherited->stories[0]) << inherited->errors[0];
+    auto const &s = inherited->stories[0]->lines[0].runs[0].style;
+    EXPECT_EQ(s.size, 24); EXPECT_EQ(s.tracking, 150);
+    EXPECT_TRUE(s.underline); EXPECT_FALSE(s.ligatures);
+    EXPECT_EQ(s.fill->model, AN::Color::Model::Gray); EXPECT_EQ(s.fill->v[0], 0);
+    EXPECT_FALSE(inherited->stories[0]->rtl); // Explicit child zero overrides parent one.
+    document = with_paragraphs(text_document("(Hello\\r)", 6, "ArialMT",
+        "/1 30 /8 0 /16 0 /18 true"), definitions, runs);
+    auto overridden = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+    ASSERT_TRUE(overridden->stories[0]) << overridden->errors[0];
+    auto const &o = overridden->stories[0]->lines[0].runs[0].style;
+    EXPECT_EQ(o.size, 30); EXPECT_EQ(o.tracking, 0);
+    EXPECT_FALSE(o.underline); EXPECT_TRUE(o.ligatures);
+    EXPECT_EQ(o.fill->v[0], 0); // Unoverridden paint still inherits the ancestor.
+    auto from_document = AN::read_text_document(text_setup(with_paragraphs(
+        without_character_runs(text_document()), {}, {}, "/32 << /1 22 /8 50 >>")), Geom::Point(100, 50));
+    ASSERT_TRUE(from_document->stories[0]) << from_document->errors[0];
+    EXPECT_EQ(from_document->stories[0]->lines[0].runs[0].style.size, 22);
+    EXPECT_EQ(from_document->stories[0]->lines[0].runs[0].style.tracking, 50);
+    EXPECT_FALSE(from_document->stories[0]->paragraph_styles_expanded);
+}
+
+TEST_F(AiNativeImportTest, ParagraphCharacterDefaultsSplitRunsAtUtf16Boundaries)
+{
+    auto document = area_text_document("(\\376\\377\\000A\\330\\075\\336\\000\\000\\015\\000B\\000\\015)", 6,
+                                      {{0, 10, 4}, {0, 25, 2}});
+    std::string const definitions = "<< /0 << /5 << /32 << /1 10 >> >> >> >> "
+                                    "<< /0 << /5 << /32 << /1 20 >> >> >> >>";
+    document = with_paragraphs(document, definitions, "<< /1 4 /0 << /0 0 >> >> << /1 2 /0 << /0 1 >> >>");
+    auto texts = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    auto const &lines = texts->stories[0]->lines; ASSERT_EQ(lines.size(), 2u);
+    ASSERT_EQ(lines[0].runs.size(), 1u); ASSERT_EQ(lines[1].runs.size(), 1u);
+    EXPECT_EQ(lines[0].runs[0].text, "A\xf0\x9f\x98\x80");
+    EXPECT_EQ(lines[1].runs[0].text, "B");
+    EXPECT_EQ(lines[0].runs[0].style.size, 10); EXPECT_EQ(lines[1].runs[0].style.size, 20);
+    // Paragraph and character runs cannot bisect a surrogate pair.
+    document.replace(document.find("<< /1 4 /0 << /0 0 >> >> << /1 2"),
+                     std::string("<< /1 4 /0 << /0 0 >> >> << /1 2").size(), "<< /1 2 /0 << /0 0 >> >> << /1 4");
+    auto bad = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+    EXPECT_FALSE(bad->stories[0]);
+    EXPECT_NE(bad->errors[0].find("Unicode character"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, ParagraphStylesRefuseInvalidReferencesCyclesAndInheritedFeatures)
+{
+    auto bad_story = [&](std::string const &definitions, std::string const &reference,
+                         std::string const &defaults = {}) {
+        auto texts = AN::read_text_document(text_setup(with_paragraphs(
+            without_character_runs(text_document()), definitions,
+            "<< /1 6 /0 << /0 " + reference + " >> >>", defaults)), Geom::Point(100, 50));
+        ASSERT_EQ(texts->stories.size(), 1u) << texts->error;
+        EXPECT_FALSE(texts->stories[0]) << reference;
+        EXPECT_FALSE(texts->errors[0].empty());
+    };
+    std::string const base = "<< /0 << /5 << >> >> >>";
+    for (auto const *reference : {"0", "-1", "0.5", "3", "(Normal)"}) {
+        bad_story(reference == std::string("0") ? "" : base, reference);
+    }
+    for (auto const *definitions : {
+        "<< /0 << /5 << >> /6 0 >> >>", // Self-cycle.
+        "<< /0 << /5 << >> /6 1 >> >> << /0 << /5 << >> /6 0 >> >>",
+        "<< /0 << /5 << >> /6 (Base) >> >>",
+        "<< /0 << /5 [] >> >>",
+        "<< /0 << /5 << /32 0 >> >> >>",
+        "<< /0 << /5 << /32 << /2 true >> >> >> >>", // Unsupported inherited feature.
+        "<< /0 << /5 << /0 7 >> >> >>"}) bad_story(definitions, "0");
+    bad_story(base, "0", "/32 false");
+    std::string deep;
+    for (unsigned i = 0; i < 65; ++i) {
+        deep += "<< /0 << /5 << >>" + (i < 64 ? " /6 " + std::to_string(i + 1) : "") + " >> >> ";
+    }
+    bad_story(deep, "0");
+    auto justified = with_paragraphs(area_text_document("(Hi\\r)", 3, {{0, 10, 3}}),
+        "<< /0 << /5 << /0 3 >> >> >>", "<< /1 3 /0 << /0 0 >> >>");
+    auto refused = AN::read_text_document(text_setup(justified), Geom::Point(100, 50));
+    EXPECT_FALSE(refused->stories[0]);
+    EXPECT_NE(refused->errors[0].find("justified"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, ParagraphResourcesAreLocalToTypedAndDrawnDocuments)
+{
+    auto document = [&](unsigned size) {
+        return with_paragraphs(without_character_runs(text_document()),
+            "<< /0 << /5 << /32 << /1 " + std::to_string(size) + " >> >> >> >>",
+            "<< /1 6 /0 << /0 0 >> >>");
+    };
+    auto texts = AN::read_text_document(text_setup(document(18), document(24)), Geom::Point(100, 50));
+    ASSERT_EQ(texts->stories.size(), 1u); ASSERT_EQ(texts->drawn.size(), 1u);
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0]; ASSERT_TRUE(texts->drawn[0]) << texts->drawn_errors[0];
+    EXPECT_EQ(texts->stories[0]->lines[0].runs[0].style.size, 18);
+    EXPECT_EQ(texts->drawn[0]->lines[0].runs[0].style.size, 24);
+}
+
+TEST_F(AiNativeImportTest, NamedParagraphFormattingRemainsEditableAndReportsLostLinks)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto document = with_paragraphs(without_character_runs(text_document("(Hello\\r)", 6, font)),
+        "<< /0 << /0 (Body) /5 << /32 << /1 22 /8 100 "
+        "/53 << /0 << /0 2 /1 [1 0.1 0.2 0.3 0.4] >> >> >> >> >> >>",
+        "<< /1 6 /0 << /0 0 >> >>");
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(document)));
+    ASSERT_TRUE(b);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](auto const &note) {
+        return note.find("paragraph styles came in as inline formatting") != std::string::npos;
+    }));
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto texts = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    EXPECT_NE(attr(texts[0], "style").find("letter-spacing:2.2"), std::string::npos);
+    EXPECT_EQ(reopened->getObjectByRepr(texts[0])->style->fill.getColor().getValues(),
+              (std::vector<double>{0.1, 0.2, 0.3, 0.4}));
+    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 1u);
+    ASSERT_TRUE(spans[0]->firstChild()); EXPECT_STREQ(spans[0]->firstChild()->content(), "Hello");
+    spans[0]->firstChild()->setContent("Edited!"); reopened->ensureUpToDate();
+    auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(edited);
+    auto again = elements(elements(edited->getReprRoot(), "svg:text")[0], "svg:tspan");
+    ASSERT_EQ(again.size(), 1u); EXPECT_STREQ(again[0]->firstChild()->content(), "Edited!");
 }
 
 TEST_F(AiNativeImportTest, PointTextBuildsEditableSvgAndSurvivesReopen)

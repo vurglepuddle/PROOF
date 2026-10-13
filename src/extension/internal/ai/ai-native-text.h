@@ -99,6 +99,8 @@ struct PointText
     /// Illustrator doesn't draw it either.
     std::string overflow;
     bool empty = false;     ///< Nothing typed and nothing laid out: an empty frame.
+    /// Named paragraph styles were resolved to inline formatting; their links are not retained.
+    bool paragraph_styles_expanded = false;
     /// Where Illustrator set each run of glyphs, in the layout's space: what its type covers
     /// on the page, whatever font sets it here.
     std::vector<Geom::Rect> set;

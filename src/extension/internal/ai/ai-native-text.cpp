@@ -409,16 +409,72 @@ struct Setup
     TypeSettings const *document = nullptr;
     /// The named paints of the records that aren't a plain colour (named_paints).
     std::map<std::string, NamedPaint> const *paints = nullptr;
+    Value const *paragraph_styles = nullptr;   ///< Resource 6 of this text document.
+    Value const *paragraph_defaults = nullptr; ///< Main dictionary 3.
 };
 
-TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
+using StyleLayers = std::vector<Value const *>;
+
+/// Most specific first. Keep references to the bounded parsed document instead of
+/// copying dictionaries for every run. A declaration is inline, or a resource index;
+/// key 6 links to the parent style and key 5 holds its property dictionary.
+StyleLayers paragraph_layers(Value const *declaration, Setup const &setup,
+                             bool &expanded, std::size_t &budget)
 {
+    StyleLayers layers;
+    std::vector<std::size_t> seen;
+    while (declaration) {
+        if (layers.size() >= 64) throw Bad("paragraph style inheritance is too deep");
+        if (declaration->kind == Value::Number) {
+            auto const index = declaration->index();
+            if (std::find(seen.begin(), seen.end(), index) != seen.end()) throw Bad("paragraph style inheritance is cyclic");
+            seen.push_back(index);
+            if (!setup.paragraph_styles) throw Bad("paragraph style resource is missing");
+            declaration = &setup.paragraph_styles->get("0").at(index).get("0");
+            expanded = true;
+        }
+        auto const &properties = declaration->get("5");
+        if (properties.kind != Value::Dictionary) throw Bad("invalid paragraph style properties");
+        layers.push_back(&properties);
+        auto const parent = declaration->dict.find("6");
+        declaration = parent == declaration->dict.end() ? nullptr : &parent->second;
+        if (declaration && declaration->kind != Value::Number) throw Bad("invalid paragraph parent style reference");
+    }
+    if (setup.paragraph_defaults) {
+        if (setup.paragraph_defaults->kind != Value::Dictionary) throw Bad("invalid default paragraph style");
+        layers.push_back(setup.paragraph_defaults);
+    }
+    if (layers.size() > budget) throw Bad("paragraph style resolution exceeds its limits");
+    budget -= layers.size();
+    return layers;
+}
+
+Value const *layer_value(StyleLayers const &layers, char const *key)
+{
+    for (auto const *layer : layers) {
+        auto const it = layer->dict.find(key);
+        if (it != layer->dict.end()) return &it->second;
+    }
+    return nullptr;
+}
+
+TextStyle style(Value const &own, Value const &defaults, Setup const &setup,
+                StyleLayers const &paragraph = {})
+{
+    if (own.kind != Value::Dictionary || defaults.kind != Value::Dictionary) throw Bad("invalid character style dictionary");
     auto const &fonts = setup.fonts;
+    auto find = [&](char const *k) -> Value const * {
+        if (auto const it = own.dict.find(k); it != own.dict.end()) return &it->second;
+        if (auto const inherited = layer_value(paragraph, k)) return inherited;
+        auto const it = defaults.dict.find(k);
+        return it == defaults.dict.end() ? nullptr : &it->second;
+    };
     auto pick = [&](char const *k) -> Value const & {
-        auto it = own.dict.find(k); return it == own.dict.end() ? defaults.get(k) : it->second;
+        auto const value = find(k);
+        return value ? *value : defaults.get(k);
     };
     auto number = [&](char const *k, double fallback) {
-        if (!own.dict.count(k) && !defaults.dict.count(k)) return fallback;
+        if (!find(k)) return fallback;
         return pick(k).num();
     };
     TextStyle out;
@@ -440,7 +496,7 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
     if (kerning != 0 && kerning != 1 && kerning != 2 && kerning != 3) throw Bad("text is kerned in a way that isn't supported");
     out.kerning = int(kerning);
     auto on = [&](char const *k) {
-        if (!own.dict.count(k) && !defaults.dict.count(k)) return true;
+        if (!find(k)) return true;
         auto const &v = pick(k);
         return v.kind != Value::Boolean || v.boolean;
     };
@@ -511,7 +567,7 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup)
     if (out.stroke_width < 0 || out.stroke_width > 1e6) throw Bad("invalid text stroke width");
     // Features beyond the supported style subset must not be silently normalised.
     for (auto const *k : {"2", "3", "10", "14", "17", "19", "21", "22", "23", "24", "25", "26", "28", "29", "30", "31", "32", "33", "34"}) {
-        if (own.dict.count(k) || defaults.dict.count(k)) {
+        if (find(k)) {
             auto const &v = pick(k);
             if ((v.kind == Value::Boolean && v.boolean) || (v.kind == Value::Number && v.num() != 0))
                 throw Bad("text has an unsupported character style feature");
@@ -664,35 +720,54 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
-    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool justified; };
+    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool justified; StyleLayers characters; };
     std::vector<Paragraph> paragraphs;
-    std::size_t paragraph_units = 0;
+    std::size_t paragraph_units = 0, layer_budget = MAX_VALUES;
+    auto add_paragraph = [&](Value const *declaration, std::size_t count) {
+        auto const layers = paragraph_layers(declaration, setup, out.paragraph_styles_expanded, layer_budget);
+        auto number = [&](char const *key) {
+            auto const value = layer_value(layers, key);
+            return value ? value->index() : 0;
+        };
+        StyleLayers characters;
+        for (auto const *p : layers) {
+            if (auto const it = p->dict.find("32"); it != p->dict.end()) {
+                if (it->second.kind != Value::Dictionary) throw Bad("invalid paragraph character defaults");
+                characters.push_back(&it->second);
+            }
+        }
+        // How its lines are aligned (0): 0 left, 1 right, 2 centred, and justified with
+        // the last line left (3), right (4), centred (5) or justified too (6).
+        auto align = number("0");
+        if (align > 6) throw Bad("text has an unsupported paragraph alignment");
+        bool const justified = align > 2;
+        // A line of point type has no measure to be justified to: it is set as the last
+        // line of its paragraph would be, and one justified too from its left end.
+        if (justified && area) throw Bad("justified paragraph alignment isn't supported yet");
+        if (justified) align = align == 4 ? 1 : align == 5 ? 2 : 0;
+        // The way it reads (35): 0 from the left, 1 from the right.
+        auto const direction = number("35");
+        if (direction > 1) throw Bad("text has an unsupported paragraph direction");
+        if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
+        paragraph_units += count;
+        paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, justified, std::move(characters)});
+    };
     if (s.get("0").dict.count("5")) {
         for (auto const &paragraph : s.get("0").get("5").get("0").list) {
-            auto const &p = paragraph.get("0").get("0").get("5");
-            // How its lines are aligned (0): 0 left, 1 right, 2 centred, and justified with
-            // the last line left (3), right (4), centred (5) or justified too (6).
-            auto align = p.dict.count("0") ? p.get("0").index() : 0;
-            if (align > 6) throw Bad("text has an unsupported paragraph alignment");
-            bool const justified = align > 2;
-            // A line of point type has no measure to be justified to: it is set as the last
-            // line of its paragraph would be, and one justified too from its left end.
-            if (justified && area) throw Bad("justified paragraph alignment isn't supported yet");
-            if (justified) align = align == 4 ? 1 : align == 5 ? 2 : 0;
-            // The way it reads (35): 0 from the left, 1 from the right.
-            auto const direction = p.dict.count("35") ? p.get("35").index() : 0;
-            if (direction > 1) throw Bad("text has an unsupported paragraph direction");
-            auto const count = paragraph.get("1").index();
-            if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
-            paragraph_units += count;
-            paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, justified});
+            add_paragraph(&paragraph.get("0").get("0"), paragraph.get("1").index());
         }
         if (paragraphs.empty()) throw Bad("text has no paragraph runs");
-        // A text object reads one way: its paragraphs are one to what sets them.
-        out.rtl = paragraphs.front().rtl;
-        for (auto const &p : paragraphs) {
-            if (p.rtl != out.rtl) throw Bad("paragraphs that read both ways in one story aren't supported yet");
+    } else {
+        std::size_t count = 0;
+        for (auto const *at = text.data(); at < text.data() + text.size(); at = g_utf8_next_char(at)) {
+            count += g_utf8_get_char(at) > 0xffff ? 2 : 1;
         }
+        add_paragraph(nullptr, count);
+    }
+    // A text object reads one way: its paragraphs are one to what sets them.
+    out.rtl = paragraphs.front().rtl;
+    for (auto const &p : paragraphs) {
+        if (p.rtl != out.rtl) throw Bad("paragraphs that read both ways in one story aren't supported yet");
     }
     // Area type: how many characters Illustrator put in each line, their ends included.
     std::vector<std::size_t> line_units;
@@ -722,25 +797,45 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     }
     struct Run { std::size_t end; TextStyle style; };
     std::vector<Run> runs;
+    struct RawRun { std::size_t end; Value const *own; };
+    std::vector<RawRun> raw_runs;
+    Value inherited;
+    inherited.kind = Value::Dictionary;
     std::size_t units = 0;
     auto const &content = s.get("0");
     if (!content.dict.count("6")) {
         // A story with no character overrides has no run list. Illustrator uses the
-        // document's default character style for all its UTF-16 units, including ends.
+        // paragraph's character defaults, then the document's, including ends.
         // An explicitly present but broken run list must still fail below.
         for (auto const *at = text.data(); at < text.data() + text.size(); at = g_utf8_next_char(at)) {
             units += g_utf8_get_char(at) > 0xffff ? 2 : 1;
         }
-        runs.push_back({units, style(defaults, defaults, setup)});
+        raw_runs.push_back({units, &inherited});
     } else {
         for (auto const &run : content.get("6").get("0").list) {
             auto count = run.get("1").index();
             if (!count || count > MAX_STORY * 2 - units) throw Bad("invalid text run length");
             units += count;
-            runs.push_back({units, style(run.get("0").get("0").get("6"), defaults, setup)});
+            raw_runs.push_back({units, &run.get("0").get("0").get("6")});
         }
     }
-    if (runs.empty()) throw Bad("text has no character runs");
+    if (raw_runs.empty()) throw Bad("text has no character runs");
+    if (paragraph_units != units) throw Bad("paragraph runs don't cover the story");
+    // Character overrides can span paragraph boundaries. Intersect the two run
+    // lists so each span inherits its own paragraph's character defaults.
+    std::size_t resolved_units = 0, paragraph_index = 0;
+    for (auto const &r : raw_runs) {
+        while (resolved_units < r.end) {
+            auto const &p = paragraphs[paragraph_index];
+            auto const end = std::min(r.end, p.end);
+            if (runs.size() >= MAX_VALUES) throw Bad("resolved character runs exceed their limits");
+            if (p.characters.size() + 1 > layer_budget) throw Bad("character style resolution exceeds its limits");
+            layer_budget -= p.characters.size() + 1;
+            runs.push_back({end, style(*r.own, defaults, setup, p.characters)});
+            resolved_units = end;
+            if (end == p.end) ++paragraph_index;
+        }
+    }
     auto const hscale = runs[0].style.horizontal_scale, vscale = runs[0].style.vertical_scale;
     for (auto const &r : runs) {
         if (r.style.horizontal_scale != hscale || r.style.vertical_scale != vscale)
@@ -752,7 +847,6 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     for (auto &l : out.lines) l.origin *= Geom::Scale(1 / hscale, 1 / vscale);
     out.frame *= Geom::Scale(1 / hscale, 1 / vscale);
     for (auto &r : out.set) r *= Geom::Scale(1 / hscale, 1 / vscale);
-    if (!paragraphs.empty() && paragraph_units != units) throw Bad("paragraph runs don't cover the story");
     if (area) {
         std::size_t laid_units = 0;
         for (auto const n : line_units) laid_units += n;
@@ -909,6 +1003,8 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
             setup.paints = &paints;
             for (auto const &font : doc.get("0").get("1").get("0").list) setup.fonts.push_back(font_entry(font.get("0").get("0")));
             auto const &main = doc.get("1");
+            if (auto const it = doc.get("0").dict.find("6"); it != doc.get("0").dict.end()) setup.paragraph_styles = &it->second;
+            if (auto const it = main.dict.find("3"); it != main.dict.end()) setup.paragraph_defaults = &it->second;
             if (auto const settings = main.dict.find("0"); settings != main.dict.end() && settings->second.kind == Value::Dictionary) {
                 // Illustrator takes sizes up to twice the type's own; a shift can be none.
                 auto share = [&](char const *k, double &value, bool size) {

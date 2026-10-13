@@ -555,6 +555,7 @@ public:
     /// Text objects painted with a gradient, which is black on type.
     std::size_t gradient_text = 0;
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
+    std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     /// The text objects that show and are set by a font other than their own.
     std::vector<XML::Node *> substituted_shown;
     std::size_t knockouts = 0;
@@ -686,13 +687,13 @@ void Builder::run()
         auto const error = link_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
-                                       gradient_text);
+                                       gradient_text, paragraph_styled_text);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error;
         images_left_out = images;
         link_error = error;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
-                 substituted_text, glyphs_missing_text, unordered_text, gradient_text) = counts;
+                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -759,6 +760,7 @@ XML::Node *Builder::text(Node const &n)
         if (it == _text_fonts.end() || !it->second) { ++hidden_text; return nullptr; }
     }
     auto e = create("svg:text");
+    if (story.paragraph_styles_expanded) ++paragraph_styled_text;
     e->setAttribute("xml:space", "preserve");
     // Type an appearance drew isn't the object's own text: its story is told apart.
     e->setAttribute(n.text_proxy ? "proof:ai-drawn-story" : "proof:ai-story", std::to_string(*n.story));
@@ -1754,6 +1756,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     if (b.empty_text) {
         notes.push_back(count(b.empty_text, "text frame with nothing typed in it was", "text frames with nothing typed in them were") +
                         " left out");
+    }
+    if (b.paragraph_styled_text) {
+        notes.push_back(count(b.paragraph_styled_text, "text object's", "text objects'") +
+                        " paragraph styles came in as inline formatting; named style definitions and links aren't kept");
     }
     if (b.overflowing_text) {
         notes.push_back(count(b.overflowing_text, "text frame holds", "text frames hold") +
