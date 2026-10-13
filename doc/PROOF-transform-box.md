@@ -1,6 +1,6 @@
 # Transform box
 
-The select tool's handles follow the professional convention (Figma's
+The select and rectangle, ellipse and star tools' handles follow the professional convention (Figma's
 4-corner box, which the user prefers), replacing Inkscape's arrow handles and
 its click-again rotate/skew mode.
 
@@ -24,7 +24,7 @@ its click-again rotate/skew mode.
   centre of rotation. Alt rotates around the opposite corner and Shift snaps
   the angle. Clicking the selection again no longer switches modes.
 - **Corner radius:** with one rectangle selected and the pointer over it,
-  small circles appear inside its corners, at the radius or 12 px in from a
+  small circles appear inside its corners, at the radius or 15 px inside each edge from a
   sharp corner. Dragging one rounds all four corners together, in one undo
   step. They do not appear for rectangles with path effects (the Corners
   effect has its own handles in the node tool), or for rectangles under 48 px
@@ -42,6 +42,28 @@ its click-again rotate/skew mode.
   are not picked. A small or thin object can still be dragged by its middle.
 
 Shift+S still reaches the remaining skew mode and on-canvas alignment.
+
+## Shape tools (2026-10-13)
+
+Creating a rectangle, ellipse or star leaves its drawing tool active and shows
+the same four-corner transform box. The old native white size/arc knots are
+replaced in those drawing tools; native geometry and toolbar fields remain
+editable. Direct Selection retains its individual anchors and ellipse arc
+controls. A new drawing gesture hides the preceding selection's controls until
+creation finishes. The shared transform callbacks bind their owning controller
+instead of assuming the active tool is Select.
+
+The owner's two Illustrator reference captures place rounding widgets about
+15 screen pixels inside each rectangle edge at both captured shape sizes.
+Direct Selection's Live Corners use a 21-pixel diagonal offset from the anchor
+or split-anchor midpoint. These starting gaps stay constant with zoom.
+
+Owner Windows 10 acceptance passes 193/193 across feedback, transform box,
+turned box, rotation centre, UI, Live Corners, display, groups and normal close.
+The new feedback check covers native rectangle/ellipse creation and resizing,
+exact Undo, drawing a second shape with the tool still active, small anchor hit
+areas, and corner movement/deletion at 60 ms samples. All eight non-input
+suites and the 19-check AI interchange smoke test also pass.
 
 ## Turned box (2026-10-03)
 

@@ -261,25 +261,23 @@ Notes:
     fill: #277fff;
 }
 
-/* PROOF Direct Selection: anchors about as large as the transform box's corners. Inkscape's
-   were half as large again, and larger still when selected. They keep their shapes: a diamond
-   for a corner, a square for a smooth anchor. At the default handle size a corner is 9 px
-   across, 11 px selected. */
+/* PROOF Direct Selection: small anchor markers, with the preceding 9/11 px
+   hit area retained by Node independently of the drawn marker. */
 .inkscape-node-cusp {
-    scale: 2.0;
+    scale: 1.5;
     size-extra: 1px;
     outline-width: 1px;
 }
 
 .inkscape-node-smooth,
 .inkscape-node-symmetrical {
-    scale: 1.5;
+    scale: 1.0;
     size-extra: 1px;
     outline-width: 1px;
 }
 
 .inkscape-node-auto {
-    scale: 1.7;
+    scale: 1.25;
     size-extra: 1px;
     outline-width: 1px;
 }

@@ -366,6 +366,7 @@ void PathManipulator::update(bool alert_LPE)
     _observer->block();
     _createGeometryFromControlPoints(alert_LPE);
     _updateSegmentHighlights();
+    if (_corners) _corners->geometryChanged();
     _observer->unblock();
 }
 
@@ -1430,6 +1431,7 @@ void PathManipulator::setControlsTransform(Geom::Affine const &tnew)
         }
     }
     _createGeometryFromControlPoints();
+    if (_corners) _corners->geometryChanged();
     if (_ellipse_arcs) _ellipse_arcs->queueRefresh();
 }
 
@@ -1610,6 +1612,7 @@ void PathManipulator::_externalChange(unsigned type)
         } break;
     default: break;
     }
+    if (_corners) _corners->geometryChanged();
     if (_ellipse_arcs) _ellipse_arcs->queueRefresh();
     _queueSegmentHighlights();
 }

@@ -409,6 +409,15 @@ bool CanvasItemCtrl::_pick_zone_contains(Geom::Point const &p) const
     return true;
 }
 
+void CanvasItemCtrl::set_pick_size(double size)
+{
+    defer([=, this] {
+        if (_pick_size == size) return;
+        _pick_size = size;
+        request_update();
+    });
+}
+
 Geom::OptRect CanvasItemCtrl::_pick_zone_bounds() const
 {
     if (!_pick_zone) {
@@ -585,6 +594,11 @@ void CanvasItemCtrl::_update(bool)
 
     // The bounding box we want to invalidate in cairo, rounded out to catch any stray pixels
     _bounds = Geom::Rect::from_xywh(_pos - Geom::Point(w_half, w_half), {width, width}).roundOutwards();
+    if (_pick_size > 0) {
+        auto const half = Geom::Point(_pick_size / 2, _pick_size / 2);
+        _bounds.unionWith(Geom::Rect(_pos - half, _pos + half));
+        _bounds = _bounds->roundOutwards();
+    }
 
     // Parent groups only pick within their children's bounds, so those must cover the pick zone.
     if (auto zone = _pick_zone_bounds()) {

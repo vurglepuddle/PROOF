@@ -14,6 +14,7 @@
 #define SEEN_SHAPE_EDITOR_H
 
 #include <2geom/affine.h>
+#include <memory>
 
 #include "xml/node-observer.h"
 
@@ -22,7 +23,7 @@ class LivePathEffectObject;
 class SPDesktop;
 class SPItem;
 
-namespace Inkscape { namespace XML { class Node; }
+namespace Inkscape { class SelTrans; namespace XML { class Node; }
 namespace UI {
 
 class ShapeEditor : private XML::NodeObserver
@@ -34,6 +35,10 @@ public:
 
     void set_item(SPItem *item);
     void unset_item(bool keep_knotholder = false);
+    /// Shape drawing tools share the selector's box; other editors keep native knots.
+    void useTransformBox();
+    void setDrawing(bool drawing);
+    void setPointer(Geom::Point const &point);
 
     void update_knotholder(); //((deprecated))
 
@@ -49,6 +54,7 @@ public:
 private:
     void reset_item();
     static bool _blockSetItem;
+    std::unique_ptr<SelTrans> _transform_box;
 
     SPDesktop *desktop;
     Inkscape::XML::Node *knotholder_listener_attached_for{nullptr};

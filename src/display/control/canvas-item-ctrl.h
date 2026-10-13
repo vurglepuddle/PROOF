@@ -82,6 +82,8 @@ public:
         double overlap = 0;        ///< How far it reaches back along the box edges.
     };
     void set_pick_zone(std::optional<PickZone> zone);
+    /// Minimum square hit area in screen pixels, independent of the visible marker.
+    void set_pick_size(double size);
 
     // do not call directly; only used for invisible handle
     void _set_size(int size);
@@ -119,6 +121,7 @@ private:
     // preferred size parity in logical pixels -1 disabled, 0-even, 1-odd >1 minimum size and parity
     int _size_parity = -1;
     std::optional<PickZone> _pick_zone;
+    double _pick_size = 0;
     bool _pick_zone_contains(Geom::Point const &p) const;
     Geom::OptRect _pick_zone_bounds() const;
 

@@ -9,6 +9,12 @@ dragging a visible widget edits all the visible corners on that object.
 Selected anchors map to the new split endpoints on commit, so another drag
 continues to edit the same corner subset.
 
+The starting widget is 21 screen pixels from its anchor along the inward
+bisector (about 15 pixels inside each edge at a right angle), following the
+owner's Illustrator references. Geometry edits refresh its position and
+topology synchronously; unchanged widget sets retain their controls. Moving or
+deleting an anchor therefore updates its corner widgets in the same edit.
+
 Alt-click cycles Round, Inverted Round and Chamfer. Double-click opens Corners,
 with a numeric radius in the document's display units, corner type, and Absolute
 or Relative rounding. Absolute specifies a circular radius at straight-sided

@@ -42,9 +42,10 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
   While they showed, a click on a selected anchor switched their mode where it
   should have selected that anchor alone. The node toolbar's button and the
   preference for single nodes are gone with them.
-- **Anchor size:** a corner anchor is a diamond 9 px across at the default
-  handle size and 11 px when selected, about the size of the transform box's
-  corner squares; a smooth anchor is a 7 px square. The end of a Bezier handle
+- **Anchor size:** a corner anchor is a diamond 7 px across at the default
+  handle size and 9 px when selected. Its preceding 9/11 px pick area remains
+  available independently of the visible marker. Smooth anchors are smaller
+  squares too. The end of a Bezier handle
   is a smaller circle with a type of its own, `.proof-node-handle` in
   `share/ui/node-handles.css`, so that the handles of other tools keep theirs.
 - **An object that goes:** a path's manipulator forgets its object when the

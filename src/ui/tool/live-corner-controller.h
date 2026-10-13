@@ -27,6 +27,7 @@ public:
     explicit LiveCornerController(PathManipulator &pm);
     ~LiveCornerController();
     void queueRefresh(bool reset_selection = false);
+    void geometryChanged();
     void updateMetadata();
     void captureNativeCorners();
     void pathReleased();

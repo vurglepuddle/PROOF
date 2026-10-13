@@ -49,6 +49,7 @@ ArcTool::ArcTool(SPDesktop *desktop)
     Inkscape::Selection *selection = desktop->getSelection();
 
     this->shape_editor = new ShapeEditor(desktop);
+    this->shape_editor->useTransformBox();
 
     SPItem *item = desktop->getSelection()->singleItem();
     if (item) {
@@ -61,9 +62,6 @@ ArcTool::ArcTool(SPDesktop *desktop)
     );
 
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
-    if (prefs->getBool("/tools/shapes/selcue")) {
-        this->enableSelectionCue();
-    }
 
     if (prefs->getBool("/tools/shapes/gradientdrag")) {
         this->enableGrDrag();
@@ -142,6 +140,7 @@ bool ArcTool::root_handler(CanvasEvent const &event)
             }
         },
         [&] (MotionEvent const &event) {
+            if (!(event.modifiers & GDK_BUTTON1_MASK)) shape_editor->setPointer(_desktop->w2d(event.pos));
             if (dragging && (event.modifiers & GDK_BUTTON1_MASK)) {
                 if (!checkDragMoved(event.pos)) {
                     return;
@@ -254,6 +253,7 @@ bool ArcTool::root_handler(CanvasEvent const &event)
 
 void ArcTool::drag(Geom::Point const &pt, unsigned state)
 {
+    shape_editor->setDrawing(true);
     if (!this->arc) {
         if (Inkscape::have_viable_layer(_desktop, defaultMessageContext()) == false) {
             return;
@@ -382,6 +382,7 @@ void ArcTool::finishItem()
         // update while creating inside a LPE group
         sp_lpe_item_update_patheffect(this->arc.get(), true, true);
         _desktop->getSelection()->set(arc.get());
+        shape_editor->setDrawing(false);
 
         DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Create ellipse"), INKSCAPE_ICON("draw-ellipse"));
 
@@ -391,6 +392,7 @@ void ArcTool::finishItem()
 
 void ArcTool::cancel()
 {
+    shape_editor->setDrawing(false);
     _desktop->getSelection()->clear();
     ungrabCanvasEvents();
 

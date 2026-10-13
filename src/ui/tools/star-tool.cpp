@@ -53,6 +53,7 @@ StarTool::StarTool(SPDesktop *desktop)
     sp_event_context_read(this, "randomized");
 
     this->shape_editor = new ShapeEditor(desktop);
+    this->shape_editor->useTransformBox();
 
     SPItem *item = desktop->getSelection()->singleItem();
     if (item) {
@@ -66,9 +67,6 @@ StarTool::StarTool(SPDesktop *desktop)
     this->sel_changed_connection = selection->connectChanged(sigc::mem_fun(*this, &StarTool::selection_changed));
 
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
-    if (prefs->getBool("/tools/shapes/selcue")) {
-        this->enableSelectionCue();
-    }
 
     if (prefs->getBool("/tools/shapes/gradientdrag")) {
         this->enableGrDrag();
@@ -151,6 +149,7 @@ bool StarTool::root_handler(CanvasEvent const &event)
             }
         },
         [&] (MotionEvent const &event) {
+            if (!(event.modifiers & GDK_BUTTON1_MASK)) shape_editor->setPointer(_desktop->w2d(event.pos));
             if (dragging && (event.modifiers & GDK_BUTTON1_MASK)) {
                 if (!checkDragMoved(event.pos)) {
                     return;
@@ -258,6 +257,7 @@ bool StarTool::root_handler(CanvasEvent const &event)
 
 void StarTool::drag(Geom::Point p, unsigned state)
 {
+    shape_editor->setDrawing(true);
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
     double const snaps = prefs->getDoubleLimited("/options/rotationsnapsperpi/value", 12.0, 0.1, 1800.0);
 
@@ -339,6 +339,7 @@ void StarTool::finishItem() {
         // update while creating inside a LPE group
         sp_lpe_item_update_patheffect(this->star.get(), true, true);
         _desktop->getSelection()->set(star.get());
+        shape_editor->setDrawing(false);
         DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Create star"), INKSCAPE_ICON("draw-polygon-star"));
 
         this->star = nullptr;
@@ -346,6 +347,7 @@ void StarTool::finishItem() {
 }
 
 void StarTool::cancel() {
+    shape_editor->setDrawing(false);
     _desktop->getSelection()->clear();
     ungrabCanvasEvents();
 

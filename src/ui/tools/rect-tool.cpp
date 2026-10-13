@@ -48,6 +48,7 @@ RectTool::RectTool(SPDesktop *desktop)
     , mod_trans_off_center(Modifiers::Modifier::get(Modifiers::Type::TRANS_OFF_CENTER))
 {
     this->shape_editor = new ShapeEditor(desktop);
+    this->shape_editor->useTransformBox();
 
     SPItem *item = desktop->getSelection()->singleItem();
     if (item) {
@@ -63,9 +64,6 @@ RectTool::RectTool(SPDesktop *desktop)
     sp_event_context_read(this, "ry");
 
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
-    if (prefs->getBool("/tools/shapes/selcue")) {
-        this->enableSelectionCue();
-    }
 
     if (prefs->getBool("/tools/shapes/gradientdrag")) {
         this->enableGrDrag();
@@ -157,6 +155,7 @@ bool RectTool::root_handler(CanvasEvent const &event)
             }
         },
         [&] (MotionEvent const &event) {
+            if (!(event.modifiers & GDK_BUTTON1_MASK)) shape_editor->setPointer(_desktop->w2d(event.pos));
             if (dragging && (event.modifiers & GDK_BUTTON1_MASK)) {
                 if (!checkDragMoved(event.pos)) {
                     return;
@@ -275,6 +274,7 @@ bool RectTool::root_handler(CanvasEvent const &event)
 }
 
 void RectTool::drag(Geom::Point const pt, unsigned state) {
+    shape_editor->setDrawing(true);
     if (!this->rect) {
         if (Inkscape::have_viable_layer(_desktop, defaultMessageContext()) == false) {
             return;
@@ -377,6 +377,7 @@ void RectTool::finishItem() {
         // update while creating inside a LPE group
         sp_lpe_item_update_patheffect(this->rect.get(), true, true);
         _desktop->getSelection()->set(rect.get());
+        shape_editor->setDrawing(false);
 
         DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Create rectangle"), INKSCAPE_ICON("draw-rectangle"));
 
@@ -385,6 +386,7 @@ void RectTool::finishItem() {
 }
 
 void RectTool::cancel(){
+    shape_editor->setDrawing(false);
     _desktop->getSelection()->clear();
     ungrabCanvasEvents();
 

@@ -160,6 +160,13 @@ void LiveCornerController::queueRefresh(bool reset_selection)
     _refresh_idle = Glib::signal_idle().connect([this] { refresh(); return false; });
 }
 
+void LiveCornerController::geometryChanged()
+{
+    if (_dragging) return; // The corner edit itself owns its preview and controls.
+    _refresh_idle.disconnect();
+    refresh();
+}
+
 void LiveCornerController::refresh()
 {
     if (_dragging) return;
@@ -219,12 +226,14 @@ void LiveCornerController::refresh()
     // Keep thousands of on-canvas widgets out of large drawings, as Illustrator
     // does. Geometry and saved live parameters are unaffected by this display cap.
     if (shown.size() > 100) shown.clear();
-    _shown = std::move(shown);
-    _widgets.clear();
-    for (auto c : _shown) {
-        auto widget = std::make_unique<LiveCornerWidget>(*this, c);
-        widget->display(widgetPosition(c), _selected.contains(c));
-        _widgets.push_back(std::move(widget));
+    if (shown != _shown || _widgets.size() != shown.size()) {
+        _widgets.clear();
+        _shown = std::move(shown);
+        for (auto c : _shown) _widgets.push_back(std::make_unique<LiveCornerWidget>(*this, c));
+    }
+    for (std::size_t i = 0; i < _shown.size(); ++i) {
+        auto c = _shown[i];
+        _widgets[i]->display(widgetPosition(c), _selected.contains(c));
     }
 }
 
@@ -237,7 +246,7 @@ Geom::Point LiveCornerController::widgetPosition(std::size_t c) const
     auto transform = _pm._getTransform();
     auto anchor = info->anchor * _model.frame * transform;
     auto direction = Geom::unit_vector((info->anchor + info->direction) * _model.frame * transform - anchor);
-    return at * transform + direction * (12 / _pm._desktop->current_zoom());
+    return at * transform + direction * (21 / _pm._desktop->current_zoom());
 }
 
 double LiveCornerController::displayScale() const

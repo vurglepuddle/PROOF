@@ -56,23 +56,20 @@
 #include "ui/icon-names.h"
 #include "ui/modifiers.h"
 #include "ui/knot/knot.h"
-#include "ui/tools/select-tool.h"
+#include "ui/tools/tool-base.h"
 #include "ui/widget/canvas.h"
 #include "ui/widget/canvas/framecheck.h"
 #include "ui/widget/events/canvas-event.h"
 
 using Inkscape::DocumentUndo;
 
-static void sp_sel_trans_handle_grab(SPKnot *knot, guint state, SPSelTransHandle const* data);
-static void sp_sel_trans_handle_ungrab(SPKnot *knot, guint state, SPSelTransHandle const* data);
-static void sp_sel_trans_handle_click(SPKnot *knot, guint state, SPSelTransHandle const* data);
-static void sp_sel_trans_handle_new_event(SPKnot *knot, Geom::Point const &position, guint32 state, SPSelTransHandle const* data);
-static gboolean sp_sel_trans_handle_request(SPKnot *knot, Geom::Point *p, guint state, SPSelTransHandle const *data);
+static void sp_sel_trans_handle_grab(SPKnot *knot, guint state, SPSelTransHandle const* data, Inkscape::SelTrans *owner);
+static void sp_sel_trans_handle_ungrab(SPKnot *knot, guint state, SPSelTransHandle const* data, Inkscape::SelTrans *owner);
+static void sp_sel_trans_handle_click(SPKnot *knot, guint state, SPSelTransHandle const* data, Inkscape::SelTrans *owner);
+static void sp_sel_trans_handle_new_event(SPKnot *knot, Geom::Point const &position, guint32 state, SPSelTransHandle const* data, Inkscape::SelTrans *owner);
+static gboolean sp_sel_trans_handle_request(SPKnot *knot, Geom::Point *p, guint state, SPSelTransHandle const *data, Inkscape::SelTrans *owner);
 
-// TODO Remove
-#define SP_SELECT_CONTEXT(obj) (dynamic_cast<Inkscape::UI::Tools::SelectTool*>((Inkscape::UI::Tools::ToolBase*)obj))
-
-static bool sp_sel_trans_handle_event(SPKnot *knot, Inkscape::CanvasEvent const &event, SPSelTransHandle const*)
+static bool sp_sel_trans_handle_event(SPKnot *knot, Inkscape::CanvasEvent const &event, SPSelTransHandle const*, Inkscape::SelTrans *owner)
 {
     bool ret = false;
 
@@ -83,11 +80,9 @@ static bool sp_sel_trans_handle_event(SPKnot *knot, Inkscape::CanvasEvent const 
                 if (!knot->is_grabbed()) {
                     return;
                 }
-                auto desktop = knot->desktop;
-                auto seltrans = SP_SELECT_CONTEXT(desktop->getTool())->_seltrans;
                 // This stamp can't produce clones without requiring extra support of "undoing"
                 // the cascaded transform from this knot's changes.
-                seltrans->stamp();
+                owner->stamp();
                 ret = true;
             }
         },
@@ -729,7 +724,7 @@ void Inkscape::SelTrans::_updateHandles()
         _center_is_set = true;
     }
 
-    if ( !_show_handles || _empty ) {
+    if ( !_show_handles || _empty || _boxes_hidden ) {
         _desktop->getSelection()->setAnchor(0.0, 0.0, false);
         _updateBox();
         _updateRadiusKnots();
@@ -855,10 +850,10 @@ void Inkscape::SelTrans::_updateBox()
 
 void Inkscape::SelTrans::setBoxesHidden(bool hidden)
 {
+    if (_boxes_hidden == hidden) return;
     _boxes_hidden = hidden;
     _selcue.setBboxesVisible(!hidden);
-    _updateBox();
-    _updateRadiusKnots();
+    _updateHandles();
 }
 
 Glib::RefPtr<Gdk::Cursor> Inkscape::SelTrans::_boxCursor(std::string const &name)
@@ -985,7 +980,7 @@ double rect_radius(SPRect const &rect)
 }
 
 /// How far into the corner a radius handle sits: at the radius, or a little in when it is small.
-constexpr double RADIUS_HANDLE_MIN_INSET = 12; // screen pixels
+constexpr double RADIUS_HANDLE_MIN_INSET = 15; // screen pixels
 /// Rectangles narrower than this on screen show no radius handles, leaving room to move them.
 constexpr double RADIUS_HANDLES_MIN_SIZE = 48;
 
@@ -1200,12 +1195,12 @@ void Inkscape::SelTrans::_makeHandles()
         knots[i]->setAnchor(box_handle ? SP_ANCHOR_CENTER : hands[i].anchor);
         knots[i]->updateCtrl();
 
-        knots[i]->request_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_request), &hands[i]));
-        knots[i]->moved_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_new_event), &hands[i]));
-        knots[i]->grabbed_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_grab), &hands[i]));
-        knots[i]->ungrabbed_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_ungrab), &hands[i]));
-        knots[i]->click_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_click), &hands[i]));
-        knots[i]->event_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_event), &hands[i]));
+        knots[i]->request_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_request), &hands[i], this));
+        knots[i]->moved_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_new_event), &hands[i], this));
+        knots[i]->grabbed_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_grab), &hands[i], this));
+        knots[i]->ungrabbed_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_ungrab), &hands[i], this));
+        knots[i]->click_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_click), &hands[i], this));
+        knots[i]->event_signal.connect(sigc::bind(sigc::ptr_fun(sp_sel_trans_handle_event), &hands[i], this));
     }
 
     // Corners win over edges, and edges over the rotation zones around them.
@@ -1218,19 +1213,19 @@ void Inkscape::SelTrans::_makeHandles()
     }
 }
 
-static void sp_sel_trans_handle_grab(SPKnot *knot, guint state, SPSelTransHandle const* data)
+static void sp_sel_trans_handle_grab(SPKnot *knot, guint state, SPSelTransHandle const* data, Inkscape::SelTrans *owner)
 {
-    SP_SELECT_CONTEXT(knot->desktop->getTool())->_seltrans->handleGrab(
+    owner->handleGrab(
         knot, state, *(SPSelTransHandle const *) data
         );
 }
 
-static void sp_sel_trans_handle_ungrab(SPKnot *knot, guint /*state*/, SPSelTransHandle const* /*data*/)
+static void sp_sel_trans_handle_ungrab(SPKnot *, guint /*state*/, SPSelTransHandle const* /*data*/, Inkscape::SelTrans *owner)
 {
-    SP_SELECT_CONTEXT(knot->desktop->getTool())->_seltrans->ungrab();
+    owner->ungrab();
 }
 
-static void sp_sel_trans_handle_new_event(SPKnot *knot, Geom::Point const& position, guint state, SPSelTransHandle const *data)
+static void sp_sel_trans_handle_new_event(SPKnot *knot, Geom::Point const& position, guint state, SPSelTransHandle const *data, Inkscape::SelTrans *owner)
 {
     Geom::Point pos = position;
 
@@ -1238,21 +1233,21 @@ static void sp_sel_trans_handle_new_event(SPKnot *knot, Geom::Point const& posit
         return;
     }
 
-    SP_SELECT_CONTEXT(knot->desktop->getTool())->_seltrans->handleNewEvent(
+    owner->handleNewEvent(
         &pos, state, *(SPSelTransHandle const *) data
     );
 }
 
-static gboolean sp_sel_trans_handle_request(SPKnot *knot, Geom::Point *position, guint state, SPSelTransHandle const *data)
+static gboolean sp_sel_trans_handle_request(SPKnot *knot, Geom::Point *position, guint state, SPSelTransHandle const *data, Inkscape::SelTrans *owner)
 {
-    return SP_SELECT_CONTEXT(knot->desktop->getTool())->_seltrans->handleRequest(
+    return owner->handleRequest(
         knot, position, state, *(SPSelTransHandle const *) data
         );
 }
 
-static void sp_sel_trans_handle_click(SPKnot *knot, guint state, SPSelTransHandle const* data)
+static void sp_sel_trans_handle_click(SPKnot *knot, guint state, SPSelTransHandle const* data, Inkscape::SelTrans *owner)
 {
-    SP_SELECT_CONTEXT(knot->desktop->getTool())->_seltrans->handleClick(
+    owner->handleClick(
         knot, state, *(SPSelTransHandle const *) data
         );
 }

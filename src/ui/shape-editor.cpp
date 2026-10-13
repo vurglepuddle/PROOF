@@ -15,6 +15,7 @@
 #include "shape-editor.h"
 
 #include "desktop.h"
+#include "seltrans.h"
 #include "live_effects/effect.h"
 #include "object/sp-lpe-item.h"
 #include "shape-editor-knotholders.h"
@@ -35,6 +36,22 @@ ShapeEditor::ShapeEditor(SPDesktop *dt, Geom::Affine edit_transform, double edit
 
 ShapeEditor::~ShapeEditor() {
     unset_item();
+}
+
+void ShapeEditor::useTransformBox()
+{
+    unset_item();
+    _transform_box = std::make_unique<SelTrans>(desktop);
+}
+
+void ShapeEditor::setDrawing(bool drawing)
+{
+    if (_transform_box) _transform_box->setBoxesHidden(drawing);
+}
+
+void ShapeEditor::setPointer(Geom::Point const &point)
+{
+    if (_transform_box) _transform_box->setPointer(point);
 }
 
 void ShapeEditor::unset_item(bool keep_knotholder) {
@@ -118,7 +135,7 @@ void ShapeEditor::set_item(SPItem *item) {
 
     if (item) {
         Inkscape::XML::Node *repr;
-        if (!knotholder) {
+        if (!knotholder && !_transform_box) {
             // only recreate knotholder if none is present
             knotholder = create_knot_holder(item, desktop, _edit_rotation, _edit_marker_mode);
         }

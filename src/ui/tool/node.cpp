@@ -1359,6 +1359,8 @@ void Node::_setState(State state)
 {
     // change node size to match type and selection state
     _canvas_item_ctrl->set_size(selected() ? HandleSize::LARGE : HandleSize::NORMAL);
+    auto const grab = Preferences::get()->getIntLimited("/options/grabsize/value", 3, 1, 15);
+    _canvas_item_ctrl->set_pick_size(2 * std::min(grab + int(selected()), 15) + 3);
     switch (state) {
         // These were used to set "active" and "prelight" flags but the flags weren't being used.
         case STATE_NORMAL:
