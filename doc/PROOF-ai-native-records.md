@@ -52,7 +52,7 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | Operators | Meaning | Source |
 |---|---|---|
 | `%AI5_BeginLayer`, `… Lb`, `(name) Ln`, `LB` | Layer. The `Lb` operands are: 0 visible, 1 preview, 2 unlocked, 3 printing, 4 dimmed, 7 colour index, 8–10 RGB, 12 dim %. | VectorCraft |
-| `u`…`U`, `*u`…`*U`, `q`…`Q` | Group, compound path, clip group. `W` makes the next path clip. A compound path is painted as its last path that has paint. A clipping path can lie in a group of its own at the end of its clip group, and be written three times when it has a fill and a stroke: see "What a plug-in made, clipping paths, compound paths and a group's own state". | VectorCraft; the rest from the **2026-10-13 round** |
+| `u`…`U`, `*u`…`*U`, `q`…`Q` | Group, compound path, clip group. `W` makes the next path clip. A compound path is painted as its last path that has paint. A clipping path can lie in a group of its own at the end of its clip group, and be written three times when it has a fill and a stroke: see "What a plug-in made, clipping paths, compound paths and a group's own state". Several clipping paths in one clip group clip together. | VectorCraft; the rest from the **2026-10-13 round** |
 | `m l L c C v V y Y h H` | Path construction. | VectorCraft |
 | `N n F f S s B b` | Paint: none, fill, stroke, both. The lower-case forms close the path. `(op) *` paints a guide. | VectorCraft |
 | `w J j M d`, `XR` | Stroke width, cap, join, miter limit and dash; fill rule (1 means even-odd). | VectorCraft |
@@ -1467,6 +1467,10 @@ its drawn look; the paint its style gives it follows the marker, and then
 | `Adobe Calligraphic Brush Tool` | Calligraphic brush strokes | 1,882 in 48 files |
 | `Adobe Path Blends` | Blend | 214 in 16 files |
 
+Where such an object is itself the drawn look of another, the reader dropped
+the first group already. Drawn twice were 1,051 compound shapes in 79 files,
+947 brush strokes in 40 and 76 blends in 10.
+
 What the plug-in drew comes in as a group marked `proof:plugin` with the
 plug-in's name. What it was made from isn't kept, and the document says how
 many such objects it has. A plug-in that wasn't met in a file is left as it
@@ -1546,6 +1550,51 @@ at every outline, with an artboard that is only guessed at.
 **Not kept, and said so in the document's notes.** The paths a compound shape,
 a blend or a brush stroke was made from. The stroke comes in as the outline
 the brush drew, not as a path with a brush.
+
+### Blend modes in clipping groups, and several clipping paths in one (2026-10-13, later)
+
+Five of the six files left had something with a blend mode inside a clipping
+group. Their records were read as written. It was the canvas that drew them
+differently, and the exported PDF did the same for any group or layer: a shape
+set to Multiply met nothing on its own surface and came out flat. That is the
+editor's fault and is mended there: see
+[blend modes under a group](PROOF-clip-blending.md).
+
+**Several clipping paths in one clip group clip together.** Two posters kept a
+grey field where the page has a dark green one. Each picture in them lies in
+four clip groups, one in the other, with the clipping path after the picture,
+and the outermost has three clipping objects of its own:
+
+```
+q q q q
+%AI5_BeginRaster … %AI5_EndRaster  N
+… W n  Q
+… W n  Q
+… W n  Q
+… W n                a path
+*u … W N … W N … W N … W N *U     a compound path of four pieces
+… W n                a wider path
+Q
+```
+
+The reader joined the three into one clipping path, which lets through what
+any of them does: here the widest, and the picture spread over the field. What
+shows is where all of them let it through, as with one clip set after another
+on a page. 84 clip groups in 8 files have more than one clipping object, and in
+none of them are two of the objects apart from each other, which they would be
+if they were meant to add up. A compound path of clipping paths is still one
+clipping path of several pieces.
+
+The first clips the group. Each of the others clips a group of its own inside
+the one before (`Node::clip_chain`), so the document has one clipped group in
+another, as it would for clip groups written that way.
+
+**Results.** All 879 files, one worker: **846 native, 33 on
+their pages** (841 and 38 after the round before), 5 gained and
+none lost. 497 are partial, 349 unverified for complete
+editability. One file still draws differently from its page: a hair off at
+every outline, with an artboard that is only guessed at. The reader's suite has
+57 tests, the importer's 88, and `test_clip-blend` 5.
 
 ## Plan
 
