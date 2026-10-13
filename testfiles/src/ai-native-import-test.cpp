@@ -1392,6 +1392,49 @@ TEST_F(AiNativeImportTest, GuidesAndDrawnLooks)
     EXPECT_EQ(attr(groups[1], "proof:drawn-look"), "true");
 }
 
+TEST_F(AiNativeImportTest, AClippingPathsFillLiesUnderWhatItClipsAndItsStrokeOverIt)
+{
+    // What is clipped, then the clipping path: filled, itself, stroked.
+    std::string const frame = "10 20 m\n10 60 L\n90 60 L\n90 20 L\n10 20 L\nh\nW\n";
+    auto b = make(records(layer("q\n0 1 0 0 k\n0 30 m\n100 30 L\n100 50 L\n0 50 L\nf\nu\n0 0 0 1 k\n" + frame + "f\n" + frame +
+                                "n\n0 R\n1 0 0 0 K\n4 w\n" + frame + "s\nU\n9 () XW\nQ\n9 () XW\n")));
+    ASSERT_TRUE(b);
+    auto *root = b->document->getReprRoot();
+    auto const paths = elements(root, "svg:path");
+    // In the clipping path of the document, and three drawn: the fill, the clipped art, the stroke.
+    ASSERT_EQ(elements(b->document->getDefs()->getRepr(), "svg:clipPath").size(), 1u);
+    std::vector<XML::Node *> drawn;
+    for (auto *p : paths) {
+        if (!p->parent() || std::string_view(p->parent()->name()) != "svg:clipPath") drawn.push_back(p);
+    }
+    ASSERT_EQ(drawn.size(), 3u);
+    auto style = [&](XML::Node *n) { return attr(n, "style"); };
+    // The fill and what is clipped lie in the clipped group, the fill first; the stroke after the group.
+    EXPECT_FALSE(attr(drawn[0]->parent(), "clip-path").empty());
+    EXPECT_EQ(drawn[0]->parent(), drawn[1]->parent());
+    EXPECT_NE(style(drawn[0]).find("stroke:none"), std::string::npos) << style(drawn[0]);
+    EXPECT_EQ(style(drawn[0]).find("fill:none"), std::string::npos) << style(drawn[0]);
+    EXPECT_TRUE(attr(drawn[2]->parent(), "clip-path").empty());
+    EXPECT_EQ(drawn[2]->parent(), drawn[0]->parent()->parent());
+    EXPECT_NE(style(drawn[2]).find("fill:none"), std::string::npos) << style(drawn[2]);
+    EXPECT_NE(style(drawn[2]).find("stroke-width:4"), std::string::npos) << style(drawn[2]);
+}
+
+TEST_F(AiNativeImportTest, ABrushStrokeIsWhatTheBrushDrewWithoutThePathUnderIt)
+{
+    // The path a brush follows is written on %_ lines beside what the brush drew of it.
+    // Drawn as well, it would lie over the stroke as a line of its own.
+    auto b = make(records(layer("u\n%_u\n%_0 R\n%_0 G\n%_1 w\n%_10 40 m\n%_90 40 L\n%_S\n%_U\n%_9 () XW\n"
+                                "u\n0 O\n0 g\n" + rect + "U\n9 () XW\n(Adobe ArtOnPath Brush Tool) 1 0 34 XP\n"
+                                "%0403020100\n9 () XW\nU\n0 0 Xd\n6 () XW\n")));
+    ASSERT_TRUE(b);
+    auto const paths = elements(b->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    EXPECT_EQ(attr(paths[0]->parent(), "proof:plugin"), "Adobe ArtOnPath Brush Tool");
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_EQ(b->notes[0], "1 brush stroke came in as what it draws: the paths it was made from aren't kept");
+}
+
 // ---- area type, baseline shifts -----------------------------------------------------------
 
 TEST_F(AiNativeImportTest, AreaTypeKeepsTheLinesIllustratorLaidOut)

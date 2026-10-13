@@ -24,6 +24,8 @@
  *   placed (linked) picture        image linked to the same file, found where the document
  *                                  says it is or beside the document; one that can't be found
  *                                  keeps its link and shows as the document's own preview of it
+ *   clipping group                 group with clip-path; a clipping path's own fill is a path
+ *                                  under what it clips, its stroke a path over all of it
  *   name, hidden, locked           label, display:none, sodipodi:insensitive
  *   transparency                   opacity, mix-blend-mode, isolation; knockout in proof:knockout
  *   turned box (BBAccumRotation)   proof:box-angle on paths
@@ -46,6 +48,8 @@
  *                                  as Illustrator draws it
  *   an envelope                    group of the outlines it drew, marked proof:drawn-look;
  *                                  what it distorts isn't kept
+ *   a compound shape, a blend,     group of what the plug-in drew of it, with the plug-in's
+ *   a brush stroke                 name in proof:plugin; the paths it was made from aren't kept
  *   superscript, subscript         font-variant-position:super or sub at the type's own
  *                                  size, which the text layout sets smaller and off the
  *                                  baseline by what the document says (type-settings.h)

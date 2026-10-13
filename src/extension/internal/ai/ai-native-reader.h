@@ -22,8 +22,12 @@
  * The operator meanings are ported from VectorCraft's reader
  * (crates/eps/src/import/ai/{read,paint,obj}.rs at 4cf912f), Copyright (c) 2026
  * ArtCraft Team and the VectorCraft contributors, MIT licence; see
- * LICENSES/MIT-VectorCraft.txt. PROOF adds global process colours (Xk), Lab spot
- * definitions, Registration (Xs, Xz) and fails closed on opacity masks, from a
+ * LICENSES/MIT-VectorCraft.txt. Three later findings of theirs (at 0d0ea352) are
+ * followed too, each checked against real files first: a compound path is painted as
+ * its last path, a group has the transparency that holds at its Xd, and a gradient
+ * instance with no path in it paints nothing. PROOF adds global process colours (Xk),
+ * Lab spot definitions, Registration (Xs, Xz), objects that plug-ins keep live (XP),
+ * clipping paths in groups of their own, and fails closed on opacity masks, from a
  * census of real files.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_READER_H
@@ -32,6 +36,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -283,6 +288,10 @@ struct Node
     /// Group: what an envelope (Object > Envelope Distort) drew of the object it distorts.
     /// It is a drawn look too. The object itself, type or art, isn't kept.
     bool envelope = false;
+    /// Group: what a plug-in drew of an object it keeps live (a compound shape, a blend, a
+    /// brush stroke), under the plug-in's name as the records give it. What the object was
+    /// made from, written beside it on %_ lines, is no art and isn't kept.
+    std::string plugin;
     /// Read from %_ lines (Illustrator's own copy of an object).
     bool commented = false;
 };
@@ -332,6 +341,9 @@ struct Document
     std::optional<int> ruler_units;
     std::size_t drawn_looks = 0;
     std::size_t envelopes = 0; ///< Objects an envelope distorts, read as what it drew.
+    /// Objects a plug-in keeps live, read as what it drew, by the plug-in's name. Those in a
+    /// drawn look, or that are one, count there.
+    std::map<std::string, std::size_t> plugin_objects;
     std::size_t commented_kept = 0; ///< Objects from %_ lines kept (not replaced by a drawn look).
     std::vector<std::string> left_out; ///< What hidden layers had that wasn't read.
     std::vector<std::string> warnings;

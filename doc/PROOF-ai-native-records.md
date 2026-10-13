@@ -52,13 +52,15 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | Operators | Meaning | Source |
 |---|---|---|
 | `%AI5_BeginLayer`, `… Lb`, `(name) Ln`, `LB` | Layer. The `Lb` operands are: 0 visible, 1 preview, 2 unlocked, 3 printing, 4 dimmed, 7 colour index, 8–10 RGB, 12 dim %. | VectorCraft |
-| `u`…`U`, `*u`…`*U`, `q`…`Q` | Group, compound path, clip group. `W` makes the next path clip. | VectorCraft |
+| `u`…`U`, `*u`…`*U`, `q`…`Q` | Group, compound path, clip group. `W` makes the next path clip. A compound path is painted as its last path that has paint. A clipping path can lie in a group of its own at the end of its clip group, and be written three times when it has a fill and a stroke: see "What a plug-in made, clipping paths, compound paths and a group's own state". | VectorCraft; the rest from the **2026-10-13 round** |
 | `m l L c C v V y Y h H` | Path construction. | VectorCraft |
 | `N n F f S s B b` | Paint: none, fill, stroke, both. The lower-case forms close the path. `(op) *` paints a guide. | VectorCraft |
 | `w J j M d`, `XR` | Stroke width, cap, join, miter limit and dash; fill rule (1 means even-odd). | VectorCraft |
 | `O`, `R` | Overprint the fill or the stroke. | VectorCraft |
 | `Xw`, `A` | Hidden, locked. | VectorCraft |
-| `mode opacity isolate knockout shape Xy` | Transparency. The modes run Normal, Multiply, Screen, Overlay, Soft Light, Hard Light, Color Dodge, Color Burn, Darken, Lighten, Difference, Exclusion, Hue, Saturation, Color, Luminosity. After a group closes, it applies to the group. | VectorCraft |
+| `mode opacity isolate knockout shape Xy` | Transparency. The modes run Normal, Multiply, Screen, Overlay, Soft Light, Hard Light, Color Dodge, Color Burn, Darken, Lighten, Difference, Exclusion, Hue, Saturation, Color, Luminosity. It is written only where it differs from what the last object was written with. After a group closes, it applies to the group. After a compound path closes it is the next object's. | VectorCraft; the last two sentences from the **2026-10-13 round** |
+| `a b Xd`, then `6 () XW` | Ends the state a group is written with after it closes. The group's transparency is what holds at `Xd`, whether an `Xy` came before it or not. A group that ends with `9 () XW` has no state of its own. | VectorCraft (`939bc02f`), checked on **2026-10-13** |
+| `(plug-in) a b n XP`, then n bytes on `%` lines | Ends an object a plug-in keeps live. Two groups come before it: what the object was made from, on `%_` lines, and what the plug-in drew. Only the second is art. Seen: `Pathfinder Suite` (compound shape), `Adobe Path Blends`, `Adobe Calligraphic Brush Tool`, `Adobe ArtOnPath Brush Tool`, `Adobe PatternOnPath Brush Tool`, `Adobe Deform Plugin` (envelope). | **2026-10-13 round**; the envelope from the second gauntlet |
 | `n (style) XW` | Style marker. `1` means the object's drawn look came first and the object itself follows on `%_` lines. | VectorCraft |
 | `/ArtDictionary : … ;` | Follows an object. `AIArtName`, or `AI10_ArtUID` (an XML id: `_` is a space, `_xHH_` an escaped character), gives its name. `BBAccumRotation` is the turned box's angle. | VectorCraft; angle from PROOF's transform-box work |
 | `g`/`G` | Grey, where 1 is white. | VectorCraft |
@@ -71,7 +73,7 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `Xz`/`XZ` | Registration, in the `Xx` layout. | **census** |
 | `(name) type n Bd` … `Bs` … `BD` | Gradient definition. Each stop is `colour style [opacity 6] midpoint ramp Bs`. The styles are 0 grey, 1 CMYK, 2 RGB with CMYK, 3 and 4 named, and **5 named with its type, in the `Xx`/`Xk` layout** (`c m y k [v1 v2 v3] (name) tint type`). | VectorCraft; style 5 from the 2026-10-10 trial |
 | `… %_BS`, `… %_Bs`, `n %_Br` | **Operators ending a line after `%_`.** Each stop is written twice: `c m y k 1 opacity 6 midpoint ramp %_BS`, a process stand-in, then the exact stop on its own `%_… Bs` line. Old files end the one line `%_Bs`. `%_Br` is the ramp count. Read as comments, their operands pile up in front of the next operator. | **2026-10-10 trial**. VectorCraft skips them, and then misreads every named stop. |
-| `[flag] Bb`, `Bg`, `Xm`, `Bm`, `Bc`, `Bh`, `BB` | Gradient on an object. See "Gradient placement" below: with `Xm` or `Bm` present that matrix is the whole placement, and `Bg`'s origin, angle, length and matrix are not applied as well. | VectorCraft read `Bg` × `Bm`; corrected in the **2026-10-10 trial** |
+| `[flag] Bb`, `Bg`, `Xm`, `Bm`, `Bc`, `Bh`, `BB` | Gradient on an object, written around the path's paint operator. See "Gradient placement" below: with `Xm` or `Bm` present that matrix is the whole placement, and `Bg`'s origin, angle, length and matrix are not applied as well. `Bb`, `Bg`, `BB` with no path between them is a note an object keeps of its gradient, written with its own state: it paints nothing. | VectorCraft read `Bg` × `Bm`; corrected in the **2026-10-10 trial**. The note: VectorCraft (`77120ada`), checked on **2026-10-13** |
 | `%AI5_BeginRaster`, `/Space XN`, `[m] … w h bits type alpha … XI`, `XH`, `N` | Embedded image. The samples stay in their colour space; CMYK is common. The image is an object once its samples are read: the `XH` and the `N` (which paints no path) after it don't end what follows an object, so its name and a `1 () XW` still reach it. | VectorCraft; the tail from the **second 2026-10-10 trial** |
 | `%AI3_BeginPattern: (name)`, `(name) llx lly urx ury`, the tile's art on `%_` lines, `E`, `%AI3_EndPattern` | Pattern. The box is the tile, in a space of the pattern's own (y up); art past it is cut off there. | **second 2026-10-10 trial**. VectorCraft skips the section. |
 | `(name) px py sx sy angle rf r k ka [a b c d tx ty] p` (`P` for a stroke) | Paint with a pattern. The matrix carries the pattern's space onto the art, the same space the paths are in. The nine numbers before it are how Illustrator 8 and older moved, scaled, turned, mirrored and slanted a pattern; later versions leave them at `0 0 1 1 0 0 0 0 0`. Like a colour, it stays the paint until another is set. | **second 2026-10-10 trial**; the matrix checked against a file's own PDF pattern |
@@ -81,7 +83,7 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `n Ar` | The old Attributes panel's output resolution (300, 800). No visual effect. | **census** |
 | `1 An` | CS5 only, after every object. Almost certainly *Align to Pixel Grid*. No visual effect. | **census** |
 | `(hex) Xt n XD` | Brush metadata inside drawn looks, with n running 0–4. No geometry or paint. | **census** |
-| `Ae AE Ap As Xd Xr XG Xh XH XF D X= X+ Bc XP Np TE TZ Xt Xi XI ` LB2 Lc Xv XV Xq XQ Xg Xn Bn` | Ignored by VectorCraft. (It ignores `Xm` too; PROOF reads it.) | VectorCraft |
+| `Ae AE Ap As Xr XG Xh XH XF D X= X+ Bc Np TE TZ Xt Xi XI ` LB2 Lc Xv XV Xq XQ Xg Xn Bn` | Ignored by VectorCraft. (It ignores `Xm`, `Xd` and `XP` too; PROOF reads them.) | VectorCraft |
 
 ### Not read yet (the file opens from its PDF page)
 
@@ -1427,6 +1429,123 @@ remain unverified for complete editability. The new loss report moves 22
 previously native files into the partial category; these retain acceptance.
 The local evidence is `artifacts/ai-native-workbench/round11/corpus-final/` in
 the workspace. Artwork, paths and generated reports remain outside Git.
+
+### What a plug-in made, clipping paths, compound paths and a group's own state (2026-10-13)
+
+Twenty-three corpus files still drew differently from their pages. Each of the
+first few was traced from its picture to its records, the rule found there was
+counted over all 879 files, and then it was changed. Seven rules came of it.
+Three of them VectorCraft's agents had found in the two days before
+(`0d0ea352`, read as source; see the workspace's
+`audit-results/vectorcraft-delta-2026-10-13.md`). They have no corpus of real
+files, so each was checked against ours first.
+
+**An object a plug-in keeps live** is written as two groups and a marker:
+
+```
+%_u … %_U            what it was made from, always on %_ lines
+%_9 () XW
+u … U                what the plug-in drew of it
+9 () XW
+(Adobe ArtOnPath Brush Tool) 1 0 34 XP
+%0403020100…         34 bytes of the plug-in's own, on % lines
+```
+
+Only the second group is art: Illustrator draws and prints that, and so does
+the file's page. The reader kept both, and the importer drew both. The path a
+brush follows lay over its stroke as a line of its own, and the shapes of a
+compound shape lay over what they add up to in their own colours: a dog's body
+blue where the shape is white, a black picture on a wall under a pale box. An
+object with an appearance is on `%_` lines altogether, marker included, after
+its drawn look; the paint its style gives it follows the marker, and then
+`1 () XW`, which settles it like any object with a look.
+
+| Plug-in | What it is | In the corpus |
+|---|---|---|
+| `Pathfinder Suite` | Compound shape | 1,058 objects in about 80 files |
+| `Adobe ArtOnPath Brush Tool`, `Adobe PatternOnPath Brush Tool` | Art and pattern brush strokes | 2,854 in about 290 files |
+| `Adobe Calligraphic Brush Tool` | Calligraphic brush strokes | 1,882 in 48 files |
+| `Adobe Path Blends` | Blend | 214 in 16 files |
+
+What the plug-in drew comes in as a group marked `proof:plugin` with the
+plug-in's name. What it was made from isn't kept, and the document says how
+many such objects it has. A plug-in that wasn't met in a file is left as it
+was read. The transparency written after the marker is the object's own: a
+blend is a knockout group there.
+
+**A mask's art is written like the art around it**: only what differs from the
+object before is set again. A mask whose first shape is white, after a white
+object, sets no colour. The reader began every dictionary with a fresh state,
+whose fill is black, and a black mask hides what it masks: one panel of four
+was missing from a file. The state now carries on into a dictionary, and is
+put back when the dictionary ends.
+
+**A clipping path in a group of its own.** The path that clips a clip group
+can be written after what it clips, in a group that holds nothing else: a
+compound shape that clips, or a page-sized background that also clips. Left in
+its group it clipped nothing and painted over everything. It now clips the
+whole group. Ten files, 131 groups.
+
+**A clipping path that is painted.** Its fill lies under what it clips; the
+importer did that already. Its stroke lies over all of it, whole, and that it
+did not: the stroke came in under the art and cut to half its width. A
+clipping path with both is written three times in a row, to be filled
+(`W f`), to clip (`W n`) and to be stroked (`W s`); the three are one path
+now, where they were joined into a clipping path with no paint at all. In the
+document the clipped art goes in a group of its own, with the stroked path
+after it.
+
+**A compound path is painted as its last path.** A gradient is written around
+the last path of a compound path alone:
+
+```
+*u
+0 g  … f             black, for readers that know no gradients
+0 g  … f
+…  Bb  1 (Gradient) … Bg  … Xm  f  0 BB
+*U
+```
+
+1,279 compound paths in 222 files are written so, and none with the gradient
+around the first path. The reader took the first path's paint: black. Without
+a gradient every path of a compound path is painted alike, so nothing else
+changes.
+
+**What is set after a compound path ends is the next object's.** A compound
+path has the transparency of its paths, set inside it, and no state of its own
+after `*U`. An `Xy` after `*U` was given to the compound path, which made a
+shape set to Overlay at 20% opaque and normal: a row of buildings in flat
+orange.
+
+**A group's own state** is written after it closes and ended by `Xd` and
+`6 () XW`. An `Xy` comes before those only when the group's transparency
+differs from what the last object was written with. 1,246 groups in 371 files
+are written with an explicit normal `Xy` there, so the state does carry over
+where none is written. A group whose last member is at 29% in Multiply, and
+which is at 29% in Multiply itself, sets nothing, and came in opaque.
+
+**A gradient noted with an object's state.** `Bb`, `Bg`, `BB` with no path
+between them, after a group's `Xd`, is a note of the group's gradient. The
+reader painted the next path with it, at a placement that meant nothing: a
+rail in cream where the page has it grey.
+
+**Results.** All 879 files, one worker: **841 native, 38 on their pages**
+(824 and 55 before), seventeen gained and none lost. Of the 841, 492 are
+partial and 349 unverified for complete editability. 46 files that already
+passed moved closer to their pages and three read further by the numbers; all
+three were looked at and are closer in the picture (which of the check's two
+weighings counted changed, see "Two ways of weighing"). The reader's suite has
+57 tests and the importer's 88, one corpus case skipped in each.
+
+**What is left of the files that draw differently**: six. Five have something
+with a blend mode inside a clipping group, and it is the display that differs
+there, not the reader: PROOF's canvas blends such a thing with nothing, where
+Illustrator blends it with what lies under the group. The sixth is a hair off
+at every outline, with an artboard that is only guessed at.
+
+**Not kept, and said so in the document's notes.** The paths a compound shape,
+a blend or a brush stroke was made from. The stroke comes in as the outline
+the brush drew, not as a path with a brush.
 
 ## Plan
 

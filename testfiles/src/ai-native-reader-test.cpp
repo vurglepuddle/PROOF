@@ -74,6 +74,20 @@ std::string rect(double x0, double y0, double x1, double y1)
            s(y0) + " L\n" + s(x0) + " " + s(y0) + " L\n";
 }
 
+/// `art` as Illustrator's own copy of an object: every line of it on a %_ line.
+std::string hidden(std::string const &art)
+{
+    std::string out;
+    std::size_t at = 0;
+    while (at < art.size()) {
+        auto const end = art.find('\n', at);
+        auto const next = end == std::string::npos ? art.size() : end + 1;
+        out += "%_" + art.substr(at, next - at);
+        at = next;
+    }
+    return out;
+}
+
 Document read_ok(std::string const &recs)
 {
     std::string error;
@@ -299,6 +313,53 @@ TEST(AiNativeReader, GroupsCompoundsAndClipping)
     EXPECT_FALSE(kids[2].children[0].fill);
 }
 
+TEST(AiNativeReader, AClippingPathInAGroupOfItsOwnClipsTheGroupItEnds)
+{
+    // What is clipped, then the clipping path, painted, in a group of its own: as Illustrator
+    // writes a page-sized background that also clips the art over it.
+    std::string const art = "q\nu\n0 1 0 0 k\n" + rect(-20, -20, 60, 60) + "f\nU\n0 0 Xd\n6 () XW\n"
+                            "u\n1 0 0 0 k\n" + rect(0, 0, 40, 40) + "h\nW\nf\nU\n0 0 Xd\n6 () XW\nQ\n9 () XW\n";
+    auto doc = read_ok(records(layer("L", art)));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    auto const &group = doc.layers[0].children[0];
+    EXPECT_TRUE(group.clipped);
+    ASSERT_EQ(group.children.size(), 2u);
+    // The clipping path comes first, with its paint: it lies under what it clips.
+    EXPECT_EQ(group.children[0].kind, Node::Kind::Path);
+    EXPECT_TRUE(group.children[0].clipping);
+    ASSERT_TRUE(group.children[0].fill);
+    EXPECT_EQ(group.children[0].fill->color, Color::cmyk(1, 0, 0, 0));
+    EXPECT_EQ(group.children[1].kind, Node::Kind::Group);
+    EXPECT_FALSE(group.children[1].clipped);
+
+    // A clipping path with a fill and a stroke is written three times in that group: to be
+    // filled, to clip, to be stroked. It is one path, with both.
+    std::string const thrice = "q\nu\n0 1 0 0 k\n" + rect(-20, -20, 60, 60) + "f\nU\n9 () XW\nu\n0 0 0 1 k\n1 XR\n" +
+                               rect(0, 0, 40, 40) + "h\nW\nf\n" + rect(0, 0, 40, 40) + "h\nW\nn\n0 R\n0 0 0 1 K\n1.5 w\n" +
+                               rect(0, 0, 40, 40) + "h\nW\ns\nU\n9 () XW\nQ\n9 () XW\n";
+    doc = read_ok(records(layer("L", thrice)));
+    auto const &framed = doc.layers[0].children[0];
+    EXPECT_TRUE(framed.clipped);
+    ASSERT_EQ(framed.children.size(), 2u);
+    EXPECT_EQ(framed.children[0].kind, Node::Kind::Path);
+    EXPECT_TRUE(framed.children[0].clipping);
+    EXPECT_EQ(framed.children[0].path.size(), 1u);
+    ASSERT_TRUE(framed.children[0].fill);
+    EXPECT_EQ(framed.children[0].fill->color, Color::cmyk(0, 0, 0, 1));
+    ASSERT_TRUE(framed.children[0].stroke);
+    EXPECT_DOUBLE_EQ(framed.children[0].stroke_style.width, 1.5);
+
+    // A clipping group with a clipping path of its own keeps such a group as it is.
+    doc = read_ok(records(layer("L", "q\n" + rect(0, 0, 50, 50) + "h\nW\nn\nu\n1 0 0 0 k\n" + rect(0, 0, 40, 40) +
+                                         "h\nW\nf\nU\n0 g\n" + rect(0, 0, 5, 5) + "f\nQ\n")));
+    auto const &kept = doc.layers[0].children[0];
+    EXPECT_TRUE(kept.clipped);
+    ASSERT_EQ(kept.children.size(), 3u);
+    EXPECT_FALSE(kept.children[0].fill);
+    EXPECT_EQ(kept.children[1].kind, Node::Kind::Group);
+    EXPECT_TRUE(kept.children[1].clipped);
+}
+
 TEST(AiNativeReader, ACompoundPathTakesItsPaintFromPathsGroupedInsideIt)
 {
     // A compound path with a style of its own: its paths are in a group inside it, with the
@@ -320,6 +381,56 @@ TEST(AiNativeReader, ACompoundPathTakesItsPaintFromPathsGroupedInsideIt)
     EXPECT_EQ(compound.children[0].children.size(), 2u);
     EXPECT_EQ(kids[1].kind, Node::Kind::Path);
     EXPECT_TRUE(kids[1].transparency.is_default());
+}
+
+TEST(AiNativeReader, ACompoundPathIsPaintedAsItsLastPath)
+{
+    // A gradient is written around the last path of a compound path alone. The paths
+    // before it are painted black, for readers that know no gradients.
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 0 0 0 1 0 0 2 1 6 50 100 Bs\n0.81 0 1 6 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    std::string const art = "*u\n1 D\n0 g\n" + rect(0, 0, 100, 100) + "f\n0 D\n0 g\n" + rect(10, 10, 90, 90) +
+                            "Bb\n1 (G) 0 0 0 1 1 0 0 1 0 0 Bg\n100 0 0 100 0 0 Xm\nf\n0 BB\n*U\n";
+    auto doc = read_ok(records(layer("L", art), setup));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    auto const &compound = doc.layers[0].children[0];
+    EXPECT_EQ(compound.kind, Node::Kind::Compound);
+    ASSERT_TRUE(compound.fill);
+    EXPECT_EQ(compound.fill->kind, Paint::Kind::Gradient);
+    EXPECT_EQ(compound.children.size(), 2u);
+    // Paths that aren't painted at all don't take the paint away: the last painted one counts.
+    doc = read_ok(records(layer("L", "*u\n0.5 g\n" + rect(0, 0, 100, 100) + "f\n" + rect(10, 10, 90, 90) + "n\n*U\n")));
+    ASSERT_TRUE(doc.layers[0].children[0].fill);
+    EXPECT_EQ(doc.layers[0].children[0].fill->color, Color::gray(0.5));
+}
+
+TEST(AiNativeReader, TransparencyAfterAContainerEnds)
+{
+    // A compound path has the transparency of its paths. What is set after it ends is the
+    // next object's, and doesn't make the compound path opaque.
+    std::string art = "*u\n0 g\n3 0.2 0 0 0 Xy\n" + rect(0, 0, 100, 100) + "f\n" + rect(10, 10, 90, 90) +
+                      "f\n*U\n0 1 0 0 0 Xy\n" + rect(0, 0, 5, 5) + "f\n";
+    auto doc = read_ok(records(layer("L", art)));
+    auto const *kids = &doc.layers[0].children;
+    ASSERT_EQ(kids->size(), 2u);
+    EXPECT_EQ((*kids)[0].transparency.blend, 3); // Overlay
+    EXPECT_DOUBLE_EQ((*kids)[0].transparency.opacity, 0.2);
+    EXPECT_TRUE((*kids)[1].transparency.is_default());
+
+    // A group is written with its own state after it closes, ended by `Xd` and `6 () XW`.
+    // Where that is the state of the last thing in it, no `Xy` says so again.
+    art = "1 0.5 0 0 0 Xy\nu\n0 g\n" + rect(0, 0, 10, 10) + "f\nU\n1 w 4 M\n0 0 Xd\n6 () XW\n";
+    // The group of a look has no state of its own (`9 () XW`), and one that sets its own has that.
+    art += "u\n" + rect(0, 0, 10, 10) + "f\nU\n9 () XW\n";
+    art += "u\n" + rect(0, 0, 10, 10) + "f\nU\n0 1 0 0 0 Xy\n0 0 Xd\n6 () XW\n";
+    doc = read_ok(records(layer("L", art)));
+    kids = &doc.layers[0].children;
+    ASSERT_EQ(kids->size(), 3u);
+    EXPECT_EQ((*kids)[0].transparency.blend, 1); // Multiply
+    EXPECT_DOUBLE_EQ((*kids)[0].transparency.opacity, 0.5);
+    EXPECT_TRUE((*kids)[1].transparency.is_default());
+    EXPECT_TRUE((*kids)[2].transparency.is_default());
+    // What is in the last group was written while the state was still the first group's.
+    EXPECT_DOUBLE_EQ((*kids)[2].children[0].transparency.opacity, 0.5);
 }
 
 TEST(AiNativeReader, NamesStateAndTransparency)
@@ -586,6 +697,23 @@ TEST(AiNativeReader, Gradients)
     EXPECT_EQ(p.gradient.hilight, Geom::Point(2, 3));
     EXPECT_TRUE(p.gradient.bm_given);
     EXPECT_FALSE(p.gradient.xm);
+}
+
+TEST(AiNativeReader, AGradientNotedWithAnObjectsStatePaintsNothing)
+{
+    // A group that keeps a note of a gradient: an instance with no path in it, between the
+    // group's `Xd` and its marker. The path after the group is painted as it says itself.
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 0 0 0 1 0 0 2 1 6 50 100 Bs\n0.81 0 1 6 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    std::string const art = "u\n0 g\n" + rect(0, 0, 10, 10) + "f\nU\n0 1 Xd\nBb\n2 (G) -65 0 -75 108 1 0 0 1 0 0 1 Bg\n0 BB\n6 () XW\n" +
+                            rect(20, 0, 30, 10) + "f\n0.5 g\n" + rect(40, 0, 50, 10) + "f\n";
+    auto doc = read_ok(records(layer("L", art), setup));
+    auto const &kids = doc.layers[0].children;
+    ASSERT_EQ(kids.size(), 3u);
+    ASSERT_TRUE(kids[1].fill);
+    EXPECT_EQ(kids[1].fill->kind, Paint::Kind::Solid);
+    EXPECT_EQ(kids[1].fill->color, Color::gray(0));
+    EXPECT_EQ(kids[2].fill->color, Color::gray(0.5));
+    EXPECT_TRUE(doc.warnings.empty());
 }
 
 TEST(AiNativeReader, GradientMatricesOfSeveralRamps)
@@ -1122,6 +1250,20 @@ TEST(AiNativeReader, ClippedVectorOpacityMasksKeepTheirArtworkAndState)
         SCOPED_TRACE(unsupported);
         EXPECT_NE(read_error(records(layer("L", shape + unsupported))).find("opacity masks"), std::string::npos);
     }
+    // A mask's art is painted as the art before it where it sets nothing else: white
+    // here, which lets the object show, where a state begun afresh would be black and hide it.
+    auto white = read_ok(records(layer("L", "0 0 0 0 k\n" + rect(0, 0, 40, 40) + "f\n"
+                                            + hidden("/ArtDictionary :\n/Mask :\n1 /Bool (Linked) ,\nX=\nu\n10 M\n" +
+                                                     rect(0, 0, 10, 10) + "f\nU\n9 () XW\nX+\n (Art) ,\n"
+                                                     "1 /Bool (Clipping) ,\n0 /Bool (Inverted) ,\n0 /Bool (Disabled) ,\n"
+                                                     "; (AI9_Mask) ,\n;\n"))));
+    ASSERT_EQ(white.layers[0].children.size(), 1u);
+    ASSERT_TRUE(white.layers[0].children[0].opacity_mask);
+    ASSERT_EQ(white.layers[0].children[0].opacity_mask->size(), 1u);
+    auto const &covering = white.layers[0].children[0].opacity_mask->front();
+    ASSERT_EQ(covering.children.size(), 1u);
+    ASSERT_TRUE(covering.children[0].fill);
+    EXPECT_EQ(covering.children[0].fill->color, Color::cmyk(0, 0, 0, 0));
     // Masks on component paths cannot be flattened into a compound path's geometry.
     EXPECT_NE(read_error(records(layer("L", "*u\n" + shape + mask(coverage) + "*U\n"))).find("opacity masks"), std::string::npos);
 }
@@ -1182,6 +1324,79 @@ TEST(AiNativeReader, AnEnvelopeIsWhatItDrewAndAMeshIsRefused)
     EXPECT_FALSE(doc.texts);
     // The same written by a plug-in this doesn't know: its mesh may be art.
     refused_for_mesh(envelope("Some Other Plugin"));
+}
+
+TEST(AiNativeReader, ObjectsAPlugInKeepsLiveAreWhatItDrew)
+{
+    // What an object was made from, on %_ lines, then what the plug-in drew of it, then the
+    // plug-in's name: a brush stroke as Illustrator writes one, in the group that is the
+    // brushed path.
+    std::string const spine = hidden("0 Ae\nu\n0 R\n0 G\n1 w\n0 0 m\n40 0 L\nS\nU\n9 () XW\n");
+    std::string const drawn = "0 Ap\n0 A\n0 Xw\n0 Ae\nu\n0 O\n0 g\n" + rect(0, -2, 40, 2) + "f\nU\n9 () XW\n0 Ae\n";
+    auto stroke = [&](std::string const &plugin) {
+        return "0 Ae\nu\n" + spine + drawn + "(" + plugin + ") 1 0 34 XP\n%040302010000803F\n"
+               "%_/ArtDictionary :\n%_ /String (Adobe_Brushed_Path) ,\n%_;\n%_\n9 () XW\nU\n0 0 Xd\n6 () XW\n";
+    };
+    auto doc = read_ok(records(layer("L", stroke("Adobe ArtOnPath Brush Tool") + "0 g\n" + rect(50, 0, 55, 5) + "f\n")));
+    ASSERT_EQ(doc.layers.size(), 1u);
+    auto const *kids = &doc.layers[0].children;
+    ASSERT_EQ(kids->size(), 2u);
+    // The brushed path holds what the brush drew and nothing else: no path under its stroke.
+    ASSERT_EQ((*kids)[0].children.size(), 1u);
+    auto const &made = (*kids)[0].children[0];
+    EXPECT_EQ(made.plugin, "Adobe ArtOnPath Brush Tool");
+    EXPECT_FALSE(made.commented);
+    EXPECT_FALSE(made.drawn_look);
+    ASSERT_EQ(made.children.size(), 1u);
+    EXPECT_TRUE(made.children[0].fill);
+    EXPECT_FALSE(made.children[0].stroke);
+    EXPECT_EQ(doc.commented_kept, 0u);
+    ASSERT_EQ(doc.plugin_objects.size(), 1u);
+    EXPECT_EQ(doc.plugin_objects.at("Adobe ArtOnPath Brush Tool"), 1u);
+
+    // A plug-in that wasn't met in a file: left as it was read.
+    doc = read_ok(records(layer("L", stroke("Some Other Plugin"))));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    EXPECT_EQ(doc.layers[0].children[0].children.size(), 2u);
+    EXPECT_EQ(doc.commented_kept, 2u);
+    EXPECT_TRUE(doc.plugin_objects.empty());
+
+    // A blend: the transparency after the marker is the blend's own.
+    std::string const blend = hidden("u\n0 g\n" + rect(0, 0, 10, 10) + "f\n" + rect(30, 0, 40, 10) + "f\nU\n9 () XW\n") +
+                              "u\n0 g\n" + rect(0, 0, 10, 10) + "f\n" + rect(15, 0, 25, 10) + "f\n" + rect(30, 0, 40, 10) +
+                              "f\nU\n9 () XW\n(Adobe Path Blends) 1 0 92 XP\n%4443424101\n0 0.5 0 1 0 Xy\n10 M\n0 0 Xd\n6 () XW\n";
+    doc = read_ok(records(layer("L", blend + "0 1 0 0 0 Xy\n0 g\n" + rect(50, 0, 55, 5) + "f\n")));
+    kids = &doc.layers[0].children;
+    ASSERT_EQ(kids->size(), 2u);
+    EXPECT_EQ((*kids)[0].plugin, "Adobe Path Blends");
+    EXPECT_EQ((*kids)[0].children.size(), 3u);
+    EXPECT_DOUBLE_EQ((*kids)[0].transparency.opacity, 0.5);
+    EXPECT_EQ((*kids)[0].transparency.knockout, 1);
+    EXPECT_DOUBLE_EQ((*kids)[1].transparency.opacity, 1.0);
+    EXPECT_EQ(doc.plugin_objects.at("Adobe Path Blends"), 1u);
+
+    // A compound shape with an appearance: its drawn look, then all of it on %_ lines (its
+    // paths in their own colours, the shape they add up to, the marker), then the paint its
+    // style gives it and the style's marker. The look stands; neither group under it does.
+    std::string const shape =
+        "u\nu\n1 g\n" + rect(0, 0, 20, 10) + "f\nU\n9 () XW\nu\n0 G\n" + rect(0, 0, 20, 10) + "s\nU\n9 () XW\nU\n0 0 Xd\n6 () XW\n" +
+        hidden("u\n0 O\n0.3 g\n0 R\n0 G\n" + rect(0, 0, 10, 10) + "b\n" + rect(10, 0, 20, 10) + "b\nU\n9 () XW\n"
+               "0 Ap\n0 A\n0 Xw\nu\n0 1 0 0 0 Xy\n" + rect(0, 0, 20, 10) + "n\n"
+               "/ArtDictionary :\n0 /Int (AI10 compound shape mode) ,\n;\n\nU\n9 () XW\n"
+               "(Pathfinder Suite) 1 0 0 XP\n") +
+        "0 O\n1 g\n0 R\n0 G\n0 1 0 0 0 Xy\n0 J 0 j 2 w 4 M []0 d\n0 XR\n1 1 Xd\n1 () XW\n";
+    doc = read_ok(records(layer("L", shape + "0 g\n" + rect(50, 0, 55, 5) + "f\n")));
+    kids = &doc.layers[0].children;
+    ASSERT_EQ(kids->size(), 2u);
+    EXPECT_TRUE((*kids)[0].drawn_look);
+    EXPECT_EQ((*kids)[0].plugin, "Pathfinder Suite");
+    EXPECT_FALSE((*kids)[0].commented);
+    ASSERT_EQ((*kids)[0].children.size(), 2u);
+    EXPECT_EQ((*kids)[1].kind, Node::Kind::Path);
+    EXPECT_EQ(doc.commented_kept, 0u);
+    EXPECT_EQ(doc.drawn_looks, 1u);
+    // It counts as the look it is.
+    EXPECT_TRUE(doc.plugin_objects.empty());
 }
 
 TEST(AiNativeReader, ForeignObjectsAreRefusedNotDropped)

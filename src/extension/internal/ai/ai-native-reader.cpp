@@ -357,7 +357,7 @@ std::optional<Geom::Rect> four(std::string_view text)
 /// Operators that change nothing the reader keeps. PROOF additions from the census:
 /// Ar (output resolution), An (CS5, probably Align to Pixel Grid), XD (brush metadata).
 constexpr std::string_view IGNORED[] = {
-    "Ae", "AE", "Ap", "As", "Xd", "Xr", "XG", "Xh", "XH", "XF", "D", "X=", "X+", "Bc", "Xm", "Np", "TE",
+    "Ae", "AE", "Ap", "As", "Xr", "XG", "Xh", "XH", "XF", "D", "X=", "X+", "Bc", "Xm", "Np", "TE",
     "TZ", "Xt", "Xi", "XI", "`", "LB2", "Lc", "Xv", "XV", "Xq", "XQ", "Xg", "Xn", "Bn", "gsave", "grestore",
     "showpage", "annotatepage", "Ar", "An", "XD", "Br", "BS",
 };
@@ -366,6 +366,27 @@ bool ignored(std::string_view w)
 {
     return std::find(std::begin(IGNORED), std::end(IGNORED), w) != std::end(IGNORED);
 }
+
+/// Operators that set how the next object is painted, and make nothing themselves.
+constexpr std::string_view PAINT_STATE[] = {
+    "O", "R", "XR", "w", "J", "j", "M", "d", "g", "G", "k", "K", "x", "X", "Xa", "XA",
+    "Xx", "XX", "Xk", "XK", "Xs", "XS", "Xz", "XZ", "p", "P",
+};
+
+bool paint_state(std::string_view w)
+{
+    return std::find(std::begin(PAINT_STATE), std::end(PAINT_STATE), w) != std::end(PAINT_STATE);
+}
+
+/// The plug-ins whose objects are read as what they drew: those met in real files, each
+/// written the same way (see Reader::plugin_object).
+constexpr std::string_view LIVE_PLUGINS[] = {
+    "Pathfinder Suite",               // A compound shape.
+    "Adobe Path Blends",              // A blend.
+    "Adobe Calligraphic Brush Tool",  // Brush strokes.
+    "Adobe ArtOnPath Brush Tool",
+    "Adobe PatternOnPath Brush Tool",
+};
 
 std::string join_and(std::set<std::string> const &items);
 
@@ -615,6 +636,11 @@ private:
     /// A style marker (XW) has come since the last object. Its name can still follow, but
     /// transparency from here on is the next object's, not a just-closed group's.
     bool _marked = false;
+    /// The last object is one a plug-in made, written on %_ lines: the paint its style gives
+    /// it follows, before the style's own marker.
+    bool _after_plugin = false;
+    /// The last object is a group that has just closed: its own state can still follow (Xd).
+    bool _group_closed = false;
     std::size_t _nodes = 0;
     std::set<std::string> _unsupported, _unknown, _hidden_unread;
     std::optional<bool> _mesh; ///< Inside a mesh (/Mesh X! … /End X!): whether it began on a %_ line.
@@ -818,6 +844,7 @@ void Reader::add(Node node, bool commented)
     _frames.back().children.push_back(std::move(node));
     _after_object = true;
     _marked = false;
+    _after_plugin = false;
 }
 
 Node *Reader::last_object()
@@ -835,14 +862,17 @@ Node Reader::new_node(Node::Kind kind, GState const &gs)
     return n;
 }
 
-/// The first path among `nodes`, depth first, and in `group` the transparency of the
-/// nearest group it lies in that has any.
-Node const *first_path(std::vector<Node> const &nodes, Transparency &group)
+/// The last path among `nodes`, depth first, and in `group` the transparency of the nearest
+/// group it lies in that has any. With `painted`, the last that has a fill or a stroke.
+Node const *last_path(std::vector<Node> const &nodes, Transparency &group, bool painted)
 {
-    for (auto const &n : nodes) {
-        if (n.kind == Node::Kind::Path) return &n;
-        if (auto const *inner = first_path(n.children, group)) {
-            if (group.is_default()) group = n.transparency;
+    for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
+        if (it->kind == Node::Kind::Path) {
+            if (!painted || it->fill || it->stroke) return &*it;
+            continue;
+        }
+        if (auto const *inner = last_path(it->children, group, painted)) {
+            if (group.is_default()) group = it->transparency;
             return inner;
         }
     }
@@ -858,11 +888,18 @@ void Reader::end_container(std::string_view what, bool hidden)
     Node node;
     if (kind == FrameKind::Compound) {
         if (f.children.empty()) return;
-        // Its paint is its first path's. A compound path with a style of its own has its
-        // paths in a group inside it (`*u u … U n () XW *U`): the first path is in there, and
-        // the group has no paint to give.
+        // Its paint is its last path's that has any. A gradient is written around the last
+        // path alone (`Bb … Bg … f … BB` before `*U`), and the paths before it are painted
+        // in a plain colour that stands in for readers that know no gradients: black, in
+        // most files. Without a gradient every path is painted alike. A compound path with a
+        // style of its own has its paths in a group inside it (`*u u … U n () XW *U`): the
+        // path is in there, and the group has no paint to give.
         Transparency grouped;
-        auto const *path = first_path(f.children, grouped);
+        auto const *path = last_path(f.children, grouped, true);
+        if (!path) {
+            grouped = {};
+            path = last_path(f.children, grouped, false);
+        }
         auto const &first = path ? *path : f.children.front();
         node = new_node(Node::Kind::Compound, f.gs);
         node.fill = first.fill;
@@ -880,6 +917,24 @@ void Reader::end_container(std::string_view what, bool hidden)
         }
         node.children = std::move(f.children);
     } else {
+        // The clipping path of a clipping group can lie in a group of its own, written after
+        // what it clips: a compound shape that clips, or a path that Illustrator wrapped.
+        // That group holds nothing but the clipping path, and the clipping group has none
+        // besides. The path clips all of the group, and its own paint lies under all of it,
+        // as a clipping path's does. Left in its group it would clip nothing and paint on top.
+        if (kind == FrameKind::Clip && f.clips.empty()) {
+            auto wraps = [](Node const &n) {
+                return n.kind == Node::Kind::Group && n.clipped && n.children.size() == 1 && !n.opacity_mask;
+            };
+            if (std::count_if(f.children.begin(), f.children.end(), wraps) == 1) {
+                auto const at = std::find_if(f.children.begin(), f.children.end(), wraps);
+                Node clip = std::move(at->children.front());
+                if (clip.name.empty()) clip.name = at->name;
+                clip.commented = at->commented;
+                *at = std::move(clip);
+                f.clips.push_back(static_cast<std::size_t>(at - f.children.begin()));
+            }
+        }
         // A group with a clipping path (q ... Q, or a W path in a group) is a clipping group.
         auto [children, clip] = clip_first(std::move(f.children), f.clips);
         node = new_node(Node::Kind::Group, f.gs);
@@ -889,6 +944,7 @@ void Reader::end_container(std::string_view what, bool hidden)
     bool const commented = f.hidden || hidden;
     if (clipping && !_frames.empty()) _frames.back().clips.push_back(_frames.back().children.size());
     add(std::move(node), commented);
+    _group_closed = kind != FrameKind::Compound;
 }
 
 std::pair<std::vector<Node>, bool> Reader::clip_first(std::vector<Node> kids, std::vector<std::size_t> const &clips)
@@ -899,9 +955,32 @@ std::pair<std::vector<Node>, bool> Reader::clip_first(std::vector<Node> kids, st
         (is_clip ? clip : rest).push_back(std::move(kids[i]));
     }
     if (clip.empty()) return {std::move(rest), false};
+    // A clipping path with a fill and a stroke is written as the same path three times: to
+    // be filled, to clip, to be stroked. They are one path, with the fill of the first that
+    // has one, and the stroke.
+    bool const same = clip.size() > 1 && std::all_of(clip.begin(), clip.end(), [&](Node const &k) {
+        return k.kind == Node::Kind::Path && k.path == clip.front().path && k.evenodd == clip.front().evenodd;
+    });
     std::vector<Node> out;
     if (clip.size() == 1) {
         out.push_back(std::move(clip.front()));
+    } else if (same) {
+        Node one = clip.front();
+        one.fill.reset();
+        one.stroke.reset();
+        for (auto const &k : clip) {
+            if (!one.fill && k.fill) {
+                one.fill = k.fill;
+                one.overprint_fill = k.overprint_fill;
+            }
+            if (!one.stroke && k.stroke) {
+                one.stroke = k.stroke;
+                one.stroke_style = k.stroke_style;
+                one.overprint_stroke = k.overprint_stroke;
+            }
+            if (one.name.empty()) one.name = k.name;
+        }
+        out.push_back(std::move(one));
     } else {
         Node compound;
         compound.kind = Node::Kind::Compound;
@@ -997,7 +1076,13 @@ void Reader::op(std::string_view w, bool hidden)
         auto const *last = last_object();
         follows = last && (last->kind == Node::Kind::Image || last->kind == Node::Kind::Placed);
     }
-    if (!follows) _after_object = false;
+    if (!follows && _after_plugin) follows = paint_state(w);
+    if (!follows) {
+        _after_object = false;
+        _after_plugin = false;
+        // A stroke's width or a colour can come between a group's end and its own state.
+        if (!paint_state(w)) _group_closed = false;
+    }
     Values vals = operands();
     if (_palette) {
         // The Swatches panel: spot inks (Xx), global process colours (Xk) and named
@@ -1099,6 +1184,16 @@ void Reader::op(std::string_view w, bool hidden)
     // Transparency and state.
     else if (w == "Xy") {
         transparency(vals);
+    } else if (w == "Xd") {
+        // `Xd`, with `6 () XW` after it, ends the state a group is written with after it
+        // closes. Its transparency is what holds then. An `Xy` comes before the two only when
+        // that differs from what the last object was written with: a group as transparent as
+        // the last thing in it sets none, and isn't opaque for that.
+        if (_group_closed && !_marked && !_frames.empty() && !_frames.back().children.empty()) {
+            auto &group = _frames.back().children.back();
+            if (group.kind == Node::Kind::Group) group.transparency = _gs.transparency;
+        }
+        _group_closed = false;
     } else if (w == "Xw") {
         _gs.hidden = last_is_one();
     } else if (w == "A") {
@@ -1175,10 +1270,14 @@ void Reader::op(std::string_view w, bool hidden)
             _instance->placement.hilight_length = nums[3];
         }
     } else if (w == "BB") {
+        // A gradient is written around the paint operator of the path it paints, which has
+        // taken it by now. One that closes with no path begun is a note that an object keeps
+        // of its gradient, written with the object's own state (`Xd`, `Bb … Bg`, `BB`,
+        // `6 () XW`): it paints nothing, and least of all the next path.
         if (_instance) {
             auto i = std::move(*_instance);
             _instance.reset();
-            set_instance(i);
+            if (_current || !_path.empty()) set_instance(i);
         }
     }
     // Images.
@@ -1449,8 +1548,11 @@ void Reader::begin_obj(bool hidden)
     f.obj = std::move(obj);
     f.hidden = hidden;
     open(std::move(f));
-    // A dictionary's state starts afresh (styles set theirs inside).
-    _gs = GState();
+    // The state carries on into a dictionary, and is put back when it ends. A mask's art,
+    // the only art of a dictionary that is kept, is written like the art around it: only
+    // what differs from the object before is set again. A mask whose first shape is painted
+    // as that object was sets no colour, and a state begun afresh here would make it black,
+    // which hides what it masks.
 }
 
 void Reader::end_obj()
@@ -1548,27 +1650,54 @@ static bool only_meshes(Node const &n)
 }
 
 /**
- * `(a plug-in's name) … XP` ends an object that the plug-in made: what it was made from,
- * written on %_ lines, then what the plug-in drew of it, written plainly.
+ * `(a plug-in's name) … XP` ends an object that a plug-in keeps live: a compound shape, a
+ * blend, a brush stroke, an envelope. Two groups come before the marker. The first is what
+ * the object was made from (the paths of a compound shape, the ends and the spine of a
+ * blend, the path a brush follows), always on %_ lines. The second is what the plug-in drew
+ * of it, and only that is art: Illustrator draws and prints it, and so does the file's page.
+ * The first group isn't kept. Drawn as well, a brush's path lies over its stroke, and the
+ * paths of a compound shape over what they add up to, in colours of their own.
  *
- * An envelope (Adobe Deform Plugin) has two things on its %_ lines: a group with the mesh
- * it distorts with, and in that group's dictionary the object it distorts, type or art.
- * Art in a dictionary is never kept. With the mesh gone too, what is left is the outlines
- * the envelope drew, which is all Illustrator draws of it.
+ * An object with an appearance is on %_ lines altogether, its marker too, after its drawn
+ * look. The paint that its style gives it then follows the marker, before the style's own
+ * marker (`1 () XW`), which settles it as any object with a look.
  *
- * Other plug-ins' objects are left as they have been read so far.
+ * An envelope (Adobe Deform Plugin) has two things on its %_ lines: a group with the mesh it
+ * distorts with, and in that group's dictionary the object it distorts, type or art. Art in
+ * a dictionary is never kept. With the mesh gone too, what is left is the outlines the
+ * envelope drew, which is all Illustrator draws of it.
+ *
+ * Objects of plug-ins that weren't met in a file are left as they have been read so far.
  */
 void Reader::plugin_object(Values const &vals, bool hidden)
 {
-    if (hidden || _frames.empty() || last_text(vals).value_or("") != "Adobe Deform Plugin") return;
+    if (_frames.empty()) return;
+    auto const name = last_text(vals).value_or("");
     auto &kids = _frames.back().children;
     if (kids.size() < 2) return;
     auto const &drawn = kids[kids.size() - 1];
     auto const &source = kids[kids.size() - 2];
-    if (drawn.commented || drawn.kind != Node::Kind::Group || !source.commented || !only_meshes(source)) return;
+    if (drawn.kind != Node::Kind::Group || drawn.commented != hidden || !source.commented) return;
+    bool const envelope = name == "Adobe Deform Plugin";
+    if (envelope) {
+        if (hidden || !only_meshes(source)) return;
+    } else if (source.kind != Node::Kind::Group ||
+               std::find(std::begin(LIVE_PLUGINS), std::end(LIVE_PLUGINS), name) == std::end(LIVE_PLUGINS)) {
+        return;
+    }
     kids.erase(kids.end() - 2);
-    kids.back().drawn_look = true;
-    kids.back().envelope = true;
+    auto &made = kids.back();
+    made.plugin = name;
+    if (envelope) {
+        made.drawn_look = true;
+        made.envelope = true;
+        return;
+    }
+    // The object's own name, transparency and style follow the marker.
+    _after_object = true;
+    _marked = false;
+    _after_plugin = hidden;
+    _group_closed = true;
 }
 
 void Reader::text_slot(Obj const &o)
@@ -1812,11 +1941,10 @@ void Reader::transparency(Values const &vals)
     int const ko = n.size() > 3 ? static_cast<int>(n[3]) : 0;
     t.knockout = (ko == 1 || ko == 2) ? ko : 0;
     t.knockout_shape = n.size() > 4 && n[4] != 0.0;
-    // Straight after a group or compound path closes, it is the group's.
-    if (auto *obj = last_object();
-        obj && !_marked && (obj->kind == Node::Kind::Group || obj->kind == Node::Kind::Compound)) {
-        obj->transparency = t;
-    }
+    // Straight after a group closes, it is the group's. A compound path has the transparency
+    // of its paths, set inside it, and no state of its own after it: what follows its end is
+    // the next object's.
+    if (auto *obj = last_object(); obj && !_marked && obj->kind == Node::Kind::Group) obj->transparency = t;
 }
 
 /// Remove the children read from %_ lines.
@@ -1937,6 +2065,7 @@ void Reader::style_marker(Values const &vals, bool hidden)
     auto const style = last_text(vals).value_or("");
     bool const after = _after_object;
     _marked = true;
+    _after_plugin = false;
     // `1 (style) XW` after the object written on %_ lines; its drawn look comes before it.
     // The style's name can be empty. An object with an appearance inside one that has an
     // appearance too is all on %_ lines: its look, itself and this marker (`nested`). It is
@@ -1956,6 +2085,7 @@ void Reader::style_marker(Values const &vals, bool hidden)
     if (!obj.name.empty()) l.name = obj.name;
     l.box_rotation = obj.box_rotation;
     l.drawn_look = true;
+    if (!obj.plugin.empty()) l.plugin = obj.plugin;
     // Type among what the appearance drew has stories of its own, in the text document's
     // second part. Whether the look is anything more than the object's own type can only be
     // told from those, once they are read: the object is kept until then (settle_type). A
@@ -2382,6 +2512,15 @@ std::optional<Document> read(std::string_view records, std::string &error, Limit
         return n;
     };
     doc->envelopes = envelopes(envelopes, doc->layers);
+    auto plugins = [&](auto &&self, std::vector<Node> const &nodes) -> void {
+        for (auto const &k : nodes) {
+            // A look counts as one object, with whatever it holds.
+            if (k.drawn_look) continue;
+            if (!k.plugin.empty()) ++doc->plugin_objects[k.plugin];
+            self(self, k.children);
+        }
+    };
+    plugins(plugins, doc->layers);
     return doc;
 }
 

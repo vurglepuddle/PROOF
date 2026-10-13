@@ -983,6 +983,7 @@ XML::Node *Builder::group(Node const &n)
     std::string style;
     common(e, n, style);
     if (n.drawn_look) e->setAttribute("proof:drawn-look", "true");
+    if (!n.plugin.empty() && !n.envelope) e->setAttribute("proof:plugin", n.plugin);
     if (!style.empty()) e->setAttribute("style", style);
     children(e, n.children, n.clipped);
     // The turned box of an object read as its drawn look: its paths share it.
@@ -999,20 +1000,39 @@ XML::Node *Builder::group(Node const &n)
 void Builder::children(XML::Node *parent, std::vector<Node> const &kids, bool clipped)
 {
     std::size_t start = 0;
+    // A clipping path can be painted itself. Its fill lies under what it clips, as a
+    // background. Its stroke lies over it, whole: what is clipped goes in a group of its
+    // own then, with the stroked path after it.
+    auto *into = parent;
+    bool const stroked = clipped && !kids.empty() && kids.front().stroke;
     if (clipped && !kids.empty()) {
-        parent->setAttribute("clip-path", "url(#" + clip_path(kids.front()) + ")");
-        // A clipping path can also be a painted background (W f / W B).
-        if (!kids.front().fill && !kids.front().stroke) start = 1;
+        if (stroked) into = create("svg:g");
+        into->setAttribute("clip-path", "url(#" + clip_path(kids.front()) + ")");
+        if (!kids.front().fill) start = 1;
     }
     auto const seamless = tiles(kids, start, clipped && !kids.empty() ? &kids.front() : nullptr, _to_doc);
     for (std::size_t i = start; i < kids.size(); ++i) {
-        if (auto e = node(kids[i])) {
+        XML::Node *e = nullptr;
+        if (i == 0 && stroked) {
+            Node fill = kids[i];
+            fill.stroke.reset();
+            e = node(fill);
+        } else {
+            e = node(kids[i]);
+        }
+        if (e) {
             if (seamless.count(i)) {
                 auto const style = e->attribute("style");
                 e->setAttribute("style", std::string(style ? style : "") + "shape-rendering:crispEdges;");
             }
-            append(parent, e);
+            append(into, e);
         }
+    }
+    if (stroked) {
+        append(parent, into);
+        Node line = kids.front();
+        line.fill.reset();
+        if (auto e = node(line)) append(parent, e);
     }
 }
 
@@ -1748,6 +1768,24 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         notes.push_back(count(ai.envelopes, "object distorted by an envelope came in as the outlines it draws",
                               "objects distorted by envelopes came in as the outlines they draw") +
                         ": what was distorted, type or art, isn't kept");
+    }
+    if (!ai.plugin_objects.empty()) {
+        // Compound shapes, blends and brush strokes: what a plug-in keeps live in Illustrator.
+        std::size_t shapes = 0, blends = 0, strokes = 0;
+        for (auto const &[name, n] : ai.plugin_objects) {
+            (name == "Pathfinder Suite" ? shapes : name == "Adobe Path Blends" ? blends : strokes) += n;
+        }
+        std::vector<std::string> kinds;
+        if (shapes) kinds.push_back(count(shapes, "compound shape", "compound shapes"));
+        if (blends) kinds.push_back(count(blends, "blend", "blends"));
+        if (strokes) kinds.push_back(count(strokes, "brush stroke", "brush strokes"));
+        std::string list;
+        for (std::size_t i = 0; i < kinds.size(); ++i) {
+            list += (i == 0 ? "" : i + 1 == kinds.size() ? " and " : ", ") + kinds[i];
+        }
+        bool const one = shapes + blends + strokes == 1;
+        notes.push_back(list + " came in as what " + (one ? "it draws" : "they draw") + ": the paths " +
+                        (one ? "it was" : "they were") + " made from aren't kept");
     }
     if (b.hidden_text) {
         notes.push_back(count(b.hidden_text, "text object", "text objects") +
