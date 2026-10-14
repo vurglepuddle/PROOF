@@ -125,6 +125,7 @@ public:
     std::optional<capypdf::Color> get_paint(SPIPaint const &paint, SPStyle const *context_style,
                                             std::optional<double> opacity);
     capypdf::Color get_color(Colors::Color const &color, std::optional<double> opacity);
+    capypdf::Color get_shading_color(Colors::Color const &color, std::optional<double> opacity);
 
     std::optional<CapyPDF_PatternId> get_pattern(SPPaintServer const *paint, std::optional<double> opacity);
 

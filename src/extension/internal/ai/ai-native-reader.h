@@ -278,10 +278,11 @@ struct Node
     LayerOptions layer;
     Transparency transparency;
 
-    /// A clipped, non-inverted opacity mask made of solid greyscale vector artwork.
-    /// Empty artwork hides the object; no value means no active mask. Other forms
+    /// A non-inverted opacity mask made of greyscale vector artwork (including gradients).
+    /// Empty clipped artwork hides the object; no value means no active mask. Other forms
     /// remain explicit native-import refusals rather than losing their mask.
     std::optional<std::vector<Node>> opacity_mask;
+    bool opacity_mask_clipped = true; ///< Unclipped masks have an opaque white backdrop.
 
     // Path (and Compound: the first child's paint is the compound's).
     Geom::PathVector path;

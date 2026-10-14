@@ -179,12 +179,23 @@ std::optional<CapyPDF_TransparencyGroupId> Document::mask_to_transparency_group(
     }
 
     auto group_ctx = PdfBuilder::GroupContext(*this, *bbox);
+    // A luminosity mask needs an explicit blending space, including when another
+    // mask composites it. Without it, translucent white can become fully opaque.
+    capypdf::TransparencyGroupProperties props;
+    props.set_CS(CAPY_DEVICE_CS_RGB);
+    props.set_I(true);
+    props.set_K(false);
+    group_ctx._ctx.set_transparency_group_properties(props);
     group_ctx.transform(transform);
 
     for (auto &obj : mask->children) {
         if (auto child_item = cast<SPItem>(&obj)) {
+            std::optional<CapyPDF_TransparencyGroupId> nested_mask;
+            if (auto child_mask = child_item->getMaskObject(); child_mask && !group_ctx.should_rasterize(*child_item)) {
+                nested_mask = mask_to_transparency_group(child_mask, child_item->transform);
+            }
             if (auto item_id = item_to_transparency_group(child_item)) {
-                group_ctx.paint_group(*item_id, child_item->style);
+                group_ctx.paint_group(*item_id, child_item->style, Geom::identity(), nested_mask);
             }
         }
     }

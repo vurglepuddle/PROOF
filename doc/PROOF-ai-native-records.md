@@ -1351,6 +1351,10 @@ lost. **821 of 879** by count, 21 still drawing differently.
 
 ### Inherited character styles and clipped vector opacity masks (2026-10-11)
 
+This records the first mask subset. The later
+[unclipped, gradient and nested mask work](#unclipped-gradient-and-nested-opacity-masks-2026-10-14)
+expands it; the refusal list below describes the initial implementation.
+
 A story can omit its character-run list when every character uses the
 document's default style. This is valid Illustrator data, previously rejected
 as an incomplete dictionary. The reader now inherits that style for the whole
@@ -1647,6 +1651,74 @@ partial, 349 pass the appearance check without complete-editability
 certification. Three mesh files still require nonuniform interpolation
 with extra boundary nodes. All nine unit suites and both export smoke
 tests passed; one full corpus regression was run for this milestone.
+
+### Unclipped, gradient and nested opacity masks (2026-10-14)
+
+The next mask census found sixteen documents with mask dictionaries, including
+four whose only remaining blocker was an active, linked, non-inverted,
+unclipped greyscale mask. Their masks use greyscale gradients, Normal or
+Multiply artwork, and empty nested masks. A nested empty mask with Clip off
+is opaque white, so it leaves its target visible. With Clip on it hides it.
+[Illustrator's transparency reference](https://helpx.adobe.com/illustrator/using/transparency-blending-modes-alt.html)
+describes the white backdrop when Clip is off and the black backdrop when it
+is on. Grey is coverage, independent of the document's printing profile.
+
+The reader now retains the clipping flag and accepts the bounded non-inverted
+greyscale vector subset: filled or stroked paths, compound paths, groups,
+linear/radial gradients, nested masks, and Normal or Multiply. Every gradient
+stop must be Gray, neutral RGB or K-only CMYK, without named inks. Flags are
+validated before attachment. An ArtDictionary inside a mask attaches to its
+preceding artwork before it is stored as metadata; otherwise a nested mask
+could disappear when the dictionary ends. Drawing state still inherits into
+the dictionary and restores on exit, including an inherited object's opacity.
+
+The importer builds editable SVG luminance masks. Unclipped masks have an
+explicit white backdrop; its region includes the target's painted bounds,
+strokes and off-artboard artwork, with a small guard beyond the painted edge.
+Mask colours use embedded sRGB, and gradient vectors are cached separately
+for ordinary colour and mask coverage. A gradient used in both contexts keeps
+its original CMYK channels outside the mask. Nested construction restores the
+previous coverage-colour context rather than unconditionally leaving it.
+
+**Editing limit:** the mask region and white backdrop are finite, sized at
+import time. Moving or transforming the wrapper carries them with the art;
+later anchor or stroke edits that expand beyond the initial region can need
+the region/backdrop enlarged. Save/reopen and mask colour edits are checked;
+this is not a certification of every subsequent editing operation.
+
+Inverted or unlinked masks, coloured/named-ink paints, raster, pattern, mesh,
+text, symbol or foreign artwork in a mask, other blend modes and knockout
+remain explicit refusals. Masks on compound components or clipping paths,
+and unsupported masks in replaced styled source artwork, still fail closed.
+No PDF comparison thresholds or per-artboard fallback rules changed.
+
+The print checks also exposed two PDF exporter faults: ICC colour objects
+could abort gradient-function serialization, and a mask nested directly in
+mask artwork was omitted. Shadings now pass the RGB/CMYK device components
+expected by CapyPDF, preserving channel values; ICC-tagged shading output is
+still a separate limitation. Nested mask artwork receives its own soft mask,
+and luminosity mask groups explicitly use RGB for blending so translucent
+white contributes its alpha to coverage.
+
+Regressions cover flag/attachment refusal, nested inherited/reset opacity,
+white-backdrop compositing, Multiply through groups, strokes, off-artboard
+extent, shared ordinary/mask gradients, mask colour edits and SVG reopen.
+Independent PDF shadings check clipped and unclipped coverage. The
+[installed opacity-mask export check](../testfiles/cli_tests/ai-opacity-mask-smoke.py)
+uses importer-generated synthetic SVGs: canvas and PDF pixels, vector-only
+output and exact ordinary CMYK gradient channels. No private artwork is
+included in those fixtures.
+
+**Milestone result:** 858/879 native, 21 PDF fallback; four gained and none
+lost from 854/25. 508 imports are explicitly partial and 350 are not certified
+for complete editability. All sixteen mask-bearing files were checked during
+implementation; the four mask-only fallbacks gained native import and the
+other twelve retained their previous acceptance/fallback. All nine unit
+suites passed, with affected suites rerun after the PDF fixes. Installed
+export checks passed: opacity masks 59/59, `.ai` 19/19 and blends 32/32. One
+full corpus regression ran at the stable milestone, with no errors/timeouts,
+source hash differences or native losses. No previously accepted native file
+moved by more than 0.2 percentage points in either visual measure.
 
 ## Plan
 

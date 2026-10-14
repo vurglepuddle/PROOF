@@ -1271,11 +1271,11 @@ TEST(AiNativeReader, ClippedVectorOpacityMasksKeepTheirArtworkAndState)
     EXPECT_TRUE(doc.layers[0].children[0].opacity_mask->empty());
     doc = read_ok(records(layer("L", shape + mask(coverage, 1, 0, 1))));
     EXPECT_FALSE(doc.layers[0].children[0].opacity_mask);
-    for (auto const &unsupported : {mask(coverage, 0), mask(coverage, 1, 1),
+    for (auto const &unsupported : {mask(coverage, 1, 1),
             mask("0 1 0 0 k\n" + rect(0, 0, 20, 40) + "f\n"),
-            mask("0 G 2 w\n" + rect(0, 0, 20, 40) + "S\n"),
+            mask("0 1 0 0 K 2 w\n" + rect(0, 0, 20, 40) + "S\n"),
             mask("/AI11Text : 0 /StoryIndex , ;\n"),
-            mask(shape + mask(coverage))}) {
+            mask("/Mask :\n1 /Bool (Clipping) , 0 /Bool (Inverted) , 0 /Bool (Disabled) , ;\n")}) {
         SCOPED_TRACE(unsupported);
         EXPECT_NE(read_error(records(layer("L", shape + unsupported))).find("opacity masks"), std::string::npos);
     }
@@ -1295,6 +1295,53 @@ TEST(AiNativeReader, ClippedVectorOpacityMasksKeepTheirArtworkAndState)
     EXPECT_EQ(covering.children[0].fill->color, Color::cmyk(0, 0, 0, 0));
     // Masks on component paths cannot be flattened into a compound path's geometry.
     EXPECT_NE(read_error(records(layer("L", "*u\n" + shape + mask(coverage) + "*U\n"))).find("opacity masks"), std::string::npos);
+}
+
+TEST(AiNativeReader, UnclippedGradientOpacityMasksKeepNestedArtwork)
+{
+    auto mask = [](std::string const &art, int clip) {
+        return "/ArtDictionary :\n/Mask :\n" + std::to_string(clip) +
+            " /Bool (Clipping) ,\n0 /Bool (Inverted) ,\n0 /Bool (Disabled) ,\n1 /Bool (Linked) ,\n"
+            "X=\n" + art + "X+\n(Art) ,\n; (AI9_Mask) ,\n;\n";
+    };
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n1 0 50 100 Bs\n0 0 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    auto const gradient = "0 g\n" + rect(0, 0, 20, 40) +
+        "Bb\n0 (G) 0 0 0 20 1 0 0 1 0 0 Bg\nf\n0 BB\n";
+    auto doc = read_ok(records(layer("L", "0 g\n" + rect(0, 0, 40, 40) + "f\n" +
+                                          mask(gradient + mask("", 0), 0)), setup));
+    auto const &n = doc.layers[0].children[0];
+    ASSERT_TRUE(n.opacity_mask);
+    EXPECT_FALSE(n.opacity_mask_clipped);
+    ASSERT_EQ(n.opacity_mask->size(), 1u);
+    auto const &g = n.opacity_mask->front();
+    ASSERT_TRUE(g.fill);
+    EXPECT_EQ(g.fill->kind, Paint::Kind::Gradient);
+    ASSERT_TRUE(g.opacity_mask);
+    EXPECT_TRUE(g.opacity_mask->empty());
+    EXPECT_FALSE(g.opacity_mask_clipped);
+    auto stroke = read_ok(records(layer("L", "0 g\n" + rect(0, 0, 40, 40) + "f\n" +
+                                              mask("1 G 4 w\n" + rect(0, 0, 20, 40) + "S\n", 1))));
+    ASSERT_TRUE(stroke.layers[0].children[0].opacity_mask->front().stroke);
+    auto coloured = setup;
+    coloured.replace(coloured.find("1 0 50 100"), 10, "1 0 0 0 1 50 100");
+    EXPECT_NE(read_error(records(layer("L", "0 g\n" + rect(0, 0, 40, 40) + "f\n" +
+                                          mask(gradient, 0)), coloured)).find("opacity masks"), std::string::npos);
+}
+
+TEST(AiNativeReader, OpacityMaskFlagsAndAttachmentsRemainBounded)
+{
+    auto const shape = "0 g\n" + rect(0, 0, 40, 40) + "f\n";
+    for (auto const &flags : {"0.5 /Bool (Clipping) ,", "1 /Bool (Inverted) ,", "0 /Bool (Linked) ,"}) {
+        std::string settings = "1 /Bool (Clipping) ,\n0 /Bool (Inverted) ,\n0 /Bool (Disabled) ,\n1 /Bool (Linked) ,\n";
+        auto const key = std::string(flags).substr(std::string(flags).find(" /Bool"));
+        auto const end = settings.find(key);
+        ASSERT_NE(end, settings.npos);
+        auto const start = settings.rfind('\n', end);
+        settings.replace(start == settings.npos ? 0 : start + 1,
+                         end + key.size() - (start == settings.npos ? 0 : start + 1), flags);
+        EXPECT_NE(read_error(records(layer("L", shape + "/ArtDictionary :\n/Mask :\n" + settings +
+            "X=\n1 g\n" + rect(0, 0, 20, 40) + "f\nX+\n(Art) ,\n; (AI9_Mask) ,\n;\n"))).find("opacity masks"), std::string::npos);
+    }
 }
 
 namespace {

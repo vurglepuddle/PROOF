@@ -1576,8 +1576,7 @@ void Reader::begin_obj(bool hidden)
         obj->type = _stack.back().str;
         _stack.pop_back();
     }
-    if (obj->type == "AI11Text" || obj->type == "SymbolInstance" ||
-        obj->type == "ForeignObject" || obj->type == "Mask") {
+    if (obj->type == "AI11Text" || obj->type == "SymbolInstance" || obj->type == "ForeignObject") {
         for (auto &frame : _frames) {
             if (frame.kind == FrameKind::Obj && frame.obj->type == "Mask") {
                 frame.obj->unsupported_mask_art = true;
@@ -1614,18 +1613,18 @@ void Reader::end_obj()
         bool const active = disabled.size() != 1 || disabled[0] != 1.0;
         auto const clipped = f.obj->nums("Clipping"), inverted = f.obj->nums("Inverted"), linked = f.obj->nums("Linked");
         if (active && (disabled.size() != 1 || disabled[0] != 0.0 ||
-                clipped.size() != 1 || clipped[0] != 1.0 || inverted.size() != 1 || inverted[0] != 0.0 ||
+                clipped.size() != 1 || (clipped[0] != 0.0 && clipped[0] != 1.0) || inverted.size() != 1 || inverted[0] != 0.0 ||
                 (!linked.empty() && (linked.size() != 1 || linked[0] != 1.0)))) {
-            unreadable("opacity masks outside the supported clipped greyscale vector subset");
+            unreadable("opacity masks outside the supported non-inverted greyscale vector subset");
         }
-        // A text/symbol/nested mask can be a dictionary directly inside the mask,
+        // A text/symbol can be a dictionary directly inside the mask,
         // without a group frame. Such artwork must not become an empty mask.
         // Remember them when opened: X+ and drawing operators consume unkeyed
         // dictionary values, so checking the remaining entries would miss them.
         if (active && f.obj->unsupported_mask_art) {
             unreadable("opacity masks containing unsupported artwork dictionaries");
         }
-        if ((_frames.empty() || _frames.back().kind != FrameKind::Obj) &&
+        if ((_frames.empty() || _frames.back().kind != FrameKind::Obj || _frames.back().obj->type != "ArtDictionary") &&
             (disabled.size() != 1 || disabled[0] != 1.0)) unreadable("opacity masks without an artwork dictionary");
     }
     if (type == "ForeignObject") {
@@ -1633,6 +1632,11 @@ void Reader::end_obj()
         // PDF, mostly) and can't edit either: a blob with where it goes.
         unreadable("art kept in another format (foreign objects)");
     }
+    // A mask dictionary holds real artwork, so an ArtDictionary inside it belongs
+    // to its preceding child. Apply that attachment before retaining the dictionary
+    // as metadata; otherwise a nested mask would silently disappear at X+.
+    if (type == "ArtDictionary" && !_frames.empty() && _frames.back().kind == FrameKind::Obj &&
+        _frames.back().obj->type == "Mask") art_dictionary(*f.obj);
     if (!_frames.empty() && _frames.back().kind == FrameKind::Obj) {
         Value v;
         v.kind = Value::Kind::Dict;
@@ -1900,24 +1904,30 @@ void Reader::art_dictionary(Obj const &o)
         auto const disabled = mask->nums("Disabled");
         if (disabled.size() == 1 && disabled[0] == 1.0) return;
         auto const clipped = mask->nums("Clipping"), inverted = mask->nums("Inverted");
-        // Start with the form that maps exactly to an SVG luminance mask. Non-clipping
-        // masks have a white backdrop; inversion applies to that composite. Neither
-        // can be approximated by dropping a flag or reversing each individual shape.
+        // Non-clipping masks have an opaque white backdrop. Inversion applies to the
+        // composite, and is still refused rather than reversing individual shapes.
         bool const supported_flags = mask->type == "Mask" && disabled.size() == 1 && disabled[0] == 0.0 &&
-            clipped.size() == 1 && clipped[0] == 1.0 && inverted.size() == 1 && inverted[0] == 0.0;
-        auto grey = [](Paint const &p) {
-            if (p.kind != Paint::Kind::Solid || p.ink >= 0) return false;
-            auto const &c = p.color;
+            clipped.size() == 1 && (clipped[0] == 0.0 || clipped[0] == 1.0) && inverted.size() == 1 && inverted[0] == 0.0;
+        auto grey_color = [](Color const &c) {
             return c.model == Color::Model::Gray ||
                 (c.model == Color::Model::Cmyk && c.v[0] == 0 && c.v[1] == 0 && c.v[2] == 0) ||
                 (c.model == Color::Model::Rgb && c.v[0] == c.v[1] && c.v[1] == c.v[2]);
         };
+        auto grey = [&](Paint const &p) {
+            if (p.kind == Paint::Kind::Solid) return p.ink < 0 && grey_color(p.color);
+            if (p.kind != Paint::Kind::Gradient || p.gradient.gradient < 0 ||
+                p.gradient.gradient >= static_cast<int>(_doc.gradients.size())) return false;
+            auto const &stops = _doc.gradients[p.gradient.gradient].stops;
+            return !stops.empty() && std::all_of(stops.begin(), stops.end(), [&](GradientStop const &s) {
+                return s.ink < 0 && grey_color(s.color);
+            });
+        };
         auto supported_art = [&](auto &&self, std::vector<Node> const &nodes) -> bool {
             for (auto const &k : nodes) {
                 if ((k.kind != Node::Kind::Path && k.kind != Node::Kind::Compound && k.kind != Node::Kind::Group) ||
-                    k.opacity_mask || k.guide || k.stroke || (k.fill && !grey(*k.fill)) ||
-                    k.transparency.blend != 0 || k.transparency.knockout == 1 ||
-                    !self(self, k.children)) return false;
+                    k.guide || (k.stroke && !grey(*k.stroke)) || (k.fill && !grey(*k.fill)) ||
+                    (k.transparency.blend != 0 && k.transparency.blend != 1) || k.transparency.knockout == 1 ||
+                    !self(self, k.children) || (k.opacity_mask && !self(self, *k.opacity_mask))) return false;
             }
             return true;
         };
@@ -1925,9 +1935,10 @@ void Reader::art_dictionary(Obj const &o)
             return f.kind == FrameKind::Compound;
         });
         if (!supported_flags || in_compound || !supported_art(supported_art, mask->art)) {
-            unreadable("opacity masks outside the supported clipped greyscale vector subset");
+            unreadable("opacity masks outside the supported non-inverted greyscale vector subset");
         } else {
             n->opacity_mask = mask->art;
+            n->opacity_mask_clipped = clipped[0] == 1.0;
         }
     }
 }

@@ -79,9 +79,9 @@ std::string records(std::string const &art, std::string const &setup = {}, bool 
            "%%EndSetup\n" + art + "%%PageTrailer\nshowpage\n%%EOF\n";
 }
 
-std::string vector_mask(std::string const &art)
+std::string vector_mask(std::string const &art, int clipping = 1)
 {
-    return "/ArtDictionary :\n/Mask :\n1 /Bool (Clipping) ,\n0 /Bool (Inverted) ,\n0 /Bool (Disabled) ,\n"
+    return "/ArtDictionary :\n/Mask :\n" + std::to_string(clipping) + " /Bool (Clipping) ,\n0 /Bool (Inverted) ,\n0 /Bool (Disabled) ,\n"
            "X=\n" + art + "X+\n(Art) ,\n; (AI9_Mask) ,\n;\n";
 }
 
@@ -861,6 +861,57 @@ TEST_F(AiNativeImportTest, VectorOpacityMaskIsEditableAndSurvivesReopen)
     auto final_paths = elements(final_mask[0], "svg:path"); ASSERT_EQ(final_paths.size(), 1u);
     EXPECT_EQ(saved->getObjectByRepr(final_paths[0])->style->fill.getColor().getValues(),
               (std::vector<double>{1, 1, 1}));
+}
+
+TEST_F(AiNativeImportTest, OpacityMaskGradientsHaveTheirOwnCoverageColorsAndSurviveReopen)
+{
+    // The same CMYK gradient paints ordinary artwork and a mask. Only the mask's
+    // vector belongs to embedded sRGB, so its K values remain exact coverage.
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 0 0 1 1 50 100 Bs\n"
+                              "0 0 0 0 1 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    auto const gradient = "10 20 m 90 20 L 90 60 L 10 60 L h\nBb\n0 (G) 10 20 0 80 1 0 0 1 0 0 Bg\nf\n0 BB\n";
+    auto const mask_art = std::string(gradient) + vector_mask("", 0) + "0 0 0 0.5 k\n" + rect;
+    auto b = make(records(layer(std::string(gradient) + "0 g\n" + rect + vector_mask(mask_art, 0) + gradient), setup));
+    ASSERT_TRUE(b);
+    auto check = [&](SPDocument *doc) {
+        auto masks = elements(doc->getDefs()->getRepr(), "svg:mask"); ASSERT_EQ(masks.size(), 2u);
+        unsigned rgb = 0, cmyk = 0;
+        for (auto stop : elements(doc->getDefs()->getRepr(), "svg:stop")) {
+            auto const color = doc->getObjectByRepr(stop)->style->stop_color.getColor();
+            auto const type = color.getSpace()->getComponentType();
+            if (type == Type::CMYK) ++cmyk;
+            else if (type == Type::RGB) ++rgb;
+        }
+        EXPECT_EQ(rgb, 2u);
+        EXPECT_EQ(cmyk, 2u);
+        for (auto mask : masks) {
+            auto backgrounds = elements(mask, "svg:rect"); ASSERT_EQ(backgrounds.size(), 1u);
+            EXPECT_EQ(attr(backgrounds[0], "proof:mask-backdrop"), "white");
+        }
+        // Siblings after a nested mask must still use coverage colours.
+        auto paths = elements(masks[1], "svg:path"); ASSERT_EQ(paths.size(), 2u);
+        auto color = doc->getObjectByRepr(paths.back())->style->fill.getColor();
+        EXPECT_EQ(color.getSpace()->getComponentType(), Type::RGB);
+        EXPECT_EQ(color.getValues(), (std::vector<double>{0.5, 0.5, 0.5}));
+    };
+    check(b->document.get());
+    if (auto const *dir = g_getenv("PROOF_AI_MASK_DIAG")) {
+        g_mkdir_with_parents(dir, 0700);
+        auto const svg = sp_repr_save_buf(b->document->getReprDoc());
+        g_file_set_contents((std::string(dir) + "/cmyk-gradient.svg").c_str(), svg.c_str(), svg.bytes(), nullptr);
+    }
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    check(reopened.get());
+    auto stops = elements(reopened->getDefs()->getRepr(), "svg:stop");
+    auto const space = reopened->getObjectByRepr(stops[2])->style->stop_color.getColor().getSpace();
+    stops[2]->setAttribute("style", "stop-color:" + Colors::Color(space, {0.25, 0.25, 0.25}).toString(false));
+    reopened->ensureUpToDate();
+    auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(edited);
+    auto final = elements(edited->getDefs()->getRepr(), "svg:stop");
+    EXPECT_EQ(edited->getObjectByRepr(final[2])->style->stop_color.getColor().getValues(),
+              (std::vector<double>{0.25, 0.25, 0.25}));
 }
 
 TEST_F(AiNativeImportTest, VisibleTextRefusedHiddenTextNoted)
@@ -3644,6 +3695,76 @@ TEST_F(AiNativeImportTest, VectorOpacityMasksMatchIndependentPdfArtwork)
     auto const masked_image = records(layer(image + vector_mask("1 g\n10 20 m 10 60 L 30 60 L 30 20 L f\n")), {}, false);
     EXPECT_TRUE(Extension::Internal::open_ai_native(fixture(masked_image, {"0 g 10 20 20 40 re f"}), reason)) << reason;
     EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(masked_image, {"0 g 10 20 40 40 re f"}), reason));
+}
+
+TEST_F(AiNativeImportTest, UnclippedOpacityMasksCompositeOnWhiteAndKeepNestedCoverage)
+{
+    auto const half = std::string("10 20 m 10 60 L 50 60 L 50 20 L f\n");
+    std::vector<std::pair<std::string, std::string>> cases = {
+        {vector_mask("", 0), "0 g 10 20 80 40 re f"},
+        {vector_mask("0 0.5 0 0 0 Xy\n0 g\n" + half, 0), "0.5 g 10 20 40 40 re f 0 g 50 20 40 40 re f"},
+        {vector_mask("0 0.5 0 0 0 Xy\n0 g\n" + rect + vector_mask("1 g\n" + half), 0),
+         "0.25 g 10 20 40 40 re f 0 g 50 20 40 40 re f"},
+        // The inner artwork inherits half opacity above. Reset it explicitly here:
+        // opaque white coverage then leaves only the outer artwork's half opacity.
+        {vector_mask("0 0.5 0 0 0 Xy\n0 g\n" + rect + vector_mask("0 1 0 0 0 Xy\n1 g\n" + half), 0),
+         "0.5 g 10 20 40 40 re f 0 g 50 20 40 40 re f"},
+        {vector_mask("1 G 4 w\n30 30 m 70 30 L 70 50 L 30 50 L h S\n"), "0 G 4 w 30 30 40 20 re S"},
+        {vector_mask("0.5 g\n" + rect + "u\n1 1 0 0 0 Xy\n0.5 g\n" + half + "U\n", 0),
+         "0.75 g 10 20 40 40 re f 0.5 g 50 20 40 40 re f"}
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        auto const source = records(layer("0 g\n" + rect + cases[i].first), {}, false);
+        std::string reason;
+        auto good = Extension::Internal::open_ai_native(fixture(source, {cases[i].second}), reason);
+        ASSERT_TRUE(good) << i << ": " << reason;
+        EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(source, {"1 g 10 20 80 40 re f"}), reason));
+        if (auto const *dir = g_getenv("PROOF_AI_MASK_DIAG")) {
+            g_mkdir_with_parents(dir, 0700);
+            auto const svg = sp_repr_save_buf(good->document->getReprDoc());
+            g_file_set_contents((std::string(dir) + "/mask-" + std::to_string(i) + ".svg").c_str(), svg.c_str(), svg.bytes(), nullptr);
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, OpacityMaskGradientsMatchIndependentPdfShading)
+{
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 0 0 1 1 50 100 Bs\n"
+                              "0 0 0 0 1 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    std::string const half = "10 20 m 50 20 L 50 60 L 10 60 L h\n";
+    std::string const mask = half + "Bb\n0 (G) 10 20 0 40 1 0 0 1 0 0 Bg\nf\n0 BB\n";
+    std::string const shading = "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [10 20 50 20] "
+        "/Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> /Extend [true true] >>";
+    for (int clip : {0, 1}) {
+        auto const source = records(layer("0 g\n" + rect + vector_mask(mask, clip)), setup, false);
+        auto const page = std::string(clip ? "" : "0 g 50 20 40 40 re f ") +
+            "q 10 20 40 40 re W n /S1 sh Q";
+        std::string reason;
+        auto good = Extension::Internal::open_ai_native(
+            fixture(source, {page}, "/MediaBox [0 0 200 100]", {}, {}, shading), reason);
+        ASSERT_TRUE(good) << clip << ": " << reason;
+        EXPECT_LT(good->differences[0].lightness, 0.005);
+        if (auto const *dir = g_getenv("PROOF_AI_MASK_DIAG")) {
+            g_mkdir_with_parents(dir, 0700);
+            auto const svg = sp_repr_save_buf(good->document->getReprDoc());
+            g_file_set_contents((std::string(dir) + "/gradient-" + std::to_string(clip) + ".svg").c_str(), svg.c_str(), svg.bytes(), nullptr);
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, UnclippedOpacityMaskBackdropIncludesOffboardArtworkAndStrokes)
+{
+    // Nothing in this target lies on its artboard; mask extent comes from the target,
+    // not a page rectangle or only the narrow path carrying its stroke.
+    auto b = make(records(layer("0 G 20 w\n250 30 m 300 30 L S\n" + vector_mask("", 0)), {}, false));
+    ASSERT_TRUE(b);
+    auto masks = elements(b->document->getDefs()->getRepr(), "svg:mask"); ASSERT_EQ(masks.size(), 1u);
+    auto backgrounds = elements(masks[0], "svg:rect"); ASSERT_EQ(backgrounds.size(), 1u);
+    auto number = [&](char const *key) { return g_ascii_strtod(backgrounds[0]->attribute(key), nullptr); };
+    EXPECT_LT(number("x"), 250);
+    EXPECT_GT(number("x") + number("width"), 300);
+    EXPECT_LT(number("y"), 60);
+    EXPECT_GT(number("y") + number("height"), 80);
 }
 
 TEST_F(AiNativeImportTest, TypeInAFontThatIsNotInstalledIsLeftOutOfTheComparison)

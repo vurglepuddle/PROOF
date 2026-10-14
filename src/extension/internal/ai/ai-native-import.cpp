@@ -588,7 +588,7 @@ private:
     XML::Node *text(Node const &n);
     void children(XML::Node *parent, std::vector<Node> const &kids, bool clipped);
     std::string clip_path(Node const &clip);
-    XML::Node *masked(XML::Node *art, std::vector<Node> const &mask);
+    XML::Node *masked(XML::Node *art, std::vector<Node> const &mask, bool clipped);
     void common(XML::Node *e, Node const &n, std::string &style);
 
     Colors::Color process(Color const &c) const;
@@ -614,7 +614,7 @@ private:
     std::shared_ptr<Colors::CMS::Profile> _srgb;
     cmsHTRANSFORM _cmyk_to_rgb = nullptr;
     std::map<std::pair<int, double>, std::string> _inks; ///< (ink, tint) to its paint.
-    std::map<int, std::string> _vectors;               ///< Gradient to its vector's id.
+    std::map<std::pair<int, bool>, std::string> _vectors; ///< (Gradient, mask coverage) to vector id.
     std::map<int, std::string> _tiles;                 ///< Pattern to its tile's id.
     /// An image as the document holds it: for the screen, and its CMYK samples for print.
     struct Encoded
@@ -713,7 +713,7 @@ XML::Node *Builder::node(Node const &n)
     bool const hidden = !n.visible;
     if (hidden) ++_hidden;
     auto *e = made(n);
-    if (e && n.opacity_mask) e = masked(e, *n.opacity_mask);
+    if (e && n.opacity_mask) e = masked(e, *n.opacity_mask, n.opacity_mask_clipped);
     if (hidden) --_hidden;
     return e;
 }
@@ -1055,7 +1055,7 @@ std::string Builder::clip_path(Node const &clip)
     return id;
 }
 
-XML::Node *Builder::masked(XML::Node *art, std::vector<Node> const &mask)
+XML::Node *Builder::masked(XML::Node *art, std::vector<Node> const &mask, bool clipped)
 {
     if (!_mask_space) {
         auto const profile = Colors::CMS::Profile::create_srgb();
@@ -1069,20 +1069,40 @@ XML::Node *Builder::masked(XML::Node *art, std::vector<Node> const &mask)
     m->setAttribute("id", id);
     m->setAttribute("maskUnits", "userSpaceOnUse");
     m->setAttribute("maskContentUnits", "userSpaceOnUse");
-    // A clipped mask is black outside its art. The union of its filled paths bounds
-    // all possible coverage (including clipping groups), without cropping to a page
-    // or guessing a margin around the object. Stroked/raster masks are refused above.
+    // Use actual painted bounds, including strokes, instead of clipping to an artboard.
+    // The temporary definitions child is never displayed and retains its creation ref.
+    _defs->appendChild(art);
+    _doc->ensureUpToDate();
+    auto const *item = dynamic_cast<SPItem *>(_doc->getObjectByRepr(art));
+    auto const art_bounds = item ? item->visualBounds(item->transform) : Geom::OptRect();
+    _defs->removeChild(art);
     Geom::PathVector pv;
     for (auto const &n : mask) outline(n, pv);
-    auto const bounds = (pv * _to_doc).boundsFast();
-    auto const box = bounds.value_or(Geom::Rect(Geom::Point(0, 0), Geom::Point(1, 1)));
+    auto bounds = (pv * _to_doc).boundsFast();
+    if (art_bounds) bounds.unionWith(art_bounds);
+    auto box = bounds.value_or(Geom::Rect(Geom::Point(0, 0), Geom::Point(1, 1)));
+    if (!clipped) {
+        // White is the unclipped mask's backdrop, including where its artwork is absent
+        // or translucent. Extend beyond the target's painted edge to avoid multiplying
+        // its antialiasing by a second coincident edge. The margin follows SVG's 10% guard.
+        box.expandBy(std::max(1.0, std::max(box.width(), box.height()) * 0.1));
+        auto background = create("svg:rect");
+        background->setAttribute("x", num(box.left()));
+        background->setAttribute("y", num(box.top()));
+        background->setAttribute("width", num(box.width()));
+        background->setAttribute("height", num(box.height()));
+        background->setAttribute("style", "fill:" + Colors::Color(_mask_space, {1, 1, 1}).toString(false));
+        background->setAttribute("proof:mask-backdrop", "white");
+        append(m, background);
+    }
+    m->setAttribute("proof:ai-mask-clipping", clipped ? "true" : "false");
     m->setAttribute("x", num(box.left()));
     m->setAttribute("y", num(box.top()));
     m->setAttribute("width", num(box.width()));
     m->setAttribute("height", num(box.height()));
-    _in_opacity_mask = true;
+    auto const was_mask = std::exchange(_in_opacity_mask, true);
     children(m, mask, false);
-    _in_opacity_mask = false;
+    _in_opacity_mask = was_mask;
     append(_defs, m);
     // An image or text can carry its own transform. A wrapper keeps both the mask
     // and the already positioned artwork in the same document coordinates.
@@ -1280,7 +1300,8 @@ void Builder::add_stop(XML::Node *vector, double offset, StopPaint const *paint,
 
 std::string Builder::gradient_vector(int index)
 {
-    if (auto it = _vectors.find(index); it != _vectors.end()) return it->second;
+    auto const key = std::pair(index, _in_opacity_mask);
+    if (auto it = _vectors.find(key); it != _vectors.end()) return it->second;
     auto const &g = _ai.gradients[index];
     auto vec = create("svg:linearGradient");
     auto const id = unique("gradient");
@@ -1323,7 +1344,7 @@ std::string Builder::gradient_vector(int index)
         }
     }
     append(_defs, vec);
-    return _vectors[index] = id;
+    return _vectors[key] = id;
 }
 
 std::string Builder::gradient(Paint const &p)

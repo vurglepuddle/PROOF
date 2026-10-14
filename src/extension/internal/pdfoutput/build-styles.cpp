@@ -384,6 +384,28 @@ capypdf::Color Document::get_color(Colors::Color const &color, std::optional<dou
     return out;
 }
 
+capypdf::Color Document::get_shading_color(Colors::Color const &color, std::optional<double> opacity)
+{
+    // CapyPDF's shading functions accept device components, not ICC color objects.
+    // Keep the profile's RGB/CMYK channels in the device space selected below.
+    if (!opacity) {
+        if (auto cms = std::dynamic_pointer_cast<Colors::Space::CMS>(color.getSpace())) {
+            capypdf::Color out;
+            if (cms->getComponentType() == Colors::Space::Type::CMYK) {
+                out.set_cmyk(color[0], color[1], color[2], color[3]);
+                return out;
+            }
+            if (cms->getComponentType() == Colors::Space::Type::RGB) {
+                out.set_rgb(color[0], color[1], color[2]);
+                return out;
+            }
+            // Other profile models use the same RGB fallback as get_colorspace().
+            return get_color(*color.converted(Colors::Space::Type::RGB), opacity);
+        }
+    }
+    return get_color(color, opacity);
+}
+
 std::optional<CapyPDF_IccColorSpaceId> Document::get_icc_profile(std::shared_ptr<Colors::Space::CMS> const &profile)
 {
     auto key = profile->getName();
@@ -417,7 +439,7 @@ CapyPDF_Device_Colorspace Document::get_colorspace(std::shared_ptr<Colors::Space
     } else if (auto cms = std::dynamic_pointer_cast<Colors::Space::CMS>(space)) {
         // TODO: Support icc profiles here, which are missing from capypdf atm
         g_warning("ICC profile color space expressed as device color space!");
-        switch (cms->getType()) {
+        switch (cms->getComponentType()) {
             case Colors::Space::Type::RGB:
                 return CAPY_DEVICE_CS_RGB;
             case Colors::Space::Type::CMYK:

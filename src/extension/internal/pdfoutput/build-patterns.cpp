@@ -313,7 +313,7 @@ std::optional<CapyPDF_PatternId> Document::get_mesh_pattern(SPMeshGradient const
                     coords.emplace_back(p[X]);
                     coords.emplace_back(p[Y]);
                 }
-                colors.push_back(get_color(*patch.getColor(k)->converted(space), opacity));
+                colors.push_back(get_shading_color(*patch.getColor(k)->converted(space), opacity));
             }
 
             shading.add_patch(coords.data(), coords.size(), colors.data(), colors.size());
@@ -362,11 +362,10 @@ std::optional<CapyPDF_FunctionId> Document::get_gradient_function(SPGradientVect
 {
     static auto domain = std::to_array({0.0, 1.0});
     unsigned int stops = vector.stops.size();
-    auto color_space = vector.stops[0].color->getSpace();
-
     if (stops == 0) {
         return {};
     }
+    auto color_space = vector.stops[0].color->getSpace();
 
     // Update the caller on what the color space should be for this gradient
     if (!opacity) {
@@ -379,9 +378,9 @@ std::optional<CapyPDF_FunctionId> Document::get_gradient_function(SPGradientVect
     std::vector<double> encode;
 
     for (unsigned int i = 0; i < stops - 1 || (i == 0 && stops == 1); i++) {
-        auto c1 = get_color(*vector.stops[i].color->converted(color_space), opacity);
+        auto c1 = get_shading_color(*vector.stops[i].color->converted(color_space), opacity);
         // A single stop gradient is a swatch, this makes a gradient but it might be better as a Spot Color
-        auto c2 = get_color(*vector.stops[i + (stops == 1 ? 0 : 1)].color->converted(color_space), opacity);
+        auto c2 = get_shading_color(*vector.stops[i + (stops == 1 ? 0 : 1)].color->converted(color_space), opacity);
 
         auto func = capypdf::Type2Function(domain.data(), domain.size(), c1, c2);
         functs.push_back(_gen.add_function(func));
