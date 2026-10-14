@@ -1297,7 +1297,114 @@ TEST(AiNativeReader, ClippedVectorOpacityMasksKeepTheirArtworkAndState)
     EXPECT_NE(read_error(records(layer("L", "*u\n" + shape + mask(coverage) + "*U\n"))).find("opacity masks"), std::string::npos);
 }
 
-TEST(AiNativeReader, AnEnvelopeIsWhatItDrewAndAMeshIsRefused)
+namespace {
+// A square with independent, exact cubic sides; the four corners have different greys.
+std::string square_mesh(std::string const &first = "0.2", std::string const &space = {})
+{
+    return "/Mesh X!\n2 /Version X#\n/Cartesian /Type X#\n[1 1] /Size X#\n/Data X#\n[0 0] /P X#\n" + space +
+           "[" + first + " 0.5 10 20 10 40 1 30 20 1] /N X#\n"
+           "[0.4 0.5 10 80 30 80 1 10 60 1] /N X#\n"
+           "[0.6 0.5 70 80 70 60 1 50 80 1] /N X#\n"
+           "[0.8 0.5 70 20 50 20 1 70 40 1] /N X#\n/E X#\n/End X!\n";
+}
+
+std::string changed(std::string s, std::string const &from, std::string const &to)
+{
+    auto const at = s.find(from);
+    EXPECT_NE(at, s.npos);
+    if (at != s.npos) s.replace(at, from.size(), to);
+    return s;
+}
+}
+
+TEST(AiNativeReader, MeshCornersKeepGeometryColorAndOpacity)
+{
+    auto doc = read_ok(records(layer("L", square_mesh())));
+    auto const &node = doc.layers[0].children[0];
+    EXPECT_EQ(node.kind, Node::Kind::Mesh);
+    ASSERT_EQ(node.mesh.patches.size(), 1u);
+    auto const &p = node.mesh.patches[0];
+    EXPECT_FALSE(p.outlined);
+    EXPECT_EQ(p.corners[0].color, Color::gray(0.2));
+    EXPECT_EQ(p.corners[0].opacity, 0.5);
+    EXPECT_EQ(p.corners[0].next, Geom::Point(10, 40));
+    EXPECT_EQ(p.corners[0].previous, Geom::Point(30, 20));
+    ASSERT_EQ(p.boundary.size(), 1u);
+    EXPECT_TRUE(p.boundary[0].closed());
+    EXPECT_EQ(p.boundary[0].initialPoint(), Geom::Point(10, 20));
+    auto cmyk = square_mesh("0.1 0.2 0.3 0.4", "/DeviceCMYK /CS X#\n");
+    for (auto const &grey : {"0.4 0.5", "0.6 0.5", "0.8 0.5"})
+        cmyk = changed(cmyk, "[" + std::string(grey), "[0.1 0.2 0.3 0.4 0.5");
+    auto ink = read_ok(records(layer("L", cmyk)));
+    EXPECT_EQ(ink.layers[0].children[0].mesh.patches[0].corners[0].color, Color::cmyk(0.1, 0.2, 0.3, 0.4));
+}
+
+TEST(AiNativeReader, MeshExtraBoundaryNodesNeedUniformColorAndOpacity)
+{
+    auto mesh = square_mesh();
+    auto const extra = "[4 50 4 40 4 60 1] /S X#\n[6 70 6 60 6 75 1] /A X#\n";
+    mesh = changed(mesh, "[0.4", std::string(extra) + "[0.4");
+    EXPECT_NE(read_error(records(layer("L", mesh))).find("gradient meshes"), std::string::npos);
+    for (auto const &v : {"0.4", "0.6", "0.8"}) mesh = changed(mesh, "[" + std::string(v), "[0.2");
+    auto doc = read_ok(records(layer("L", mesh)));
+    auto const &p = doc.layers[0].children[0].mesh.patches[0];
+    EXPECT_TRUE(p.outlined);
+    ASSERT_EQ(p.boundary[0].size(), 6u);
+    auto const &side = dynamic_cast<Geom::CubicBezier const &>(p.boundary[0][1]);
+    EXPECT_EQ(side.controlPoint(0), Geom::Point(4, 50));
+    EXPECT_EQ(side.controlPoint(1), Geom::Point(4, 60));
+    EXPECT_EQ(side.controlPoint(2), Geom::Point(6, 60));
+}
+
+TEST(AiNativeReader, MeshMalformedAndUnsupportedRecordsFailClosed)
+{
+    auto mesh = square_mesh();
+    EXPECT_NE(read_error(records(layer("L", "*u\n" + mesh + "*U\n"))).find("gradient meshes"), std::string::npos);
+    for (auto const &bad : {
+             changed(mesh, "2 /Version", "3 /Version"),
+             changed(mesh, "/Cartesian", "/Polar"),
+             changed(mesh, "[1 1] /Size", "[2 2] /Size"),
+             changed(mesh, "[0 0] /P", "[1 0] /P"),
+             changed(mesh, "[0.2", "[-0.2"),
+             changed(mesh, "0.5 10 20", "1.5 10 20"),
+             changed(mesh, "10 40 1", "10 40 0.5"),
+             changed(mesh, "10 40 1", "1000001 40 1"),
+             changed(mesh, "[0.2", "[(bad) 0.2"),
+             changed(mesh, "/Data X#", "/Data X#\n/Unknown X#"),
+             changed(mesh, "/E X#", "[0 0] /P X#\n/E X#"),
+             changed(mesh, "/End X!", "")}) {
+        EXPECT_NE(read_error(records(layer("L", bad))).find("gradient meshes"), std::string::npos);
+    }
+}
+
+TEST(AiNativeReader, MeshLimitsAreCheckedBeforeAllocatingPatches)
+{
+    auto mesh = square_mesh();
+    EXPECT_NE(read_error(records(layer("L", changed(mesh, "[1 1] /Size", "[1000000000 1000000000] /Size")))).find("gradient meshes"), std::string::npos);
+    Limits limits;
+    limits.max_mesh_patches = 0;
+    std::string error;
+    EXPECT_FALSE(read(records(layer("L", mesh)), error, limits));
+    limits.max_mesh_patches = 1;
+    limits.max_points = 3;
+    EXPECT_FALSE(read(records(layer("L", mesh)), error, limits));
+}
+
+TEST(AiNativeReader, MeshGridMustBeCompleteAndHaveUniquePatchPositions)
+{
+    auto mesh = changed(square_mesh(), "[1 1] /Size", "[2 1] /Size");
+    auto const begin = mesh.find("[0 0] /P");
+    auto const end = mesh.find("/End X!");
+    auto patch = changed(mesh.substr(begin, end - begin), "[0 0] /P", "[1 0] /P");
+    mesh.insert(end, patch);
+    auto doc = read_ok(records(layer("L", mesh)));
+    ASSERT_EQ(doc.layers[0].children[0].mesh.patches.size(), 2u);
+    auto duplicate = changed(mesh, "[1 0] /P", "[0 0] /P");
+    EXPECT_NE(read_error(records(layer("L", duplicate))).find("gradient meshes"), std::string::npos);
+    EXPECT_NE(read_error(records(layer("L", "") + square_mesh())).find("gradient meshes"), std::string::npos);
+}
+
+TEST(AiNativeReader, AnEnvelopeIsWhatItDrewAndAnUnreadMeshIsRefused)
 {
     auto refused_for_mesh = [](std::string const &art) {
         auto const e = read_error(records(layer("L", art)));
@@ -1320,7 +1427,7 @@ TEST(AiNativeReader, AnEnvelopeIsWhatItDrewAndAMeshIsRefused)
     ASSERT_EQ(old.layers.size(), 2u);
     EXPECT_TRUE(old.layers[0].children.empty());
     ASSERT_EQ(old.left_out.size(), 1u);
-    EXPECT_EQ(old.left_out[0], "gradient meshes");
+    EXPECT_NE(old.left_out[0].find("gradient meshes"), std::string::npos);
 
     // An envelope as Illustrator 2025 writes one. On %_ lines: a group with the mesh it
     // distorts with, and in that group's dictionary the type it distorts. Then, plainly,

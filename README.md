@@ -27,19 +27,56 @@ file exchange.
   PDF-compatible `.ai` and PDF artwork; load `.ase`, `.acb`, and `.ai` palettes.
   Linked spot swatches retain their ink definitions, and editing an ink updates
   its tints.
-- **Illustrator interchange.** Open PDF-compatible `.ai` artwork and export an
-  Illustrator-readable copy through **Save a Copy**. SVG remains the working
-  document format.
+- **Illustrator interchange.** Read supported native `.ai` artwork, checked
+  against its PDF pages, and export an Illustrator-readable copy through
+  **Save a Copy**. SVG remains the working document format.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
   PDF bleed boxes, and fixes for image transforms and SVG profile imports.
+
+## Illustrator .ai progress
+
+**Verified on 2026-10-14:** 854 of 879 private corpus files open from
+Illustrator's native records; 25 use their PDF pages. This round gained
+8 native imports and lost none. The corpus contains real documents; source
+names, filenames, artwork and individual reports are kept private.
+
+| Capability | Current state |
+|---|---|
+| Native reading | Layers, paths, clipping, compound paths, gradients, patterns, bounded gradient meshes, process/spot colours, document ICC profiles, images, linked-image previews and supported editable type |
+| Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
+| Editability | 505 native imports are explicitly partial; 349 pass the visual check but have not been certified for complete editability |
+| Writing `.ai` | Save a Copy writes PDF-based RGB interchange. Native Illustrator records, CMYK/spot separations and a complete editable return trip are still planned |
+
+The latest mesh work keeps four-corner patches as editable mesh gradients.
+Uniform patches with extra boundary nodes retain their exact outlines as paths
+and are reported as partial imports. Three more complex mesh files still use
+PDF fallback. Other remaining families include opacity masks, foreign-format
+objects, advanced type, symbols and unreadable images. Brushes, blends,
+compound shapes and many appearances currently keep their drawn result rather
+than all of Illustrator's live controls.
+
+For agents and contributors, start with the
+[native-record reference and implementation history](doc/PROOF-ai-native-records.md)
+and [interchange/export limits and writer plan](doc/PROOF-ai-interchange.md).
+The [native reader and importer](src/extension/internal/ai/) build the editable
+document; [the PDF comparison and fallback](src/extension/internal/pdfinput/ai-native-open.cpp)
+decide whether it is accepted. Regression fixtures are in
+[the reader tests](testfiles/src/ai-native-reader-test.cpp) and
+[the importer tests](testfiles/src/ai-native-import-test.cpp).
+
+This milestone passed all nine relevant unit suites, the `.ai` export smoke
+checks (19/19), blend/PDF export checks (32/32), and one full 879-file corpus
+regression. A visual pass is evidence of appearance, not a certificate of full
+editability or a native Illustrator round trip.
 
 ## Still in progress
 
 **Full native `.ai` support is a goal, not a finished feature.** Current `.ai`
 export is PDF-based RGB interchange: it does not preserve CMYK separations,
 spot-ink identity, native layers, or Illustrator live effects. Modern `.ai`
-artwork without PDF-compatible content is not supported yet, and complex text,
-masks, and blends can change on import.
+artwork without PDF-compatible content is not supported yet. Unsupported
+native records use PDF fallback; many appearances and live objects currently
+retain their drawn result with explicit import notes.
 
 Spot inks can be imported and edited, but spot separations are not exported yet.
 ICC-managed vector previews work; complete press soft proofing, overprint

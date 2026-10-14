@@ -494,6 +494,18 @@ bool finite(Geom::Affine const &m)
     return true;
 }
 
+struct MeshRead
+{
+    bool commented = false, version = false, cartesian = false, data = false;
+    std::size_t rows = 0, columns = 0, points = 0;
+    std::string space = "DeviceGray"; ///< Omitted /CS means Gray, as in the corpus.
+    std::optional<std::pair<std::size_t, std::size_t>> place;
+    std::set<std::pair<std::size_t, std::size_t>> places;
+    std::vector<MeshCorner> boundary;
+    std::vector<MeshCorner> corners;
+    Mesh mesh;
+};
+
 class Reader
 {
 public:
@@ -583,6 +595,7 @@ private:
     void document(Obj const &o);
     void text_slot(Obj const &o);
     bool mesh_marker(Values const &vals, bool hidden);
+    void mesh_entry(Values const &vals);
     void plugin_object(Values const &vals, bool hidden);
     void layer_attrs(Values const &vals);
     void color(std::string_view w, Values const &vals);
@@ -643,7 +656,7 @@ private:
     bool _group_closed = false;
     std::size_t _nodes = 0;
     std::set<std::string> _unsupported, _unknown, _hidden_unread;
-    std::optional<bool> _mesh; ///< Inside a mesh (/Mesh X! … /End X!): whether it began on a %_ line.
+    std::optional<MeshRead> _mesh;
     std::size_t _cmyk_colors = 0, _rgb_colors = 0;
     std::optional<bool> _color_model;
     bool _done = false;
@@ -1041,6 +1054,9 @@ void Reader::end_layer()
 
 void Reader::op(std::string_view w, bool hidden)
 {
+    if (_mesh && w != "[" && w != "]" && w != "X#" && w != "X!") {
+        fail("it has gradient meshes with an unterminated or unsupported record");
+    }
     if (w == "[") {
         _marks.push_back(_stack.size());
         push(Value::mark());
@@ -1140,6 +1156,10 @@ void Reader::op(std::string_view w, bool hidden)
                 _doc.gradients.push_back(std::move(def.gradient));
             }
         }
+        return;
+    }
+    if (_mesh && w == "X#") {
+        mesh_entry(vals);
         return;
     }
     auto const nums = nums_of(vals);
@@ -1312,7 +1332,6 @@ void Reader::op(std::string_view w, bool hidden)
     }
     // A mesh, and what a plug-in made.
     else if (w == "X!" && mesh_marker(vals, hidden)) {
-    } else if (w == "X#" && _mesh) {
     } else if (w == "XP") {
         plugin_object(vals, hidden);
     }
@@ -1635,9 +1654,8 @@ void Reader::end_obj()
 /**
  * `/Mesh X!` begins a mesh and `/End X!` ends it; everything between is its own (`X#`).
  *
- * A gradient mesh is art, and isn't read. An envelope keeps the mesh it distorts with the
- * same way, where it is no art at all. Which one this is shows only later (plugin_object),
- * so the mesh is kept as an object of its own until the records are read.
+ * An envelope keeps its non-art mesh the same way. Refuse unsupported meshes only after
+ * plugin_object has removed those, so an envelope's controls cannot cost its drawn art.
  *
  * @return whether the marker was one of the two.
  */
@@ -1648,19 +1666,143 @@ bool Reader::mesh_marker(Values const &vals, bool hidden)
         if (v.kind == Value::Kind::Name) name = v.str;
     }
     if (name == "Mesh") {
-        _mesh = hidden;
+        if (_frames.empty()) fail("it has gradient meshes outside its layers");
+        if (_mesh) {
+            _mesh->mesh.unread = true;
+            return true;
+        }
+        _mesh.emplace();
+        _mesh->commented = hidden;
         return true;
     }
     if (name != "End" || !_mesh) return false;
-    bool const commented = *_mesh || hidden;
+    auto m = std::move(*_mesh);
     _mesh.reset();
+    m.mesh.unread = m.mesh.unread || !m.version || !m.cartesian || !m.data || m.place ||
+                    m.rows == 0 || m.columns == 0 || m.mesh.patches.size() != m.rows * m.columns ||
+                    std::any_of(_frames.begin(), _frames.end(), [](Frame const &f) { return f.kind == FrameKind::Compound; });
     // In a pattern's tile it only matters to what is painted with that pattern.
-    if (_pattern_unread) {
+    if (_pattern_unread && m.mesh.unread) {
         _pattern_unread->insert("a gradient mesh");
         return true;
     }
-    if (!_frames.empty()) add(new_node(Node::Kind::Mesh, _gs), commented);
+    auto n = new_node(Node::Kind::Mesh, _gs);
+    n.mesh = std::move(m.mesh);
+    n.transparency = _gs.transparency;
+    add(std::move(n), m.commented || hidden);
     return true;
+}
+
+/** Mesh layout reference: VectorCraft ai/mesh.rs at 0d0ea352 (MIT, see the header).
+ * Unlike that reader, keep /S and /A geometry and check every entry. Patches with extra
+ * boundary nodes are accepted only when their colour and opacity are uniform: then their
+ * exact closed outline draws the same art, without guessing an interior interpolation.
+ */
+void Reader::mesh_entry(Values const &vals)
+{
+    auto &m = *_mesh;
+    auto bad = [&] { m.mesh.unread = true; };
+    if (vals.empty() || vals.back().kind != Value::Kind::Name) { bad(); return; }
+    auto const &key = vals.back().str;
+    auto array = [&]() -> std::optional<std::vector<double>> {
+        if (vals.size() != 2 || vals[0].kind != Value::Kind::Arr) return {};
+        std::vector<double> out;
+        for (auto const &v : *vals[0].arr) {
+            if (v.kind != Value::Kind::Num || !std::isfinite(v.num)) return {};
+            out.push_back(v.num);
+        }
+        return out;
+    };
+    auto named = [&](std::string_view name) {
+        return vals.size() == 2 && vals[0].kind == Value::Kind::Name && vals[0].str == name;
+    };
+    if (key == "Version") {
+        m.version = vals.size() == 2 && vals[0].as_num() == 2.0;
+        if (!m.version) bad();
+    } else if (key == "Type") {
+        m.cartesian = named("Cartesian");
+        if (!m.cartesian) bad();
+    } else if (key == "Size") {
+        auto n = array();
+        auto dim = [&](double v) { return v >= 1 && v <= _limits.max_mesh_patches && v == std::floor(v); };
+        if (!n || n->size() != 2 || !dim((*n)[0]) || !dim((*n)[1]) ||
+            (*n)[0] * (*n)[1] > _limits.max_mesh_patches || m.rows) { bad(); return; }
+        m.rows = (*n)[0];
+        m.columns = (*n)[1];
+    } else if (key == "Data") {
+        if (vals.size() != 1 || m.data) bad();
+        m.data = true;
+    } else if (key == "CS") {
+        if (vals.size() != 2 || vals[0].kind != Value::Kind::Name ||
+            (vals[0].str != "DeviceGray" && vals[0].str != "DeviceRGB" && vals[0].str != "DeviceCMYK")) {
+            bad(); return;
+        }
+        m.space = vals[0].str;
+    } else if (key == "P") {
+        auto n = array();
+        if (m.place || !m.boundary.empty() || !n || n->size() != 2 || !m.data ||
+            (*n)[0] < 0 || (*n)[0] >= m.rows || (*n)[0] != std::floor((*n)[0]) ||
+            (*n)[1] < 0 || (*n)[1] >= m.columns || (*n)[1] != std::floor((*n)[1])) { bad(); return; }
+        m.place = std::pair<std::size_t, std::size_t>((*n)[0], (*n)[1]);
+        if (!m.places.insert(*m.place).second) bad();
+    } else if (key == "R") {
+        // The patch's grid parameter. Patches are drawn independently, in file order.
+        auto n = array();
+        if (!m.place || !n || n->size() != 1 || (*n)[0] < -1 || (*n)[0] > 1) bad();
+    } else if (key == "N" || key == "S" || key == "A") {
+        auto n = array();
+        bool const corner = key == "N";
+        std::size_t const components = m.space == "DeviceCMYK" ? 4 : m.space == "DeviceRGB" ? 3 : 1;
+        if (!m.place || !n || n->size() != (corner ? components + 9 : 7) ||
+            ++m.points > _limits.max_points || m.boundary.size() >= 4096 ||
+            (corner && m.corners.size() >= 4)) { bad(); return; }
+        auto const &v = *n;
+        MeshCorner c;
+        if (corner) {
+            for (std::size_t i = 0; i <= components; ++i) {
+                if (v[i] < 0 || v[i] > 1) { bad(); return; }
+            }
+            c.color = components == 4 ? Color::cmyk(v[0], v[1], v[2], v[3]) :
+                      components == 3 ? Color::rgb(v[0], v[1], v[2]) : Color::gray(v[0]);
+            c.opacity = v[components];
+            c.point = Geom::Point(v[components + 1], v[components + 2]);
+            c.next = Geom::Point(v[components + 3], v[components + 4]);
+            c.previous = Geom::Point(v[components + 6], v[components + 7]);
+            if (v[components + 5] != 1 || v[components + 8] != 1) { bad(); return; }
+        } else {
+            c.point = Geom::Point(v[0], v[1]);
+            c.previous = Geom::Point(v[2], v[3]);
+            c.next = Geom::Point(v[4], v[5]);
+            if (v[6] != 1) { bad(); return; }
+        }
+        for (auto const &p : {c.point, c.next, c.previous}) {
+            if (std::abs(p.x()) > MAX_SIDE || std::abs(p.y()) > MAX_SIDE) { bad(); return; }
+        }
+        m.boundary.push_back(c);
+        if (corner) m.corners.push_back(c);
+    } else if (key == "E") {
+        if (vals.size() != 1 || !m.place || m.corners.size() != 4 ||
+            m.mesh.patches.size() >= _limits.max_mesh_patches) { bad(); return; }
+        MeshPatch p;
+        std::copy(m.corners.begin(), m.corners.end(), p.corners.begin());
+        p.outlined = m.boundary.size() != 4;
+        if (p.outlined && !std::all_of(m.corners.begin(), m.corners.end(), [&](MeshCorner const &c) {
+            return c.color == m.corners[0].color && c.opacity == m.corners[0].opacity;
+        })) bad();
+        Geom::Path boundary(m.boundary.front().point);
+        for (std::size_t i = 0; i < m.boundary.size(); ++i) {
+            auto const &a = m.boundary[i], &b = m.boundary[(i + 1) % m.boundary.size()];
+            boundary.appendNew<Geom::CubicBezier>(a.next, b.previous, b.point);
+        }
+        boundary.close(true);
+        p.boundary.push_back(std::move(boundary));
+        m.mesh.patches.push_back(std::move(p));
+        m.boundary.clear();
+        m.corners.clear();
+        m.place.reset();
+    } else {
+        bad(); // A new mesh feature must never be silently dropped.
+    }
 }
 
 /// Whether an object is nothing but meshes: one, or groups of them.
@@ -2339,14 +2481,15 @@ std::string join_and(std::set<std::string> const &items)
 
 Document Reader::finish()
 {
-    // A mesh that is still there is a gradient mesh, or an envelope's that wasn't made out:
-    // either way art that isn't read.
+    // Envelopes have dropped their control meshes. Refuse only unread artwork meshes.
     auto meshes = [&](auto &&self, std::vector<Node> &nodes, bool shown) -> void {
         for (auto &n : nodes) self(self, n.children, shown && (n.kind != Node::Kind::Layer || n.visible));
-        auto const kept = std::remove_if(nodes.begin(), nodes.end(), [](Node const &n) { return n.kind == Node::Kind::Mesh; });
+        auto const kept = std::remove_if(nodes.begin(), nodes.end(), [](Node const &n) {
+            return n.kind == Node::Kind::Mesh && (n.mesh.unread || n.mesh.patches.empty());
+        });
         if (kept == nodes.end()) return;
         nodes.erase(kept, nodes.end());
-        (shown ? _unsupported : _hidden_unread).insert("gradient meshes");
+        (shown ? _unsupported : _hidden_unread).insert("gradient meshes outside the supported four-corner or uniform-outline subset");
     };
     meshes(meshes, _doc.layers, true);
     if (_mesh) _unsupported.insert("gradient meshes");

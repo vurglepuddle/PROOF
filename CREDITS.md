@@ -36,6 +36,7 @@ of these donor projects.
 
 | Project | Reviewed work |
 | --- | --- |
+| [VectorCraft](https://github.com/storytold/vectorcraft) | Native Illustrator record layout and operator meanings, including text and mesh records; bounded, credited adaptations under the MIT licence in [LICENSES/MIT-VectorCraft.txt](LICENSES/MIT-VectorCraft.txt). |
 | [Scribus](https://github.com/scribusproject/scribus) | Native Illustrator import, drawing operators, layers, and spot colors. |
 | [inkscape-eps-export](https://github.com/tzunghaor/inkscape-eps-export) | Illustrator native output operators; work by Andras Prim, including arc-to-Bézier code credited to Angel Kostadinov. |
 | [illustrator-parser-pdfcpu](https://github.com/opendesigndev/illustrator-parser-pdfcpu) | Private-record extraction and native text/name recovery. |

@@ -85,7 +85,10 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `(hex) Xt n XD` | Brush metadata inside drawn looks, with n running 0–4. No geometry or paint. | **census** |
 | `Ae AE Ap As Xr XG Xh XH XF D X= X+ Bc Np TE TZ Xt Xi XI ` LB2 Lc Xv XV Xq XQ Xg Xn Bn` | Ignored by VectorCraft. (It ignores `Xm`, `Xd` and `XP` too; PROOF reads them.) | VectorCraft |
 
-### Not read yet (the file opens from its PDF page)
+### Not read at the first census (2026-10-09)
+
+This table records the original census. Later sections describe delivered
+support; the README gives the current aggregate results.
 
 | Feature | Records | Files (of 877) |
 |---|---|---|
@@ -1595,6 +1598,55 @@ none lost. 497 are partial, 349 unverified for complete
 editability. One file still draws differently from its page: a hair off at
 every outline, with an artboard that is only guessed at. The reader's suite has
 57 tests, the importer's 88, and `test_clip-blend` 5.
+
+### Gradient meshes: bounded native reading (2026-10-14)
+
+`/Mesh X!` opens a mesh and `/End X!` closes it. Entries end with `X#`:
+`2 /Version`, `/Cartesian /Type`, `[rows columns] /Size`, `/Data`, then each
+patch's `[row column] /P`, grid parameter `/R`, colour space `/CS`, boundary
+nodes and `/E`. The colour space is DeviceGray when omitted, or DeviceRGB or
+DeviceCMYK. The grid must be complete, with unique, in-range patch positions.
+
+Each `/N` corner holds colour components, opacity, its position, the handle
+towards the next corner and its weight, then the handle towards the previous
+corner and its weight. Four corners with unit weights become an editable SVG
+mesh gradient per patch, preserving the cubic sides, colour channels and
+opacity. Patches are kept in the order the file writes them. The source layout
+reference is VectorCraft's `ai/mesh.rs` at `0d0ea352`, under its MIT licence
+(`LICENSES/MIT-VectorCraft.txt`); its code and dependencies were not run.
+
+**Boundary nodes cannot be dropped.** `/S` and `/A` add positions and two
+handles between corners. Their handles are written previous first, then next,
+the opposite of `/N`. Across 879 files, 11 have meshes: 585 meshes including
+envelope controls, 798 patches, all version 2 Cartesian and all corner weights
+1. Of those patches, 592 have extra boundary nodes. The donor ignores these
+nodes, changing the outline. PROOF keeps every cubic segment. When all four
+corner colours and opacities are equal, that exact outline can be painted
+uniformly: it becomes an editable path marked `proof:mesh-outline`, and the
+import notes explicitly say mesh editing was not retained. It counts as a
+partial native import. Varying-colour or varying-opacity patches with extra
+boundary nodes still fall back to PDF; their interior interpolation is not
+guessed.
+
+Unknown entries, unsupported spaces or weights, missing patches, incomplete
+meshes, nonnumeric or non-finite data, and excessive dimensions or boundary
+data fail closed. Limits are checked before patch allocation. Meshes cannot
+be flattened into compound paths. An envelope's non-art control mesh is still
+discarded in favour of what the envelope drew, before unsupported artwork
+meshes are rejected.
+
+Regression fixtures check the boundary-node handle order, malformed records,
+grid completeness and limits, exact CMYK channels, editable corners and
+handles after saving and reopening, an independently encoded PDF Type 6 Coons
+shading, and refusal when the native outline and PDF page disagree. Visual
+thresholds and per-artboard fallback are unchanged.
+
+**Milestone result:** 854/879 native, 25 PDF fallback; eight gained and
+none lost from the preceding 846/33 result. 505 imports are explicitly
+partial, 349 pass the appearance check without complete-editability
+certification. Three mesh files still require nonuniform interpolation
+with extra boundary nodes. All nine unit suites and both export smoke
+tests passed; one full corpus regression was run for this milestone.
 
 ## Plan
 

@@ -12,8 +12,8 @@
  * writer.
  *
  * Reading fails closed: anything a layer that shows holds and this doesn't read
- * (an unknown operator, a mesh, a pattern of the old format, a symbol, an
- * opacity mask, legacy type) makes read() return nothing with the reason, and the
+ * (an unknown operator, an unsupported mesh or opacity mask, a pattern of the old
+ * format, a symbol, legacy type) makes read() return nothing with the reason, and the
  * caller opens the PDF page instead. What a hidden layer holds and this doesn't
  * read is left out of it, and listed in Document::left_out.
  *
@@ -27,8 +27,9 @@
  * its last path, a group has the transparency that holds at its Xd, and a gradient
  * instance with no path in it paints nothing. PROOF adds global process colours (Xk),
  * Lab spot definitions, Registration (Xs, Xz), objects that plug-ins keep live (XP),
- * clipping paths in groups of their own, and fails closed on opacity masks, from a
- * census of real files.
+ * clipping paths in groups of their own, and bounded mesh reading (mesh.rs at 0d0ea352),
+ * checked against the corpus. Extra mesh boundary nodes and the omitted Gray colour
+ * space come from that census; unsupported meshes and opacity masks fail closed.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_READER_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_READER_H
@@ -230,6 +231,28 @@ struct LayerOptions
     std::array<int, 3> color_rgb{};
 };
 
+/// One corner of a gradient-mesh patch, in art space.
+struct MeshCorner
+{
+    Color color;
+    double opacity = 1.0;
+    Geom::Point point, next, previous;
+};
+
+struct MeshPatch
+{
+    std::array<MeshCorner, 4> corners;
+    Geom::PathVector boundary; ///< Includes every /S and /A boundary node, not only /N corners.
+    bool outlined = false; ///< Uniform colour, extra boundary nodes: imported as its exact outline.
+};
+
+struct Mesh
+{
+    std::vector<MeshPatch> patches;
+    /// Checked only after envelopes have discarded their non-art mesh.
+    bool unread = false;
+};
+
 struct Node
 {
     enum class Kind
@@ -241,8 +264,7 @@ struct Node
         Image,
         Text,   ///< A text object; its characters are in the text document (story).
         Placed, ///< A placed (linked) file.
-        /// A mesh: of a gradient mesh, or the one an envelope distorts with. Only while the
-        /// records are read, to tell the two apart; none is in what read() returns.
+        /// A gradient mesh, or (while reading) the non-art mesh of an envelope.
         Mesh,
     };
     Kind kind = Kind::Group;
@@ -277,6 +299,7 @@ struct Node
 
     int image = -1; ///< Image: index into Document::images.
     int placed = -1; ///< Placed: index into Document::placed.
+    Mesh mesh; ///< Mesh: bounded, independently drawn patches.
     std::optional<unsigned> story; ///< Text: its story in the text document.
     /// Text: drawn by an appearance (FreeUndo), not typed. Its story is one of the text
     /// document's drawn stories (TextDocument::drawn), not of those that were typed.
@@ -361,6 +384,7 @@ struct Limits
     std::uint64_t max_pixels = 1u << 25; ///< In one image.
     std::size_t max_inks = 65536;
     std::size_t max_gradient_stops = 256;
+    std::size_t max_mesh_patches = 4096; ///< In one mesh; dimensions are checked before allocating.
 };
 
 /**

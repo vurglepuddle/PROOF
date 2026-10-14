@@ -45,6 +45,7 @@
 #include "object/sp-defs.h"
 #include "object/sp-image.h"
 #include "object/sp-item.h"
+#include "object/sp-mesh-gradient.h"
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
 #include "object/sp-root.h"
@@ -297,7 +298,7 @@ protected:
 // its own box; changing either half exercises the safety net rather than the parser.
 std::string fixture(std::string const &native, std::vector<std::string> const &contents,
                     std::string const &boxes = "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]",
-                    std::string const &font = {}, std::string const &profile = {})
+                    std::string const &font = {}, std::string const &profile = {}, std::string const &shading = {})
 {
     std::map<int, std::string> objects;
     objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -317,6 +318,11 @@ std::string fixture(std::string const &native, std::vector<std::string> const &c
         int const id = next++;
         objects[id] = "<< /N 4 /Length " + std::to_string(profile.size()) + " >>\nstream\n" + profile + "\nendstream";
         resources += " /ColorSpace << /CS0 [/ICCBased " + std::to_string(id) + " 0 R] >>";
+    }
+    if (!shading.empty()) {
+        int const id = next++;
+        objects[id] = shading;
+        resources += " /Shading << /S1 " + std::to_string(id) + " 0 R >>";
     }
     resources = "<<" + resources + " >>";
     for (std::size_t i = 0; i < contents.size(); ++i) {
@@ -377,6 +383,131 @@ TEST_F(AiNativeImportTest, LayersPagesUnitsAndYFlip)
     ASSERT_EQ(pv.size(), 1u);
     EXPECT_EQ(pv[0].initialPoint(), Geom::Point(10, 80));
 }
+
+namespace {
+std::string mesh_art(std::string const &space, std::array<std::string, 4> const &colors,
+                     std::string const &extra = {})
+{
+    return "/Mesh X!\n2 /Version X#\n/Cartesian /Type X#\n[1 1] /Size X#\n/Data X#\n"
+           "[0 0] /P X#\n/" + space + " /CS X#\n[" + colors[0] + " 1 10 20 10 40 1 30 20 1] /N X#\n" + extra +
+           "[" + colors[1] + " 1 10 80 30 80 1 10 60 1] /N X#\n"
+           "[" + colors[2] + " 1 70 80 70 60 1 50 80 1] /N X#\n"
+           "[" + colors[3] + " 1 70 20 50 20 1 70 40 1] /N X#\n/E X#\n/End X!\n";
+}
+}
+
+TEST_F(AiNativeImportTest, MeshKeepsEditableCornersAndHandlesAfterReopen)
+{
+    auto b = make(records(layer(mesh_art("DeviceRGB", {"1 0 0", "0 1 0", "0 0 1", "1 1 1"})), {}, false));
+    ASSERT_TRUE(b);
+    auto check = [&](SPDocument *doc) {
+        doc->ensureUpToDate();
+        auto gradients = elements(doc->getDefs()->getRepr(), "svg:meshgradient");
+        ASSERT_EQ(gradients.size(), 1u);
+        auto *gradient = dynamic_cast<SPMeshGradient *>(doc->getObjectByRepr(gradients[0]));
+        ASSERT_TRUE(gradient);
+        gradient->ensureArray();
+        ASSERT_EQ(gradient->array.patch_rows(), 1u);
+        ASSERT_EQ(gradient->array.patch_columns(), 1u);
+        SPMeshPatchI p(&gradient->array.nodes, 0, 0);
+        EXPECT_EQ(p.getPoint(0, 0), Geom::Point(10, 80));
+        EXPECT_EQ(p.getPoint(0, 1), Geom::Point(10, 60));
+        EXPECT_EQ(p.getPoint(0, 2), Geom::Point(10, 40));
+        EXPECT_EQ(p.getPoint(1, 0), Geom::Point(10, 20));
+        EXPECT_EQ(p.getPoint(2, 0), Geom::Point(70, 20));
+        EXPECT_EQ(p.getPoint(3, 0), Geom::Point(70, 80));
+        auto const color = p.getColor(0);
+        ASSERT_TRUE(color);
+        auto const values = color->getValues();
+        ASSERT_GE(values.size(), 3u);
+        EXPECT_EQ(values[0], 1);
+        EXPECT_EQ(values[1], 0);
+        EXPECT_EQ(values[2], 0);
+    };
+    check(b->document.get());
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    check(reopened.get());
+    auto stops = elements(reopened->getDefs()->getRepr(), "svg:stop");
+    stops[0]->setAttribute("style", "stop-color:#123456;stop-opacity:0.5");
+    reopened->ensureUpToDate();
+    auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(edited);
+    EXPECT_NE(attr(elements(edited->getDefs()->getRepr(), "svg:stop")[0], "style").find("#123456"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, MeshCmykChannelsAndOpacitySurviveReopen)
+{
+    auto art = mesh_art("DeviceCMYK", {"0.1 0.2 0.3 0.4", "0 0 0 0", "0 0 0 1", "1 0 0 0"});
+    art.replace(art.find("0.4 1 10"), 8, "0.4 0.25 10");
+    auto b = make(records(layer(art)));
+    ASSERT_TRUE(b);
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto stops = elements(reopened->getDefs()->getRepr(), "svg:stop");
+    ASSERT_EQ(stops.size(), 4u);
+    auto *stop = reopened->getObjectByRepr(stops[0]);
+    auto color = stop->style->stop_color.getColor();
+    EXPECT_EQ(color.getSpace()->getComponentType(), Type::CMYK);
+    auto const v = color.getValues();
+    ASSERT_GE(v.size(), 4u);
+    for (unsigned i = 0; i < 4; ++i) EXPECT_NEAR(v[i], 0.1 * (i + 1), 1e-5);
+    EXPECT_NE(attr(stops[0], "style").find("stop-opacity:0.25"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, UniformMeshKeepsEveryBoundaryNodeAndSaysItIsOutlined)
+{
+    auto b = make(records(layer(mesh_art("DeviceGray", {"0.3", "0.3", "0.3", "0.3"},
+                                        "[4 50 4 40 4 60 1] /S X#\n[6 70 6 60 6 75 1] /A X#\n")), {}, false));
+    ASSERT_TRUE(b);
+    EXPECT_TRUE(elements(b->document->getDefs()->getRepr(), "svg:meshgradient").empty());
+    auto paths = elements(b->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    EXPECT_EQ(attr(paths[0], "proof:mesh-outline"), "true");
+    auto pv = sp_svg_read_pathv(attr(paths[0], "d").c_str());
+    ASSERT_EQ(pv.size(), 1u);
+    EXPECT_EQ(pv[0].size(), 6u);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](std::string const &s) {
+        return s.find("mesh editing is not kept") != s.npos;
+    }));
+}
+
+#if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
+TEST_F(AiNativeImportTest, MeshGradientMatchesIndependentPdfShading)
+{
+    // Independently encoded PDF Type 6 Coons patch, 8-bit coordinates and colours.
+    // Coordinates decode onto [10,70] x [20,80]; 85 and 170 are exactly one and two thirds.
+    std::string const hex = "000000005500aa00ff55ffaaffffffffaaff55ff00aa005500"
+                            "ff000000ff000000ffffffff>";
+    std::string const shading = "<< /ShadingType 6 /ColorSpace /DeviceRGB /BitsPerCoordinate 8 "
+        "/BitsPerComponent 8 /BitsPerFlag 8 /Decode [10 70 20 80 0 1 0 1 0 1] "
+        "/Filter /ASCIIHexDecode /Length " + std::to_string(hex.size()) + " >>\nstream\n" + hex + "\nendstream";
+    auto const native = records(layer(mesh_art("DeviceRGB", {"1 0 0", "0 1 0", "0 0 1", "1 1 1"})), {}, false);
+    auto const file = fixture(native, {"/S1 sh"}, "/MediaBox [0 0 200 100]", {}, {}, shading);
+    std::string reason;
+    auto result = Extension::Internal::open_ai_native(file, reason);
+    ASSERT_TRUE(result) << reason;
+    ASSERT_EQ(result->differences.size(), 1u);
+    EXPECT_LT(result->differences[0].lightness, 0.005);
+    EXPECT_LT(result->differences[0].colour, 0.005);
+}
+
+TEST_F(AiNativeImportTest, MeshOutlineMatchesIndependentPdfAndDifferentPageIsRefused)
+{
+    auto native = records(layer(mesh_art("DeviceGray", {"0.3", "0.3", "0.3", "0.3"},
+                                          "[10 50 10 40 10 60 1] /S X#\n")), {}, false);
+    std::string reason;
+    auto file = fixture(native, {"0.3 g 10 20 60 60 re f"});
+    auto result = Extension::Internal::open_ai_native(file.c_str(), reason);
+    ASSERT_TRUE(result) << reason;
+    ASSERT_EQ(result->differences.size(), 1u);
+    EXPECT_LT(result->differences[0].lightness, 0.005);
+    file = fixture(native, {"0.3 g 110 20 60 60 re f"});
+    result = Extension::Internal::open_ai_native(file.c_str(), reason);
+    EXPECT_FALSE(result);
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+}
+#endif
 
 TEST_F(AiNativeImportTest, ImportedPagesAndArtworkKeepTheSamePhysicalCoordinates)
 {

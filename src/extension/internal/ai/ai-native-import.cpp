@@ -556,6 +556,7 @@ public:
     std::size_t gradient_text = 0;
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
+    std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
     /// The text objects that show and are set by a font other than their own.
     std::vector<XML::Node *> substituted_shown;
     std::size_t knockouts = 0;
@@ -580,6 +581,7 @@ private:
     XML::Node *layer(Node const &n);
     XML::Node *group(Node const &n);
     XML::Node *shape(Node const &n, Geom::PathVector const &pv);
+    XML::Node *mesh(Node const &n);
     XML::Node *image(Node const &n);
     XML::Node *placed(Node const &n);
     std::optional<std::string> linked_file(Placed const &p) const;
@@ -687,13 +689,13 @@ void Builder::run()
         auto const error = link_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
-                                       gradient_text, paragraph_styled_text);
+                                       gradient_text, paragraph_styled_text, mesh_outlines);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error;
         images_left_out = images;
         link_error = error;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
-                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text) = counts;
+                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, mesh_outlines) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -741,7 +743,7 @@ XML::Node *Builder::made(Node const &n)
         case Node::Kind::Text:
             return text(n);
         case Node::Kind::Mesh:
-            break; // None is in a document that was read.
+            return mesh(n);
     }
     return nullptr;
 }
@@ -1128,6 +1130,53 @@ XML::Node *Builder::shape(Node const &n, Geom::PathVector const &pv)
 }
 
 // ---- colours --------------------------------------------------------------------------------
+
+XML::Node *Builder::mesh(Node const &n)
+{
+    auto e = create("svg:g");
+    std::string style;
+    common(e, n, style);
+    if (!style.empty()) e->setAttribute("style", style);
+    e->setAttribute("proof:ai-mesh", "true");
+    for (auto const &p : n.mesh.patches) {
+        auto path = create("svg:path");
+        path->setAttribute("d", sp_svg_write_path(p.boundary * _to_doc));
+        std::string fill;
+        if (p.outlined) {
+            ++mesh_outlines;
+            fill = process(p.corners[0].color).toString(false) + ";fill-opacity:" + num(p.corners[0].opacity);
+            path->setAttribute("proof:mesh-outline", "true");
+        } else {
+            auto gradient = create("svg:meshgradient");
+            auto const id = unique("mesh");
+            gradient->setAttribute("id", id);
+            gradient->setAttribute("gradientUnits", "userSpaceOnUse");
+            auto const start = p.corners[0].point * _to_doc;
+            gradient->setAttribute("x", num(start.x()));
+            gradient->setAttribute("y", num(start.y()));
+            auto row = create("svg:meshrow");
+            auto patch = create("svg:meshpatch");
+            for (std::size_t i = 0; i < 4; ++i) {
+                auto const &a = p.corners[i], &b = p.corners[(i + 1) % 4];
+                auto const h1 = a.next * _to_doc, h2 = b.previous * _to_doc, end = b.point * _to_doc;
+                auto stop = create("svg:stop");
+                stop->setAttribute("path", "C " + num(h1.x()) + " " + num(h1.y()) + " " +
+                                   num(h2.x()) + " " + num(h2.y()) +
+                                   (i == 3 ? "" : " " + num(end.x()) + " " + num(end.y())));
+                stop->setAttribute("style", "stop-color:" + process(a.color).toString(false) +
+                                   ";stop-opacity:" + num(a.opacity));
+                append(patch, stop);
+            }
+            append(row, patch);
+            append(gradient, row);
+            append(_defs, gradient);
+            fill = "url(#" + id + ")";
+        }
+        path->setAttribute("style", "fill:" + fill + ";stroke:none");
+        append(e, path);
+    }
+    return e;
+}
 
 Colors::Color Builder::process(Color const &c) const
 {
@@ -1866,6 +1915,8 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
                               "linked pictures that don't show weren't") +
                         " found; the links are kept as the document has them");
     }
+    if (b.mesh_outlines) notes.push_back(count(b.mesh_outlines, "uniform mesh patch came in as the outlines",
+                                             "uniform mesh patches came in as the outlines") + " they draw; mesh editing is not kept for them");
     if (b.knockouts) notes.push_back(count(b.knockouts, "knockout group", "knockout groups") + " draw as ordinary groups");
     if (curved) notes.push_back(count(curved, "curved guide segment was", "curved guide segments were") + " left out");
     for (auto const &l : ai.left_out) notes.push_back("hidden layers hold " + l + ", left out of them");

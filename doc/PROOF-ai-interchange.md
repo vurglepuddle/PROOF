@@ -1,7 +1,13 @@
 # PROOF AI interchange
 
-This first implementation is **PDF-based RGB interchange**, not a native
-Illustrator authoring engine. It needs no installed Illustrator to export.
+Writing `.ai` is currently **PDF-based RGB interchange**. It needs no installed
+Illustrator to export, and does not yet write Illustrator's native records.
+
+Reading `.ai` now reconstructs supported artwork from Illustrator's own
+records, compares every artboard with its PDF page, and uses the PDF import
+when anything is unsupported, incomplete or visually different. See the
+[current progress in the README](../README.md#illustrator-ai-progress) and
+[native-record reference](PROOF-ai-native-records.md) for coverage and limits.
 
 Open a PDF-compatible `.ai`, edit it, and save the working document as SVG.
 Use **File → Save a Copy → Illustrator interchange (*.ai, PDF-based)** for the
@@ -32,8 +38,8 @@ successful opening do not prove visual fidelity, retained layers or ink identity
 
 - CMYK separations, spot identities/tints and original Illustrator live effects
   are not preserved by this RGB export. It is not a print-production preset.
-- Native layer structure, text layout, masks and blends can change during PDF
-  import. Some text is already outlined in the source PDF.
+- When native reading falls back to PDF, layer structure, text layout, masks
+  and blends can change. Some text is already outlined in the source PDF.
 - Page dimensions round up to whole PDF points; default interchange options
   preserve object dimensions rather than stretching objects to fit the rounding.
 - Non-PDF-compatible modern AI and native AI writing are not implemented. A
@@ -53,7 +59,7 @@ successful opening do not prove visual fidelity, retained layers or ink identity
 - Cairo save propagates final surface errors and reads rounding preferences from
   the active output module rather than the separate PDF module.
 
-## Hybrid importer direction
+## Original hybrid importer direction (before native reading was delivered)
 
 The proposed architecture is sound with explicit authority and edit tracking:
 
@@ -79,9 +85,12 @@ header: a private-data-only document may have a placeholder PDF page.
 2. Prefer a single artwork representation per object. Use native data to enrich
    objects only where membership and correspondence are established; never stack
    a second rendering of all private artwork on the PDF artwork.
-3. Adapt native text/name recovery from OpenDesign, and selected drawing/spot
-   operators from Scribus, behind the existing bounded AI24 decoder. See the
-   [donor review](PROOF-ai-donor-review.md). No donor has yet been integrated.
+3. The original proposal was to adapt native text/name recovery from OpenDesign
+   and selected drawing/spot operators from Scribus. The delivered reader
+   instead uses a bounded, credited port of VectorCraft's operator meanings,
+   with corrections checked against real files. See the
+   [native-record reference](PROOF-ai-native-records.md) and
+   [donor review](PROOF-ai-donor-review.md).
 4. Add real paint identity to the model: ICC-aware process colours, named spot
    ink, alternate colour and tint. RGB-hex matching cannot distinguish inks.
    Preserve original image bytes/profiles with the image object.
