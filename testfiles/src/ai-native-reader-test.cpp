@@ -1582,12 +1582,57 @@ TEST(AiNativeReader, ObjectsAPlugInKeepsLiveAreWhatItDrew)
     EXPECT_TRUE(doc.plugin_objects.empty());
 }
 
-TEST(AiNativeReader, ForeignObjectsAreRefusedNotDropped)
+TEST(AiNativeReader, ForeignPdfBytesAndFullPlacementAreRetained)
+{
+    // ASCII85 for %PDF-1.5\n; the parser validates the actual PDF later.
+    std::string const foreign = "/ForeignObject :\n1 /Version ,\n0 2 -3 0 100 200 /RTransform ,\n"
+        "20 30 /Origin ,\n5 7 15 27 /Bounds ,\n/Data ,\n%,u@!!/MSk8$3~>\n;\n";
+    auto doc = read_ok(records(layer("L", foreign + "0 g\n" + rect(1, 2, 3, 4) + "f\n")));
+    ASSERT_EQ(doc.foreign.size(), 1u);
+    EXPECT_EQ(doc.foreign[0].pdf, "%PDF-1.5\n");
+    ASSERT_EQ(doc.layers[0].children.size(), 2u);
+    EXPECT_EQ(doc.layers[0].children[0].kind, Node::Kind::Foreign);
+    EXPECT_EQ(doc.layers[0].children[1].kind, Node::Kind::Path);
+    // PDF (0,0) maps to source (5,7), then Origin flips y, then RTransform.
+    EXPECT_EQ(Geom::Point(0, 0) * doc.foreign[0].to_art, Geom::Point(31, 250));
+    EXPECT_EQ(Geom::Point(10, 20) * doc.foreign[0].to_art, Geom::Point(91, 270));
+    for (auto const &bad : {
+        changed(foreign, "1 /Version", "2 /Version"),
+        changed(foreign, "0 2 -3 0", "0 0 0 0"),
+        changed(foreign, "5 7 15 27", "5 7 5 27"),
+        changed(foreign, "20 30 /Origin", "20 (bad) 30 /Origin"),
+        changed(foreign, "/Data ,", "/Extra ,\n/Data ,"),
+        changed(foreign, "1 /Version ,", "1 /Version ,\n1 /Version ,"),
+        "*u\n" + foreign + "*U\n"}) {
+        EXPECT_NE(read_error(records(layer("L", bad))).find("foreign objects"), std::string::npos);
+    }
+    EXPECT_FALSE(read_error(records(layer("L", changed(foreign, "~>", "")))).empty());
+    Limits limits;
+    limits.max_foreign_bytes = 8;
+    std::string error;
+    EXPECT_FALSE(read(records(layer("L", foreign)), error, limits));
+    limits.max_foreign_bytes = 17;
+    EXPECT_FALSE(read(records(layer("L", foreign + foreign)), error, limits));
+}
+
+TEST(AiNativeReader, ForeignAscii85ChecksTerminatorsPaddingAndBounds)
+{
+    EXPECT_EQ(ascii85_decode("%9jqo^BlbD-BleB1DJ+*+F(f,q~>", 20), "Man is distinguished");
+    EXPECT_EQ(ascii85_decode("%z~>", 4), std::string(4, '\0'));
+    EXPECT_EQ(ascii85_decode("%!!~>", 1), std::string(1, '\0'));
+    // Only the first % is a comment marker; '_' and '%' at the start of data survive.
+    EXPECT_TRUE(ascii85_decode("%_!!!!\n%%!!!!~>", 8));
+    for (auto s : {"!~>", "uuuuu~>", "!z~>", "!!!!!", "!!!!!{~>"}) EXPECT_FALSE(ascii85_decode(s, 100));
+    EXPECT_FALSE(ascii85_decode("z~>", 3));
+    EXPECT_FALSE(ascii85_decode("!!!!~>", 2));
+}
+
+TEST(AiNativeReader, UnsupportedForeignObjectsAreRefusedNotDropped)
 {
     // Art Illustrator keeps in the format it came in: a blob after /Data, in lines that start
     // with a percent sign. One of them starts "%_(" by chance, which read as a hidden line
     // opened a string that swallowed the rest of the layer.
-    std::string const foreign = "/ForeignObject :\n1 /Version ,\n1 0 0 -1 0 0  /RTransform ,\n0 0  /Origin ,\n0 0 10 10  /Bounds ,\n"
+    std::string const foreign = "/ForeignObject :\n2 /Version ,\n1 0 0 -1 0 0  /RTransform ,\n0 0  /Origin ,\n0 0 10 10  /Bounds ,\n"
                                 "/Data ,\n%,u@!!/MSk8%41#ocdN=10d\n%_(29#!0n[=#e7]Vg0n\n%68^JT77&[t2Ddlh~>\n;\n";
     auto const after = "0 g\n" + rect(0, 0, 1, 1) + "f\n";
     auto const e = read_error(records(layer("L", foreign + after)));

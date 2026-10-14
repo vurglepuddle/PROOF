@@ -96,6 +96,10 @@ std::optional<double> parse_number(std::string_view word);
 /// Nothing when a character isn't a digit.
 std::optional<std::string> hex_decode(std::string_view digits);
 
+/// ASCII85 through its required ~> terminator, stripping exactly one leading '%' per
+/// data line (the following '_' or '%' is data). Refuse malformed or oversized input.
+std::optional<std::string> ascii85_decode(std::string_view data, std::size_t limit);
+
 } // namespace Inkscape::Extension::Internal::AiNative
 
 #endif // SEEN_EXTENSION_INTERNAL_AI_NATIVE_LEXER_H

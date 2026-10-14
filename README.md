@@ -35,16 +35,16 @@ file exchange.
 
 ## Illustrator .ai progress
 
-**Verified on 2026-10-14:** 858 of 879 private corpus files open from
-Illustrator's native records; 21 use their PDF pages. This round gained
-4 native imports and lost none. The corpus contains real documents; source
+**Verified on 2026-10-14:** 861 of 879 private corpus files open from
+Illustrator's native records; 18 use their PDF pages. This round gained
+3 native imports and lost none. The corpus contains real documents; source
 names, filenames, artwork and individual reports are kept private.
 
 | Capability | Current state |
 |---|---|
-| Native reading | Layers, paths, clipping, compound paths, gradients, patterns, bounded gradient meshes and greyscale opacity masks, process/spot colours, document ICC profiles, images, linked-image previews and supported editable type |
+| Native reading | Layers, paths, clipping, compound paths, gradients, patterns, bounded gradient meshes, greyscale opacity masks and embedded foreign PDF vectors, process/spot colours, document ICC profiles, images, linked-image previews and supported editable type |
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
-| Editability | 508 native imports are explicitly partial; 350 pass the visual check but have not been certified for complete editability |
+| Editability | 511 native imports are explicitly partial; 350 pass the visual check but have not been certified for complete editability |
 | Writing `.ai` | Save a Copy writes PDF-based RGB interchange. Native Illustrator records, CMYK/spot separations and a complete editable return trip are still planned |
 
 Opacity masks now support the linked, non-inverted greyscale vector subset:
@@ -53,6 +53,13 @@ Normal/Multiply blending. Unsupported mask forms retain PDF fallback. Mask
 regions are finite; geometry edits beyond the imported extent can require the
 region and white backdrop to be enlarged. The PDF exporter also retains nested
 mask coverage and avoids a crash on ICC-tagged gradient colours.
+
+Embedded foreign PDFs now import as editable path/gradient groups for a bounded
+vector subset, keeping page margins, clipping, CMYK values, rotation and shear.
+The original embedded PDF is retained separately; SVG edits do not update it.
+Unsupported PDF content retains fallback, including mesh shading and overprint.
+The checks also fixed disappearing unconverted grey PDF strokes by preserving
+them as black-channel CMYK.
 
 Four-corner mesh patches remain editable mesh gradients.
 Uniform patches with extra boundary nodes retain their exact outlines as paths
@@ -70,11 +77,12 @@ document; [the PDF comparison and fallback](src/extension/internal/pdfinput/ai-n
 decide whether it is accepted. Regression fixtures are in
 [the reader tests](testfiles/src/ai-native-reader-test.cpp) and
 [the importer tests](testfiles/src/ai-native-import-test.cpp), with
-[canvas/vector PDF mask checks](testfiles/cli_tests/ai-opacity-mask-smoke.py).
+[canvas/vector PDF mask checks](testfiles/cli_tests/ai-opacity-mask-smoke.py) and
+[foreign PDF vector/CMYK checks](testfiles/cli_tests/ai-foreign-pdf-smoke.py).
 
 This milestone passed all nine relevant unit suites, the `.ai` export smoke
 checks (19/19), blend/PDF export checks (32/32), opacity-mask export checks
-(59/59), and one full 879-file corpus
+(59/59), foreign PDF export checks (44/44), and one full 879-file corpus
 regression. A visual pass is evidence of appearance, not a certificate of full
 editability or a native Illustrator round trip.
 

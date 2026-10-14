@@ -450,7 +450,13 @@ std::string SvgBuilder::convertGfxColor(const GfxColor &color, GfxColorSpace *sp
             case csCalGray:
                 GfxGray gray;
                 space->_POPPLER_GET_GRAY(color, &gray);
-                return Colors::Color(get_space(cmsSigGrayData, Type::Gray), {colToDbl(gray)}).toString();
+                if (icc_space == cmsSigGrayData) {
+                    return Colors::Color(_getColorSpace(_icc_profile, intent), {colToDbl(gray)}).toString();
+                }
+                // Gray is an internal editing space with no CSS serialization. An
+                // empty paint silently drops strokes (and makes fills inherit).
+                // PDF DeviceGray prints on black; preserve it as K-only CMYK.
+                return Colors::Color(Type::CMYK, {0, 0, 0, 1.0 - colToDbl(gray)}).toString();
             case csDeviceRGB:
             case csCalRGB:
                 GfxRGB rgb;

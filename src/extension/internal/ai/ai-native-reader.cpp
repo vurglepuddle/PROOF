@@ -86,6 +86,7 @@ std::optional<std::string> last_text(Values const &vals)
 struct Obj
 {
     std::string type;
+    std::string_view foreign_data; ///< Raw ASCII85 after /Data, including its terminator.
     std::vector<Node> art; ///< Artwork inside a Mask dictionary, in art coordinates.
     bool unsupported_mask_art = false; ///< Includes dictionaries consumed by drawing operators.
     /// Entries in order: the key (none in an array) and the values before it.
@@ -594,6 +595,7 @@ private:
     void art_dictionary(Obj const &o);
     void document(Obj const &o);
     void text_slot(Obj const &o);
+    void foreign_art(Obj const &o);
     bool mesh_marker(Values const &vals, bool hidden);
     void mesh_entry(Values const &vals);
     void plugin_object(Values const &vals, bool hidden);
@@ -655,6 +657,7 @@ private:
     /// The last object is a group that has just closed: its own state can still follow (Xd).
     bool _group_closed = false;
     std::size_t _nodes = 0;
+    std::size_t _foreign_bytes = 0;
     std::set<std::string> _unsupported, _unknown, _hidden_unread;
     std::optional<MeshRead> _mesh;
     std::size_t _cmyk_colors = 0, _rgb_colors = 0;
@@ -1097,7 +1100,8 @@ void Reader::op(std::string_view w, bool hidden)
             // the same way after its /Data.
             auto const &key = f.obj->entries.empty() ? std::optional<std::string>() : f.obj->entries.back().first;
             if ((f.obj->type == "Binary" && key == "ASCII85Decode") || (f.obj->type == "ForeignObject" && key == "Data")) {
-                _lex.skip_past("~>");
+                auto const data = _lex.skip_past("~>");
+                if (f.obj->type == "ForeignObject") f.obj->foreign_data = data;
             }
         }
         return;
@@ -1112,7 +1116,7 @@ void Reader::op(std::string_view w, bool hidden)
     bool follows = w == "Xy" || w == "Xd" || w == "XW" || w == "BB";
     if (!follows && (w == "XH" || ((w == "N" || w == "n") && !_current && _path.empty()))) {
         auto const *last = last_object();
-        follows = last && (last->kind == Node::Kind::Image || last->kind == Node::Kind::Placed);
+        follows = last && (last->kind == Node::Kind::Image || last->kind == Node::Kind::Placed || last->kind == Node::Kind::Foreign);
     }
     if (!follows && _after_plugin) follows = paint_state(w);
     if (!follows) {
@@ -1630,7 +1634,8 @@ void Reader::end_obj()
     if (type == "ForeignObject") {
         // Art of another format that Illustrator keeps as it came (from a placed or pasted
         // PDF, mostly) and can't edit either: a blob with where it goes.
-        unreadable("art kept in another format (foreign objects)");
+        foreign_art(*f.obj);
+        return;
     }
     // A mask dictionary holds real artwork, so an ArtDictionary inside it belongs
     // to its preceding child. Apply that attachment before retaining the dictionary
@@ -1653,6 +1658,60 @@ void Reader::end_obj()
     } else if (type == "SymbolInstance") {
         unreadable("symbols");
     }
+}
+
+// Record layout reference: VectorCraft ai/read.rs::foreign_art at 0d0ea352 (MIT).
+// Keep the full affine and PDF page margins rather than fitting painted bounding boxes.
+void Reader::foreign_art(Obj const &o)
+{
+    auto bad = [&] { unreadable("art kept in another format (foreign objects) with unsupported or malformed records"); };
+    std::set<std::string> keys;
+    for (auto const &[key, values] : o.entries) {
+        if (!key || !keys.insert(*key).second ||
+            (*key != "Version" && *key != "RTransform" && *key != "Origin" && *key != "Bounds" && *key != "Data")) {
+            bad(); return;
+        }
+    }
+    auto numbers = [&](char const *key, std::size_t count) -> std::optional<std::vector<double>> {
+        auto values = o.get(key);
+        if (!values || values->size() != count) return {};
+        std::vector<double> out;
+        for (auto const &v : *values) {
+            if (v.kind != Value::Kind::Num || !std::isfinite(v.num) || std::abs(v.num) > MAX_SIDE) return {};
+            out.push_back(v.num);
+        }
+        return out;
+    };
+    auto version = numbers("Version", 1), rt = numbers("RTransform", 6), origin = numbers("Origin", 2), bounds = numbers("Bounds", 4);
+    auto data = o.get("Data");
+    bool const compound = std::any_of(_frames.begin(), _frames.end(), [](Frame const &f) {
+        return f.kind == FrameKind::Compound || f.kind == FrameKind::Obj;
+    });
+    if (!version || (*version)[0] != 1 || !rt || !origin || !bounds || !data || !data->empty() ||
+        !o.content.empty() || compound || _frames.empty() || (*bounds)[2] <= (*bounds)[0] || (*bounds)[3] <= (*bounds)[1]) {
+        bad(); return;
+    }
+    Geom::Affine const matrix((*rt)[0], (*rt)[1], (*rt)[2], (*rt)[3], (*rt)[4], (*rt)[5]);
+    if (matrix.isSingular()) { bad(); return; }
+    // PDF's (0,0) is the low corner of Bounds. Origin flips the native canvas's
+    // y axis before RTransform. Keep the full affine, including rotation
+    // and shear; fitting transformed bounding boxes would destroy both.
+    auto const to_art = Geom::Scale(1, -1) *
+        Geom::Translate((*bounds)[0] + (*origin)[0], (*origin)[1] - (*bounds)[1]) * matrix;
+    Geom::Rect box(0, 0, (*bounds)[2] - (*bounds)[0], (*bounds)[3] - (*bounds)[1]);
+    box *= to_art;
+    if (!std::isfinite(box.left()) || !std::isfinite(box.top()) || !std::isfinite(box.right()) || !std::isfinite(box.bottom()) ||
+        std::max({std::abs(box.left()), std::abs(box.top()), std::abs(box.right()), std::abs(box.bottom())}) > MAX_SIDE) {
+        bad(); return;
+    }
+    auto pdf = ascii85_decode(o.foreign_data, _limits.max_foreign_bytes - _foreign_bytes);
+    if (!pdf || pdf->compare(0, 5, "%PDF-") != 0) { bad(); return; }
+    auto n = new_node(Node::Kind::Foreign, _gs);
+    n.transparency = _gs.transparency;
+    n.foreign = static_cast<int>(_doc.foreign.size());
+    _foreign_bytes += pdf->size();
+    _doc.foreign.push_back({std::move(*pdf), Geom::Rect((*bounds)[0], (*bounds)[1], (*bounds)[2], (*bounds)[3]), to_art});
+    add(std::move(n), _obj_hidden);
 }
 
 /**

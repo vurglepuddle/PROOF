@@ -12,6 +12,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 
 namespace Inkscape::Extension::Internal::AiNative {
 namespace {
@@ -134,6 +135,43 @@ std::optional<std::string> hex_decode(std::string_view digits)
     }
     if (high >= 0) {
         out.push_back(static_cast<char>(high << 4));
+    }
+    return out;
+}
+
+std::optional<std::string> ascii85_decode(std::string_view data, std::size_t limit)
+{
+    auto const end = data.find("~>");
+    if (end == data.npos) return {};
+    std::string out;
+    std::uint64_t acc = 0;
+    unsigned digits = 0;
+    bool line_start = true;
+    auto emit = [&](unsigned count) {
+        if (acc > UINT32_MAX || count > limit - out.size()) return false;
+        for (unsigned i = 0; i < count; ++i) out.push_back(char((acc >> (24 - 8 * i)) & 255));
+        acc = 0;
+        digits = 0;
+        return true;
+    };
+    for (char c : data.substr(0, end)) {
+        if (c == '\r' || c == '\n') { line_start = true; continue; }
+        if (line_start && c == '%') { line_start = false; continue; }
+        if (is_space(c)) continue;
+        line_start = false;
+        if (c == 'z' && digits == 0) {
+            if (!emit(4)) return {};
+        } else {
+            if (c < '!' || c > 'u') return {};
+            acc = acc * 85 + unsigned(c - '!');
+            if (++digits == 5 && !emit(4)) return {};
+        }
+    }
+    if (digits == 1) return {};
+    if (digits) {
+        unsigned const count = digits - 1;
+        while (digits++ < 5) acc = acc * 85 + 84;
+        if (!emit(count)) return {};
     }
     return out;
 }

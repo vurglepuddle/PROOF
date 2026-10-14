@@ -1652,6 +1652,74 @@ certification. Three mesh files still require nonuniform interpolation
 with extra boundary nodes. All nine unit suites and both export smoke
 tests passed; one full corpus regression was run for this milestone.
 
+### Embedded foreign PDF vectors (2026-10-14)
+
+A `/ForeignObject` dictionary keeps a PDF that Illustrator placed or pasted,
+with `Version`, `RTransform`, `Origin`, `Bounds` and ASCII85 `Data` entries.
+The census found 30 objects in five development files. All use version 1 and
+one embedded PDF page. Four files contain axial CMYK shadings with sampled
+functions; one also contains symbols. The fifth contains tensor mesh shading
+with overprint and remains outside this first subset.
+
+The decoder requires the `~>` terminator, checks partial groups and overflow,
+and strips exactly one `%` at a data line's start. A following `_` or `%` is
+data. Total decoded foreign PDFs are limited to 64 MiB per document. Unknown
+or duplicate record keys, invalid dimensions/transforms and foreign artwork
+inside a compound path or another dictionary are refused.
+
+The layout reference is VectorCraft `ai/read.rs::foreign_art` at `0d0ea352`
+(MIT, credited in `LICENSES/MIT-VectorCraft.txt`), read as source only. PROOF
+keeps the full affine rather than fitting painted bounding boxes. For a PDF
+point relative to its page's low corner, first add the low corner of `Bounds`,
+then apply the canvas origin/y flip, then `RTransform`, then the document
+transform. Blank page margins, stroke extents, rotation and shear survive.
+The PDF page is clipped at its own bounds; a nonzero page origin is normalized
+without moving its painted content.
+
+The embedded page is imported through PROOF's existing vector PDF parser.
+This first subset accepts paths, strokes, clipping, device Gray/RGB/CMYK
+paint, axial/radial shadings in supported process/ICC spaces, Normal/Multiply
+and fill/stroke opacity. It checks the content operators and used graphics
+states before importing: text, images/forms, patterns, mesh/function shadings,
+overprint, soft masks, transfer functions, page transparency groups,
+annotations, rotated/cropped or multiple pages and unknown operators,
+including inside `BX`/`EX`, retain PDF fallback. Hidden unsupported objects
+are omitted with a note. Tiny unsupported visible objects cannot evade this
+structural refusal through the artboard's visual tolerance.
+
+Each imported object is an editable SVG group marked `proof:ai-foreign="pdf"`.
+Its original PDF is retained in `proof:foreign-pdf` as a data URI. Editing the
+SVG paths/gradient stops does **not** update that saved source PDF. The import
+notes state this boundary, and these imports count as partial reconstruction;
+no native Illustrator writer or foreign-object write/read round trip is
+claimed. SVG resource IDs remain independent between imported objects.
+
+The print checks also found a general PDF-import paint bug: the internal Gray
+editing space has no CSS serialization, so unconverted grey strokes disappeared
+and grey fills inherited other paint. Unprofiled PDF grey now becomes K-only
+CMYK; a carried greyscale ICC profile retains its own space.
+
+Synthetic regressions cover exact decoded bytes and limits, full affine
+placement against independent PDF content, blank margins and clipping,
+nonzero page origins, separate gradients/resources, retained original PDF
+bytes, CMYK/black-channel paint, hidden and tiny unsupported artwork, and SVG
+save/edit/reopen. `ai-foreign-pdf-smoke.py` consumes fixtures generated with
+`PROOF_AI_FOREIGN_DIAG`; `--case` selects one while implementing. Its canvas
+and PDF checks also require vector output and exact CMYK fill/stroke channels.
+
+**Milestone result:** 861/879 native, 18 PDF fallback; three gained and none
+lost from 858/21. 511 imports are explicitly partial and 350 remain unverified
+for full editability. All nine unit suites and four export smokes pass,
+including 44/44 foreign-PDF checks; one full corpus regression was run.
+
+**Mesh investigation:** extra boundary anchors in the three remaining native
+meshes still have no established interior interpolation here. The pinned
+donor drops those anchors, and the
+[SVG working-group discussion](https://www.w3.org/Graphics/SVG/WG/wiki/SVG2GradientsComments)
+describes why Illustrator colour smoothing cannot generally be reproduced
+by one bilinear Coons patch. Neither is a specification for these native
+records; keep the fallback until a synthetic reference establishes the rule.
+
 ### Unclipped, gradient and nested opacity masks (2026-10-14)
 
 The next mask census found sixteen documents with mask dictionaries, including

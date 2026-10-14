@@ -473,6 +473,177 @@ TEST_F(AiNativeImportTest, UniformMeshKeepsEveryBoundaryNodeAndSaysItIsOutlined)
 }
 
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
+namespace {
+std::string foreign_pdf(std::string const &content, std::string const &boxes = "/MediaBox [0 0 40 30]",
+                        std::string const &shading = {})
+{
+    auto path = fixture("", {content}, boxes, {}, {}, shading);
+    gchar *bytes = nullptr;
+    gsize size = 0;
+    EXPECT_TRUE(g_file_get_contents(path.c_str(), &bytes, &size, nullptr));
+    std::string pdf(bytes ? bytes : "", size);
+    g_free(bytes);
+    return pdf;
+}
+
+std::string foreign_art(std::string const &pdf, std::string const &matrix = "1 0 0 -1 0 0",
+                        std::string const &origin = "0 0", std::string const &bounds = "10 20 50 50")
+{
+    auto data = ascii85(pdf);
+    std::string lines;
+    for (std::size_t i = 0; i < data.size(); i += 71) lines += "%" + data.substr(i, 71) + "\n";
+    return "/ForeignObject :\n1 /Version ,\n" + matrix + " /RTransform ,\n" + origin + " /Origin ,\n" +
+        bounds + " /Bounds ,\n/Data ,\n" + lines + "%~>\n;\n";
+}
+
+void foreign_fixture(std::string const &name, SPDocument *doc)
+{
+    if (auto const *dir = g_getenv("PROOF_AI_FOREIGN_DIAG")) {
+        g_mkdir_with_parents(dir, 0700);
+        auto const svg = sp_repr_save_buf(doc->getReprDoc());
+        g_file_set_contents((std::string(dir) + "/" + name + ".svg").c_str(), svg.c_str(), svg.bytes(), nullptr);
+    }
+}
+}
+
+TEST_F(AiNativeImportTest, ForeignPdfKeepsMarginsStrokeAndAffinePlacement)
+{
+    // Native Bounds locate the whole PDF, not just its smaller painted bounds.
+    // The path also extends past the PDF page and must be clipped there.
+    auto pdf = foreign_pdf("0.2 0.4 0.6 0.1 k 5 5 12 9 re f 0 G 2 w -5 25 m 45 25 l S");
+    unsigned index = 0;
+    for (auto const &matrix : {std::string("1 0 0 -1 0 0"), std::string("0 1 1 0 90 10"),
+                              std::string("1 0.2 0.3 -1 0 10")}) {
+        auto src = records(layer(foreign_art(pdf, matrix)), {}, false);
+        // Independently written outer PDF placement: native origin flips y once,
+        // then RTransform. Its PDF content starts at (10,20) before that rotation.
+        std::string const page = "q " + matrix + " cm 1 0 0 -1 10 -20 cm 0 0 40 30 re W n "
+            "0.2 0.4 0.6 0.1 k 5 5 12 9 re f 0 G 2 w -5 25 m 45 25 l S Q";
+        std::string reason;
+        auto opened = Extension::Internal::open_ai_native(fixture(src, {page}), reason);
+        ASSERT_TRUE(opened) << matrix << ": " << reason;
+        EXPECT_LT(opened->differences[0].lightness, 0.005);
+        auto groups = elements(opened->document->getReprRoot(), "svg:g");
+        auto it = std::find_if(groups.begin(), groups.end(), [](auto n) { return attr(n, "proof:ai-foreign") == "pdf"; });
+        ASSERT_NE(it, groups.end());
+        EXPECT_EQ(attr(*it, "proof:foreign-pdf"), "data:application/pdf;base64," + [&] {
+            auto encoded = g_base64_encode(reinterpret_cast<guchar const *>(pdf.data()), pdf.size());
+            std::string result(encoded); g_free(encoded); return result;
+        }());
+        EXPECT_TRUE(elements(*it, "svg:image").empty());
+        auto paths = elements(*it, "svg:path");
+        ASSERT_EQ(paths.size(), 2u);
+        auto color = opened->document->getObjectByRepr(paths[0])->style->fill.getColor();
+        EXPECT_EQ(color.getSpace()->getComponentType(), Type::CMYK);
+        auto values = color.getValues(); ASSERT_EQ(values.size(), 4u);
+        EXPECT_NEAR(values[0], 0.2, 1e-4); EXPECT_NEAR(values[3], 0.1, 1e-4);
+        auto stroke = opened->document->getObjectByRepr(paths[1])->style->stroke.getColor();
+        EXPECT_EQ(stroke.getSpace()->getComponentType(), Type::CMYK);
+        EXPECT_EQ(stroke.getValues(), (std::vector<double>{0, 0, 0, 1}));
+        foreign_fixture("foreign-" + std::to_string(index++), opened->document.get());
+        auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(opened->document->getReprDoc()).raw());
+        ASSERT_TRUE(reopened);
+        auto wrappers = elements(reopened->getReprRoot(), "svg:g");
+        auto wrapper = std::find_if(wrappers.begin(), wrappers.end(), [](auto n) { return attr(n, "proof:ai-foreign") == "pdf"; });
+        ASSERT_NE(wrapper, wrappers.end());
+        auto editable = elements(*wrapper, "svg:path");
+        ASSERT_EQ(editable.size(), 2u);
+        editable[0]->setAttribute("d", "M 6,6 H 18 V 16 H 6 Z");
+        auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+        ASSERT_TRUE(edited);
+        EXPECT_EQ(attr(edited->getObjectById(editable[0]->attribute("id"))->getRepr(), "d"), "M 6,6 H 18 V 16 H 6 Z");
+    }
+}
+
+TEST_F(AiNativeImportTest, ForeignPdfGradientsHaveIndependentResourcesAndSurviveReopen)
+{
+    auto shading = [](char const *first, char const *last) {
+        return std::string("<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 40 0] ") +
+            "/Function << /FunctionType 2 /Domain [0 1] /C0 [" + first + "] /C1 [" + last + "] /N 1 >> /Extend [true true] >>";
+    };
+    auto pdf1 = foreign_pdf("/S1 sh", "/MediaBox [0 0 40 30]", shading("1 0 0", "0 0 1"));
+    auto pdf2 = foreign_pdf("/S1 sh", "/MediaBox [0 0 40 30]", shading("0 1 0", "1 1 0"));
+    auto b = make(records(layer(foreign_art(pdf1) + foreign_art(pdf2, "1 0 0 -1 60 0")), {}, false));
+    ASSERT_TRUE(b);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](auto const &s) { return s.find("original embedded PDF") != s.npos; }));
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto stops = elements(reopened->getDefs()->getRepr(), "svg:stop");
+    ASSERT_GE(stops.size(), 4u);
+    auto gradients = elements(reopened->getDefs()->getRepr(), "svg:linearGradient");
+    ASSERT_EQ(gradients.size(), 2u);
+    EXPECT_NE(attr(gradients[0], "id"), attr(gradients[1], "id"));
+    auto paths = elements(reopened->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 2u);
+    EXPECT_NE(attr(paths[0], "style"), attr(paths[1], "style"));
+    foreign_fixture("foreign-gradients", reopened.get());
+    stops[0]->setAttribute("style", "stop-color:#123456;stop-opacity:0.5");
+    auto edited = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(edited);
+    EXPECT_NE(attr(elements(edited->getDefs()->getRepr(), "svg:stop")[0], "style").find("#123456"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, ForeignPdfNonzeroPageOriginAndHiddenUnsupportedArtwork)
+{
+    auto pdf = foreign_pdf("0 g -5 -15 12 9 re f", "/MediaBox [-10 -20 30 10]");
+    auto src = records(layer(foreign_art(pdf)), {}, false);
+    std::string reason;
+    auto good = Extension::Internal::open_ai_native(fixture(src, {"0 g 15 25 12 9 re f"}), reason);
+    ASSERT_TRUE(good) << reason;
+    EXPECT_LT(good->differences[0].lightness, 0.002);
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(src, {"0 g 30 40 12 9 re f"}), reason));
+
+    auto unsupported = foreign_art(foreign_pdf("BX unsupported EX"));
+    auto b = make(records(layer(unsupported, "0 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb") + layer("0 g\n" + rect)));
+    ASSERT_TRUE(b);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](auto const &note) {
+        return note.find("hidden foreign object was left out") != note.npos;
+    }));
+    // The same unsupported content must be rejected even in a one-point object.
+    std::string error;
+    auto ai = AN::read(records(layer(foreign_art(foreign_pdf("BX unsupported EX", "/MediaBox [0 0 1 1]"),
+                                              "1 0 0 -1 0 0", "0 0", "0 0 1 1"))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+}
+
+TEST_F(AiNativeImportTest, ForeignPdfGrayFillKeepsItsBlackChannel)
+{
+    auto pdf = foreign_pdf("0.25 g 5 5 12 9 re f");
+    auto b = make(records(layer(foreign_art(pdf))));
+    ASSERT_TRUE(b);
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto paths = elements(reopened->getReprRoot(), "svg:path"); ASSERT_EQ(paths.size(), 1u);
+    auto color = reopened->getObjectByRepr(paths[0])->style->fill.getColor();
+    EXPECT_EQ(color.getSpace()->getComponentType(), Type::CMYK);
+    auto values = color.getValues(); ASSERT_EQ(values.size(), 4u);
+    EXPECT_EQ(values[0], 0); EXPECT_EQ(values[1], 0); EXPECT_EQ(values[2], 0);
+    EXPECT_NEAR(values[3], 0.75, 1e-4);
+}
+
+TEST_F(AiNativeImportTest, ForeignPdfUnsupportedContentCannotHideBelowTheVisualTolerance)
+{
+    // Tiny foreign objects are rejected structurally even if the artboard comparison
+    // would miss their omission. BX/EX must never excuse an unknown operator.
+    for (auto const &content : {"0 g 5 5 5 5 re f BX /Bad Do EX", "BT /F1 12 Tf (x) Tj ET",
+                               "BX unsupported EX", "/Missing sh", "0 0 1 1 cm", "Q", "1 m", "[0 0] 0 d"}) {
+        auto src = records(layer(foreign_art(foreign_pdf(content))));
+        std::string error;
+        auto ai = AN::read(src, error); ASSERT_TRUE(ai) << error;
+        EXPECT_FALSE(AN::build(*ai, error)) << content;
+        EXPECT_NE(error.find("foreign object"), std::string::npos);
+    }
+    for (auto const &boxes : {"/MediaBox [0 0 41 30]", "/MediaBox [0 0 40 30] /Rotate 90",
+                             "/MediaBox [0 0 40 30] /CropBox [1 1 39 29]",
+                             "/MediaBox [0 0 40 30] /Group << /S /Transparency >>"}) {
+        std::string error;
+        auto ai = AN::read(records(layer(foreign_art(foreign_pdf("0 g 0 0 40 30 re f", boxes)))), error);
+        ASSERT_TRUE(ai) << error;
+        EXPECT_FALSE(AN::build(*ai, error)) << boxes;
+    }
+}
+
 TEST_F(AiNativeImportTest, MeshGradientMatchesIndependentPdfShading)
 {
     // Independently encoded PDF Type 6 Coons patch, 8-bit coordinates and colours.

@@ -266,6 +266,7 @@ struct Node
         Placed, ///< A placed (linked) file.
         /// A gradient mesh, or (while reading) the non-art mesh of an envelope.
         Mesh,
+        Foreign, ///< A bounded embedded PDF, placed by its own native record.
     };
     Kind kind = Kind::Group;
     std::string name;
@@ -300,6 +301,7 @@ struct Node
 
     int image = -1; ///< Image: index into Document::images.
     int placed = -1; ///< Placed: index into Document::placed.
+    int foreign = -1; ///< Foreign: index into Document::foreign.
     Mesh mesh; ///< Mesh: bounded, independently drawn patches.
     std::optional<unsigned> story; ///< Text: its story in the text document.
     /// Text: drawn by an appearance (FreeUndo), not typed. Its story is one of the text
@@ -345,6 +347,13 @@ struct Artboard
     Geom::Rect rect; ///< Art space.
 };
 
+struct ForeignObject
+{
+    std::string pdf;
+    Geom::Rect bounds; ///< Native object space (y down).
+    Geom::Affine to_art; ///< Normalized PDF space (y up) to native art space.
+};
+
 struct Document
 {
     std::vector<Node> layers; ///< Bottom first, as the file writes them.
@@ -357,6 +366,7 @@ struct Document
     std::vector<Pattern> patterns;
     std::vector<Image> images;
     std::vector<Placed> placed;
+    std::vector<ForeignObject> foreign;
     std::shared_ptr<TextDocument const> texts; ///< Bounded point-type stories, when text slots occur.
     std::optional<Geom::Point> template_center; ///< Centre used by the text document's canvas.
     std::optional<Geom::Rect> bbox; ///< %%HiResBoundingBox, else %%BoundingBox (art space).
@@ -386,6 +396,7 @@ struct Limits
     std::size_t max_inks = 65536;
     std::size_t max_gradient_stops = 256;
     std::size_t max_mesh_patches = 4096; ///< In one mesh; dimensions are checked before allocating.
+    std::size_t max_foreign_bytes = 64u << 20; ///< Total decoded foreign PDFs in one document.
 };
 
 /**

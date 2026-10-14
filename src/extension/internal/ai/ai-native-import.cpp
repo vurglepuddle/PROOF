@@ -6,6 +6,13 @@
 #include "ai-native-fonts.h"
 #include "ai-native-text.h"
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+#ifdef WITH_POPPLER
+#include "extension/internal/pdfinput/ai-native-foreign.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -557,6 +564,9 @@ public:
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
+    std::size_t foreign_objects = 0;
+    std::size_t hidden_foreign = 0;
+    std::string foreign_error;
     /// The text objects that show and are set by a font other than their own.
     std::vector<XML::Node *> substituted_shown;
     std::size_t knockouts = 0;
@@ -582,6 +592,7 @@ private:
     XML::Node *group(Node const &n);
     XML::Node *shape(Node const &n, Geom::PathVector const &pv);
     XML::Node *mesh(Node const &n);
+    XML::Node *foreign(Node const &n);
     XML::Node *image(Node const &n);
     XML::Node *placed(Node const &n);
     std::optional<std::string> linked_file(Placed const &p) const;
@@ -687,15 +698,18 @@ void Builder::run()
         if (_tiles.count(int(i)) || !_ai.patterns[i].unread.empty()) continue;
         auto const images = images_left_out;
         auto const error = link_error;
+        auto const foreign = foreign_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
-                                       gradient_text, paragraph_styled_text, mesh_outlines);
+                                       gradient_text, paragraph_styled_text, mesh_outlines, foreign_objects, hidden_foreign);
         auto const id = pattern_tile(int(i));
-        bool const placed = images_left_out == images && link_error == error;
+        bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
         images_left_out = images;
         link_error = error;
+        foreign_error = foreign;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
-                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, mesh_outlines) = counts;
+                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, mesh_outlines,
+                 foreign_objects, hidden_foreign) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -744,6 +758,8 @@ XML::Node *Builder::made(Node const &n)
             return text(n);
         case Node::Kind::Mesh:
             return mesh(n);
+        case Node::Kind::Foreign:
+            return foreign(n);
     }
     return nullptr;
 }
@@ -1150,6 +1166,51 @@ XML::Node *Builder::shape(Node const &n, Geom::PathVector const &pv)
 }
 
 // ---- colours --------------------------------------------------------------------------------
+
+XML::Node *Builder::foreign(Node const &n)
+{
+    if (n.foreign < 0 || n.foreign >= static_cast<int>(_ai.foreign.size())) {
+        foreign_error = "a foreign object's embedded PDF is missing";
+        return nullptr;
+    }
+#ifdef WITH_POPPLER
+    auto const &source = _ai.foreign[n.foreign];
+    std::string error;
+    auto art = import_foreign_pdf(source, _doc, error);
+    if (!art) {
+        if (_hidden) ++hidden_foreign;
+        else foreign_error = error;
+        return nullptr;
+    }
+    auto e = create("svg:g");
+    std::string style;
+    common(e, n, style);
+    if (!style.empty()) e->setAttribute("style", style);
+    e->setAttribute("proof:ai-foreign", "pdf");
+    auto encoded = g_base64_encode(reinterpret_cast<guchar const *>(source.pdf.data()), source.pdf.size());
+    e->setAttribute("proof:foreign-pdf", std::string("data:application/pdf;base64,") + encoded);
+    g_free(encoded);
+    art->setAttribute("transform", sp_svg_transform_write(source.to_art * _to_doc));
+    // Page bounds are a clip, not a geometric fit: preserve blank margins, strokes,
+    // rotations and shears even when the painted bounds are smaller than the page.
+    auto clip = create("svg:clipPath");
+    auto id = unique("foreignclip");
+    clip->setAttribute("id", id);
+    clip->setAttribute("clipPathUnits", "userSpaceOnUse");
+    auto rect = create("svg:rect");
+    rect->setAttribute("width", num(source.bounds.width()));
+    rect->setAttribute("height", num(source.bounds.height()));
+    append(clip, rect);
+    append(_defs, clip);
+    art->setAttribute("clip-path", "url(#" + id + ")");
+    append(e, art);
+    ++foreign_objects;
+    return e;
+#else
+    foreign_error = "embedded foreign PDFs require PDF import support";
+    return nullptr;
+#endif
+}
 
 XML::Node *Builder::mesh(Node const &n)
 {
@@ -1804,6 +1865,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
 
     Builder b(ai, doc.get(), std::move(text), source);
     b.run();
+    if (!b.foreign_error.empty()) {
+        error = b.foreign_error;
+        return {};
+    }
     if (b.images_left_out) {
         error = "an embedded image couldn't be placed";
         return {};
@@ -1938,6 +2003,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     }
     if (b.mesh_outlines) notes.push_back(count(b.mesh_outlines, "uniform mesh patch came in as the outlines",
                                              "uniform mesh patches came in as the outlines") + " they draw; mesh editing is not kept for them");
+    if (b.foreign_objects) notes.push_back(count(b.foreign_objects, "foreign object came in as what it draws, in an editable group",
+                                               "foreign objects came in as what they draw, in editable groups") +
+        "; vector paths and gradients are editable; the original embedded PDF is kept separately and is not updated by edits");
+    if (b.hidden_foreign) notes.push_back(count(b.hidden_foreign, "hidden foreign object was left out", "hidden foreign objects were left out"));
     if (b.knockouts) notes.push_back(count(b.knockouts, "knockout group", "knockout groups") + " draw as ordinary groups");
     if (curved) notes.push_back(count(curved, "curved guide segment was", "curved guide segments were") + " left out");
     for (auto const &l : ai.left_out) notes.push_back("hidden layers hold " + l + ", left out of them");
