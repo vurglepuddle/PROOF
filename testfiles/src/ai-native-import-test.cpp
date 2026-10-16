@@ -4079,6 +4079,53 @@ TEST_F(AiNativeImportTest, TypeInAFontThatIsNotInstalledIsLeftOutOfTheComparison
     EXPECT_TRUE(share);
 }
 
+TEST_F(AiNativeImportTest, ALinkedPictureThatChangedSinceTheSaveIsLeftOutOfTheComparison)
+{
+    // The file is blue now. The document keeps the picture it had when saved, red, and the
+    // page shows that red picture in its box: the link changed since, as a photograph
+    // updated in Photoshop after the .ai was last saved.
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    auto const file = folder + G_DIR_SEPARATOR_S + "photo.png";
+    write_picture(file); // 4 x 2, #336699
+    std::string red, blue;
+    for (int i = 0; i < 8; ++i) {
+        red += argb(255, 255, 0, 0);
+        blue += argb(255, 0x33, 0x66, 0x99);
+    }
+    std::string const old_page = "1 0 0 rg 10 60 40 20 re f";
+    std::string reason;
+    auto changed = records(layer(linked(file, {}, kept_preview(4, 2, red))));
+    auto opened = Extension::Internal::open_ai_native(fixture(changed, {old_page}), reason);
+    ASSERT_TRUE(opened) << reason;
+    bool noted = false;
+    for (auto const &note : opened->notes) {
+        noted = noted || note.find("1 linked picture looks different from what the document kept of it when it was "
+                                   "saved (photo.png)") != std::string::npos;
+    }
+    EXPECT_TRUE(noted);
+    EXPECT_TRUE(opened->missing_links.empty());
+    // It is in the document as it is now, linked to its file.
+    auto const images = elements(opened->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    EXPECT_EQ(attr(images[0], "sodipodi:absref"), file);
+
+    // A link that didn't change is weighed as before: the page's red against the file's blue.
+    auto same = records(layer(linked(file, {}, kept_preview(4, 2, blue))));
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(same, {old_page}), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+    // Only its box is left out: art beside it that the page lacks still refuses.
+    auto extra = records(layer("0 g\n120 10 m 120 50 L 190 50 L 190 10 L 120 10 L\nf\n" +
+                               linked(file, {}, kept_preview(4, 2, red))));
+    EXPECT_FALSE(Extension::Internal::open_ai_native(fixture(extra, {old_page}), reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+    // A kept picture of another shape than the file is a change too.
+    std::string wide;
+    for (int i = 0; i < 8; ++i) wide += argb(255, 0x33, 0x66, 0x99);
+    auto reshaped = records(layer(linked(file, {}, kept_preview(8, 1, wide))));
+    EXPECT_TRUE(Extension::Internal::open_ai_native(fixture(reshaped, {old_page}), reason)) << reason;
+}
+
 TEST_F(AiNativeImportTest, ALinkedPictureThatIsGoneIsLeftOutOfTheComparison)
 {
     // The page has the picture, mid grey, in its box. The records link a file that is gone,

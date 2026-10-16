@@ -101,6 +101,19 @@ struct MissingLink
     bool preview = false; ///< Whether the document keeps a picture of it, which then shows there.
 };
 
+/// A linked picture that shows, whose file is found, and of which the document keeps the
+/// picture Illustrator made of it when saving. A file that no longer looks like that picture
+/// changed since; the file's page shows it as it was.
+struct FoundLink
+{
+    std::string name; ///< The file's name, without its folder.
+    std::string file; ///< Where it was found (UTF-8).
+    std::array<Geom::Point, 4> box; ///< Its four corners in the document's user units.
+    /// The kept picture: rows of width * 4 bytes, red, green, blue and a straight alpha.
+    int preview_width = 0, preview_height = 0;
+    std::string preview;
+};
+
 struct Built
 {
     std::unique_ptr<SPDocument> document;
@@ -118,6 +131,9 @@ struct Built
     /// The linked pictures that show and can't be found, in the order met. What stands in
     /// for one can't look like the page either, and a comparison leaves its box out.
     std::vector<MissingLink> missing_links;
+    /// The linked pictures found, with the picture the document keeps of each; a comparison
+    /// with the page leaves out those that no longer look like it (pdfinput/ai-native-open).
+    std::vector<FoundLink> found_links;
     /// The document's own colour profile, by its description, when the file carried one and
     /// the document has it; empty when the document has PROOF's working profile.
     std::string profile;

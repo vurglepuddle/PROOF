@@ -1863,15 +1863,39 @@ Numbers), and prints them right; see
 went from 33.4% different to 0.00%. The import names a linked CMYK TIFF whose
 own profile differs from the document's.
 
-A page can also be older than its links. Illustrator said of one file "Some
-of the linked objects have been updated", and showed both artboards as PROOF
-imports them, while the file's page showed the pictures as they were before:
-the import was right and the check refused it for the page's sake. The records
-hold no date of a link (the placed record is its matrix, four numbers and its
-path; the XMP manifest has `stRef:filePath` only), but they hold the preview
-Illustrator made of each link when saving (`%AI26_BeginPlacedObjectPreview`).
-A found link that no longer looks like its preview changed since; leaving its
-box out of the weighing, as a missing link's is, is open work.
+**A page can be older than its links**: a photograph updated in Photoshop
+after the `.ai` was last saved shows as it is now in Illustrator, while the
+file's page keeps it as it was, and weighing the import against that page
+refuses a right import. The records hold no date of a link (the placed record
+is its matrix, four numbers and its path; the XMP manifest has
+`stRef:filePath` only). They hold the picture Illustrator made of each link
+when saving (`%AI26_BeginPlacedObjectPreview`, up to 512 pixels, straight
+alpha). Since 2026-10-16 a found link that no longer looks like it is left out
+of the weighing, as a missing link is, and the notes say so: "1 linked picture
+looks different from what the document kept of it when it was saved (name):
+the page shows it as before, so where it lies wasn't compared with the page"
+(`link_changed` in `pdfinput/ai-native-open.cpp`). Both on white, the file at
+the kept picture's size (a 4 x 4 grid of samples a pixel), each pixel allowed
+to match a neighbour; changed when more than 15% of it differs by more than
+48, or its shape by more than 10%. On the collaborator's 70 links with kept
+pictures: unchanged ones differ in at most 6.4%, shape at most 3.3%; one
+replaced after saving (in a file refused for other reasons) in 25-31%, shape
+24%. The four numbers of the placed record are not always the file's pixel
+size: equal in one file, a tenth of it in another whose pictures were
+exported again larger with the same content, so they aren't used.
+Test: `ALinkedPictureThatChangedSinceTheSaveIsLeftOutOfTheComparison`.
+
+**Correction, the same day.** This section first said that the file whose
+Illustrator screenshots showed PROOF right ("Some of the linked objects have
+been updated") had a page older than its links. It hasn't: its 13 links match
+the pictures kept of them. **Its PDF part is broken**: page 2 draws its
+pictures off the page (at y 405-412 and 525-731 on a page 319 high, one at x
+836-1042), each frame inside a knockout group whose clip lies where the frame
+belongs, so nothing of it shows; page 1 is shifted likewise. Illustrator wrote
+a page that doesn't match its own art. The import is right; what serves that
+file is opening the editable version anyway (the owner's decision of
+2026-10-14), not the link check. Illustrator's message can come from file
+dates alone, which copying changes.
 
 ## Plan
 

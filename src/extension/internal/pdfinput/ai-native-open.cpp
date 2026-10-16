@@ -9,15 +9,18 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <set>
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <Catalog.h>
 #include <Dict.h>
@@ -41,6 +44,7 @@
 #include <2geom/transforms.h>
 
 #include "ai-private-data.h"
+#include "display/cairo-utils.h"
 #include "display/drawing-context.h"
 #include "display/drawing-item.h"
 #include "display/drawing.h"
@@ -48,6 +52,7 @@
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-reader.h"
 #include "io/sys.h"
+#include "object/sp-image.h"
 #include "object/sp-page.h"
 #include "object/sp-root.h"
 #include "page-manager.h"
@@ -554,6 +559,81 @@ std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string 
 
 namespace {
 
+/// More of a kept picture than this differing from its file, or its shape more than this
+/// different, and the file changed since the document was saved. Measured on the collaborator's
+/// files (2026-10-16): unchanged links differ in at most 6.4% of their kept picture, one
+/// replaced after saving in 25-31% and its shape by 24%.
+constexpr double CHANGED_LINK_SHARE = 0.15;
+constexpr double CHANGED_LINK_SHAPE = 0.10;
+
+/// Whether `link`'s file, as the document shows it (`picture`), no longer looks like the
+/// picture the document keeps of it: both on white, the file drawn at the kept picture's
+/// size, each pixel allowed to match any pixel next to it, as the pages are weighed.
+bool link_changed(AiNative::FoundLink const &link, Inkscape::Pixbuf const &picture)
+{
+    int const w = link.preview_width, h = link.preview_height;
+    int const iw = picture.width(), ih = picture.height();
+    if (w < 1 || h < 1 || iw < 1 || ih < 1 || link.preview.size() < std::size_t(w) * h * 4) return false;
+    if (std::abs((double(w) / h) / (double(iw) / ih) - 1.0) > CHANGED_LINK_SHAPE) return true;
+    // The file at the kept picture's size, on white: each pixel the mean of a 4 x 4 grid of
+    // samples over the part of the file it covers. A picture of thousands of pixels shrinks
+    // in a few million reads; averaging every pixel of it took seconds.
+    auto *surface = const_cast<cairo_surface_t *>(picture.getSurfaceRaw());
+    cairo_surface_flush(surface);
+    auto const *source = cairo_image_surface_get_data(surface);
+    int const source_stride = cairo_image_surface_get_stride(surface);
+    constexpr int GRID = 4;
+    std::vector<std::array<int, 3>> small(std::size_t(w) * h);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            std::array<int, 3> sum{};
+            for (int sy = 0; sy < GRID; ++sy) {
+                int const py = std::min(ih - 1, int((y + (sy + 0.5) / GRID) * ih / h));
+                auto const *row = reinterpret_cast<std::uint32_t const *>(source + std::size_t(py) * source_stride);
+                for (int sx = 0; sx < GRID; ++sx) {
+                    auto const px = row[std::min(iw - 1, int((x + (sx + 0.5) / GRID) * iw / w))];
+                    int const a = px >> 24;
+                    // Premultiplied: on white, a channel is its value and the white left showing.
+                    for (int k = 0; k < 3; ++k) sum[k] += int((px >> (16 - 8 * k)) & 0xff) + 255 - a;
+                }
+            }
+            for (int k = 0; k < 3; ++k) small[std::size_t(y) * w + x][k] = (sum[k] + GRID * GRID / 2) / (GRID * GRID);
+        }
+    }
+    auto file_on_white = [&](int x, int y, int k) { return small[std::size_t(y) * w + x][k]; };
+    std::size_t differing = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            auto const *kept = reinterpret_cast<unsigned char const *>(link.preview.data()) + (std::size_t(y) * w + x) * 4;
+            int const a = kept[3];
+            int best = 255;
+            for (int dy = -1; dy <= 1 && best > LIGHTNESS_STEP; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    int const nx = std::clamp(x + dx, 0, w - 1), ny = std::clamp(y + dy, 0, h - 1);
+                    int most = 0;
+                    for (int k = 0; k < 3; ++k) {
+                        int const want = (kept[k] * a + 255 * (255 - a) + 127) / 255;
+                        most = std::max(most, std::abs(file_on_white(nx, ny, k) - want));
+                    }
+                    best = std::min(best, most);
+                }
+            }
+            if (best > LIGHTNESS_STEP) ++differing;
+        }
+    }
+    return differing > CHANGED_LINK_SHARE * w * h;
+}
+
+/// The picture the document shows for the file `file`, when it found it.
+std::shared_ptr<Inkscape::Pixbuf const> shown_picture(SPDocument *doc, std::string const &file)
+{
+    for (auto *object : doc->getObjectsByElement("image")) {
+        auto *image = cast<SPImage>(object);
+        if (image && !image->missing && image->pixbuf && image->linkedFile() == file) return image->pixbuf;
+    }
+    return nullptr;
+}
+
 std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, bool keep_differing,
                                          std::string const &diagnostic_directory, AiNativeCache *cache)
 {
@@ -697,6 +777,15 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         result.missing_links.push_back(link.name);
         unweighed.push_back(link.box);
     }
+    // Nor where a linked picture lies that changed since the file was saved: the page keeps it
+    // as it was (Illustrator: "Some of the linked objects have been updated").
+    std::set<std::string> changed;
+    for (auto const &link : built->found_links) {
+        if (auto picture = shown_picture(doc, link.file); picture && link_changed(link, *picture)) {
+            unweighed.push_back(link.box);
+            changed.insert(link.name);
+        }
+    }
     double most_unweighed = 0;
     std::size_t most_unweighed_board = 0;
     auto const doc_pages = doc->getPageManager().getPages();
@@ -823,12 +912,25 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         result.notes.push_back("its own art differs from its page" + where + " in about " +
                                percent(std::max(d.lightness, d.colour)) + " of it");
     }
+    if (!changed.empty()) {
+        std::string names;
+        for (auto const &name : changed) names += (names.empty() ? "" : ", ") + name;
+        result.notes.push_back(std::to_string(changed.size()) +
+                               (changed.size() == 1 ? " linked picture looks different from what the document kept of it"
+                                                    : " linked pictures look different from what the document kept of them") +
+                               " when it was saved (" + names + "): the page shows " +
+                               (changed.size() == 1 ? "it" : "them") + " as before, so where " +
+                               (changed.size() == 1 ? "it lies" : "they lie") + " wasn't compared with the page");
+    }
     if (most_unweighed > 0.25) {
-        std::string const what = built->missing_links.empty()
-                                     ? "type set in another font than its own"
-                                     : built->substituted_type.empty()
-                                           ? "linked pictures that can't be found"
-                                           : "type set in another font than its own or linked pictures that can't be found";
+        std::vector<std::string> kinds;
+        if (!built->substituted_type.empty()) kinds.emplace_back("type set in another font than its own");
+        if (!built->missing_links.empty()) kinds.emplace_back("linked pictures that can't be found");
+        if (!changed.empty()) kinds.emplace_back("linked pictures that changed since it was saved");
+        std::string what;
+        for (std::size_t k = 0; k < kinds.size(); ++k) {
+            what += (k == 0 ? "" : k + 1 == kinds.size() ? " or " : ", ") + kinds[k];
+        }
         result.notes.push_back("about " + percent(most_unweighed) + " of " +
                                (boards.size() > 1 ? "artboard " + std::to_string(most_unweighed_board + 1) : "the artboard") +
                                " is " + what + ", and wasn't compared with the page");

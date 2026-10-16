@@ -577,6 +577,8 @@ public:
     std::size_t hidden_links_missing = 0;
     /// The linked pictures that show and can't be found.
     std::vector<MissingLink> missing_links;
+    /// The linked pictures that show, are found, and of which the document keeps a picture.
+    std::vector<FoundLink> found_links;
     /// Linked CMYK TIFFs that carry a profile other than the document's: their file names, and
     /// the profiles' names. Their numbers are kept (Illustrator's "Preserve Numbers").
     std::map<std::string, std::string> other_profiles;
@@ -1754,6 +1756,16 @@ XML::Node *Builder::placed(Node const &n)
     e->setAttribute("xlink:href", uri ? uri : file->c_str());
     g_free(uri);
     e->setAttribute("sodipodi:absref", *file);
+    if (!gone && !_hidden && !_in_tile && p.preview.width > 0 && p.preview.height > 0) {
+        FoundLink link;
+        link.name = name;
+        link.file = *file;
+        link.preview_width = p.preview.width;
+        link.preview_height = p.preview.height;
+        link.preview = p.preview.pixels;
+        for (unsigned i = 0; i < 4; ++i) link.box[i] = p.box.corner(i) * m;
+        found_links.push_back(std::move(link));
+    }
     if (gone) {
         // The picture Illustrator keeps of it for this stands in its place here too.
         bool preview = false;
@@ -2019,6 +2031,7 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
                         "): " + shows + " until it is linked again");
         built.missing_links = links;
     }
+    built.found_links = std::move(b.found_links);
     if (!b.other_profiles.empty()) {
         std::string names;
         for (auto const &[file, profile] : b.other_profiles) {
