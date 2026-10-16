@@ -49,6 +49,10 @@ struct AiPageDifference
     double colour = 0.0;
 };
 
+/// On the root of a document opened from its records alone, with no page to weigh them
+/// against: "postscript" for a PostScript .ai.
+inline constexpr char const *AI_UNCHECKED_ATTRIBUTE = "proof:unchecked";
+
 /// More of an artboard than this differing, by lightness or by colour, and the page is used.
 inline constexpr double AI_NATIVE_MAX_LIGHTNESS = 0.01;
 inline constexpr double AI_NATIVE_MAX_COLOUR = 0.02;

@@ -700,6 +700,8 @@ TEST_F(AiNativeImportTest, APostScriptFileWithoutLayersOpensFromItsRecordsUnchec
     ASSERT_FALSE(result->notes.empty());
     EXPECT_NE(result->notes[0].find("wasn't checked against a page"), std::string::npos) << result->notes[0];
     auto *root = result->document->getReprRoot();
+    // For the warning when it opens in a window.
+    EXPECT_EQ(attr(root, Extension::Internal::AI_UNCHECKED_ATTRIBUTE), "postscript");
     auto const groups = elements(root, "svg:g");
     ASSERT_FALSE(groups.empty());
     EXPECT_EQ(attr(groups[0], "inkscape:label"), "Layer 1");

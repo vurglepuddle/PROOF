@@ -22,6 +22,7 @@
 #include <gtkmm/dialog.h>
 #include <gtkmm/label.h>
 #include <gtkmm/listbox.h>
+#include <gtkmm/messagedialog.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/textview.h>
 #include <libnrtype/font-factory.h>
@@ -32,6 +33,7 @@
 #include "document-undo.h"
 #include "document.h"
 #include "extension/internal/ai/ai-native-fonts.h"
+#include "extension/internal/pdfinput/ai-native-open.h"
 #include "inkscape-window.h"
 #include "inkscape.h"
 #include "link-missing.h"
@@ -399,6 +401,29 @@ std::pair<std::vector<SPItem*>, Glib::ustring> getFontReplacedItems(SPDocument *
     return std::make_pair(std::move(outList), std::move(out));
 }
 
+/// Whether the document is an .ai that opened from its records alone, with no page to check
+/// them against (Illustrator 8 and older).
+bool openedUnchecked(SPDocument *doc)
+{
+    auto const *root = doc ? doc->getReprRoot() : nullptr;
+    auto const *mark = root ? root->attribute(Inkscape::Extension::Internal::AI_UNCHECKED_ATTRIBUTE) : nullptr;
+    auto const *file = doc ? doc->getDocumentFilename() : nullptr;
+    if (!mark || !file) return false;
+    auto const name = Glib::ustring(file).lowercase();
+    return name.size() > 3 && name.substr(name.size() - 3) == ".ai";
+}
+
+/// Says that the artwork couldn't be checked against the file's pages, as there are none.
+void showUnchecked(Gtk::Window &window)
+{
+    Gtk::MessageDialog dialog(window, _("This file is in the format of Illustrator 8 or older"), false,
+                              Gtk::MessageType::WARNING, Gtk::ButtonsType::OK, true);
+    dialog.set_secondary_text(_("It has no PDF copy of its pages, so PROOF couldn't check that its artwork "
+                                "came in as it was drawn. Look it over before you use it for print."));
+    dialog.set_title(_("Opened Without a Check"));
+    dialog_run(dialog);
+}
+
 } // namespace
 
 void checkFontSubstitutions(SPDesktop *desktop)
@@ -426,7 +451,9 @@ void checkFontSubstitutions(SPDesktop *desktop)
     auto const missing = prefs->getBool("/options/font/missingdlg", true) ? AiNative::missing_fonts(doc)
                                                                          : std::vector<AiNative::MissingFont>();
     // PROOF: and so are the linked pictures whose files can't be found, first, as there.
-    if (!show_substituted && missing.empty() && !missingLinksToShow(doc)) {
+    // Before them, that an Illustrator file of the oldest kind couldn't be checked.
+    bool const unchecked = openedUnchecked(doc);
+    if (!show_substituted && missing.empty() && !missingLinksToShow(doc) && !unchecked) {
         return;
     }
     bool const show_missing = !missing.empty();
@@ -436,7 +463,7 @@ void checkFontSubstitutions(SPDesktop *desktop)
     // of the screen. It is shown once the window is there.
     auto const serial = doc->serial();
     auto tries = std::make_shared<int>(0);
-    Glib::signal_idle().connect([desktop, serial, show_substituted, show_missing, tries] {
+    Glib::signal_idle().connect([desktop, serial, show_substituted, show_missing, unchecked, tries] {
         // The window and the document it was opened for, while both are still there.
         auto const shown = [desktop, serial]() -> SPDocument * {
             auto const &desktops = INKSCAPE.get_desktops();
@@ -453,6 +480,13 @@ void checkFontSubstitutions(SPDesktop *desktop)
         auto const *window = desktop->getInkscapeWindow();
         if ((!window || !window->get_mapped()) && ++*tries < 500) {
             return true;
+        }
+        if (unchecked && window) {
+            showUnchecked(*desktop->getInkscapeWindow());
+            document = shown();
+            if (!document) {
+                return false;
+            }
         }
         if (missingLinksToShow(document)) {
             showMissingLinks(desktop, true);

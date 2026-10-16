@@ -626,6 +626,8 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         result.notes.push_back(UNCHECKED_NOTE);
         for (auto &n : built->notes) result.notes.push_back(std::move(n));
         result.document = std::move(built->document);
+        // Said again when it opens in a window (ui/dialog/font-substitution.cpp).
+        result.document->getReprRoot()->setAttribute(AI_UNCHECKED_ATTRIBUTE, "postscript");
         result.timings = std::move(timings);
         return result;
     }

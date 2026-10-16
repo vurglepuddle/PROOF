@@ -1837,6 +1837,16 @@ no paths and opens as an empty layer on its artboard. Tests:
 `AiNativeReader.RecordsWithoutLayersAreOneLayer`,
 `AiNativeImportTest.APostScriptFileWithoutLayersOpensFromItsRecordsUnchecked`.
 
+**A warning when it opens** (owner, 2026-10-16: "I think for ancient files
+that open unchecked, a warning is good enough. Illustrator 2025 also actually
+warns you about them!"). The import marks the root `proof:unchecked=
+"postscript"` (`AI_UNCHECKED_ATTRIBUTE`); when such an `.ai` opens in a window,
+a warning comes before the missing links and fonts: "This file is in the
+format of Illustrator 8 or older. It has no PDF copy of its pages, so PROOF
+couldn't check that its artwork came in as it was drawn. Look it over before
+you use it for print." (`ui/dialog/font-substitution.cpp`, `showUnchecked`).
+The wording is PROOF's own.
+
 **The pack, files up to 500 MB** (150 of 153): 39 open unchecked (the 38
 and the CorelDRAW file), 104 fall back for the reasons they did on the
 collaborator's machine, and 7 that depend on links open as before (their
