@@ -186,6 +186,7 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-styles.cpp
         internal/pdfoutput/build-text.cpp
 	    internal/pdfoutput/pdf-output.cpp
+	    internal/pdfoutput/placed-pages.cpp
 	    internal/pdfoutput/remember-styles.cpp
 
         # Header
@@ -195,6 +196,7 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-patterns.h
 	    internal/pdfoutput/build-text.h
 	    internal/pdfoutput/pdf-output.h
+	    internal/pdfoutput/placed-pages.h
 	    internal/pdfoutput/remember-styles.h
     )
 endif()
@@ -208,6 +210,7 @@ if(WITH_POPPLER)
         internal/pdfinput/ai-native-open.cpp
         internal/pdfinput/ai-native-foreign.cpp
         internal/pdfinput/ai-private-data.cpp
+        internal/pdfinput/placed-page.cpp
         internal/pdfinput/poppler-utils.cpp
         internal/pdfinput/poppler-cairo-font-engine.cpp
 
@@ -219,6 +222,7 @@ if(WITH_POPPLER)
         internal/pdfinput/ai-native-open.h
         internal/pdfinput/ai-native-foreign.h
         internal/pdfinput/ai-private-data.h
+        internal/pdfinput/placed-page.h
         internal/pdfinput/poppler-utils.h
         internal/pdfinput/poppler-cairo-font-engine.h
     )

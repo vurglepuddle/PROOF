@@ -199,6 +199,11 @@ struct Placed
     std::string folder;  ///< %AI28_BeginPlacedRelativePath, undecoded.
     int file_type = -1;  ///< %%FileType.
     Preview preview;
+    /// Of a placed PDF (an .ai too), from its art dictionary: the page, from 1
+    /// ("AI11 PlacedPDFPageIndex"), and the box it is cropped to ("AI11 PlacedPDFCropTo"; its
+    /// numbering is unknown, so the box is told by its size).
+    int page = 1;
+    int crop_to = -1;
 };
 
 struct StrokeStyle

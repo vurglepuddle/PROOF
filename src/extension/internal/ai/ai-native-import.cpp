@@ -11,6 +11,9 @@
 #endif
 #ifdef WITH_POPPLER
 #include "extension/internal/pdfinput/ai-native-foreign.h"
+#ifdef WITH_POPPLER
+#include "extension/internal/pdfinput/placed-page.h"
+#endif
 #endif
 
 #include <algorithm>
@@ -1737,11 +1740,31 @@ XML::Node *Builder::placed(Node const &n)
             g_free(data);
         }
     }
-    if (file && (photoshop_shows ? !*photoshop_shows : !gdk_pixbuf_get_file_info(file->c_str(), nullptr, nullptr))) {
-        // A file of another application's (PDF, EPS), or a Photoshop file whose merged image
-        // isn't read: nothing here draws it.
+    // A placed PDF page (a linked .pdf, or an .ai, a PDF too): its first page cropped to its crop
+    // box, which is drawn for the screen and goes to print as it is (pdfinput/placed-page.h).
+    std::optional<bool> page_shows;
+    std::string page_why;
+#ifdef WITH_POPPLER
+    if (file && ends(*file, {".pdf", ".ai"})) {
+        auto const crop = placed_page_crop(*file, &page_why);
+        auto same = [](double a, double b) { return std::abs(a - b) <= 0.01 + 1e-5 * std::abs(b); };
+        if (crop && p.page != 1) {
+            page_why = "it is placed at its page " + std::to_string(p.page) + ", and only a first page is shown yet";
+        } else if (crop && (!same(crop->width(), p.box.width()) || !same(crop->height(), p.box.height()))) {
+            page_why = "it is cropped to another of its boxes than its crop box, which isn't shown yet";
+        }
+        page_shows = crop && page_why.empty();
+    }
+#endif
+    bool const shows = photoshop_shows ? *photoshop_shows
+                     : page_shows      ? *page_shows
+                                       : bool(gdk_pixbuf_get_file_info(file ? file->c_str() : "", nullptr, nullptr));
+    if (file && !shows) {
+        // A file of another application's (EPS), a Photoshop file whose merged image isn't
+        // read, or a page that can't be placed: nothing here draws it.
         if (!_hidden && link_error.empty()) {
             link_error = photoshop_shows ? "a linked Photoshop file can't be shown: " + photoshop_why + " (" + name + ")"
+                       : page_shows      ? "a linked page can't be shown: " + page_why + " (" + name + ")"
                                          : "a linked file is of a kind PROOF can't show yet (" + name + ")";
         }
         file.reset();

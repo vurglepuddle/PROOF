@@ -16,10 +16,13 @@
 #include <2geom/2geom.h>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
+#include <vector>
 
 #include "attributes.h"
 #include "capypdf.hpp"
+#include "placed-pages.h"
 #include "remember-styles.h"
 #include "style-enums.h"
 
@@ -81,11 +84,18 @@ std::string paint_to_cache_key(SPIPaint const &paint, std::optional<double> opac
 void get_context_use_recursive(SPItem const *item, bool &fill, bool &stroke);
 std::vector<PaintLayer> get_paint_layers(SPStyle const *style, SPStyle const *context_style);
 
+/// PROOF: the placed pages couldn't be put into the PDF; it lacks them (placed-pages.h).
+struct PlacedPagesFailed : std::runtime_error
+{
+    using std::runtime_error::runtime_error;
+};
+
 class Document
 {
 public:
     Document(char const *filename, capypdf::DocumentProperties &opt)
         : _gen(filename, opt)
+        , _filename(filename)
         , _paint_memory({
               SPAttr::FILL,
               SPAttr::FILL_OPACITY,
@@ -102,7 +112,9 @@ public:
 
     void add_page(PageContext &page);
     void set_label(uint32_t page, std::string const &label);
-    void write() { _gen.write(); }
+    /// Writes the file; then the placed pages go into it (placed-pages.h). Throws
+    /// PlacedPagesFailed when they can't, the rest of the file written.
+    void write();
 
     void set_filter_resolution(unsigned res = 0) { _filter_resolution = res; }
     unsigned get_filter_resolution() const { return _filter_resolution; }
@@ -131,9 +143,14 @@ public:
     std::optional<CapyPDF_PatternId> get_pattern(SPPaintServer const *paint, std::optional<double> opacity);
 
     std::optional<CapyPDF_ImageId> get_image(std::string const &filename, capypdf::ImagePdfProperties &props);
-    /// PROOF: the TIFF in `data` as a PDF image when CapyPDF's own reader would get it wrong
-    /// (a CMYK TIFF, or one with transparency); nothing otherwise. See build-document.cpp.
+    /// PROOF: the picture in `data` as a PDF image when CapyPDF's own reader would get it wrong
+    /// (a Photoshop file; a TIFF of CMYK or with transparency); nothing otherwise. See
+    /// build-document.cpp.
     std::optional<CapyPDF_ImageId> add_own_pixels(std::string_view data, capypdf::ImagePdfProperties &props);
+    /// PROOF: when `filename` is a PDF (a linked .pdf or .ai), the stand-in for its first page,
+    /// drawn where it is placed and replaced by the page itself once the file is written
+    /// (placed-pages.h), and that page's crop box (PDF units). Nothing otherwise.
+    std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> placed_page(std::string const &filename);
 private:
     std::optional<CapyPDF_PatternId> get_linear_pattern(SPLinearGradient const *linear, std::optional<double> opacity);
     std::optional<CapyPDF_PatternId> get_radial_pattern(SPRadialGradient const *radial, std::optional<double> opacity);
@@ -175,6 +192,9 @@ private:
     std::map<std::string, CapyPDF_PatternId> _pattern_cache;
     std::map<std::string, CapyPDF_FontId> _font_cache;
     std::map<std::string, CapyPDF_ImageId> _raster_cache;
+    std::string _filename;
+    std::map<std::string, std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>>> _placed_cache;
+    std::vector<PlacedPage> _placed;
 
     // Anchors are post-processed into pages
     std::set<SPAnchor const *> _anchors;

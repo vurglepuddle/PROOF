@@ -3754,6 +3754,67 @@ TEST_F(AiNativeImportTest, ALinkedPhotoshopFileShowsItsMergedImage)
     EXPECT_NE(error.find("flat.psd"), std::string::npos) << error;
 }
 
+TEST_F(AiNativeImportTest, ALinkedPdfPageShowsItsFirstPageCroppedToItsCropBox)
+{
+    // The collaborator's linked .ai and .pdf files (2026-10-17): Illustrator places a page and
+    // keeps it as it is. PROOF shows the first page's crop box, drawn by Poppler.
+    auto const placed = fixture(records(layer("0 g\n" + rect)), {"0 0 1 0 k 0 0 200 100 re f"}); // 200 by 100
+    // As Illustrator writes the placement: the box the size of the page box it is cropped to.
+    auto page = [](std::string const &file, double w, double h, int index) {
+        auto num = [](double v) {
+            std::ostringstream os;
+            os << v;
+            return os.str();
+        };
+        return "%AI5_BeginPlace\n%%FileType: 1\n[1 0 0 -1 0 100] 7893 " + num(7770 - h) + " " + num(7893 + w) +
+               " 7770 4 4 0\n(" + escaped(file) + ")`\n%%IncludeFile:" + file + "\n~\n%AI5_EndPlace\n"
+               "%_/ArtDictionary :\n%_3 /Int (AI11 PlacedPDFCropTo) ,\n%_" + std::to_string(index) +
+               " /Int (AI11 PlacedPDFPageIndex) ,\n%_;\n";
+    };
+    std::string error;
+    auto ai = AN::read(records(layer(page(placed, 200, 100, 1))), error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->placed.size(), 1u);
+    EXPECT_EQ(ai->placed[0].page, 1);
+    EXPECT_EQ(ai->placed[0].crop_to, 3);
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    auto const images = elements(b->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    b->document->ensureUpToDate();
+    auto *image = cast<SPImage>(b->document->getObjectByRepr(images[0]));
+    ASSERT_TRUE(image && image->pixbuf);
+    // At 300 pixels an inch: 200 by 100 points.
+    EXPECT_EQ(image->pixbuf->width(), 833);
+    EXPECT_EQ(image->pixbuf->height(), 417);
+    auto *surface = image->pixbuf->getSurfaceRaw();
+    auto const *row = cairo_image_surface_get_data(surface) + 200 * cairo_image_surface_get_stride(surface);
+    auto const yellow = reinterpret_cast<std::uint32_t const *>(row)[400];
+    EXPECT_EQ(yellow >> 24, 255u);
+    EXPECT_GT((yellow >> 16) & 0xff, 200u);
+    EXPECT_GT((yellow >> 8) & 0xff, 200u);
+    EXPECT_LT(yellow & 0xff, 60u);
+
+    // Another page than the first, or another box than its crop box: refused, saying why.
+    ai = AN::read(records(layer(page(placed, 200, 100, 2))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("page 2"), std::string::npos) << error;
+    ai = AN::read(records(layer(page(placed, 150, 100, 1))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("crop box"), std::string::npos) << error;
+    // An .ai of Illustrator 8 or older is PostScript, not a page.
+    auto const folder = temporary_folder();
+    auto const old = folder + G_DIR_SEPARATOR_S + "old.ai";
+    std::string const postscript = "%!PS-Adobe-3.0\n%%BoundingBox: 0 0 200 100\n%%EOF\n";
+    ASSERT_TRUE(g_file_set_contents(old.c_str(), postscript.data(), gssize(postscript.size()), nullptr));
+    ai = AN::read(records(layer(page(old, 200, 100, 1))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("can't be read as a PDF"), std::string::npos) << error;
+}
+
 TEST_F(AiNativeImportTest, PicturesThatAreGoneAreLinkedAgainFromOneFolder)
 {
     auto const folder = temporary_folder();

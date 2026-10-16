@@ -72,6 +72,7 @@ void DrawContext::paint_raster(SPImage const *image)
     auto [base64, base64_type] = extract_uri_data(href);
     std::optional<CapyPDF_ImageId> raster_id;
     std::unique_ptr<SPDocument> svg;
+    std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> placed;
 
     gsize decoded_len = 0;
     const char *decoded = nullptr;
@@ -82,6 +83,8 @@ void DrawContext::paint_raster(SPImage const *image)
             auto uri = image->getURI();
             if (uri.getMimeType() == "image/svg+xml") {
                 svg = SPDocument::createNewDoc(uri.toNativeFilename().c_str());
+            } else if ((placed = _doc.placed_page(uri.toNativeFilename()))) {
+                // PROOF: a placed PDF page (a linked .pdf or .ai), the page itself.
             } else {
                 // This is cached against the doc cache as the same filename might
                 // be loaded multiple times in the same document.
@@ -163,6 +166,17 @@ void DrawContext::paint_raster(SPImage const *image)
         } else {
             g_warning("Unable to paint embedded SVG image into PDF.");
         }
+    } else if (placed) {
+        // The page's crop box (PDF units, y up) onto where the picture goes, as a picture's
+        // pixels are: its x across, its y turned down.
+        auto const &[group, crop] = *placed;
+        auto const paint_box = image->get_paintbox(crop.width(), crop.height(), image_box);
+        double const sx = paint_box->width() / crop.width(), sy = paint_box->height() / crop.height();
+        _ctx.cmd_q();
+        set_clip_rectangle(image_box);
+        transform(Geom::Affine(sx, 0, 0, -sy, paint_box->left() - crop.left() * sx, paint_box->bottom() + crop.top() * sy));
+        _ctx.cmd_Do(group);
+        _ctx.cmd_Q();
     } else if (raster_id) {
         // Format the width and height into a transformation matrix, the image is a unit square painted
         // from the bottom upwards so must be scaled out and flipped. No cropping is needed.

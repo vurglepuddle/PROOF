@@ -12,11 +12,18 @@
 
 #include "build-document.h"
 
+#include <cstdio>
+#include <format>
+#include <glib/gstdio.h>
+
 #include "build-drawing.h"
 #include "build-page.h"
 #include "build-text.h"
 #include "display/psd-pixels.h"
 #include "display/tiff-pixels.h"
+#ifdef WITH_POPPLER
+#include "extension/internal/pdfinput/placed-page.h"
+#endif
 #include "object/sp-anchor.h"
 #include "object/sp-flowtext.h"
 #include "object/sp-image.h"
@@ -341,6 +348,48 @@ std::optional<CapyPDF_ImageId> Document::add_own_pixels(std::string_view data, c
     }
     auto image = builder.build();
     return _gen.add_image(image, props);
+}
+
+std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> Document::placed_page(std::string const &filename)
+{
+    if (auto const it = _placed_cache.find(filename); it != _placed_cache.end()) {
+        return it->second;
+    }
+    auto &placed = _placed_cache[filename];
+#ifdef WITH_POPPLER
+    gchar head[8] = {};
+    if (FILE *f = g_fopen(filename.c_str(), "rb")) {
+        auto const n = std::fread(head, 1, 5, f);
+        std::fclose(f);
+        if (n != 5) return placed;
+    }
+    if (!looks_like_pdf(std::string_view(head, 5))) return placed;
+    std::string why;
+    auto const crop = placed_page_crop(filename, &why);
+    if (!crop) {
+        g_warning("A placed page can't go into the PDF: %s (%s)", why.c_str(), filename.c_str());
+        return placed;
+    }
+    // A stand-in that names itself, to be found and replaced once the file is written: a path
+    // drawn with nothing, where no page draws (CapyPDF's C++ side has no marked content).
+    double const name = 7'700'000.0 + double(_placed.size() + 1);
+    auto const marker = std::format("{:f} {:f} {:f} {:f} re", name, name, 1.0, 1.0);
+    GroupContext stand_in(*this, *crop, false, false);
+    stand_in._ctx.cmd_re(name, name, 1.0, 1.0);
+    stand_in._ctx.cmd_n();
+    placed = std::pair(_gen.add_transparency_group(stand_in._ctx), *crop);
+    _placed.push_back({filename, marker});
+#endif
+    return placed;
+}
+
+void Document::write()
+{
+    _gen.write();
+    std::string error;
+    if (!splice_placed_pages(_filename, _placed, error)) {
+        throw PlacedPagesFailed(error);
+    }
 }
 
 std::optional<CapyPDF_ImageId> Document::get_image(std::string const &filename, capypdf::ImagePdfProperties &props)

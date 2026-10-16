@@ -12,6 +12,9 @@
 #include "display/cairo-utils.h"
 #include "display/psd-pixels.h"
 #include "display/tiff-pixels.h"
+#ifdef WITH_POPPLER
+#include "extension/internal/pdfinput/placed-page.h"
+#endif
 
 #include <2geom/affine.h>
 #include <2geom/curves.h>
@@ -186,12 +189,18 @@ Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<
 {
     std::string_view const bytes(reinterpret_cast<char const *>(data), len);
     std::optional<RasterPixels> pixels;
+    cairo_surface_t *surface = nullptr;
     if (looks_like_psd(bytes)) {
         pixels = read_psd(bytes);
     } else if (is_cmyk_tiff(bytes)) {
         pixels = read_tiff(bytes);
+#ifdef WITH_POPPLER
+    } else if (Extension::Internal::looks_like_pdf(bytes)) {
+        // A placed page (a linked .pdf or .ai), drawn by Poppler.
+        surface = Extension::Internal::placed_page_surface(bytes);
+#endif
     }
-    auto *surface = pixels ? raster_surface(*pixels, cmyk) : nullptr;
+    if (pixels) surface = raster_surface(*pixels, cmyk);
     if (!surface) return nullptr;
     auto *pixbuf = new Pixbuf(surface);
     pixbuf->_setMimeData(data, len, "own");

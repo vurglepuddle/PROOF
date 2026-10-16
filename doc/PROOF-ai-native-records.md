@@ -1962,6 +1962,23 @@ among 20 links) is native at 0.08%, its one link replaced after the save
 (`Vector 3506.png`) left out of the comparison and named, as round 19 meant.
 Test: `ALinkedPhotoshopFileShowsItsMergedImage`.
 
+### Linked `.ai` and `.pdf` files (2026-10-17)
+
+A placed PDF or `.ai` is a page, not a picture: Illustrator shows a picture of
+it and prints the page itself. PROOF now does both
+(`PROOF-placed-pages.md`). The reader keeps the placement's page and crop
+(`Placed::page` from `AI11 PlacedPDFPageIndex`, `Placed::crop_to` from
+`AI11 PlacedPDFCropTo`, in the art dictionary after `%AI5_EndPlace`); the
+placed box (always with its top-left at 7893, 7770 in the four placements
+read) has the size of the page box it is cropped to. The import shows the
+first page cropped to its crop box and refuses the rest with the reason.
+
+The collaborator's `9047eb9b4e`, refused for its linked `.ai` before, opens
+natively at 0.22%, in about three minutes: its own page takes Poppler 28 seconds
+to draw even at 20 dpi, for its 127-megapixel picture, and its thin lines need
+the finer second drawing. Test:
+`ALinkedPdfPageShowsItsFirstPageCroppedToItsCropBox`.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

@@ -1974,6 +1974,11 @@ void Reader::art_dictionary(Obj const &o)
     if (auto r = o.text("BBAccumRotation")) {
         if (auto v = parse_number(*r); v && *v != 0.0) n->box_rotation = *v;
     }
+    if (n->placed >= 0 && n->placed < static_cast<int>(_doc.placed.size())) {
+        auto &placed = _doc.placed[n->placed];
+        if (auto const page = o.nums("AI11 PlacedPDFPageIndex"); page.size() == 1) placed.page = int(page[0]);
+        if (auto const crop = o.nums("AI11 PlacedPDFCropTo"); crop.size() == 1) placed.crop_to = int(crop[0]);
+    }
     if (auto const *mask = o.obj("AI9_Mask")) {
         auto const disabled = mask->nums("Disabled");
         if (disabled.size() == 1 && disabled[0] == 1.0) return;

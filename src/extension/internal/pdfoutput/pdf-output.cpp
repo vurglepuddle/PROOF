@@ -12,6 +12,8 @@
 
 #include "pdf-output.h"
 
+#include <glib/gstdio.h>
+
 #include "build-document.h"
 #include "build-page.h"
 #include "document.h"
@@ -123,6 +125,11 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     }
     try {
         pdf.write();
+    } catch (PdfBuilder::PlacedPagesFailed const &ex) {
+        // PROOF: a PDF without the pages placed in it isn't kept: it would print without them.
+        g_warning("Couldn't put the placed pages into the PDF: %s", ex.what());
+        g_unlink(filename);
+        throw Inkscape::Extension::Output::save_failed();
     } catch (std::exception &ex) {
         g_warning("Couldn't save pdf file: %s", ex.what());
     }
