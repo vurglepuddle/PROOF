@@ -1,9 +1,12 @@
-# CMYK and cut-out TIFFs
+# CMYK and cut-out TIFFs, and Photoshop files
 
 A placed TIFF is what a print shop sends when a picture will be looked at from
 close up: CMYK, at full resolution, often cut out with transparency. PROOF
 reads such a TIFF's pixels itself, for the screen and for print
-(`src/display/tiff-pixels.h`), since 2026-10-16.
+(`src/display/tiff-pixels.h`), since 2026-10-16. Since 2026-10-17 it reads a
+placed Photoshop file's merged image the same way (`src/display/psd-pixels.h`;
+below, "Photoshop files"). Both land in one form, shown and printed from it
+(`src/display/raster-pixels.h`).
 
 The owner, on why it matters: "my vendors do not take TIFF, and their vendors
 take TIFFs, so therefore their files have this issue. This is huge, and
@@ -69,6 +72,43 @@ the submodule, keep that path until both are fixed there: the TIFF export
 smoke (`tiff-export-smoke.py`) fails if a cut-out TIFF vanishes or its edges
 lighten.
 
+## Photoshop files (2026-10-17)
+
+The owner, on linked Photoshop files: "yes, they use photoshop more than me,
+unsurprising." Nothing in PROOF read them before: the picture loader has no
+Photoshop reader, so an `.ai` that linked one fell back to its page ("a linked
+file is of a kind PROOF can't show yet"), and an SVG showed a broken picture.
+
+Illustrator shows and prints the merged image Photoshop saves beside the
+layers ("Maximize Compatibility", on by default). PROOF reads that image:
+
+- Gray, RGB and CMYK, 8 or 16 bits a channel, `.psd` and `.psb`, uncompressed or
+  RLE (PackBits), as Photoshop writes the merged image.
+- CMYK is kept inverted in the file (255 is no ink) and read as inks, which
+  then follow Preserve Numbers like a TIFF's.
+- The transparency is the first extra channel when the file says so: a
+  negative layer count (in the layer information, or in its `Lr16`/`Lr32`
+  block at 16 and 32 bits). Other extra channels are left out.
+- Photoshop mattes the merged image against white where it isn't opaque. In
+  CMYK that is the ink scaled by the transparency, as in a premultiplied TIFF;
+  in RGB and gray, the distance from white. Divided back out, straight.
+- Its own profile (image resource 1039) for the note at `.ai` import.
+
+Measured on the collaborator's five linked Photoshop files (2026-10-17, copies):
+all CMYK, 8 bits, a transparency channel ("Transparency", "Trasparenza"),
+merged image saved, RLE; two with an embedded profile, three without. Where a
+pixel is clear, every channel holds 255; on soft edges the ink divided by the
+transparency matches the solid ink beside it. An `.ai` exported to PDF holds
+each at full size as `DeviceCMYK` with its SMask; against a decoder written
+apart from PROOF's, every opaque pixel's inks equal the file's (5.7 million
+pixels in the three of one file), the SMask equals its transparency, and the
+edges unmatted match.
+
+Not read, and said so when an `.ai` links one: a file saved without its merged
+image ("it was saved without its merged image (Photoshop's Maximize
+Compatibility)"), bitmap, indexed, duotone, Lab and multichannel files, 32-bit
+channels, a merged image compressed with ZIP.
+
 ## What is read
 
 Gray, RGB and CMYK (`Photometric` 1, 2, 5 with the CMYK ink set), 8 or 16 bits
@@ -80,6 +120,13 @@ paths.
 
 ## Limits
 
+- A Photoshop file shows its merged image only: not its layers, so not a layer
+  comp or layer visibility chosen in Illustrator's placement options.
+- A Photoshop file in RGB or gray shows its values as they are on screen (its
+  profile isn't applied, as for every RGB picture in PROOF) and goes to the
+  PDF as `DeviceRGB` or `DeviceGray`, its profile dropped.
+- At `.ai` import a linked Photoshop file is read whole to check that its
+  merged image can be read, then again to show it.
 - An RGB TIFF with transparency goes out as `DeviceRGB`: CapyPDF's raster
   builder takes no profile, so its own is dropped. One without transparency
   keeps CapyPDF's path and its profile.
@@ -103,3 +150,13 @@ paths.
   numbers, an edge's full ink, the SMask, and the printed page and the canvas
   where the picture is and where it isn't.
 - `AiNativeImportTest.ALinkedCmykTiffWithAnotherProfileIsNamedAndKeepsItsNumbers`.
+- `testfiles/src/psd-pixels-test.cpp` (`test_psd-pixels`, 6; files built by
+  `testfiles/src/psd-fixture.h`): CMYK with transparency unmatted, raw and RLE;
+  a 16-bit RGB `.psb` with its layers in `Lr16`; its profile kept and extra
+  channels left out, and no transparency without the mark; the kinds not read
+  say why; a pixbuf through the document's profile with its transparency; RGB
+  and gray as their values.
+- The TIFF export smoke's Photoshop cases (31 of its 91 checks): CMYK matted
+  (RLE), 16-bit CMYK with its layers in `Lr16`, an RGB cut-out.
+- `AiNativeImportTest.ALinkedPhotoshopFileShowsItsMergedImage`: shown, and one
+  saved without its merged image refused with the reason.

@@ -11,12 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <lcms2.h>
 #include <tiffio.h>
-
-#include "colors/cms/profile.h"
-#include "colors/cms/transform.h"
-#include "colors/document-colors.h"
 
 namespace Inkscape {
 namespace {
@@ -127,7 +122,7 @@ bool read_samples(TIFF *tif, std::uint32_t w, std::uint32_t h, std::size_t pixel
 
 template <typename T>
 void split(std::vector<std::uint8_t> const &all, unsigned spp, unsigned colours, int alpha_at, bool premultiplied,
-           TiffPixels &out)
+           RasterPixels &out)
 {
     auto const *in = reinterpret_cast<T const *>(all.data());
     std::size_t const n = std::size_t(out.width) * out.height;
@@ -184,7 +179,7 @@ std::optional<std::string> cmyk_tiff_profile(std::string_view data)
     return std::string();
 }
 
-std::optional<TiffPixels> read_tiff(std::string_view data, std::string *error)
+std::optional<RasterPixels> read_tiff(std::string_view data, std::string *error)
 {
     if (!looks_like_tiff(data)) {
         fail(error, "it isn't a TIFF");
@@ -197,7 +192,7 @@ std::optional<TiffPixels> read_tiff(std::string_view data, std::string *error)
         fail(error, libtiff_error.empty() ? "it can't be opened" : libtiff_error.c_str());
         return {};
     }
-    TiffPixels out;
+    RasterPixels out;
     std::uint16_t bits = 0, spp = 0, photometric = 0, planar = PLANARCONFIG_CONTIG, format = SAMPLEFORMAT_UINT;
     std::uint16_t inkset = INKSET_CMYK;
     if (!TIFFGetField(tif.get(), TIFFTAG_IMAGEWIDTH, &out.width) ||
@@ -213,14 +208,14 @@ std::optional<TiffPixels> read_tiff(std::string_view data, std::string *error)
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_INKSET, &inkset);
     unsigned colours = 0;
     switch (photometric) {
-        case PHOTOMETRIC_MINISBLACK: out.model = TiffPixels::Model::Gray; colours = 1; break;
-        case PHOTOMETRIC_RGB: out.model = TiffPixels::Model::RGB; colours = 3; break;
+        case PHOTOMETRIC_MINISBLACK: out.model = RasterPixels::Model::Gray; colours = 1; break;
+        case PHOTOMETRIC_RGB: out.model = RasterPixels::Model::RGB; colours = 3; break;
         case PHOTOMETRIC_SEPARATED:
             if (inkset != INKSET_CMYK) {
                 fail(error, "its inks aren't CMYK");
                 return {};
             }
-            out.model = TiffPixels::Model::CMYK;
+            out.model = RasterPixels::Model::CMYK;
             colours = 4;
             break;
         default:
@@ -266,58 +261,6 @@ std::optional<TiffPixels> read_tiff(std::string_view data, std::string *error)
         split<std::uint16_t>(all, spp, colours, alpha_at, out.premultiplied, out);
     }
     return out;
-}
-
-cairo_surface_t *cmyk_tiff_surface(TiffPixels const &tiff, std::shared_ptr<Colors::CMS::Profile> profile,
-                                   Colors::RenderingIntent intent)
-{
-    if (tiff.model != TiffPixels::Model::CMYK) return nullptr;
-    // Preserve Numbers: the document's profile first; the picture's own, and the working
-    // profile, only where the document has none.
-    if (!profile && !tiff.profile.empty()) {
-        try {
-            profile = Colors::CMS::Profile::create_from_data(tiff.profile);
-        } catch (...) {
-            profile.reset();
-        }
-        if (profile && cmsGetColorSpace(profile->getHandle()) != cmsSigCmykData) profile.reset();
-    }
-    if (!profile) profile = Colors::DocumentColors::workingProfile(Colors::Space::Type::CMYK);
-    if (!profile || !profile->getHandle()) return nullptr;
-    auto srgb = Colors::CMS::Profile::create_srgb();
-    auto const in_format = tiff.bits == 16 ? TYPE_CMYK_16 : TYPE_CMYK_8;
-    auto transform = cmsCreateTransform(profile->getHandle(), in_format, srgb->getHandle(), TYPE_RGB_8,
-                                        Colors::CMS::Transform::lcms_intent(intent),
-                                        Colors::CMS::Transform::lcms_bpc(intent));
-    if (!transform) return nullptr;
-    auto *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, int(tiff.width), int(tiff.height));
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cmsDeleteTransform(transform);
-        cairo_surface_destroy(surface);
-        return nullptr;
-    }
-    cairo_surface_flush(surface);
-    auto *pixels = cairo_image_surface_get_data(surface);
-    int const stride = cairo_image_surface_get_stride(surface);
-    std::size_t const ink_row = std::size_t(tiff.width) * 4 * tiff.bits / 8;
-    std::vector<std::uint8_t> rgb(std::size_t(tiff.width) * 3);
-    for (std::uint32_t y = 0; y < tiff.height; ++y) {
-        cmsDoTransform(transform, tiff.colour.data() + y * ink_row, rgb.data(), tiff.width);
-        auto *row = reinterpret_cast<std::uint32_t *>(pixels + std::size_t(y) * stride);
-        for (std::uint32_t x = 0; x < tiff.width; ++x) {
-            std::uint32_t a = 255;
-            if (!tiff.alpha.empty()) {
-                std::size_t const i = std::size_t(y) * tiff.width + x;
-                a = tiff.bits == 16 ? reinterpret_cast<std::uint16_t const *>(tiff.alpha.data())[i] >> 8 : tiff.alpha[i];
-            }
-            auto premultiply = [a](std::uint32_t v) { return (v * a + 127) / 255; };
-            row[x] = (a << 24) | (premultiply(rgb[x * 3]) << 16) | (premultiply(rgb[x * 3 + 1]) << 8) |
-                     premultiply(rgb[x * 3 + 2]);
-        }
-    }
-    cmsDeleteTransform(transform);
-    cairo_surface_mark_dirty(surface);
-    return surface;
 }
 
 } // namespace Inkscape

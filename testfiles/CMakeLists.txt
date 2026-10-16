@@ -73,6 +73,7 @@ set(TEST_SOURCES
     box-frame-test
     clip-blend-test
     tiff-pixels-test
+    psd-pixels-test
     live-corners-test
     cmyk-picker-test
     colors/cms-system-test

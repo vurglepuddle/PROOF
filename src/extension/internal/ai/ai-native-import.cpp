@@ -44,6 +44,7 @@
 #include "colors/spaces/cms.h"
 #include "colors/spaces/enum.h"
 #include "colors/spaces/lab.h"
+#include "display/psd-pixels.h"
 #include "display/tiff-pixels.h"
 #include "document-undo.h"
 #include "document.h"
@@ -1704,18 +1705,31 @@ XML::Node *Builder::placed(Node const &n)
     auto const name = names.empty() ? std::string() : base_name(names.front());
     auto file = linked_file(p);
     bool gone = false;
-    // A TIFF read for its tags: whose CMYK profile it carries.
-    auto const tiff_named = [](std::string const &f) {
+    // A TIFF or a Photoshop file, which PROOF reads itself (display/raster-pixels.h), is read for
+    // its header: whose CMYK profile it carries, and of a Photoshop file whether its merged image
+    // can be read.
+    auto const ends = [](std::string const &f, std::initializer_list<char const *> endings) {
         gchar *lower = g_utf8_strdown(f.c_str(), -1);
-        bool const tiff = g_str_has_suffix(lower, ".tif") || g_str_has_suffix(lower, ".tiff");
+        bool const found = std::any_of(endings.begin(), endings.end(), [&](char const *e) { return g_str_has_suffix(lower, e); });
         g_free(lower);
-        return tiff;
+        return found;
     };
-    if (file && tiff_named(*file) && _cmyk_space && _cmyk_space->getProfile()) {
+    bool const cmyk = _cmyk_space && _cmyk_space->getProfile();
+    std::optional<bool> photoshop_shows;
+    std::string photoshop_why;
+    if (file && (ends(*file, {".psd", ".psb"}) || (cmyk && ends(*file, {".tif", ".tiff"})))) {
         gchar *data = nullptr;
         gsize len = 0;
         if (g_file_get_contents(file->c_str(), &data, &len, nullptr)) {
-            if (auto own = cmyk_tiff_profile(std::string_view(data, len)); own && !own->empty()) {
+            std::string_view const bytes(data, len);
+            std::optional<std::string> own;
+            if (looks_like_psd(bytes)) {
+                photoshop_shows = psd_readable(bytes, &photoshop_why);
+                own = cmyk_psd_profile(bytes);
+            } else {
+                own = cmyk_tiff_profile(bytes);
+            }
+            if (cmyk && own && !own->empty()) {
                 auto profile = Colors::CMS::Profile::create_from_data(*own);
                 auto const theirs = profile ? profile->getName() : std::string("an unreadable profile");
                 if (theirs != _cmyk_space->getProfile()->getName()) other_profiles.emplace(name, theirs);
@@ -1723,9 +1737,13 @@ XML::Node *Builder::placed(Node const &n)
             g_free(data);
         }
     }
-    if (file && !gdk_pixbuf_get_file_info(file->c_str(), nullptr, nullptr)) {
-        // A file of another application's (Photoshop, PDF, EPS): nothing here draws it.
-        if (!_hidden && link_error.empty()) link_error = "a linked file is of a kind PROOF can't show yet (" + name + ")";
+    if (file && (photoshop_shows ? !*photoshop_shows : !gdk_pixbuf_get_file_info(file->c_str(), nullptr, nullptr))) {
+        // A file of another application's (PDF, EPS), or a Photoshop file whose merged image
+        // isn't read: nothing here draws it.
+        if (!_hidden && link_error.empty()) {
+            link_error = photoshop_shows ? "a linked Photoshop file can't be shown: " + photoshop_why + " (" + name + ")"
+                                         : "a linked file is of a kind PROOF can't show yet (" + name + ")";
+        }
         file.reset();
     } else if (!file) {
         gone = true;

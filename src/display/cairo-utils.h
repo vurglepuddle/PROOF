@@ -90,8 +90,9 @@ public:
   private:
     static Pixbuf *create_from_buffer(gchar *&&, gsize, double svgddpi = 0, std::string const &fn = "",
                                       std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
-    /// A CMYK TIFF in `data`, taking `data` over when it is one; nothing otherwise.
-    static Pixbuf *create_from_cmyk_tiff(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk);
+    /// A picture PROOF reads itself (a CMYK TIFF, a Photoshop file: display/raster-pixels.h) in
+    /// `data`, taking `data` over when it is one; nothing otherwise.
+    static Pixbuf *create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk);
     static Geom::Affine get_embedded_orientation(GdkPixbuf *buf);
     static GdkPixbuf *apply_embedded_orientation(GdkPixbuf *buf);
 

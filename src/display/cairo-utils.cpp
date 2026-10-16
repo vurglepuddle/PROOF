@@ -10,6 +10,7 @@
  */
 
 #include "display/cairo-utils.h"
+#include "display/psd-pixels.h"
 #include "display/tiff-pixels.h"
 
 #include <2geom/affine.h>
@@ -181,15 +182,19 @@ Pixbuf *Pixbuf::cropTo(const Geom::IntRect &area) const
     return new Pixbuf(cropped);
 }
 
-Pixbuf *Pixbuf::create_from_cmyk_tiff(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk)
 {
     std::string_view const bytes(reinterpret_cast<char const *>(data), len);
-    if (!is_cmyk_tiff(bytes)) return nullptr;
-    auto tiff = read_tiff(bytes);
-    auto *surface = tiff ? cmyk_tiff_surface(*tiff, cmyk) : nullptr;
+    std::optional<RasterPixels> pixels;
+    if (looks_like_psd(bytes)) {
+        pixels = read_psd(bytes);
+    } else if (is_cmyk_tiff(bytes)) {
+        pixels = read_tiff(bytes);
+    }
+    auto *surface = pixels ? raster_surface(*pixels, cmyk) : nullptr;
     if (!surface) return nullptr;
     auto *pixbuf = new Pixbuf(surface);
-    pixbuf->_setMimeData(data, len, "tiff");
+    pixbuf->_setMimeData(data, len, "own");
     return pixbuf;
 }
 
@@ -202,9 +207,9 @@ Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
     if ((*data) && type == Base64Data::RASTER) {
         gsize decoded_len = 0;
         guchar *decoded = g_base64_decode(data, &decoded_len);
-        // PROOF: a CMYK TIFF in the document's own CMYK.
-        if (auto *tiff = create_from_cmyk_tiff(decoded, decoded_len, cmyk)) {
-            return tiff;
+        // PROOF: a CMYK TIFF in the document's own CMYK; a Photoshop file.
+        if (auto *own = create_from_own_pixels(decoded, decoded_len, cmyk)) {
+            return own;
         }
 
         GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
@@ -385,10 +390,11 @@ Pixbuf *Pixbuf::create_from_buffer(std::string const &buffer, double svgdpi, std
 Pixbuf *Pixbuf::create_from_buffer(gchar *&&data, gsize len, double svgdpi, std::string const &fn,
                                    std::shared_ptr<Colors::CMS::Profile> const &cmyk)
 {
-    // PROOF: a CMYK TIFF in the document's own CMYK, with its transparency.
-    if (auto *tiff = create_from_cmyk_tiff(reinterpret_cast<guchar *>(data), len, cmyk)) {
-        tiff->_path = fn;
-        return tiff;
+    // PROOF: a CMYK TIFF in the document's own CMYK, with its transparency; a Photoshop file's
+    // merged image.
+    if (auto *own = create_from_own_pixels(reinterpret_cast<guchar *>(data), len, cmyk)) {
+        own->_path = fn;
+        return own;
     }
     bool has_ori = false;
     Pixbuf *pb = nullptr;

@@ -39,6 +39,8 @@ target_sources(inkscape_base PRIVATE
     nr-light.cpp
     nr-style.cpp
     nr-svgfonts.cpp
+    psd-pixels.cpp
+    raster-pixels.cpp
     threading.cpp
     tiff-pixels.cpp
     translucency-group.cpp
@@ -112,6 +114,8 @@ target_sources(inkscape_base PRIVATE
     nr-light.h
     nr-style.h
     nr-svgfonts.h
+    psd-pixels.h
+    raster-pixels.h
     rendermode.h
     tags.h
     threading.h

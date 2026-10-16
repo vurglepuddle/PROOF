@@ -1944,6 +1944,24 @@ files with records from the command line, one that matches its page and one
 that differs from it with type on the page (round 19's build fails the
 second).
 
+### Linked Photoshop files (2026-10-17)
+
+A placed `.psd` or `.psb` shows its merged image, read by PROOF
+(`display/psd-pixels.h`; `PROOF-cmyk-pictures.md`, "Photoshop files"). At
+import, `Builder` reads a linked Photoshop file's header and resources: one
+whose merged image can't be read refuses the file with the reason, "a linked
+Photoshop file can't be shown: it was saved without its merged image
+(Photoshop's Maximize Compatibility) (name)". Before, every linked Photoshop
+file refused it ("a linked file is of a kind PROOF can't show yet"), as
+gdk-pixbuf has no Photoshop reader. The profile note of linked CMYK TIFFs
+covers Photoshop files too.
+
+The collaborator's two files refused for it, with their links (copies):
+`f16f351946` (three Photoshop files) is native at 0.01%; `e95eaa172c` (two
+among 20 links) is native at 0.08%, its one link replaced after the save
+(`Vector 3506.png`) left out of the comparison and named, as round 19 meant.
+Test: `ALinkedPhotoshopFileShowsItsMergedImage`.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

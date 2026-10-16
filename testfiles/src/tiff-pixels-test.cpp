@@ -138,7 +138,7 @@ TEST(TiffPixels, CmykWithPremultipliedTransparencyIsReadStraight)
     std::string error;
     auto t = read_tiff(data, &error);
     ASSERT_TRUE(t) << error;
-    EXPECT_EQ(t->model, TiffPixels::Model::CMYK);
+    EXPECT_EQ(t->model, RasterPixels::Model::CMYK);
     EXPECT_EQ(t->width, 4u);
     EXPECT_EQ(t->height, 2u);
     EXPECT_EQ(t->bits, 8u);
@@ -221,7 +221,7 @@ TEST(TiffPixels, RgbAndGrayWithTransparency)
     EXPECT_FALSE(is_cmyk_tiff(data));
     auto t = read_tiff(data);
     ASSERT_TRUE(t);
-    EXPECT_EQ(t->model, TiffPixels::Model::RGB);
+    EXPECT_EQ(t->model, RasterPixels::Model::RGB);
     EXPECT_EQ(t->alpha[5], 150);
     EXPECT_EQ(t->colour[5 * 3], 255);
 
@@ -236,7 +236,7 @@ TEST(TiffPixels, RgbAndGrayWithTransparency)
     }
     t = read_tiff(make_tiff(gray, g));
     ASSERT_TRUE(t);
-    EXPECT_EQ(t->model, TiffPixels::Model::Gray);
+    EXPECT_EQ(t->model, RasterPixels::Model::Gray);
     EXPECT_EQ(t->colour[2], 128); // 50 of 100 is half
 }
 
@@ -294,9 +294,9 @@ TEST(TiffPixels, CmykShowsThroughTheDocumentsProfileNotItsOwn)
     auto tagged = read_tiff(make_tiff(s, px));
     ASSERT_TRUE(plain && tagged);
     EXPECT_EQ(tagged->profile, fogra_icc);
-    auto *a = cmyk_tiff_surface(*plain, gracol);
-    auto *b = cmyk_tiff_surface(*tagged, gracol);
-    auto *own = cmyk_tiff_surface(*tagged, nullptr);
+    auto *a = raster_surface(*plain, gracol);
+    auto *b = raster_surface(*tagged, gracol);
+    auto *own = raster_surface(*tagged, nullptr);
     ASSERT_TRUE(a && b && own);
     auto pixel = [](cairo_surface_t *s, int x, int y) {
         auto const *row = cairo_image_surface_get_data(s) + y * cairo_image_surface_get_stride(s);

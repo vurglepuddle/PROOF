@@ -1,13 +1,14 @@
-"""CMYK and cut-out TIFFs, on the canvas and in the exported PDF (requires Pillow and pypdf).
+"""CMYK and cut-out TIFFs and Photoshop files, on the canvas and in the exported PDF (requires
+Pillow and pypdf).
 
-Small TIFFs are written here, placed in drawings by link, as data and as the CMYK samples an
-Illustrator picture keeps (proof:samples), and exported with the built editor. The PDF must
-carry the CMYK numbers as they are (DeviceCMYK, Illustrator's "Preserve Numbers", not tagged
-with the TIFF's own profile), the transparency straight in an SMask, Photoshop's premultiplied
-CMYK divided back out, and 16-bit samples at 16 bits. The canvas and the printed page must show
-the picture where it is, and nothing where it is transparent.
+Small TIFFs and Photoshop files are written here, placed in drawings by link, as data and as the
+CMYK samples an Illustrator picture keeps (proof:samples), and exported with the built editor.
+The PDF must carry the CMYK numbers as they are (DeviceCMYK, Illustrator's "Preserve Numbers",
+not tagged with the picture's own profile), the transparency straight in an SMask, Photoshop's
+premultiplied or matted colour divided back out, and 16-bit samples at 16 bits. The canvas and
+the printed page must show the picture where it is, and nothing where it is transparent.
 
-See src/display/tiff-pixels.h.
+See src/display/raster-pixels.h, tiff-pixels.h and psd-pixels.h.
 """
 import argparse
 import base64
@@ -92,6 +93,68 @@ INK = (0, 255, 150, 0)
 QUARTER = 64
 
 
+def packbits(row):
+    out = bytearray()
+    i = 0
+    while i < len(row):
+        run = 1
+        while i + run < len(row) and run < 128 and row[i + run] == row[i]:
+            run += 1
+        if run >= 3:
+            out += bytes([257 - run, row[i]])
+            i += run
+            continue
+        start = i
+        while i < len(row) and i - start < 128 and not (i + 2 < len(row) and row[i] == row[i + 1] == row[i + 2]):
+            i += 1
+        out += bytes([i - start - 1]) + row[start:i]
+    return bytes(out)
+
+
+def psd(planes, mode, bits=8, rle=True, tagged=False):
+    """A Photoshop file of its merged image alone: `planes`, the samples of each channel as
+    Photoshop keeps them (CMYK inverted, all matted against white where transparent), the last
+    its transparency. `tagged`: the layers in an "Lr16" block, as at 16 bits."""
+    size = bits // 8
+    data = [b"".join(v.to_bytes(size, "big") for v in plane) for plane in planes]
+    out = b"8BPS" + struct.pack(">H6xHIIHH", 1, len(planes), H, W, bits, mode) + struct.pack(">I", 0)
+    resources = b"8BIM" + struct.pack(">H", 1057) + b"\0\0" + struct.pack(">I", 12) + struct.pack(">IB7x", 1, 1)
+    out += struct.pack(">I", len(resources)) + resources
+    count = struct.pack(">h", -1)  # negative: the first extra channel is the merged transparency
+    if tagged:
+        layers = struct.pack(">II", 0, 0) + b"8BIMLr16" + struct.pack(">I", len(count)) + count
+    else:
+        layers = struct.pack(">I", len(count)) + count
+    out += struct.pack(">I", len(layers)) + layers
+    row = W * size
+    if rle:
+        rows = [packbits(p[y * row:(y + 1) * row]) for p in data for y in range(H)]
+        return out + struct.pack(">H", 1) + b"".join(struct.pack(">H", len(r)) for r in rows) + b"".join(rows)
+    return out + struct.pack(">H", 0) + b"".join(data)
+
+
+def psd_cmyk(bits=8):
+    top = 255 if bits == 8 else 65535
+    planes = [[], [], [], [], []]
+    for pixel in cmyk_pixels(False, bits):
+        a = pixel[4]
+        for ch in range(4):
+            planes[ch].append(top - round(pixel[ch] * a / top))
+        planes[4].append(a)
+    return planes
+
+
+def psd_rgb():
+    planes = [[], [], [], []]
+    for i in range(W * H):
+        a = {"ink": 255, "none": 0, "quarter": QUARTER}[region(i % W, i // W)]
+        colour = (255, 0, 0) if a else (0, 0, 0)
+        for ch in range(3):
+            planes[ch].append(round(colour[ch] * a / 255 + 255 * (255 - a) / 255))
+        planes[3].append(a)
+    return planes
+
+
 def cmyk_pixels(premultiplied, bits=8):
     top = 255 if bits == 8 else 65535
     scale = top / 255
@@ -158,6 +221,9 @@ def main():
         "rgb8-cutout.tif": tiff([((255, 0, 0) if region(i % W, i // W) != "none" else (0, 0, 0)) +
                                  ({"ink": 255, "none": 0, "quarter": QUARTER}[region(i % W, i // W)],)
                                  for i in range(W * H)], 4, photometric=2, extras=[2]),
+        "cmyk8-matted.psd": psd(psd_cmyk(), 4),
+        "cmyk16-tagged.psd": psd(psd_cmyk(16), 4, bits=16, rle=False, tagged=True),
+        "rgb8-cutout.psd": psd(psd_rgb(), 3),
     }
     for name, data in files.items():
         (out / name).write_bytes(data)
@@ -184,6 +250,9 @@ def main():
          '" proof:samples="' + data_uri("image/tiff", files["cmyk8-premultiplied.tif"]) +
          '" xmlns:proof="urn:x-proof:document:1"/>', "cmyk", 8, True),
         ("linked RGB cut-out", image + 'xlink:href="rgb8-cutout.tif"/>', "rgb", 8, True),
+        ("linked Photoshop CMYK", image + 'xlink:href="cmyk8-matted.psd"/>', "cmyk", 8, True),
+        ("linked Photoshop CMYK, 16 bits", image + 'xlink:href="cmyk16-tagged.psd"/>', "cmyk", 16, True),
+        ("linked Photoshop RGB cut-out", image + 'xlink:href="rgb8-cutout.psd"/>', "rgb", 8, True),
     ]
     for name, body, model, bits, cutout in cases:
         stem = name.replace(" ", "-").replace(",", "").replace("'", "")

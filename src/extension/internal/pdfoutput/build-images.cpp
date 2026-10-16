@@ -107,7 +107,7 @@ void DrawContext::paint_raster(SPImage const *image)
             if (auto pixels = read_tiff(tiff); pixels && int(pixels->width) == img_width &&
                                                int(pixels->height) == img_height) {
                 try {
-                    raster_id = _doc.add_tiff(tiff, props);
+                    raster_id = _doc.add_own_pixels(tiff, props);
                 } catch (std::exception const &e) {
                     g_warning("Could not add image samples to PDF: %s", e.what());
                 }
@@ -118,7 +118,7 @@ void DrawContext::paint_raster(SPImage const *image)
 
     if (decoded && base64_type == Base64Data::RASTER && !raster_id) {
         try {
-            raster_id = _doc.add_tiff(std::string_view(decoded, decoded_len), props);
+            raster_id = _doc.add_own_pixels(std::string_view(decoded, decoded_len), props);
             if (!raster_id) {
                 // Note this memory image is not cached.
                 auto image = _doc._gen.load_image_from_memory(decoded, decoded_len);

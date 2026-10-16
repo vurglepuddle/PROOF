@@ -49,6 +49,7 @@
 #endif
 #include "object/sp-defs.h"
 #include "object/sp-image.h"
+#include "psd-fixture.h"
 #include "object/sp-item.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-namedview.h"
@@ -3708,6 +3709,49 @@ TEST_F(AiNativeImportTest, ALinkedCmykTiffWithAnotherProfileIsNamedAndKeepsItsNu
     EXPECT_NE(note.find("kept"), std::string::npos) << note;
     // All three are in the document, linked as they are.
     EXPECT_EQ(elements(b->document->getReprRoot(), "svg:image").size(), 3u);
+}
+
+TEST_F(AiNativeImportTest, ALinkedPhotoshopFileShowsItsMergedImage)
+{
+    // The collaborator's linked Photoshop files (2026-10-16): CMYK with transparency, saved with
+    // their merged image. One saved without it says why it can't be shown.
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    auto write = [&](char const *name, PsdFixture::Psd const &p) {
+        using PsdFixture::plane8;
+        // Full cyan, opaque; nothing at all.
+        auto const data = PsdFixture::make_psd(
+            p, {plane8({0, 255}), plane8({255, 255}), plane8({255, 255}), plane8({255, 255}), plane8({255, 0})});
+        auto const path = folder + G_DIR_SEPARATOR_S + name;
+        EXPECT_TRUE(g_file_set_contents(path.c_str(), data.data(), gssize(data.size()), nullptr));
+        return path;
+    };
+    PsdFixture::Psd p;
+    p.w = 2;
+    auto const gifts = write("gifts.psd", p);
+    std::string error;
+    auto ai = AN::read(records(layer(linked(gifts))), error);
+    ASSERT_TRUE(ai) << error;
+    auto b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    auto const images = elements(b->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    b->document->ensureUpToDate();
+    auto *image = cast<SPImage>(b->document->getObjectByRepr(images[0]));
+    ASSERT_TRUE(image && image->pixbuf);
+    EXPECT_EQ(image->pixbuf->width(), 2);
+    auto const *row = reinterpret_cast<std::uint32_t const *>(cairo_image_surface_get_data(image->pixbuf->getSurfaceRaw()));
+    EXPECT_EQ(row[0] >> 24, 255u);
+    EXPECT_LT((row[0] >> 16) & 0xff, row[0] & 0xff) << "cyan";
+    EXPECT_EQ(row[1], 0u) << "transparent";
+
+    p.merged = false;
+    auto const flat = write("flat.psd", p);
+    ai = AN::read(records(layer(linked(flat))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("Maximize Compatibility"), std::string::npos) << error;
+    EXPECT_NE(error.find("flat.psd"), std::string::npos) << error;
 }
 
 TEST_F(AiNativeImportTest, PicturesThatAreGoneAreLinkedAgainFromOneFolder)
