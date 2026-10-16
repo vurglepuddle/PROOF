@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#include <GlobalParams.h>
+// Windows' headers, which Poppler's bring in, make these words nothing.
+#undef near
+#undef far
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib.h>
 #include <gtest/gtest.h>
@@ -3911,7 +3915,8 @@ TEST_F(AiNativeImportTest, PointTextVisiblePdfGlyphsAndDisplacedTextRefused)
     std::string reason;
     auto good = Extension::Internal::open_ai_native(
         fixture(src, {"0 g BT /F1 32 Tf 10 60 Td (Hello) Tj ET"},
-                "/MediaBox [0 0 200 100]", font), reason, false, diagnostics ? diagnostics : "");
+                "/MediaBox [0 0 200 100]", font), reason, Extension::Internal::AiKeepDiffering::No,
+            diagnostics ? diagnostics : "");
     ASSERT_TRUE(good) << reason << " (font " << font << ")";
     auto texts = elements(good->document->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
     auto *item = dynamic_cast<SPItem *>(good->document->getObjectByRepr(texts[0])); ASSERT_TRUE(item);
@@ -4264,7 +4269,7 @@ TEST_F(AiNativeImportTest, MatchingPdfAcceptedAndStaleRecordsRefused)
     auto bad = fixture(src, {"0 g 110 20 80 40 re f"});
     EXPECT_FALSE(Extension::Internal::open_ai_native(bad, reason));
     EXPECT_NE(reason.find("draws differently"), std::string::npos);
-    auto diagnostic = Extension::Internal::open_ai_native(bad, reason, true);
+    auto diagnostic = Extension::Internal::open_ai_native(bad, reason, Extension::Internal::AiKeepDiffering::All);
     ASSERT_TRUE(diagnostic);
     EXPECT_GT(diagnostic->differences[0].lightness, 0.1);
 }
@@ -4296,6 +4301,55 @@ TEST_F(AiNativeImportTest, EveryArtboardMustMatch)
     EXPECT_NE(reason.find("artboard 2"), std::string::npos);
     auto missing = fixture(src, {"0 g 10 20 80 40 re f"});
     EXPECT_FALSE(Extension::Internal::open_ai_native(missing, reason));
+}
+
+TEST_F(AiNativeImportTest, ArtThatDrawsDifferentlyCanBeOfferedWithHowFar)
+{
+    using Extension::Internal::AiKeepDiffering;
+    std::string reason;
+    auto src = records(layer("0 g\n" + rect + "230 20 m 230 60 L 310 60 L 310 20 L h f\n"), boards(2));
+    // Both artboards differ. To be offered, the art comes back once the first one does, with
+    // how far it differs; the second isn't drawn.
+    auto differing = fixture(src, {"0 g 110 20 80 40 re f", "0 g 110 20 80 40 re f"});
+    EXPECT_FALSE(Extension::Internal::open_ai_native(differing, reason));
+    auto offered = Extension::Internal::open_ai_native(differing, reason, AiKeepDiffering::First);
+    ASSERT_TRUE(offered) << reason;
+    EXPECT_NE(reason.find("draws differently"), std::string::npos);
+    ASSERT_TRUE(offered->document);
+    ASSERT_TRUE(offered->differing);
+    EXPECT_EQ(offered->differing->artboard, 0u);
+    EXPECT_EQ(offered->differing->artboards, 2u);
+    EXPECT_GT(offered->differing->share, 0.1);
+    EXPECT_EQ(offered->differences.size(), 1u);
+    auto all = Extension::Internal::open_ai_native(differing, reason, AiKeepDiffering::All);
+    ASSERT_TRUE(all) << reason;
+    EXPECT_EQ(all->differences.size(), 2u);
+    ASSERT_TRUE(all->differing);
+    // Art that matches comes back as before, nothing differing.
+    auto matching = fixture(src, {"0 g 10 20 80 40 re f", "0 g 10 20 80 40 re f"});
+    auto good = Extension::Internal::open_ai_native(matching, reason, AiKeepDiffering::First);
+    ASSERT_TRUE(good) << reason;
+    EXPECT_TRUE(reason.empty());
+    EXPECT_FALSE(good->differing);
+    // A page that can't be weighed against is no offer: nothing says how far it differs.
+    auto wrong_size = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f"}, "/MediaBox [0 0 300 100]");
+    EXPECT_FALSE(Extension::Internal::open_ai_native(wrong_size, reason, AiKeepDiffering::First));
+    EXPECT_NE(reason.find("size"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, PopplersSettingsOutliveTheCheckAgainstThePage)
+{
+    // Poppler's glib side, which draws the page, makes Poppler's settings for its first document
+    // and drops them when its last one closes. The page import that follows a refusal needs them:
+    // without, PROOF crashed in the import dialog, reading a font.
+    std::string reason;
+    auto path = fixture(records(layer("0 g\n" + rect)), {"0 g 110 20 80 40 re f"});
+    EXPECT_FALSE(Extension::Internal::open_ai_native(path, reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos);
+    EXPECT_TRUE(globalParams);
+    path = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f"});
+    EXPECT_TRUE(Extension::Internal::open_ai_native(path, reason)) << reason;
+    EXPECT_TRUE(globalParams);
 }
 
 TEST_F(AiNativeImportTest, BleedTrimAndNonPrintingLayers)
@@ -4335,7 +4389,7 @@ TEST_F(AiNativeImportTest, IndependentThresholdsCheckedOnEveryPage)
                              "230 10 m 242 10 L 242 30 L 230 30 L h f\n"), boards(2), false);
     auto path = fixture(src, {"0 0.51 0 rg 10 10 10 20 re f", ""});
     std::string reason;
-    auto d = Extension::Internal::open_ai_native(path, reason, true);
+    auto d = Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::All);
     ASSERT_TRUE(d) << reason;
     ASSERT_EQ(d->differences.size(), 2u);
     EXPECT_LT(d->differences[0].lightness, Extension::Internal::AI_NATIVE_MAX_LIGHTNESS);
@@ -4353,11 +4407,11 @@ TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)
     cache.records_directory = folder + "/records";
     cache.reference_directory = folder + "/references";
     std::string reason;
-    auto first = Extension::Internal::open_ai_native(path, reason, false, {}, &cache);
+    auto first = Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::No, {}, &cache);
     ASSERT_TRUE(first) << reason;
     EXPECT_EQ(cache.records_reused, 0u);
     EXPECT_EQ(cache.references_reused, 0u);
-    auto second = Extension::Internal::open_ai_native(path, reason, false, {}, &cache);
+    auto second = Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::No, {}, &cache);
     ASSERT_TRUE(second) << reason;
     EXPECT_EQ(cache.records_reused, 1u);
     EXPECT_EQ(cache.references_reused, 1u);
@@ -4368,12 +4422,12 @@ TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)
     // A damaged reference is redrawn; a damaged record cache is decoded again.
     auto const png = cache.reference_directory + "/page-1.png";
     ASSERT_TRUE(g_file_set_contents(png.c_str(), "damaged", 7, nullptr));
-    ASSERT_TRUE(Extension::Internal::open_ai_native(path, reason, false, {}, &cache)) << reason;
+    ASSERT_TRUE(Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::No, {}, &cache)) << reason;
     EXPECT_EQ(cache.records_reused, 1u);
     EXPECT_EQ(cache.references_reused, 0u);
     auto const text = cache.records_directory + "/records.txt";
     ASSERT_TRUE(g_file_set_contents(text.c_str(), "damaged", 7, nullptr));
-    ASSERT_TRUE(Extension::Internal::open_ai_native(path, reason, false, {}, &cache)) << reason;
+    ASSERT_TRUE(Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::No, {}, &cache)) << reason;
     EXPECT_EQ(cache.records_reused, 0u);
     EXPECT_EQ(cache.references_reused, 1u);
 
@@ -4409,7 +4463,8 @@ TEST_F(AiNativeImportTest, Corpus)
         Extension::Internal::AiNativeCache cache;
         if (auto const *dir = g_getenv("PROOF_AI_RECORDS_CACHE")) cache.records_directory = dir;
         if (auto const *dir = g_getenv("PROOF_AI_REFERENCE_CACHE")) cache.reference_directory = dir;
-        auto result = Extension::Internal::open_ai_native(utf8(path), reason, true, pictures ? pictures : "", &cache);
+        auto result = Extension::Internal::open_ai_native(utf8(path), reason, Extension::Internal::AiKeepDiffering::All,
+                                                          pictures ? pictures : "", &cache);
         if (result) {
             if (auto const *dump = g_getenv("PROOF_AI_DUMP")) {
                 sp_repr_save_file(result->document->getReprDoc(), dump, SP_SVG_NS_URI);

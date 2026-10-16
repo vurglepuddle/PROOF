@@ -22,7 +22,10 @@
  * keeps of it stands in its place, and its box is left out on both sides.
  *
  * When the records hold anything that isn't read, or the art draws differently from
- * the page, nothing is returned and the caller imports the page as before.
+ * the page, nothing is returned and the caller imports the page as before. Art that reads
+ * in full and only draws differently can be returned all the same, with how far it differs:
+ * the page may be what is wrong, and the import dialog offers the art (the owner's decision
+ * of 2026-10-14).
  *
  * A PostScript .ai (Illustrator 8 and older, and Photoshop's paths exported to Illustrator)
  * has no page to weigh against, and nothing else opens it: it opens from its records alone,
@@ -31,6 +34,7 @@
 #ifndef SEEN_EXTENSION_INTERNAL_PDFINPUT_AI_NATIVE_OPEN_H
 #define SEEN_EXTENSION_INTERNAL_PDFINPUT_AI_NATIVE_OPEN_H
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -57,11 +61,30 @@ inline constexpr char const *AI_UNCHECKED_ATTRIBUTE = "proof:unchecked";
 inline constexpr double AI_NATIVE_MAX_LIGHTNESS = 0.01;
 inline constexpr double AI_NATIVE_MAX_COLOUR = 0.02;
 
+/// What open_ai_native() does with art that reads in full but draws differently from its page.
+enum class AiKeepDiffering
+{
+    No,    ///< Nothing is returned: the caller imports the page.
+    First, ///< The document is returned once an artboard differs, the rest not drawn: to offer it.
+    All,   ///< Every artboard is compared and the document returned: for tests.
+};
+
+/// How far art that draws differently from its page differs: on which artboard (from 0) of
+/// how many, and the share (0-1) of that artboard, the most of those compared.
+struct AiArtDiffering
+{
+    std::size_t artboard = 0;
+    std::size_t artboards = 1;
+    double share = 0.0;
+};
+
 struct AiNativeOpen
 {
     std::unique_ptr<SPDocument> document;
     std::vector<std::string> notes;
     std::vector<AiPageDifference> differences; ///< Each artboard compared, in order.
+    /// Set when the art draws differently from its page (returned only when that was asked for).
+    std::optional<AiArtDiffering> differing;
     /// The fonts that aren't installed, by PostScript name: their type is set in another font.
     std::vector<std::string> missing_fonts;
     /// The linked pictures that show and can't be found, by file name.
@@ -88,13 +111,14 @@ struct AiNativeCache
  * Open the .ai at `path` (a file name in UTF-8) from its native records.
  *
  * @return the document, or nothing with the reason in `reason` when the records can't be
- *         read fully or don't draw like the page. With `keep_differing`, a document that
- *         draws differently is still returned (with its differences), for tests.
+ *         read fully or don't draw like the page. With `keep`, a document that draws
+ *         differently is still returned, with the reason and `differing` set.
  *         A nonempty diagnostic_directory also writes the compared pictures there.
  *         cache is for the content-addressed development runner; it is off by default.
  */
-std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, bool keep_differing = false,
-                                         std::string const &diagnostic_directory = {}, AiNativeCache *cache = nullptr);
+std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason,
+                                           AiKeepDiffering keep = AiKeepDiffering::No,
+                                           std::string const &diagnostic_directory = {}, AiNativeCache *cache = nullptr);
 
 } // namespace Inkscape::Extension::Internal
 

@@ -41,11 +41,33 @@ policy "Preserve Numbers (Ignore Linked Profiles)" has it:
   too. The premultiplied inks went out as they were, and the TIFF's own
   profile was attached (`ICCBased`). PROOF now hands CapyPDF the pixels itself
   (`Document::add_tiff` in `pdfoutput/build-document.cpp`); the submodule is
-  unchanged and the fault is not reported upstream yet.
+  unchanged. The fault is recorded here and not reported upstream: CapyPDF
+  doesn't accept contributions made with an AI's help (the owner checked,
+  2026-10-16).
 - **`.ai` import**: a file with such links was compared with its page through
   the screen's loader, so it fell back. One of the collaborator's files,
   seven Photoshop 26.5 CMYK TIFFs with premultiplied transparency and an
   embedded profile, went from 33.4% different to 0.00%.
+
+## CapyPDF's alpha fault, for whoever updates the submodule
+
+As of CapyPDF `master` at `5504541` (2026-10-12), `separate_tif_alpha` in
+`src/imagefileops.cpp` (line 260) takes every pixel's alpha from the first
+pixel:
+
+```cpp
+image.alpha.push_back(image.pixels[num_color_channels]);       // as it is
+image.alpha.push_back(image.pixels[i + num_color_channels]);   // as meant
+```
+
+Gray, RGB and CMYK TIFFs with alpha all go through it. It also passes
+associated alpha (`ExtraSamples` 1, which Photoshop writes for CMYK cut-outs)
+on with its colour premultiplied, where a PDF wants straight colour beside its
+SMask. `Document::add_tiff` avoids both by reading the TIFF itself
+(`display/tiff-pixels.*`) and handing CapyPDF the pixels. After an update of
+the submodule, keep that path until both are fixed there: the TIFF export
+smoke (`tiff-export-smoke.py`) fails if a cut-out TIFF vanishes or its edges
+lighten.
 
 ## What is read
 

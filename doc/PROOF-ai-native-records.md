@@ -1897,6 +1897,53 @@ file is opening the editable version anyway (the owner's decision of
 2026-10-14), not the link check. Illustrator's message can come from file
 dates alone, which copying changes.
 
+### Opening the editable version anyway, and a crash after the comparison (2026-10-16)
+
+The owner, 2026-10-14, on a file whose own art draws differently from its
+page: "Yes, perhaps we should offer this option, but we should obviously
+strive to have native everything at some point (not a rush obviously)".
+
+- When the records read in full and only the drawing differs, the PDF import
+  dialog that comes up for the page says so, how far, and offers the art:
+  "**Its own art doesn't match its page.** PROOF read this Illustrator file's
+  own art in full, but on artboard 1, about 27% of it looks different from the
+  PDF page saved with it: part of the art may be misread, or the page out of
+  date or damaged. OK imports the page shown here. Open Editable Version opens
+  the art as PROOF read it, with its layers, type and colours as Illustrator
+  saved them." The button sits apart from Cancel and OK, which work as before.
+- The share is the larger of the two measures, lightness and colour, on the
+  first artboard found to differ; the artboards after it aren't drawn
+  (`AiKeepDiffering::First`), so asking costs no more time than refusing did.
+- Only that refusal is offered. Records that hold something not read, or a
+  page that can't be weighed against (turned, another size, another count of
+  artboards), open from the page as before: nothing says how far they differ.
+- From the command line nothing is asked: the page, as before.
+- `cursed.ai` (`2c1e4b6cdb`), whose PDF part is broken while its art is right:
+  27% on artboard 1 (21.9% by lightness, 26.6% by colour).
+- Code: `open_ai_native(..., AiKeepDiffering)` and `AiNativeOpen::differing`
+  in `pdfinput/ai-native-open.*`; `PdfImportDialog::offerEditable` and
+  `PdfInput::open` in `pdfinput/pdf-input.cpp`. Test:
+  `ArtThatDrawsDifferentlyCanBeOfferedWithHowFar`.
+
+**A crash after the comparison, fixed.** Poppler's glib side, which draws the
+page for the comparison, makes Poppler's settings (`globalParams`) for the
+first document it opens and drops them when its last one closes
+(`GlobalParamsIniter` in Poppler 26.08). After every comparison the settings
+were gone, and the page import that follows a refusal read the page's first
+font without them: an access violation in `GlobalParams::mapNameToUnicodeText`,
+in the editor and from the command line. So every `.ai` that fell back after
+its page was drawn crashed PROOF: those whose art draws differently, and those
+whose page is turned, of another size or another count of artboards. A file
+refused before the drawing (records not read) didn't. The workbench never saw
+it, as it calls the reader directly and not the editor's open path. Found when
+a copy of `cursed.ai` crashed the editor; round 19's build crashes on it from
+the command line (`C0000005`), this one imports its page. `open_ai_native`
+makes the settings again on its way out. Tests:
+`PopplersSettingsOutliveTheCheckAgainstThePage`; the `.ai` smoke opens two
+files with records from the command line, one that matches its page and one
+that differs from it with type on the page (round 19's build fails the
+second).
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

@@ -469,7 +469,7 @@ struct Unref
 };
 #endif
 
-std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, bool keep_differing,
+std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, AiKeepDiffering keep,
                                          std::string const &diagnostic_directory, AiNativeCache *cache);
 
 /// The largest profile taken from a file. Those in use are under three megabytes.
@@ -544,13 +544,24 @@ std::string document_profile(PDFDoc &pdf, bool cmyk)
 
 } // namespace
 
-std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, bool keep_differing,
-                                         std::string const &diagnostic_directory, AiNativeCache *cache)
+std::optional<AiNativeOpen> open_ai_native(std::string const &path, std::string &reason, AiKeepDiffering keep,
+                                           std::string const &diagnostic_directory, AiNativeCache *cache)
 {
+    // Poppler's glib side, which draws the page, makes Poppler's settings for the first document
+    // it opens and drops them when the last one closes. The caller may go on to import the page
+    // with Poppler's core, which needs them: without, a file that fell back crashed in the import
+    // dialog, reading a font. They are made again.
+    struct KeepSettings
+    {
+        ~KeepSettings()
+        {
+            if (!globalParams) globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
+        }
+    } keep_settings;
     // The records hold every image uncompressed. A machine that runs out of memory over
     // them still has the page to open.
     try {
-        return open_checked(path, reason, keep_differing, diagnostic_directory, cache);
+        return open_checked(path, reason, keep, diagnostic_directory, cache);
     } catch (std::bad_alloc const &) {
         reason = "there isn't enough memory to read its own art";
         return {};
@@ -634,7 +645,7 @@ std::shared_ptr<Inkscape::Pixbuf const> shown_picture(SPDocument *doc, std::stri
     return nullptr;
 }
 
-std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, bool keep_differing,
+std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, AiKeepDiffering keep,
                                          std::string const &diagnostic_directory, AiNativeCache *cache)
 {
     reason.clear();
@@ -897,7 +908,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         result.differences.push_back(d);
         if (difference_score(d) > difference_score(result.differences[worst])) worst = i;
         // A differing artboard settles it: the remaining ones needn't be drawn.
-        if (difference_score(d) > 1.0 && !keep_differing) break;
+        if (difference_score(d) > 1.0 && keep != AiKeepDiffering::All) break;
     }
     view.reset();
 
@@ -906,7 +917,8 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     if (d.lightness > AI_NATIVE_MAX_LIGHTNESS || d.colour > AI_NATIVE_MAX_COLOUR) {
         reason = "its own art draws differently from its page" + where + " (" + percent(d.lightness) +
                  " by lightness, " + percent(d.colour) + " by colour)";
-        if (!keep_differing) return {};
+        if (keep == AiKeepDiffering::No) return {};
+        result.differing = AiArtDiffering{worst, boards.size(), std::max(d.lightness, d.colour)};
     }
     if (std::max(d.lightness, d.colour) > NOTABLE) {
         result.notes.push_back("its own art differs from its page" + where + " in about " +

@@ -101,6 +101,7 @@ enum class PdfImportType : unsigned char
 namespace Extension::Internal {
 
 class FontModelColumns;
+struct AiArtDiffering;
 
 /**
  * PDF import using libpoppler.
@@ -117,6 +118,11 @@ public:
     PdfImportType getImportMethod();
     FontStrategies getFontStrategies();
     void setFontStrategies(const FontStrategies &fs);
+    /// PROOF: for an .ai whose own art reads in full but draws differently from its page,
+    /// says how far, and offers to open that art instead of importing the page.
+    void offerEditable(AiArtDiffering const &differing);
+    /// Whether that art was chosen.
+    bool getOpenEditable() const { return _open_editable; }
 
 private:
     void _setPreviewPage(int page);
@@ -147,6 +153,7 @@ private:
     Glib::RefPtr<Gtk::ListStore> _font_model;
     FontModelColumns *_font_col;
     Gtk::Button &_ok_button;
+    bool _open_editable = false;
 
     std::shared_ptr<PDFDoc> _pdf_doc;   // Document to be imported
     std::string _current_pages;  // Current selected pages

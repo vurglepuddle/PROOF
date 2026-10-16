@@ -39,8 +39,10 @@
 #include <gdkmm/general.h>
 #include <glibmm/convert.h>
 #include <glibmm/i18n.h>
+#include <glibmm/markup.h>
 #include <glibmm/miscutils.h>
 #include <gtkmm/accessible.h>
+#include <gtkmm/box.h>
 #include <gtkmm/builder.h>
 #include <gtkmm/button.h>
 #include <gtkmm/cellrenderercombo.h>
@@ -53,6 +55,8 @@
 #include <gtkmm/liststore.h>
 #include <gtkmm/notebook.h>
 #include <gtkmm/scale.h>
+#include <algorithm>
+#include <cmath>
 #include <string_view>
 #include <utility>
 
@@ -297,12 +301,49 @@ PdfImportDialog::~PdfImportDialog() {
     }
 }
 
+/// The answer of the button that opens an .ai's own art.
+constexpr int OPEN_EDITABLE = 1;
+
 bool PdfImportDialog::showDialog() {
     gint b = UI::dialog_run(*this);
-    if ( b == Gtk::ResponseType::OK ) {
+    _open_editable = b == OPEN_EDITABLE;
+    if ( b == Gtk::ResponseType::OK || _open_editable ) {
         return TRUE;
     } else {
         return FALSE;
+    }
+}
+
+void PdfImportDialog::offerEditable(AiArtDiffering const &differing)
+{
+    auto const share = std::to_string(std::max(1L, std::lround(differing.share * 100.0))) + "%";
+    auto const where = differing.artboards > 1
+                           ? Glib::ustring::compose(_("on artboard %1, about %2 of it"), differing.artboard + 1, share)
+                           : Glib::ustring::compose(_("about %1 of it"), share);
+    auto &title = *Gtk::make_managed<Gtk::Label>();
+    title.set_markup("<b>" + Glib::Markup::escape_text(_("Its own art doesn't match its page")) + "</b>");
+    auto &text = *Gtk::make_managed<Gtk::Label>(
+        Glib::ustring::compose(_("PROOF read this Illustrator file's own art in full, but %1 looks different from "
+                                 "the PDF page saved with it: part of the art may be misread, or the page out of "
+                                 "date or damaged. OK imports the page shown here. Open Editable Version opens the "
+                                 "art as PROOF read it, with its layers, type and colours as Illustrator saved them."),
+                               where));
+    for (auto *label : {&title, &text}) {
+        label->set_xalign(0.0);
+        label->set_wrap(true);
+        label->set_max_width_chars(72);
+    }
+    auto &box = *Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+    box.set_margin(12);
+    box.append(title);
+    box.append(text);
+    get_content_area()->prepend(box);
+
+    auto &editable = *Gtk::make_managed<Gtk::Button>(_("Open _Editable Version"), true);
+    add_action_widget(editable, OPEN_EDITABLE);
+    // Apart from Cancel and OK, which import the page.
+    if (auto *buttons = dynamic_cast<Gtk::Box *>(editable.get_parent())) {
+        buttons->reorder_child_at_start(editable);
     }
 }
 
@@ -653,21 +694,31 @@ std::unique_ptr<SPDocument> PdfInput::open(Input *mod, char const *uri, bool)
     }
 
     // PROOF: an .ai opens from Illustrator's own copy of its art when that reads fully and draws
-    // like its PDF page, as Illustrator opens it; otherwise from its page, as before.
+    // like its PDF page, as Illustrator opens it; otherwise from its page, as before. Art that
+    // reads fully but draws differently is offered in the import dialog, with how far it differs
+    // (the owner's decision of 2026-10-14): the page may be what is wrong.
+    std::optional<AiNativeOpen> differing;
     if (mod && mod->get_id() && std::string_view(mod->get_id()) == "org.inkscape.input.ai" &&
         Inkscape::Preferences::get()->getBool("/options/aiimport/native", true)) {
         std::string reason;
         try {
-            if (auto native = open_ai_native(uri, reason)) {
-                for (auto const &note : native->notes) {
-                    g_message("%s: %s", uri, note.c_str());
+            auto const keep = INKSCAPE.use_gui() ? AiKeepDiffering::First : AiKeepDiffering::No;
+            if (auto native = open_ai_native(uri, reason, keep)) {
+                if (!native->differing) {
+                    for (auto const &note : native->notes) {
+                        g_message("%s: %s", uri, note.c_str());
+                    }
+                    return std::move(native->document);
                 }
-                return std::move(native->document);
+                differing = std::move(native);
             }
         } catch (std::exception const &e) {
+            differing.reset();
             reason = e.what();
         }
-        g_message("%s opens from its PDF page: %s", uri, reason.c_str());
+        g_message(differing ? "%s opens from its PDF page unless its own art is chosen: %s"
+                            : "%s opens from its PDF page: %s",
+                  uri, reason.c_str());
     }
 
     // Open the file using poppler
@@ -710,10 +761,21 @@ std::unique_ptr<SPDocument> PdfInput::open(Input *mod, char const *uri, bool)
     std::optional<PdfImportDialog> dlg;
     if (INKSCAPE.use_gui()) {
         dlg.emplace(pdf_doc, uri, mod);
+        if (differing) {
+            dlg->offerEditable(*differing->differing);
+        }
         if (!dlg->showDialog()) {
             throw Input::open_cancelled();
         }
+        if (differing && dlg->getOpenEditable()) {
+            for (auto const &note : differing->notes) {
+                g_message("%s: %s", uri, note.c_str());
+            }
+            g_message("%s opens from its own art, as chosen", uri);
+            return std::move(differing->document);
+        }
     }
+    differing.reset();
 
     // Get options
     bool import_pages = true;

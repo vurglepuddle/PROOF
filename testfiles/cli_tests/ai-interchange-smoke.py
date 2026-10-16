@@ -89,6 +89,51 @@ def main():
     check("edited artwork written", "PROOF CHANGED 456" in " ".join(changed.pages[0].extract_text().split()))
     check("fixture untouched", hashlib.sha256(source.read_bytes()).hexdigest() == original_hash)
 
+    # An .ai with Illustrator's own records opens from them when they draw like its page, and
+    # from its page when they don't. The second crashed PROOF until 2026-10-16, on the page's
+    # first font: drawing the page for the comparison left Poppler without its settings for
+    # the page import.
+    def native_fixture(path, page):
+        records = ("%!PS-Adobe-3.0\n%%BoundingBox: 0 0 200 100\n%AI3_Cropmarks: 0 0 200 100\n%AI5_RulerUnits: 1\n"
+                   "%AI9_ColorModel: 1\n%%EndComments\n%%BeginSetup\n%%EndSetup\n"
+                   "%AI5_BeginLayer\n1 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb\n(Artwork) Ln\n0 A 0 Xw\n"
+                   "0 g\n10 20 m 10 60 L 90 60 L 90 20 L 10 20 L\nf\nLB\n%AI5_EndLayer--\n"
+                   "%%PageTrailer\nshowpage\n%%EOF\n")
+        stream = lambda s: f"<< /Length {len(s)} >>\nstream\n{s}\nendstream"
+        objects = {
+            1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: "<< /Type /Pages /Kids [5 0 R] /Count 1 >>",
+            3: "<< /AIPrivateData1 4 0 R /NumBlock 1 /ContainerVersion 11 /CreatorVersion 16 /RoundtripVersion 16 >>",
+            4: stream(records),
+            5: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /TrimBox [0 0 200 100] "
+               "/Resources << /Font << /F1 7 0 R >> >> "
+               "/Contents 6 0 R /PieceInfo << /Illustrator << /Private 3 0 R >> >> >>",
+            6: stream(page),
+            7: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        }
+        pdf = "%PDF-1.5\n"
+        offsets = {}
+        for n, body in objects.items():
+            offsets[n] = len(pdf)
+            pdf += f"{n} 0 obj\n{body}\nendobj\n"
+        xref = len(pdf)
+        pdf += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n"
+        pdf += "".join(f"{offsets[n]:010d} 00000 n \n" for n in sorted(objects))
+        pdf += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+        path.write_bytes(pdf.encode("ascii"))
+
+    for label, page, native in (("native-matching", "0 g 10 20 80 40 re f", True),
+                                ("native-differing", "0 g 110 20 80 40 re f BT /F1 12 Tf 120 70 Td (PROOF) Tj ET", False)):
+        source_ai = out / (label + ".ai")
+        native_fixture(source_ai, page)
+        opened = out / (label + ".svg")
+        r = subprocess.run([exe, source_ai, f"--export-filename={opened}"], env=env, capture_output=True, timeout=240)
+        log = r.stdout + r.stderr
+        (out / (label + ".log")).write_bytes(log)
+        check(label + " opens from the command line", r.returncode == 0 and opened.is_file(), f"exit {r.returncode:#x}")
+        check(label + (" opens from its records" if native else " opens from its page"),
+              (b"opens from its PDF page" in log) != native, log.decode("utf-8", "replace")[-300:])
+
     # PDF import represents large bitmaps with unit-square SVG images. Both
     # quadrants must survive the tiny pixel-to-unit transform in Cairo export.
     pixels = Image.new("RGB", (1600, 1200), "red")
