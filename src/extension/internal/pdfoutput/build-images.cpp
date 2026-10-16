@@ -15,6 +15,7 @@
 #include "build-page.h"
 #include "display/cairo-utils.h"
 #include "display/drawing-item.h"
+#include "display/tiff-pixels.h"
 #include "document.h"
 #include "helper/pixbuf-ops.h"
 #include "object/sp-image.h"
@@ -95,11 +96,34 @@ void DrawContext::paint_raster(SPImage const *image)
         decoded = (char *)g_base64_decode(base64, &decoded_len);
     }
 
-    if (decoded && base64_type == Base64Data::RASTER) {
+    // PROOF: an Illustrator picture of CMYK keeps its samples apart from the RGB it shows
+    // with (proof:samples, a CMYK TIFF); they go to print, while the picture is still theirs.
+    if (auto const *samples = image->getRepr()->attribute("proof:samples")) {
+        auto [samples_base64, samples_type] = extract_uri_data(samples);
+        if (samples_type == Base64Data::RASTER) {
+            gsize len = 0;
+            auto *bytes = reinterpret_cast<char *>(g_base64_decode(samples_base64, &len));
+            std::string_view const tiff(bytes, len);
+            if (auto pixels = read_tiff(tiff); pixels && int(pixels->width) == img_width &&
+                                               int(pixels->height) == img_height) {
+                try {
+                    raster_id = _doc.add_tiff(tiff, props);
+                } catch (std::exception const &e) {
+                    g_warning("Could not add image samples to PDF: %s", e.what());
+                }
+            }
+            g_free(bytes);
+        }
+    }
+
+    if (decoded && base64_type == Base64Data::RASTER && !raster_id) {
         try {
-            // Note this memory image is not cached.
-            auto image = _doc._gen.load_image_from_memory(decoded, decoded_len);
-            raster_id = _doc._gen.add_image(image, props);
+            raster_id = _doc.add_tiff(std::string_view(decoded, decoded_len), props);
+            if (!raster_id) {
+                // Note this memory image is not cached.
+                auto image = _doc._gen.load_image_from_memory(decoded, decoded_len);
+                raster_id = _doc._gen.add_image(image, props);
+            }
         } catch (std::exception &e) {
             g_warning("Could not add image file to PDF: %s", e.what());
         }

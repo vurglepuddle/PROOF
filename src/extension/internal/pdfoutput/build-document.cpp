@@ -15,6 +15,7 @@
 #include "build-drawing.h"
 #include "build-page.h"
 #include "build-text.h"
+#include "display/tiff-pixels.h"
 #include "object/sp-anchor.h"
 #include "object/sp-flowtext.h"
 #include "object/sp-image.h"
@@ -293,10 +294,62 @@ std::vector<CapyPDF_AnnotationId> Document::get_anchors_for_page(SPPage const *p
     return result;
 }
 
+/**
+ * PROOF: a TIFF from its own pixels (display/tiff-pixels.h). Its CMYK goes out as its numbers,
+ * DeviceCMYK under the document's output profile (Illustrator's "Preserve Numbers"), not tagged
+ * with the picture's own profile, which a RIP would convert from. Its transparency goes into
+ * the SMask straight, though Photoshop keeps CMYK transparency premultiplied, and every sample
+ * keeps its depth. CapyPDF's own TIFF reader gives every pixel the first pixel's alpha
+ * (separate_tif_alpha in imagefileops.cpp), so a cut-out picture vanished from the PDF.
+ */
+std::optional<CapyPDF_ImageId> Document::add_tiff(std::string_view data, capypdf::ImagePdfProperties &props)
+{
+    if (!looks_like_tiff(data)) return {};
+    auto tiff = read_tiff(data);
+    if (!tiff || (tiff->model != TiffPixels::Model::CMYK && tiff->alpha.empty())) return {};
+    // PDF's samples of 16 bits are big-endian.
+    auto big_endian = [&](std::vector<std::uint8_t> &samples) {
+        if (tiff->bits != 16) return;
+        auto *p = reinterpret_cast<std::uint16_t *>(samples.data());
+        for (std::size_t i = 0; i < samples.size() / 2; ++i) {
+            auto const v = p[i];
+            samples[2 * i] = std::uint8_t(v >> 8);
+            samples[2 * i + 1] = std::uint8_t(v & 0xff);
+        }
+    };
+    big_endian(tiff->colour);
+    big_endian(tiff->alpha);
+    auto builder = capypdf::RasterImageBuilder();
+    builder.set_size(tiff->width, tiff->height);
+    builder.set_colorspace(tiff->model == TiffPixels::Model::CMYK  ? CAPY_IMAGE_CS_CMYK
+                           : tiff->model == TiffPixels::Model::RGB ? CAPY_IMAGE_CS_RGB
+                                                                   : CAPY_IMAGE_CS_GRAY);
+    builder.set_pixel_depth(tiff->bits);
+    builder.set_pixel_data(reinterpret_cast<char const *>(tiff->colour.data()), tiff->colour.size());
+    if (!tiff->alpha.empty()) {
+        builder.set_alpha_depth(tiff->bits);
+        builder.set_alpha_data(reinterpret_cast<char const *>(tiff->alpha.data()), tiff->alpha.size());
+    }
+    auto image = builder.build();
+    return _gen.add_image(image, props);
+}
+
 std::optional<CapyPDF_ImageId> Document::get_image(std::string const &filename, capypdf::ImagePdfProperties &props)
 {
     if (auto const it = _raster_cache.find(filename); it != _raster_cache.end()) {
         return it->second;
+    }
+    {
+        gchar *data = nullptr;
+        gsize len = 0;
+        if (g_file_get_contents(filename.c_str(), &data, &len, nullptr)) {
+            auto tiff = add_tiff(std::string_view(data, len), props);
+            g_free(data);
+            if (tiff) {
+                _raster_cache[filename] = *tiff;
+                return tiff;
+            }
+        }
     }
     auto image = _gen.load_image(filename.c_str());
     auto raster_id = _gen.add_image(image, props);

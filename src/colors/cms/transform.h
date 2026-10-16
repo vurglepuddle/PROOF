@@ -61,10 +61,11 @@ protected:
 
     static int lcms_color_format(std::shared_ptr<Profile> const &profile, int size = 0, bool decimal = true,
                                  Alpha alpha = Alpha::NONE);
-    static int lcms_intent(RenderingIntent intent);
-    static int lcms_bpc(RenderingIntent intent);
 
 public:
+    // PROOF: also for pictures converted row by row (display/tiff-pixels.cpp).
+    static int lcms_intent(RenderingIntent intent);
+    static int lcms_bpc(RenderingIntent intent);
     cmsUInt32Number _format_in;
     cmsUInt32Number _format_out;
     int _channels_in;

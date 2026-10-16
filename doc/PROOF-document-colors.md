@@ -42,6 +42,11 @@ process colors; values may change. The picker retains the profile while
 editing individual channels. A color wheel or RGB hex edit is a color-space
 conversion and does not promise to preserve the other CMYK channels.
 
+**CMYK pictures** keep their numbers the same way (since 2026-10-16): a placed
+CMYK TIFF shows through the document's profile, whatever profile the picture
+carries, and prints its numbers as they are. See
+[PROOF-cmyk-pictures.md](PROOF-cmyk-pictures.md).
+
 For the corporate 5/100/45/22 swatch, choose CMYK and the profile used for the
 print job, then apply. Its four channels remain 5/100/45/22. Match Illustrator's
 actual profile and conversion settings when comparing applications: GRACoL

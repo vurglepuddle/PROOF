@@ -18,6 +18,7 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib.h>
 #include <gtest/gtest.h>
+#include <tiffio.h>
 #include <zlib.h>
 #include <2geom/affine.h>
 #include <2geom/pathvector.h>
@@ -3645,6 +3646,64 @@ TEST_F(AiNativeImportTest, ALinkedPictureThatIsGoneKeepsItsLinkAndShowsWhatTheDo
     ASSERT_TRUE(unused) << error;
     EXPECT_TRUE(unused->missing_links.empty());
     EXPECT_TRUE(elements(unused->document->getReprRoot(), "svg:image").empty());
+}
+
+TEST_F(AiNativeImportTest, ALinkedCmykTiffWithAnotherProfileIsNamedAndKeepsItsNumbers)
+{
+    // Preserve Numbers (owner, 2026-10-16): the TIFF's numbers are the document's; a profile of
+    // its own that differs is said, as most TIFFs share the document's and some don't.
+    std::string gracol, fogra;
+    auto read_file = [](char const *path, std::string &out) {
+        gchar *data = nullptr;
+        gsize len = 0;
+        if (!g_file_get_contents(path, &data, &len, nullptr)) return false;
+        out.assign(data, len);
+        g_free(data);
+        return true;
+    };
+    if (!read_file("C:/Windows/System32/spool/drivers/color/CoatedGRACoL2006.icc", gracol) ||
+        !read_file("C:/Windows/System32/spool/drivers/color/CoatedFOGRA39.icc", fogra)) {
+        GTEST_SKIP() << "CoatedGRACoL2006.icc and CoatedFOGRA39.icc are needed";
+    }
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    auto write_tiff = [&](char const *name, std::string const &icc) {
+        auto const path = folder + G_DIR_SEPARATOR_S + name;
+        TIFF *t = TIFFOpen(path.c_str(), "w");
+        EXPECT_NE(t, nullptr);
+        TIFFSetField(t, TIFFTAG_IMAGEWIDTH, 2);
+        TIFFSetField(t, TIFFTAG_IMAGELENGTH, 1);
+        TIFFSetField(t, TIFFTAG_BITSPERSAMPLE, 8);
+        TIFFSetField(t, TIFFTAG_SAMPLESPERPIXEL, 4);
+        TIFFSetField(t, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_SEPARATED);
+        TIFFSetField(t, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+        if (!icc.empty()) TIFFSetField(t, TIFFTAG_ICCPROFILE, std::uint32_t(icc.size()), icc.data());
+        std::uint8_t row[8] = {0, 255, 150, 0, 0, 0, 0, 0};
+        TIFFWriteScanline(t, row, 0, 0);
+        TIFFClose(t);
+        return path;
+    };
+    auto const other = write_tiff("other.tif", fogra);
+    auto const same = write_tiff("same.tif", gracol);
+    auto const plain = write_tiff("plain.tif", {});
+    std::string error;
+    auto ai = AN::read(records(layer(linked(other) + linked(same) + linked(plain))), error);
+    ASSERT_TRUE(ai) << error;
+    AN::Source source;
+    source.profile = gracol;
+    auto b = AN::build(*ai, error, source);
+    ASSERT_TRUE(b) << error;
+    std::string note;
+    for (auto const &n : b->notes) {
+        if (n.find("a profile other than the document's") != std::string::npos) note = n;
+    }
+    EXPECT_NE(note.find("1 linked CMYK picture carries"), std::string::npos) << note;
+    EXPECT_NE(note.find("other.tif"), std::string::npos) << note;
+    EXPECT_EQ(note.find("same.tif"), std::string::npos) << note;
+    EXPECT_EQ(note.find("plain.tif"), std::string::npos) << note;
+    EXPECT_NE(note.find("kept"), std::string::npos) << note;
+    // All three are in the document, linked as they are.
+    EXPECT_EQ(elements(b->document->getReprRoot(), "svg:image").size(), 3u);
 }
 
 TEST_F(AiNativeImportTest, PicturesThatAreGoneAreLinkedAgainFromOneFolder)

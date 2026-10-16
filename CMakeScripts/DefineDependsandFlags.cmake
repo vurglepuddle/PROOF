@@ -139,6 +139,10 @@ endif()
 pkg_search_module(ICU_UC REQUIRED IMPORTED_TARGET icu-uc)
 list(APPEND INKSCAPE_LIBS PkgConfig::ICU_UC)
 
+# PROOF: TIFFs are read for the screen and for print (src/display/tiff-pixels.cpp).
+find_package(TIFF REQUIRED)
+list(APPEND INKSCAPE_LIBS TIFF::TIFF)
+
 find_package(Iconv REQUIRED)
 list(APPEND INKSCAPE_LIBS Iconv::Iconv)
 

@@ -72,6 +72,7 @@ set(TEST_SOURCES
     ai-native-import-test
     box-frame-test
     clip-blend-test
+    tiff-pixels-test
     live-corners-test
     cmyk-picker-test
     colors/cms-system-test

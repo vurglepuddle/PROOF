@@ -13,6 +13,7 @@
 #ifndef SEEN_INKSCAPE_DISPLAY_CAIRO_UTILS_H
 #define SEEN_INKSCAPE_DISPLAY_CAIRO_UTILS_H
 
+#include <memory>
 #include <2geom/forward.h>
 #include <cairomm/cairomm.h>
 #include "style.h"
@@ -31,6 +32,9 @@ enum SPColorInterpolation : std::uint_least8_t {
 namespace Inkscape {
 namespace Colors {
 class Color;
+namespace CMS {
+class Profile;
+}
 }
 
 /** Class to hold image data for raster images.
@@ -74,12 +78,20 @@ public:
     static void ensure_pixbuf(GdkPixbuf *pb);
     static void ensure_argb32(GdkPixbuf *pb);
 
-    static Pixbuf *create_from_data_uri(gchar const *uri, double svgdpi = 0);
-    static Pixbuf *create_from_file(std::string const &fn, double svgddpi = 0);
-    static Pixbuf *create_from_buffer(std::string const &, double svgddpi = 0, std::string const &fn = "");
+    // PROOF: `cmyk` is the document's CMYK profile, through which a CMYK TIFF shows (its numbers
+    // are the document's); empty, and the picture's own profile or the working one is used.
+    static Pixbuf *create_from_data_uri(gchar const *uri, double svgdpi = 0,
+                                        std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+    static Pixbuf *create_from_file(std::string const &fn, double svgddpi = 0,
+                                    std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+    static Pixbuf *create_from_buffer(std::string const &, double svgddpi = 0, std::string const &fn = "",
+                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
 
   private:
-    static Pixbuf *create_from_buffer(gchar *&&, gsize, double svgddpi = 0, std::string const &fn = "");
+    static Pixbuf *create_from_buffer(gchar *&&, gsize, double svgddpi = 0, std::string const &fn = "",
+                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+    /// A CMYK TIFF in `data`, taking `data` over when it is one; nothing otherwise.
+    static Pixbuf *create_from_cmyk_tiff(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk);
     static Geom::Affine get_embedded_orientation(GdkPixbuf *buf);
     static GdkPixbuf *apply_embedded_orientation(GdkPixbuf *buf);
 

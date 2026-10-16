@@ -44,6 +44,7 @@
 #include "colors/spaces/cms.h"
 #include "colors/spaces/enum.h"
 #include "colors/spaces/lab.h"
+#include "display/tiff-pixels.h"
 #include "document-undo.h"
 #include "document.h"
 #include "libnrtype/font-factory.h"
@@ -576,6 +577,9 @@ public:
     std::size_t hidden_links_missing = 0;
     /// The linked pictures that show and can't be found.
     std::vector<MissingLink> missing_links;
+    /// Linked CMYK TIFFs that carry a profile other than the document's: their file names, and
+    /// the profiles' names. Their numbers are kept (Illustrator's "Preserve Numbers").
+    std::map<std::string, std::string> other_profiles;
 
 private:
     XML::Node *create(char const *name) { return _xml->createElement(name); }
@@ -1698,6 +1702,25 @@ XML::Node *Builder::placed(Node const &n)
     auto const name = names.empty() ? std::string() : base_name(names.front());
     auto file = linked_file(p);
     bool gone = false;
+    // A TIFF read for its tags: whose CMYK profile it carries.
+    auto const tiff_named = [](std::string const &f) {
+        gchar *lower = g_utf8_strdown(f.c_str(), -1);
+        bool const tiff = g_str_has_suffix(lower, ".tif") || g_str_has_suffix(lower, ".tiff");
+        g_free(lower);
+        return tiff;
+    };
+    if (file && tiff_named(*file) && _cmyk_space && _cmyk_space->getProfile()) {
+        gchar *data = nullptr;
+        gsize len = 0;
+        if (g_file_get_contents(file->c_str(), &data, &len, nullptr)) {
+            if (auto own = cmyk_tiff_profile(std::string_view(data, len)); own && !own->empty()) {
+                auto profile = Colors::CMS::Profile::create_from_data(*own);
+                auto const theirs = profile ? profile->getName() : std::string("an unreadable profile");
+                if (theirs != _cmyk_space->getProfile()->getName()) other_profiles.emplace(name, theirs);
+            }
+            g_free(data);
+        }
+    }
     if (file && !gdk_pixbuf_get_file_info(file->c_str(), nullptr, nullptr)) {
         // A file of another application's (Photoshop, PDF, EPS): nothing here draws it.
         if (!_hidden && link_error.empty()) link_error = "a linked file is of a kind PROOF can't show yet (" + name + ")";
@@ -1995,6 +2018,16 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         notes.push_back(count(links.size(), "linked picture can't", "linked pictures can't") + " be found (" + names +
                         "): " + shows + " until it is linked again");
         built.missing_links = links;
+    }
+    if (!b.other_profiles.empty()) {
+        std::string names;
+        for (auto const &[file, profile] : b.other_profiles) {
+            names += (names.empty() ? "" : ", ") + file + ": " + profile;
+        }
+        notes.push_back(count(b.other_profiles.size(), "linked CMYK picture carries", "linked CMYK pictures carry") +
+                        " a profile other than the document's (" + names + "); " +
+                        (b.other_profiles.size() == 1 ? "its numbers are" : "their numbers are") +
+                        " kept, and shown through the document's profile");
     }
     if (b.hidden_links_missing) {
         notes.push_back(count(b.hidden_links_missing, "linked picture that doesn't show wasn't",

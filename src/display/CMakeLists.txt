@@ -40,6 +40,7 @@ target_sources(inkscape_base PRIVATE
     nr-style.cpp
     nr-svgfonts.cpp
     threading.cpp
+    tiff-pixels.cpp
     translucency-group.cpp
 
     control/canvas-temporary-item-list.cpp
@@ -114,6 +115,7 @@ target_sources(inkscape_base PRIVATE
     rendermode.h
     tags.h
     threading.h
+    tiff-pixels.h
     translucency-group.h
 
     control/canvas-temporary-item-list.h

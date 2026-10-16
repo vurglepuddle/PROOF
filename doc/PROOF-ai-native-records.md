@@ -1853,6 +1853,26 @@ collaborator's machine, and 7 that depend on links open as before (their
 links aren't beside the pack's copies); no errors, timeouts or changed
 sources. All nine unit suites and the four export checks pass.
 
+### Linked CMYK TIFFs, and a page older than its links (2026-10-16)
+
+A file whose links are CMYK TIFFs with transparency fell back: PROOF's screen
+drew them on white boxes, paler, and so the import couldn't look like the
+page. PROOF now reads such TIFFs itself, in the document's CMYK (Preserve
+Numbers), and prints them right; see
+[PROOF-cmyk-pictures.md](PROOF-cmyk-pictures.md). The collaborator's file
+went from 33.4% different to 0.00%. The import names a linked CMYK TIFF whose
+own profile differs from the document's.
+
+A page can also be older than its links. Illustrator said of one file "Some
+of the linked objects have been updated", and showed both artboards as PROOF
+imports them, while the file's page showed the pictures as they were before:
+the import was right and the check refused it for the page's sake. The records
+hold no date of a link (the placed record is its matrix, four numbers and its
+path; the XMP manifest has `stRef:filePath` only), but they hold the preview
+Illustrator made of each link when saving (`%AI26_BeginPlacedObjectPreview`).
+A found link that no longer looks like its preview changed since; leaving its
+box out of the weighing, as a missing link's is, is open work.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
@@ -1862,7 +1882,7 @@ sources. All nine unit suites and the four export checks pass.
 2. **Native import**, delivered for the checked subset above. It builds the PROOF document from that structure:
    - CMYK colours and spot inks stay exact.
    - Lab alternates are kept.
-   - CMYK images keep their samples.
+   - CMYK images keep their samples, and print them since 2026-10-16 ([PROOF-cmyk-pictures.md](PROOF-cmyk-pictures.md)).
    - Hidden objects and layers come in hidden.
 
    Drawn looks come in as groups. Supported text slots get editable point type. The

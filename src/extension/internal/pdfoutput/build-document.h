@@ -16,6 +16,7 @@
 #include <2geom/2geom.h>
 #include <memory>
 #include <optional>
+#include <string_view>
 
 #include "attributes.h"
 #include "capypdf.hpp"
@@ -130,6 +131,9 @@ public:
     std::optional<CapyPDF_PatternId> get_pattern(SPPaintServer const *paint, std::optional<double> opacity);
 
     std::optional<CapyPDF_ImageId> get_image(std::string const &filename, capypdf::ImagePdfProperties &props);
+    /// PROOF: the TIFF in `data` as a PDF image when CapyPDF's own reader would get it wrong
+    /// (a CMYK TIFF, or one with transparency); nothing otherwise. See build-document.cpp.
+    std::optional<CapyPDF_ImageId> add_tiff(std::string_view data, capypdf::ImagePdfProperties &props);
 private:
     std::optional<CapyPDF_PatternId> get_linear_pattern(SPLinearGradient const *linear, std::optional<double> opacity);
     std::optional<CapyPDF_PatternId> get_radial_pattern(SPRadialGradient const *radial, std::optional<double> opacity);

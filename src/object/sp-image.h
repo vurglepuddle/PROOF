@@ -29,7 +29,7 @@
 
 #define SP_IMAGE_HREF_MODIFIED_FLAG SP_OBJECT_USER_MODIFIED_FLAG_A
 
-namespace Inkscape { class Pixbuf; class URI; }
+namespace Inkscape { class Pixbuf; class URI; namespace Colors::CMS { class Profile; } }
 class SPImage final : public SPItem, public SPViewBox, public SPDimensions {
 public:
     SPImage();
@@ -88,7 +88,9 @@ public:
 
     Inkscape::URI getURI() const;
 private:
-    static Inkscape::Pixbuf *readImage(gchar const *href, gchar const *absref, gchar const *base, double svgdpi = 0);
+    /// PROOF: `cmyk` is the document's CMYK profile, for a CMYK TIFF (cairo-utils.h).
+    static Inkscape::Pixbuf *readImage(gchar const *href, gchar const *absref, gchar const *base, double svgdpi = 0,
+                                       std::shared_ptr<Inkscape::Colors::CMS::Profile> const &cmyk = {});
     static Inkscape::Pixbuf *getBrokenImage(double width, double height);
 };
 

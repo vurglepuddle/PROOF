@@ -10,6 +10,7 @@
  */
 
 #include "display/cairo-utils.h"
+#include "display/tiff-pixels.h"
 
 #include <2geom/affine.h>
 #include <2geom/curves.h>
@@ -180,18 +181,38 @@ Pixbuf *Pixbuf::cropTo(const Geom::IntRect &area) const
     return new Pixbuf(cropped);
 }
 
-Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi)
+Pixbuf *Pixbuf::create_from_cmyk_tiff(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+{
+    std::string_view const bytes(reinterpret_cast<char const *>(data), len);
+    if (!is_cmyk_tiff(bytes)) return nullptr;
+    auto tiff = read_tiff(bytes);
+    auto *surface = tiff ? cmyk_tiff_surface(*tiff, cmyk) : nullptr;
+    if (!surface) return nullptr;
+    auto *pixbuf = new Pixbuf(surface);
+    pixbuf->_setMimeData(data, len, "tiff");
+    return pixbuf;
+}
+
+Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
+                                     std::shared_ptr<Colors::CMS::Profile> const &cmyk)
 {
     Pixbuf *pixbuf = nullptr;
     auto [data, type] = extract_uri_data(uri_data);
 
     if ((*data) && type == Base64Data::RASTER) {
-        GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
-
-        if (!loader) return nullptr;
-
         gsize decoded_len = 0;
         guchar *decoded = g_base64_decode(data, &decoded_len);
+        // PROOF: a CMYK TIFF in the document's own CMYK.
+        if (auto *tiff = create_from_cmyk_tiff(decoded, decoded_len, cmyk)) {
+            return tiff;
+        }
+
+        GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
+
+        if (!loader) {
+            g_free(decoded);
+            return nullptr;
+        }
 
         if (gdk_pixbuf_loader_write(loader, decoded, decoded_len, nullptr)) {
             gdk_pixbuf_loader_close(loader, nullptr);
@@ -273,7 +294,7 @@ Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi)
     return pixbuf;
 }
 
-Pixbuf *Pixbuf::create_from_file(std::string const &fn, double svgdpi)
+Pixbuf *Pixbuf::create_from_file(std::string const &fn, double svgdpi, std::shared_ptr<Colors::CMS::Profile> const &cmyk)
 {
     Pixbuf *pb = nullptr;
     // test correctness of filename
@@ -299,7 +320,7 @@ Pixbuf *Pixbuf::create_from_file(std::string const &fn, double svgdpi)
             return nullptr;
         }
 
-        pb = Pixbuf::create_from_buffer(std::move(data), len, svgdpi, fn);
+        pb = Pixbuf::create_from_buffer(std::move(data), len, svgdpi, fn, cmyk);
 
         if (pb) {
             pb->_mod_time = stdir.st_mtime;
@@ -350,18 +371,25 @@ Geom::Affine Pixbuf::get_embedded_orientation(GdkPixbuf *buf)
     return Geom::identity();
 }
 
-Pixbuf *Pixbuf::create_from_buffer(std::string const &buffer, double svgdpi, std::string const &fn)
+Pixbuf *Pixbuf::create_from_buffer(std::string const &buffer, double svgdpi, std::string const &fn,
+                                   std::shared_ptr<Colors::CMS::Profile> const &cmyk)
 {
 #if GLIB_CHECK_VERSION(2,67,3)
     auto datacopy = (gchar *)g_memdup2(buffer.data(), buffer.size());
 #else
     auto datacopy = (gchar *)g_memdup(buffer.data(), buffer.size());
 #endif
-    return Pixbuf::create_from_buffer(std::move(datacopy), buffer.size(), svgdpi, fn);
+    return Pixbuf::create_from_buffer(std::move(datacopy), buffer.size(), svgdpi, fn, cmyk);
 }
 
-Pixbuf *Pixbuf::create_from_buffer(gchar *&&data, gsize len, double svgdpi, std::string const &fn)
+Pixbuf *Pixbuf::create_from_buffer(gchar *&&data, gsize len, double svgdpi, std::string const &fn,
+                                   std::shared_ptr<Colors::CMS::Profile> const &cmyk)
 {
+    // PROOF: a CMYK TIFF in the document's own CMYK, with its transparency.
+    if (auto *tiff = create_from_cmyk_tiff(reinterpret_cast<guchar *>(data), len, cmyk)) {
+        tiff->_path = fn;
+        return tiff;
+    }
     bool has_ori = false;
     Pixbuf *pb = nullptr;
     GError *error = nullptr;

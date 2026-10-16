@@ -30,6 +30,8 @@
 // Added for preserveAspectRatio support -- EAF
 #include "attributes.h"
 #include "colors/document-cms.h"
+#include "colors/document-colors.h"
+#include "colors/spaces/cms.h"
 #include "display/cairo-utils.h"
 #include "display/drawing-image.h"
 #include "document.h"
@@ -248,9 +250,16 @@ void SPImage::update(SPCtx *ctx, unsigned int flags) {
                 svgdpi = g_ascii_strtod(getRepr()->attribute("inkscape:svg-dpi"), nullptr);
             }
             dpi = svgdpi;
+            // PROOF: a CMYK picture's numbers are the document's own, and show through its profile
+            // (Illustrator's "Preserve Numbers").
+            std::shared_ptr<Inkscape::Colors::CMS::Profile> cmyk;
+            if (auto space = Inkscape::Colors::DocumentColors::assignedSpace(document);
+                space && space->getComponentType() == Inkscape::Colors::Space::Type::CMYK) {
+                cmyk = space->getProfile();
+            }
             pb = readImage(Inkscape::getHrefAttribute(*getRepr()).second,
                            getRepr()->attribute("sodipodi:absref"),
-                           document->getDocumentBase(), svgdpi);
+                           document->getDocumentBase(), svgdpi, cmyk);
             if (!pb) {
                 missing = true;
                 // PROOF: what the document keeps of the picture stands in for it.
@@ -627,7 +636,8 @@ Inkscape::DrawingItem* SPImage::show(Inkscape::Drawing &drawing, unsigned int /*
 }
 
 
-Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gchar const *base, double svgdpi)
+Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gchar const *base, double svgdpi,
+                                     std::shared_ptr<Inkscape::Colors::CMS::Profile> const &cmyk)
 {
     Inkscape::Pixbuf *inkpb = nullptr;
 
@@ -637,14 +647,14 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
         if (g_ascii_strncasecmp(filename, "data:", 5) == 0) {
             /* data URI - embedded image */
             filename += 5;
-            inkpb = Inkscape::Pixbuf::create_from_data_uri(filename, svgdpi);
+            inkpb = Inkscape::Pixbuf::create_from_data_uri(filename, svgdpi, cmyk);
         } else {
             auto url = Inkscape::URI::from_href_and_basedir(href, base);
 
             if (url.hasScheme("file")) {
                 try {
                     auto native = url.toNativeFilename();
-                    inkpb = Inkscape::Pixbuf::create_from_file(native.c_str(), svgdpi);
+                    inkpb = Inkscape::Pixbuf::create_from_file(native.c_str(), svgdpi, cmyk);
                 } catch (Glib::ConvertError const &e) {
                     g_warning("readImage: %s", e.what());
                     inkpb = nullptr;
@@ -652,7 +662,7 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
             } else {
                 try {
                     auto contents = url.getContents();
-                    inkpb = Inkscape::Pixbuf::create_from_buffer(contents, svgdpi);
+                    inkpb = Inkscape::Pixbuf::create_from_buffer(contents, svgdpi, "", cmyk);
                 } catch (const Gio::Error &e) {
                     g_warning("URI::getContents failed for '%.100s'", href);
                 }
@@ -674,7 +684,7 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
             g_warning ("xlink:href did not resolve to a valid image file, now trying sodipodi:absref=\"%s\"", absref);
         }
 
-        inkpb = Inkscape::Pixbuf::create_from_file(filename, svgdpi);
+        inkpb = Inkscape::Pixbuf::create_from_file(filename, svgdpi, cmyk);
         if (inkpb != nullptr) {
             return inkpb;
         }
