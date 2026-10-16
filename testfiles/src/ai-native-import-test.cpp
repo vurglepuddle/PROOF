@@ -678,6 +678,37 @@ TEST_F(AiNativeImportTest, MeshOutlineMatchesIndependentPdfAndDifferentPageIsRef
     EXPECT_FALSE(result);
     EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
 }
+
+TEST_F(AiNativeImportTest, APostScriptFileWithoutLayersOpensFromItsRecordsUnchecked)
+{
+    // Photoshop's paths exported to Illustrator: Illustrator 3 PostScript, no layers, no PDF
+    // part, every line ending in a bare CR. Nothing else here opens it.
+    std::string const ps = "%!PS-Adobe-2.0\r%%Creator: Adobe Photoshop(TM) Pen Path Export 7.0\r"
+                           "%%BoundingBox: 0 0 200 100\r%AI3_Cropmarks: 0 0 200 100\r%%EndComments\r"
+                           "%%BeginProlog\r%%EndProlog\r%%BeginSetup\rAdobe_IllustratorA_AI3 /initialize get exec\r"
+                           "n\r%%EndSetup\r0 0 0 1 k\r0 i 0 J 0 j 1 w 4 M []0 d\r%%Note:\r*u\r1 XR\r10 10 m\r"
+                           "10 40 20 50 40 50 C\r60 50 60 10 10 10 C\rn\r*U\r%%Trailer\r%%EOF\r";
+    gchar *dir = g_dir_make_tmp("proof-native-import-XXXXXX", nullptr);
+    ASSERT_NE(dir, nullptr);
+    std::string const path = std::string(dir) + "/paths.ai";
+    g_free(dir);
+    ASSERT_TRUE(g_file_set_contents(path.c_str(), ps.data(), ps.size(), nullptr));
+    std::string reason;
+    auto result = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(result) << reason;
+    EXPECT_TRUE(result->differences.empty());
+    ASSERT_FALSE(result->notes.empty());
+    EXPECT_NE(result->notes[0].find("wasn't checked against a page"), std::string::npos) << result->notes[0];
+    auto *root = result->document->getReprRoot();
+    auto const groups = elements(root, "svg:g");
+    ASSERT_FALSE(groups.empty());
+    EXPECT_EQ(attr(groups[0], "inkscape:label"), "Layer 1");
+    auto const paths = elements(root, "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    auto pv = sp_svg_read_pathv(attr(paths[0], "d").c_str());
+    ASSERT_EQ(pv.size(), 1u);
+    EXPECT_EQ(pv[0].initialPoint(), Geom::Point(10, 90));
+}
 #endif
 
 TEST_F(AiNativeImportTest, ImportedPagesAndArtworkKeepTheSamePhysicalCoordinates)

@@ -361,6 +361,7 @@ constexpr std::string_view IGNORED[] = {
     "Ae", "AE", "Ap", "As", "Xr", "XG", "Xh", "XH", "XF", "D", "X=", "X+", "Bc", "Xm", "Np", "TE",
     "TZ", "Xt", "Xi", "XI", "`", "LB2", "Lc", "Xv", "XV", "Xq", "XQ", "Xg", "Xn", "Bn", "gsave", "grestore",
     "showpage", "annotatepage", "Ar", "An", "XD", "Br", "BS",
+    "i", // flatness: how finely a printer splits curves into lines
 };
 
 bool ignored(std::string_view w)
@@ -513,6 +514,7 @@ public:
     Reader(std::string_view data, Limits const &limits)
         : _lex(data)
         , _limits(limits)
+        , _layerless(data.find("%AI5_BeginLayer") == std::string_view::npos)
     {}
 
     std::optional<Document> run(std::string &error);
@@ -663,6 +665,10 @@ private:
     std::size_t _cmyk_colors = 0, _rgb_colors = 0;
     std::optional<bool> _color_model;
     bool _done = false;
+    /// The records have no layers (Illustrator 3, Photoshop's paths exported to Illustrator):
+    /// what follows the setup is one layer, as Illustrator opens it.
+    bool _layerless = false;
+    bool _one_layer = false; ///< That layer is open.
     bool _obj_hidden = false;
     bool _palette = false; ///< In %AI5_BeginPalette: swatches register their inks.
 };
@@ -674,6 +680,7 @@ std::optional<Document> Reader::run(std::string &error)
             if (_done) break;
             token(*t, t->hidden);
         }
+        if (_one_layer && _frames.size() == 1 && _frames.back().kind == FrameKind::Layer) end_layer();
         for (auto const &f : _frames) {
             if (f.kind == FrameKind::Layer) fail("it ends inside a layer");
         }
@@ -774,6 +781,14 @@ void Reader::comment(std::string_view c, bool hidden, std::string_view data)
     }
     if (m == "%PageTrailer" || m == "%Trailer") {
         _done = true;
+        return;
+    }
+    if (m == "%EndSetup" && _layerless && !_one_layer && _frames.empty()) {
+        Frame f;
+        f.kind = FrameKind::Layer;
+        f.layer.name = "Layer 1";
+        open(std::move(f));
+        _one_layer = true;
         return;
     }
     auto starts = [&](std::string_view p) { return c.substr(0, p.size()) == p; };

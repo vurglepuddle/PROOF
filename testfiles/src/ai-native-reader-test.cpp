@@ -1649,8 +1649,35 @@ TEST(AiNativeReader, BrokenStructure)
 {
     EXPECT_FALSE(read_error(records(layer("L", "0 g\n" + rect(0, 0, 1, 1) + "f\nQ\n"))).empty());
     EXPECT_FALSE(read_error("%AI5_BeginLayer\n1 1 1 1 0 0 0 0 0 0 0 0 50 0 Lb\n(L) Ln\n0 g\n10 10 m 20 20 l f\n").empty());
-    EXPECT_FALSE(read_error(records("")).empty()); // no layers
     EXPECT_FALSE(read_error("%AI5_BeginPattern\nnever ends").empty());
+}
+
+TEST(AiNativeReader, RecordsWithoutLayersAreOneLayer)
+{
+    // Illustrator 3, and Photoshop's paths exported to Illustrator: no layers; each path a
+    // compound path of its own, closed and unpainted, its lines ending in a bare CR.
+    std::string const body = "%%Note:\r%Adobe_Photoshop_Path_Begin:<< /defaultFill false >>\r*u\r"
+                             "%AI3_Note:<< /operation /xor /defaultFill false >>\r1 XR\r10 10 m\r"
+                             "10 40 20 50 40 50 C\r60 50 60 10 10 10 C\rn\r*U\r%Adobe_Photoshop_Path_End\r";
+    auto doc = read_ok(records("0 0 0 1 k\r0 i 0 J 0 j 1 w 4 M []0 d\r" + body));
+    ASSERT_EQ(doc.layers.size(), 1u);
+    EXPECT_EQ(doc.layers[0].name, "Layer 1");
+    EXPECT_TRUE(doc.layers[0].visible);
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    auto const *path = &doc.layers[0].children[0];
+    if (path->kind == Node::Kind::Compound) path = &path->children.at(0);
+    ASSERT_EQ(path->kind, Node::Kind::Path);
+    ASSERT_EQ(path->path.size(), 1u);
+    EXPECT_TRUE(path->path[0].closed());
+    EXPECT_FALSE(doc.layers[0].children[0].fill || doc.layers[0].children[0].stroke);
+
+    // A file of nothing is one empty layer, as Illustrator opens it.
+    auto empty = read_ok(records(""));
+    ASSERT_EQ(empty.layers.size(), 1u);
+    EXPECT_TRUE(empty.layers[0].children.empty());
+
+    // Records with layers still keep art outside them out.
+    EXPECT_FALSE(read_error(records(layer("L", "") + "0 g\n" + rect(0, 0, 1, 1) + "f\n")).empty());
 }
 
 TEST(AiNativeReader, LimitsHold)

@@ -23,6 +23,10 @@
  *
  * When the records hold anything that isn't read, or the art draws differently from
  * the page, nothing is returned and the caller imports the page as before.
+ *
+ * A PostScript .ai (Illustrator 8 and older, and Photoshop's paths exported to Illustrator)
+ * has no page to weigh against, and nothing else opens it: it opens from its records alone,
+ * with a note that its art wasn't checked against a page.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_PDFINPUT_AI_NATIVE_OPEN_H
 #define SEEN_EXTENSION_INTERNAL_PDFINPUT_AI_NATIVE_OPEN_H

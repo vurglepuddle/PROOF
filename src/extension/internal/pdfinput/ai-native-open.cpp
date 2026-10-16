@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <string_view>
@@ -46,6 +47,7 @@
 #include "document.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-reader.h"
+#include "io/sys.h"
 #include "object/sp-page.h"
 #include "object/sp-root.h"
 #include "page-manager.h"
@@ -60,6 +62,20 @@ namespace {
 /// The most decoded records read. They hold every embedded image uncompressed: a brochure
 /// of photographs for print runs to several hundred megabytes from a file of twenty.
 constexpr std::size_t RECORDS_LIMIT = std::size_t(2048) << 20;
+/// The note of a file opened from its records alone, with no page to weigh them against.
+constexpr char const *UNCHECKED_NOTE =
+    "it is a PostScript file of Illustrator 8 or older, with no PDF page: its art wasn't checked against a page";
+
+/// Whether the file at `path` is a PDF (any .ai of Illustrator 9 and later).
+bool pdf_file(std::string const &path)
+{
+    auto file = std::unique_ptr<FILE, decltype(&std::fclose)>(Inkscape::IO::fopen_utf8name(path.c_str(), "rb"),
+                                                              std::fclose);
+    char head[5] = {};
+    return file && std::fread(head, 1, sizeof(head), file.get()) == sizeof(head) &&
+           std::string_view(head, sizeof(head)) == "%PDF-";
+}
+
 /// The longest side, in pixels, of an artboard as it is weighed.
 constexpr double LONGEST_SIDE = 600.0;
 /// An artboard that differs is weighed again from pictures drawn this many times larger and
@@ -574,7 +590,11 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         reason = error.empty() ? "it has no data of Illustrator's own" : error;
         return {};
     }
-    if (records->text.find("%AI5_BeginLayer") == std::string::npos) {
+    // Illustrator 8 and older wrote the file as PostScript, with no PDF part: there is no page
+    // to weigh the art against, and nothing else here opens such a file. Its records, read
+    // in full, are what opens; what they hold that isn't read still refuses it.
+    bool const postscript = !pdf_file(path);
+    if (!postscript && records->text.find("%AI5_BeginLayer") == std::string::npos) {
         reason = "its own data has no layers";
         return {};
     }
@@ -586,6 +606,29 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         return {};
     }
     timed("read");
+    AiNative::Source source;
+    {
+        gchar *folder = g_path_get_dirname(path.c_str());
+        source.folder = folder;
+        g_free(folder);
+    }
+    if (postscript) {
+        auto built = AiNative::build(*ai, error, source);
+        if (!built) {
+            reason = error;
+            return {};
+        }
+        timed("build");
+        AiNativeOpen result;
+        result.missing_fonts = built->missing_fonts;
+        result.profile = built->profile;
+        for (auto const &link : built->missing_links) result.missing_links.push_back(link.name);
+        result.notes.push_back(UNCHECKED_NOTE);
+        for (auto &n : built->notes) result.notes.push_back(std::move(n));
+        result.document = std::move(built->document);
+        result.timings = std::move(timings);
+        return result;
+    }
     // The page: Poppler's core for its boxes and the document's profile, its glib side to
     // draw it.
     if (!globalParams) {
@@ -595,12 +638,6 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     if (!pdf || !pdf->isOk()) {
         reason = "its PDF part can't be read to check the art against";
         return {};
-    }
-    AiNative::Source source;
-    {
-        gchar *folder = g_path_get_dirname(path.c_str());
-        source.folder = folder;
-        g_free(folder);
     }
     source.profile = document_profile(*pdf, ai->cmyk);
     // An artboard the records only let one guess at lies where the page is.

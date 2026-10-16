@@ -270,6 +270,12 @@ identity: small details, low-contrast changes and differences below the sampled
 resolution can escape them. An artboard over a limit is weighed once more from
 larger pictures, for lines thinner than a pixel; see the 2026-10-10 trial below.
 
+A PostScript `.ai` (Illustrator 8 and older) has no PDF page, so it can't be
+weighed at all: it opens from its records alone, with a note that its art
+wasn't checked against a page, and the corpus checker counts it apart as
+`NATIVE_UNCHECKED`. What its records hold that isn't read still refuses it.
+See "PostScript files with no layers and no page" below.
+
 Non-printing layers are retried hidden for comparison, then their visibility
 is restored. PDF optional-content screen and print views can differ; this
 check uses Poppler's screen view. Bleed comes from the PDF BleedBox relative
@@ -1787,6 +1793,55 @@ export checks passed: opacity masks 59/59, `.ai` 19/19 and blends 32/32. One
 full corpus regression ran at the stable milestone, with no errors/timeouts,
 source hash differences or native losses. No previously accepted native file
 moved by more than 0.2 percentage points in either visual measure.
+
+### PostScript files with no layers and no page (2026-10-16)
+
+The collaborator's 1,395 files had 38 that fell back with "its own data has
+no layers" (none among the owner's 879). Every one was written by Photoshop's
+"Export Paths to Illustrator" (`%%Creator: Adobe Photoshop(TM) Pen Path
+Export 7.0`):
+
+- Illustrator 3 PostScript (`Adobe_IllustratorA_AI3` procset), no `%PDF-`
+  head, so no PDF part and no page; every line ends in a bare CR.
+- No `%AI5_BeginLayer`: the art follows `%%EndSetup` directly.
+- Each path component is a compound path of its own, closed and unpainted:
+  `%AI3_Note:<< /operation /xor /defaultFill false >>`, `n XR`, `m`, curves,
+  `n`, `*U`, inside `%Adobe_Photoshop_Path_Begin` and `_End` comments. The
+  note carries Photoshop's path operation; with no paint it draws nothing.
+- The setup line `0 0 0 1 k 0 i 0 J 0 j 1 w 4 M []0 d` uses `i`, flatness,
+  which no record of the 879 has.
+
+Until now PROOF couldn't open such a file at all: the native path refused it,
+and the fallback handed PostScript to Poppler. Now:
+
+| Rule | Where |
+|---|---|
+| Records with no `%AI5_BeginLayer` are one layer, "Layer 1", opened at `%%EndSetup` and closed at the end, as Illustrator opens an Illustrator 3 file. Records with layers still refuse art outside them | `Reader::comment`, `Reader::run` |
+| `i` (flatness) is passed over: it says how finely a printer splits curves, and draws nothing | `IGNORED` |
+| A file without a `%PDF-` head opens from its records with no page and no weighing, and the note "it is a PostScript file of Illustrator 8 or older, with no PDF page: its art wasn't checked against a page". A PDF-based file whose records have no layers still falls back | `open_checked`, `pdf_file` |
+
+This applies to every PostScript `.ai`, the Illustrator 5 to 8 ones with
+layers too, which used to fail with "its PDF part can't be read". The pack had
+one: an Illustrator 8 file exported by CorelDRAW X8 (`%%Creator: Adobe
+Illustrator (TM) 8.000000 Exported from CorelDRAW X8`), one layer holding one
+compound path of 62 subpaths filled `0 0 0 1 k` with `1 XR`. It came in as one
+path of 62 subpaths, the CMYK black kept (`icc-color(…, 0, 0, 0, 1)`),
+even-odd, no stroke, its points' extent equal to the source's to 0.0000 pt.
+
+**Checked without a page.** For all 38, an independent count of the source
+(Python, not PROOF's reader) against the imported SVG: subpaths and segments
+equal in every file (155,849 paths, 0 differing), the extent of every point,
+control points included, equal to the source's to 0.000 pt in document space,
+and every path `fill:none;stroke:none`, as Illustrator has them. One file has
+no paths and opens as an empty layer on its artboard. Tests:
+`AiNativeReader.RecordsWithoutLayersAreOneLayer`,
+`AiNativeImportTest.APostScriptFileWithoutLayersOpensFromItsRecordsUnchecked`.
+
+**The pack, files up to 500 MB** (150 of 153): 39 open unchecked (the 38
+and the CorelDRAW file), 104 fall back for the reasons they did on the
+collaborator's machine, and 7 that depend on links open as before (their
+links aren't beside the pack's copies); no errors, timeouts or changed
+sources. All nine unit suites and the four export checks pass.
 
 ## Plan
 
