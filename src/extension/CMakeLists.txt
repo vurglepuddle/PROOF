@@ -26,6 +26,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-lexer.cpp
 	internal/ai/ai-native-reader.cpp
 	internal/ai/ai-native-text.cpp
+	internal/ai/ai-native-writer.cpp
 	internal/bluredge.cpp
 	internal/cairo-ps-out.cpp
 	internal/cairo-render-context.cpp
@@ -107,6 +108,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-lexer.h
 	internal/ai/ai-native-reader.h
 	internal/ai/ai-native-text.h
+	internal/ai/ai-native-writer.h
 	internal/bluredge.h
 	internal/cairo-ps-out.h
 	internal/cairo-render-context.h

@@ -221,6 +221,65 @@ PDF rendering comparison, artboard/layer/paint checks, and a save back from
 Illustrator followed by PROOF reopening. Testing a converter against its own
 parser alone is insufficient.
 
+### The records writer (2026-10-17)
+
+The owner chose one writer, toward the modern form, the version 7 form kept as
+an export option later. A second spike first: Illustrator 29.2.1 drew a mesh
+control from records rewritten and recompressed with Zstandard outside
+Illustrator (13 blocks where it wrote 14), not from the file's PDF page; it
+opened version 7 records inside a modern container as "[Converted]"; and the
+current header without the artboard list put the art 3871.5 pt off its
+artboard, as the recipe above says. `tools\ai-records-rewrite.py` (workspace)
+replaces one string in a copy's records, or all of them, to test such rules.
+
+`src/extension/internal/ai/ai-native-writer.*` writes the records of a PROOF
+document (`write_records`), by the recipe above:
+
+- **Artboards**: the document's pages (or its size), named, in points, the
+  first one's top-left at 0,0 and y down; the document data with
+  `CropAreaActive`, closed `/Recorded`. Names are UTF-8: Illustrator showed a
+  Cyrillic artboard name as written.
+- **The opening view** (`%AI10_OpenToVie`, `%AI9_OpenToView`): fits the first
+  artboard. Without it Illustrator opened on empty canvas (the owner saw
+  nothing). No `%AI5_OpenViewLayers`: copied from a one-layer file as "7", it
+  moved the hidden and locked flags to other layers.
+- **Layers** in Illustrator 29's `Lb` form: visible, preview, locked, printing,
+  dim. Illustrator shows a layer in its preset colour by index, ignoring the RGB
+  beside it, so the nearest of the presets the owner's files pair consistently
+  is written (census of 879 files; indexes 4 to 6 vary and are left out).
+- **Objects**: groups `u`/`U`; paths with corners only (`L`, `C`), a closed one
+  ending on its start; compound paths `*u`/`*U` with `XR`; clipping groups `q`,
+  one path, `h W n`, `Q`; hidden `1 Xw`, locked `1 A` (an object's own, not its
+  layer's); clones written as copies of what they show.
+- **Paint**: CMYK `k`/`K`, RGB `Xa`/`XA`, spot inks with CMYK alternates `x`/`X`
+  at full strength and `Xx`/`XX` at a tint (the operand is 1 − tint), with
+  `%%DocumentCustomColors` and `%%CMYKCustomColor`; overprint `O`/`R` from
+  `proof:overprint`; stroke width, cap, join, miter limit and dashes scaled to
+  points. `%AI9_ColorModel` follows the document's colour mode.
+- **Refused by name**, writing nothing: type, pictures, gradients, mesh
+  gradients, patterns, transparency, blend modes, opacity masks, filters,
+  markers, context paint, spot inks with RGB or Lab alternates, one ink name
+  with two definitions, strokes on stretched or skewed objects, strokes under
+  their fill, non-scaling strokes, clipping paths other than one path.
+
+**Checked.** Read back through PROOF's importer (`WrittenRecordsReadBackAsTheDocument`,
+`WrittenRecordsKeepSpotInksClipsAndArtboards`, `TheWriterRefusesWhatItCannotWriteByName`):
+every shape where it was to a thousandth of a pixel, CMYK values, stroke width,
+the even-odd hole, overprint, the spot at 30%, the clip, two named artboards, an
+A4 document in millimetres. In Illustrator 29.2.1 (`WriterRecordsForIllustrator`
+writes them when `PROOF_AI_WRITER_OUT` is set; put into a copy's container with
+the rewrite tool): both artboards at their sizes and names, four layers with
+their names (Cyrillic too), hidden and locked as written, the green layer
+green, every object at its place, CMYK fills and strokes to the number, the
+spot as a spot swatch used at 100% and 30%, the dashed round-capped curve, the
+clip, the hole. RGB fills in the CMYK document were converted by Illustrator,
+as it does.
+
+Not yet: the container (PROOF's own PDF page with these records in its
+`PieceInfo`) and the Save As entry; type, gradients and pictures; the version 7
+form; smooth points (all points are written as corners, so Illustrator's
+direct selection sees corners where PROOF had smooth ones).
+
 ## Automated checks
 
 `testfiles/src/extensions-pdfoutput-test.cpp` covers the save guard, small valid

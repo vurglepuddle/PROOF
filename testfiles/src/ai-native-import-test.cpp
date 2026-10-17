@@ -42,6 +42,7 @@
 #include "extension/internal/ai/ai-native-fonts.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
+#include "extension/internal/ai/ai-native-writer.h"
 #include "libnrtype/font-factory.h"
 #include "libnrtype/font-instance.h"
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
@@ -4970,3 +4971,173 @@ TEST_F(AiNativeImportTest, Corpus)
     }
 }
 #endif
+
+// ---- the writer: PROOF's records, read back ----------------------------------------------
+
+namespace {
+std::unique_ptr<SPDocument> svg_document(std::string const &body,
+                                         std::string const &size = R"(width="200" height="100" viewBox="0 0 200 100")")
+{
+    std::string const svg = R"(<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" )"
+                            R"(xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:proof="urn:x-proof:document:1" )" +
+                            size + ">" + body + "</svg>";
+    return SPDocument::createNewDocFromMem(svg);
+}
+
+Geom::OptRect shape_box(SPDocument *doc, XML::Node *repr)
+{
+    doc->ensureUpToDate();
+    auto *item = dynamic_cast<SPItem *>(doc->getObjectByRepr(repr));
+    return item ? item->documentGeometricBounds() : Geom::OptRect();
+}
+} // namespace
+
+TEST_F(AiNativeImportTest, WrittenRecordsReadBackAsTheDocument)
+{
+    auto doc = svg_document(
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art" inkscape:highlight-color="#ff4f4f">)"
+        R"(<rect x="10" y="10" width="40" height="30" style="fill:device-cmyk(0.1 0.2 0.3 0.4);stroke:#000000;stroke-width:2"/>)"
+        R"(<path d="M 60 10 H 100 V 50 H 60 Z M 70 20 V 40 H 90 V 20 Z" style="fill:#ff0000;fill-rule:evenodd"/>)"
+        R"(<g><rect x="110" y="10" width="10" height="10" style="fill:#00ff00"/>)"
+        R"(<rect x="125" y="10" width="10" height="10" style="fill:#0000ff" proof:overprint="fill"/></g>)"
+        R"(</g>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Hidden" style="display:none" sodipodi:insensitive="true">)"
+        R"(<rect x="10" y="60" width="20" height="20" style="fill:#000000"/></g>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find("%AI3_Cropmarks: 0 -75 150 0"), std::string::npos) << written.records.substr(0, 1200);
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    auto *root = imported->getReprRoot();
+
+    std::vector<XML::Node *> layers;
+    for (auto *g : elements(root, "svg:g")) {
+        if (attr(g, "inkscape:groupmode") == "layer") layers.push_back(g);
+    }
+    ASSERT_EQ(layers.size(), 2u);
+    EXPECT_EQ(attr(layers[0], "inkscape:label"), "Art");
+    EXPECT_EQ(attr(layers[0], "inkscape:highlight-color"), "#ff4f4f");
+    EXPECT_EQ(attr(layers[1], "inkscape:label"), "Hidden");
+    EXPECT_EQ(attr(layers[1], "style"), "display:none");
+    EXPECT_EQ(attr(layers[1], "sodipodi:insensitive"), "true");
+
+    auto paths = elements(root, "svg:path");
+    ASSERT_EQ(paths.size(), 5u) << written.records.substr(written.records.find("%%EndSetup")) << "\n----\n"
+                                << sp_repr_save_buf(imported->getReprDoc()).raw();
+    // Where each lies, in the document's pixels, as the original's shapes.
+    std::vector<XML::Node *> originals;
+    for (auto *n : elements(doc->getReprRoot(), "svg:rect")) originals.push_back(n);
+    originals.insert(originals.begin() + 1, elements(doc->getReprRoot(), "svg:path")[0]);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        auto const was = shape_box(doc.get(), originals[i]), now = shape_box(imported, paths[i]);
+        ASSERT_TRUE(was && now) << i;
+        EXPECT_NEAR(now->left(), was->left(), 1e-3) << i;
+        EXPECT_NEAR(now->top(), was->top(), 1e-3) << i;
+        EXPECT_NEAR(now->right(), was->right(), 1e-3) << i;
+        EXPECT_NEAR(now->bottom(), was->bottom(), 1e-3) << i;
+    }
+    imported->ensureUpToDate();
+    auto *cmyk = imported->getObjectByRepr(paths[0]);
+    auto const fill = cmyk->style->fill.getColor();
+    ASSERT_EQ(fill.getSpace()->getComponentType(), Type::CMYK);
+    for (unsigned i = 0; i < 4; ++i) EXPECT_NEAR(fill[i], 0.1 * (i + 1), 1e-4);
+    EXPECT_NEAR(cmyk->style->stroke_width.computed, 2 * 0.75, 1e-6); // in the import's points
+    EXPECT_NE(attr(paths[1], "style").find("evenodd"), std::string::npos);
+    EXPECT_EQ(sp_svg_read_pathv(attr(paths[1], "d").c_str()).size(), 2u);
+    EXPECT_EQ(attr(paths[3], "proof:overprint"), "fill");
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsKeepSpotInksClipsAndArtboards)
+{
+    auto doc = svg_document(
+        R"(<defs><clipPath id="c"><rect x="10" y="10" width="30" height="30"/></clipPath></defs>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"
+        R"(<rect id="spot" x="50" y="10" width="40" height="40" style="fill:#000000"/>)"
+        R"x(<g clip-path="url(#c)"><rect x="0" y="0" width="60" height="60" style="fill:device-cmyk(1 0 0 0)"/></g>)x"
+        R"(</g>)"
+        R"(<sodipodi:namedview><inkscape:page x="0" y="0" width="100" height="100" inkscape:label="Front"/>)"
+        R"(<inkscape:page x="120" y="0" width="80" height="100" inkscape:label="Back"/></sodipodi:namedview>)");
+    ASSERT_TRUE(doc);
+    auto const id = SpotInk::ensure(doc.get(), {"PROOF Orange", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 0.3});
+    doc->getObjectById("spot")->setAttribute("style", "fill:url(#" + id + ")");
+    doc->ensureUpToDate();
+
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find("%%CMYKCustomColor: 0 0.6 1 0 (PROOF Orange)"), std::string::npos);
+    EXPECT_NE(written.records.find("0 0.6 1 0 (PROOF Orange) 0.7 0 Xx"), std::string::npos);
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->artboards.size(), 2u);
+    EXPECT_EQ(ai->artboards[0].name, "Front");
+    EXPECT_EQ(ai->artboards[1].name, "Back");
+
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    imported->ensureUpToDate();
+    std::optional<SpotInk::Ink> ink;
+    for (auto *g : elements(imported->getReprRoot(), "svg:linearGradient")) {
+        if (auto read = SpotInk::read(g); read && read->name == "PROOF Orange") ink = read;
+    }
+    ASSERT_TRUE(ink);
+    EXPECT_NEAR(ink->tint, 0.3, 1e-4);
+    bool clipped = false;
+    for (auto *g : elements(imported->getReprRoot(), "svg:g")) clipped = clipped || !attr(g, "clip-path").empty();
+    EXPECT_TRUE(clipped);
+}
+
+TEST_F(AiNativeImportTest, TheWriterRefusesWhatItCannotWriteByName)
+{
+    auto doc = svg_document(R"(<g inkscape:groupmode="layer"><text x="10" y="20">Hi</text>)"
+                            R"(<rect x="10" y="30" width="10" height="10" style="fill:#ff0000;opacity:0.5"/></g>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    EXPECT_TRUE(written.records.empty());
+    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "type"), written.refused.end());
+    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "transparency"), written.refused.end());
+
+    // A document in millimetres: its artboard in points.
+    auto a4 = svg_document(R"(<rect x="10" y="10" width="20" height="20" style="fill:#000000"/>)",
+                           R"(width="210mm" height="297mm" viewBox="0 0 210 297")");
+    auto const page = AN::write_records(a4.get());
+    ASSERT_TRUE(page.refused.empty());
+    EXPECT_NE(page.records.find("%AI3_Cropmarks: 0 -841.8898 595.2756 0"), std::string::npos) << page.records.substr(0, 900);
+}
+
+// Records for checking in Illustrator: written to PROOF_AI_WRITER_OUT when it is set.
+TEST_F(AiNativeImportTest, WriterRecordsForIllustrator)
+{
+    auto const *out = g_getenv("PROOF_AI_WRITER_OUT");
+    if (!out) GTEST_SKIP() << "PROOF_AI_WRITER_OUT is not set";
+    auto doc = svg_document(
+        R"x(<defs><clipPath id="c"><circle cx="60" cy="160" r="35"/></clipPath></defs>)x"
+        R"x(<g inkscape:groupmode="layer" inkscape:label="Process" inkscape:highlight-color="#4fff4f">)x"
+        R"x(<rect x="20" y="20" width="80" height="60" style="fill:device-cmyk(0 0.9 0.2 0);stroke:device-cmyk(0 0 0 1);stroke-width:3"/>)x"
+        R"x(<path d="M 120 20 H 200 V 80 H 120 Z M 140 35 V 65 H 180 V 35 Z" style="fill:#2060c0;fill-rule:evenodd"/>)x"
+        R"x(<path d="M 220 20 C 260 0 300 60 340 30" style="fill:none;stroke:device-cmyk(1 0 0 0);stroke-width:4;stroke-dasharray:12 6;stroke-linecap:round" proof:overprint="stroke"/>)x"
+        R"x(</g>)x"
+        R"x(<g inkscape:groupmode="layer" inkscape:label="Ink">)x"
+        R"x(<rect id="full" x="220" y="60" width="50" height="40" style="fill:#000000"/>)x"
+        R"x(<rect id="tint" x="290" y="60" width="50" height="40" style="fill:#000000"/>)x"
+        R"x(<g clip-path="url(#c)"><rect x="20" y="120" width="80" height="80" style="fill:device-cmyk(0 0 1 0)"/>)x"
+        R"x(<rect x="60" y="120" width="40" height="80" style="fill:device-cmyk(0 0 0 0.6)"/></g>)x"
+        R"x(</g>)x"
+        R"x(<g inkscape:groupmode="layer" inkscape:label="Скрытый" style="display:none"><rect x="150" y="120" width="40" height="40" style="fill:#ff0000"/></g>)x"
+        R"x(<g inkscape:groupmode="layer" inkscape:label="Locked" sodipodi:insensitive="true"><rect x="220" y="140" width="40" height="40" style="fill:device-cmyk(0.5 0 0.5 0)"/></g>)x"
+        R"x(<sodipodi:namedview><inkscape:page x="0" y="0" width="360" height="220" inkscape:label="Front"/>)x"
+        R"x(<inkscape:page x="400" y="0" width="200" height="220" inkscape:label="Обратная"/></sodipodi:namedview>)x",
+        R"x(width="360" height="220" viewBox="0 0 360 220" proof:color-mode="CMYK")x");
+    ASSERT_TRUE(doc);
+    auto const ink = SpotInk::Ink{"PROOF Orange", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 1.0};
+    doc->getObjectById("full")->setAttribute("style", "fill:url(#" + SpotInk::ensure(doc.get(), ink) + ")");
+    auto tint = ink;
+    tint.tint = 0.3;
+    doc->getObjectById("tint")->setAttribute("style", "fill:url(#" + SpotInk::ensure(doc.get(), tint) + ")");
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    std::ofstream(std::filesystem::path(out) / "writer-w1.records", std::ios::binary) << written.records;
+}
