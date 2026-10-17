@@ -1076,6 +1076,13 @@ void Reader::op(std::string_view w, bool hidden)
         fail("it has gradient meshes with an unterminated or unsupported record");
     }
     if (w == "[") {
+        // Arrays are built without recursion, but a chain of them is freed by recursion, so how
+        // deeply they nest is bounded. Marks that operators have cut from the stack don't count.
+        while (!_marks.empty() &&
+               (_marks.back() >= _stack.size() || _stack[_marks.back()].kind != Value::Kind::Mark)) {
+            _marks.pop_back();
+        }
+        if (_marks.size() >= _limits.max_depth) fail("its arrays are nested too deeply");
         _marks.push_back(_stack.size());
         push(Value::mark());
         return;

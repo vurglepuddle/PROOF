@@ -393,7 +393,7 @@ struct Document
 
 struct Limits
 {
-    std::size_t max_depth = 256;
+    std::size_t max_depth = 256; ///< Objects, and arrays, each nested.
     std::size_t max_stack = 1u << 20;
     std::size_t max_nodes = 4'000'000;
     std::size_t max_points = 4'000'000; ///< In one path.

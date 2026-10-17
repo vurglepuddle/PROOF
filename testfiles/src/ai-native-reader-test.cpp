@@ -1697,6 +1697,22 @@ TEST(AiNativeReader, LimitsHold)
     EXPECT_FALSE(read(records(layer("L", "0 g\n" + rect(0, 0, 1, 1) + "f\n")), error, few));
 }
 
+TEST(AiNativeReader, ArraysNestedTooDeeplyAreRefused)
+{
+    // Arrays are built without recursion, but a chain of them is freed by recursion: half a
+    // million brackets, well within the values allowed on the stack, would overflow it.
+    std::size_t const n = 500'000;
+    std::string const deep = std::string(n, '[') + std::string(n, ']') + "\n0 g\n";
+    std::string error;
+    EXPECT_FALSE(read(records(layer("L", deep)), error));
+    EXPECT_NE(error.find("arrays are nested too deeply"), std::string::npos) << error;
+
+    // As deep as the records nest (a mesh entry, a dash in a dictionary) reads.
+    auto doc = read_ok(records(layer("L", "[[[[1 2] 3]]]\n0 g\n" + rect(0, 0, 1, 1) + "f\n")));
+    ASSERT_EQ(doc.layers.size(), 1u);
+    EXPECT_EQ(doc.layers[0].children.size(), 1u);
+}
+
 TEST(AiNativeReader, XmlNames)
 {
     EXPECT_EQ(xml_name("Layer_1"), "Layer 1");

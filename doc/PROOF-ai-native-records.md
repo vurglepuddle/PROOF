@@ -1979,6 +1979,22 @@ to draw even at 20 dpi, for its 127-megapixel picture, and its thin lines need
 the finer second drawing. Test:
 `ALinkedPdfPageShowsItsFirstPageCroppedToItsCropBox`.
 
+### Arrays nested too deeply (2026-10-17)
+
+The reader builds an array at its `]` without recursion, but a chain of arrays
+inside arrays is freed by recursion, and nothing bounded how deep they nest
+but the million values the stack may hold. Half a million `[` then as many `]`
+overflowed the stack: PROOF crashed on opening such a file. Found by reading
+VectorCraft's changes (their nesting caps; workspace
+`audit-results/vectorcraft-delta-2026-10-17.md`).
+
+Open arrays are now limited like nested objects (`Limits::max_depth`, 256),
+and such a file is refused: "its arrays are nested too deeply". Illustrator's
+records nest arrays three or four deep. A mark an operator has cut from the
+stack isn't counted, by the same test `]` already applied, so files that read
+before read the same. Test: `ArraysNestedTooDeeplyAreRefused`, which crashed
+the suite before the cap.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table
