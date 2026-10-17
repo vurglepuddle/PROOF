@@ -2002,8 +2002,8 @@ the finer second drawing. Test:
    that isn't installed is stood in for.
    Expand from confirmed root causes. Still to come: area type
    that flows again when edited (the frame and the overflow are kept for it),
-   type on a path, justified paragraphs, linked frames and the remaining
-   rendering families. (The document's own ICC profile is read since
+   wider path options and character scaling (the ordinary path subset is below),
+   justified paragraphs, linked frames and the remaining rendering families. (The document's own ICC profile is read since
    2026-10-11.)
 4. **Writer** extensions, in this order: gradients, images, text. They use the
    same tables, and the reader checks the writer's output alongside Illustrator.
@@ -2114,3 +2114,131 @@ Normal priority; 870 comparisons executed and one valid comparison reused,
 authoritative SHA-256 comparison: `artifacts/round23-tabs/owner-comparison-final.json`.
 The original 879-file milestone and excluded cases remain separate.
 No real mouse/keyboard trial was run; the last live baseline is still 2026-10-14.
+
+
+## Ordinary type on a path (2026-10-17, round 24)
+
+A single horizontal, left-to-right paragraph with Illustrator's ordinary
+baseline-aligned Rainbow path layout imports as editable SVG `textPath`.
+Left, centre and right alignment retain their anchors when the text changes.
+The full cubic path is retained in the definitions, referenced by the text;
+it is not cut to the occupied portion or converted to glyph outlines.
+
+The frame kind is `/2 /0 2`, its outline `/1 /0` and its interval `/2 /6`.
+The interval is segment index plus cubic parameter, not a length or a fraction
+of the path. Even a straight segment whose handles equal its endpoints keeps
+that parameterisation: parameter 0.25 lies 31.25 points along a 200-point
+segment. Convert those bounds to distances before simplifying any geometry.
+The frame matrix and the text document's canvas/ruler placement still apply.
+The path layout's F node has a box rather than a point-type anchor. Its /10
+matched the referenced frame index in the controls and the owner's three
+path stories; that index must not be treated as a path effect or alignment.
+
+`startOffset` and `text-anchor` carry the start, middle or end anchor. PROOF
+also keeps `proof:path-start` and `proof:path-end` as distances in the path's
+local coordinates. They keep excess characters hidden while the full text
+remains editable. Closed paths do not repeat overflow around the loop. Text
+edits, path edits and bracket-attribute edits invalidate layout; the bracket
+attributes survive save/reopen and construction of a fresh textPath node.
+Malformed bracket metadata hides the text instead of exposing overflow.
+The path object remains alive for cursor queries. Hidden glyphs stay out of
+outline conversion as well as the canvas and PDF.
+
+**Editing limitation:** Illustrator's original parameter brackets become
+fixed distances. After changing the curve, they do not retain their original
+segment/parameter positions. This is reported as partial native import.
+The active end bracket is a PROOF extension: another SVG reader can ignore it
+and show the excess text. PDF export uses PROOF's layout and hides it.
+
+The first subset accepts absent path options or the default values observed
+in Illustrator's independent controls: `/11` numeric keys 4 and 18 equal 10,
+key 22 equals 0.025, flags 6 and 7 are false. Their meanings beyond these
+controls are not established; other values or keys fail closed. No options
+are silently discarded. Wrapped intervals, disconnected paths, multiple or
+justified paragraphs, tabs, bidirectional text, non-unit character scales,
+baseline shifts, superscripts/subscripts and decorations remain unsupported.
+Existing character/paragraph inheritance and UTF-16 boundary checks apply.
+
+Adobe's behaviour reference is [Type on a path](https://helpx.adobe.com/illustrator/using/creating-type-path.html).
+The donor's `ate.rs` at `0d0ea352` confirms the segment/parameter interval,
+but its reader clamps bad bounds and ignores the options dictionary. PROOF
+does neither. The donor's `ai/frames.rs` also warns that an object's own Art
+path can differ from its text resource's frame after copying. That wider
+case is not claimed here; every imported document still passes the existing
+independent per-page comparison or falls back to PDF.
+
+**Validation.** Five new tests cover cubic-parameter conversion, malformed and
+unsupported input, alignment, path/text edits, save/reopen, bracket mutation,
+closed-loop overflow, outline conversion and end-caret queries. The full
+importer passes 119 of 120 (the corpus case is skipped), reader 67 of 68
+(the same skip), and all eleven standard unit suites pass their enabled
+checks. Twelve upstream layout/cursor tests pass with the existing isolated
+font profile; no system fonts were installed or changed.
+
+Seven independently authored Illustrator controls (straight, curve, circle,
+offset, centre, right and a short path) pass native import, retain vector
+fonts in the PDF and extract the same visible text as Illustrator. The
+short path retains ABCD but draws/exports only A. Canvas/PDF foreground
+comparison has zero unmatched ink after a two-pixel allowance at 144 dpi.
+Against Illustrator, the maximum is 1.613% (circle), within the separate 2%
+foreground test; curve is 0.199%, the other five zero. These measurements do
+not establish exact glyph placement for every curve. The installed editor's
+own native .ai open path preserves textPath and the full story for straight
+and short controls.
+
+The PDF check caught and fixed an existing layout/export disagreement:
+path fitting hid a character's glyph reference for the canvas, but did not
+set the glyph visibility flag read by PDF output. A short path printed the
+hidden letters as well. Fitting now hides both, including text used to clip.
+The six-case `testfiles/cli_tests/path-type-export-smoke.py` covers full,
+short, closed-loop, malformed-end, edited-end and ordinary SVG path text.
+It checks extracted text, vector fonts, blank output and canvas/PDF ink.
+The initial generic fixture assumed the fallback font's A advance and
+expected too few visible letters. It was corrected to use a wide W with a
+clear margin; the final six cases passed separately. Production code did
+not change after the eleven-suite run. The workspace's focused runner now
+includes this check. The six earlier export suites pass 23/32/59/44/91/43.
+No real mouse/keyboard acceptance was performed.
+
+All nine affected copied files still use PDF: eight have unestablished path
+option values; the owner's copy has common horizontal character scale
+0.99412 with vertical scale 1. Do not implement that with the point-type
+story's global affine: on a curve it would warp the path and glyph normals.
+Those settings need further independent, paced Illustrator controls. This
+round claims no new native corpus acceptance.
+
+A cached-record census gives the next investigation a lead: option keys 4
+and 18 vary roughly with font size (500 -> 427, 450 -> 384, 170 -> 145).
+They may be cached font/layout metrics; this is a hypothesis, not a mapped
+meaning. A minimal same-font control at a second size should distinguish
+that from a user path setting. Keep the nondefault dictionary refused until
+that is established; do not discard the other flags with it. Census:
+`artifacts/round24-path-text/options-and-sizes.json`.
+
+Local evidence: `artifacts/round24-path-text/`, seven-control native run
+`20261017-015213-398927`, nine-case run `20261017-015216-201608`, standard
+suite run `artifacts/focused-suites/20261017-050040/`, final six-case check
+`artifacts/round24-path-text/path-export-final/`, PDF comparison
+`pdf-summary.json` and installed native-open check `open-smoke.py`.
+**Milestone regression.** All 871 owner copies were hash-verified: 860
+native (510 partial, 350 unverified), 11 PDF fallbacks; counts unchanged,
+all old native notes/classifications and comparison values identical. The
+150-file collaborator failure pack, with 51 verified linked companions,
+remains 12 checked native (8 partial, 4 unverified), 39 unchecked and 99 PDF
+fallbacks; old native/unchecked notes and comparison values are identical.
+Only path refusals become more precise (one owner, nine collaborator).
+No lost acceptances, errors, timeouts or changed inputs/assets. The three
+inputs over 500 MB were excluded before content reads; the original full
+1,395-file collaborator baseline was not rerun.
+
+One worker, affinity [12,13,14,15] of 16 CPUs, Below Normal; no build alongside
+checks. Owner 624 s, friend 457 s (600 s per-file guard for the known
+slow linked-PDF case). Runs `20261017-020810-715882` and
+`20261017-021838-755831`; authoritative comparisons and matching source/installed
+binary hashes: `artifacts/round24-path-text/`. Broad cohorts run at stable
+milestones; affected cases and focused tests are used between changes.
+
+Illustrator automation is left idle after the owner's flicker report. Future
+controls require announced, serial document operations with at least ten
+seconds idle after completion, rather than rapid create/save/close batches.
+The old rapid helpers are disabled; saved controls remain intact.

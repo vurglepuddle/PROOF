@@ -410,7 +410,9 @@ public:
     removed at some point.
     A pointer to \a path is retained by the class for use by the cursor
     positioning functions. */
-    void fitToPathAlign(SVGLength const &startOffset, Path const &path);
+    // PROOF: an optional active interval keeps path type's end bracket live when edited.
+    void fitToPathAlign(SVGLength const &startOffset, Path const &path,
+                        std::optional<std::pair<double, double>> const &active = std::nullopt);
 
     /** Convert the specified range of characters into their bezier 
     outlines.

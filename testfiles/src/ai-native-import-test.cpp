@@ -1362,6 +1362,157 @@ TEST_F(AiNativeImportTest, ParagraphTabsKeepLetterSpaceKerningAndConsecutiveStop
     GTEST_SKIP() << "available font has no negative letter-space kerning";
 }
 
+// Ordinary Illustrator path text, independently written as one cubic and one layout
+// line. The path's parameter bounds must be converted before any straightening.
+std::string path_text_document(std::string const &characters = "(ABCD\\r)", int units = 5,
+                               std::string const &font = "ArialMT", std::string const &style = {},
+                               std::string const &options = {}, std::string const &bounds = "0 0.99")
+{
+    auto data = text_document(characters, units, font, style, "/0 2 /6 [" + bounds + "] " + options);
+    auto at = data.find("/2 << /0 2");
+    data.insert(at, "/1 << /0 [8191.5 8191.5 8191.5 8191.5 8391.5 8191.5 8391.5 8191.5] >> ");
+    at = data.find("/99 /F /0 << /0 [8191.5 8191.5] >>");
+    data.replace(at, std::string("/99 /F /0 << /0 [8191.5 8191.5] >>").size(),
+                 "/99 /F /1 [0 0 200 0] /5 2 /10 0");
+    return data;
+}
+
+TEST_F(AiNativeImportTest, PathTypeUsesCubicParametersAndKeepsFullGeometry)
+{
+    auto read = [](std::string const &bounds) {
+        return AN::read_text_document(text_setup(path_text_document("(ABCD\\r)", 5, "ArialMT", {}, {}, bounds)), Geom::Point(100, 50));
+    };
+    auto text = read("0.25 0.99");
+    ASSERT_EQ(text->stories.size(), 1u) << text->error;
+    ASSERT_TRUE(text->stories[0]) << text->errors[0];
+    auto const &s = *text->stories[0]; ASSERT_TRUE(s.path);
+    EXPECT_FALSE(s.area);
+    EXPECT_NEAR(s.path->start, 31.25, 0.001);
+    EXPECT_NEAR(s.path->end, 199.9404, 0.001);
+    EXPECT_NEAR(s.path->outline[0].length(), 200, 0.001);
+    EXPECT_EQ(s.lines[0].runs[0].text, "ABCD");
+    EXPECT_TRUE(AN::same_drawing(s, s));
+    auto changed = read("0.3 0.99"); ASSERT_TRUE(changed->stories[0]);
+    EXPECT_FALSE(AN::same_drawing(s, *changed->stories[0]));
+    for (auto bounds : {"-1 0.99", "0.5 0.2", "0 0", "0 2", "0", "0 1e100"}) {
+        auto invalid = read(bounds);
+        ASSERT_EQ(invalid->stories.size(), 1u);
+        EXPECT_FALSE(invalid->stories[0]) << bounds;
+    }
+}
+
+TEST_F(AiNativeImportTest, PathTypeRefusesUnverifiedOptionsAndCharacterSettings)
+{
+    auto read = [](std::string const &style, std::string const &options) {
+        return AN::read_text_document(text_setup(path_text_document("(ABCD\\r)", 5, "ArialMT", style, options)), Geom::Point(100, 50));
+    };
+    auto ordinary = read({}, "/11 << /4 10 /18 10 /22 0.025 /6 false /7 false >>");
+    ASSERT_TRUE(ordinary->stories[0]) << ordinary->errors[0];
+    for (auto options : {"/11 << /0 true >>", "/11 << /4 12 >>", "/11 << /18 12 >>", "/11 << /22 0.05 >>",
+                         "/11 << /6 true >>", "/11 << /7 true >>", "/11 0", "/11 << /4 false >>", "/11 << /123 0 >>"}) {
+        auto invalid = read({}, options);
+        ASSERT_EQ(invalid->stories.size(), 1u);
+        EXPECT_FALSE(invalid->stories[0]) << options;
+    }
+    for (auto style : {"/6 1.5", "/7 1.5", "/9 6", "/16 1", "/15 1", "/13 1"}) {
+        auto invalid = read(style, {});
+        ASSERT_EQ(invalid->stories.size(), 1u);
+        EXPECT_FALSE(invalid->stories[0]) << style;
+    }
+    auto tab = AN::read_text_document(text_setup(path_text_document("(A\\tB\\r)", 4)), Geom::Point(100, 50));
+    EXPECT_FALSE(tab->stories[0]);
+}
+
+TEST_F(AiNativeImportTest, PathTypeAlignmentAndGeometryRemainEditableAfterReopen)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    for (unsigned alignment : {0u, 1u, 2u}) {
+        auto document = with_paragraphs(path_text_document("(ABCD\\r)", 5, font), {},
+            "<< /1 5 /0 << /0 << /5 << /0 " + std::to_string(alignment) + " >> >> >> >>");
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(document)));
+        ASSERT_TRUE(b);
+        EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](auto const &note) {
+            return note.find("parameter brackets were left out") != std::string::npos;
+        }));
+        auto doc = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+        ASSERT_TRUE(doc); doc->ensureUpToDate();
+        auto paths = elements(doc->getDefs()->getRepr(), "svg:path"); ASSERT_EQ(paths.size(), 1u);
+        auto texts = elements(doc->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+        auto spans = elements(texts[0], "svg:textPath"); ASSERT_EQ(spans.size(), 1u);
+        EXPECT_EQ(attr(spans[0], "style"), alignment == 2 ? "text-anchor:middle;" : alignment == 1 ? "text-anchor:end;" : "text-anchor:start;");
+        EXPECT_NEAR(std::stod(attr(spans[0], "startOffset")), alignment == 2 ? 99.9702 : alignment == 1 ? 199.9404 : 0, 0.001);
+        EXPECT_TRUE(attr(spans[0], "x").empty()); EXPECT_TRUE(attr(spans[0], "y").empty());
+        auto *text = cast<SPText>(doc->getObjectByRepr(texts[0])); ASSERT_TRUE(text);
+        auto before = text->layout.convertToCurves().boundsFast(); ASSERT_TRUE(before);
+        spans[0]->firstChild()->setContent("ABCDEFG"); doc->ensureUpToDate();
+        EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 7u);
+        auto longer = text->layout.convertToCurves().boundsFast(); ASSERT_TRUE(longer);
+        EXPECT_GT(longer->width(), before->width());
+        // Editing the referenced path relays out the same text object.
+        paths[0]->setAttribute("d", "M8191.5,8241.5 h200"); doc->ensureUpToDate();
+        auto moved = text->layout.convertToCurves().boundsFast(); ASSERT_TRUE(moved);
+        EXPECT_NEAR(moved->top() - longer->top(), 50, 0.001);
+        Geom::Point cursor; double height, rotation;
+        text->layout.queryCursorShape(text->layout.end(), cursor, height, rotation);
+        EXPECT_TRUE(std::isfinite(cursor.x())); EXPECT_GT(height, 0);
+        text->layout.characterBoundingBox(text->layout.end(), &rotation);
+        auto saved = SPDocument::createNewDocFromMem(sp_repr_save_buf(doc->getReprDoc()).raw()); ASSERT_TRUE(saved);
+        auto again = elements(saved->getReprRoot(), "svg:textPath"); ASSERT_EQ(again.size(), 1u);
+        EXPECT_EQ(attr(again[0], "proof:path-end"), attr(spans[0], "proof:path-end"));
+        EXPECT_EQ(std::string(again[0]->firstChild()->content()), "ABCDEFG");
+    }
+}
+
+TEST_F(AiNativeImportTest, PathTypeEndBracketHidesOverflowAndCanBeEdited)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(path_text_document("(AAAA\\r)", 5, font))));
+    ASSERT_TRUE(b);
+    auto doc = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw()); ASSERT_TRUE(doc);
+    auto texts = elements(doc->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto *text = cast<SPText>(doc->getObjectByRepr(texts[0])); ASSERT_TRUE(text);
+    auto spans = elements(texts[0], "svg:textPath"); ASSERT_EQ(spans.size(), 1u);
+    doc->ensureUpToDate();
+    auto const width = text->layout.glyphs()[0].advance;
+    spans[0]->setAttributeSvgDouble("proof:path-end", width * 1.1); doc->ensureUpToDate();
+    EXPECT_TRUE(text->layout.inputTruncated());
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 4u); // Hidden text remains editable.
+    auto one = text->layout.convertToCurves(); EXPECT_FALSE(one.empty());
+    spans[0]->setAttribute("proof:path-end", "199.9404"); doc->ensureUpToDate();
+    EXPECT_FALSE(text->layout.inputTruncated());
+    EXPECT_GT(text->layout.convertToCurves().size(), one.size());
+    for (auto invalid : {"bad", "nan", "-1", "1e1000"}) {
+        spans[0]->setAttribute("proof:path-end", invalid); doc->ensureUpToDate();
+        EXPECT_TRUE(text->layout.inputTruncated());
+        EXPECT_TRUE(text->layout.convertToCurves().empty()) << invalid;
+    }
+    spans[0]->setAttribute("proof:path-end", "199.9404"); doc->ensureUpToDate();
+    EXPECT_FALSE(text->layout.inputTruncated());
+    // End-bracket metadata is preserved when SPTextPath builds a new representation.
+    auto fresh = doc->getObjectByRepr(spans[0])->updateRepr(doc->getReprDoc(), nullptr, SP_OBJECT_WRITE_BUILD | SP_OBJECT_WRITE_EXT);
+    ASSERT_TRUE(fresh); EXPECT_EQ(attr(fresh, "proof:path-end"), "199.9404");
+    Inkscape::GC::release(fresh);
+}
+
+TEST_F(AiNativeImportTest, PathTypeClosedPathDoesNotRepeatOverflowAroundTheLoop)
+{
+    std::string const svg =
+        "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' xmlns:proof='urn:x-proof:document:1'>"
+        "<defs><path id='p' d='M0,30 h20 v20 h-20 z'/></defs><text style='font-size:12px'>"
+        "<textPath xlink:href='#p' proof:path-start='0' proof:path-end='10'>AAAAAAAAAAAAAAAAAAAA</textPath></text></svg>";
+    auto doc = SPDocument::createNewDocFromMem(svg);
+    ASSERT_TRUE(doc); doc->ensureUpToDate();
+    auto texts = elements(doc->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto *text = cast<SPText>(doc->getObjectByRepr(texts[0])); ASSERT_TRUE(text);
+    EXPECT_TRUE(text->layout.inputTruncated());
+    auto bounds = text->layout.convertToCurves().boundsFast(); ASSERT_TRUE(bounds);
+    EXPECT_LT(bounds->right(), 15);
+    EXPECT_LT(bounds->bottom(), 35);
+}
+
+
 TEST_F(AiNativeImportTest, ParagraphTabsStayAlignedAfterTextAndRulerEditsAndReopen)
 {
     auto const font = available_text_font();

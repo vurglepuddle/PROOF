@@ -569,6 +569,7 @@ public:
     /// Text objects painted with a gradient, which is black on type.
     std::size_t gradient_text = 0;
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
+    std::size_t path_text = 0; ///< Parameter brackets expanded to editable path distances.
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
     std::size_t foreign_objects = 0;
@@ -713,14 +714,14 @@ void Builder::run()
         auto const foreign = foreign_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
-                                       gradient_text, paragraph_styled_text, mesh_outlines, foreign_objects, hidden_foreign);
+                                       gradient_text, paragraph_styled_text, path_text, mesh_outlines, foreign_objects, hidden_foreign);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
         images_left_out = images;
         link_error = error;
         foreign_error = foreign;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
-                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, mesh_outlines,
+                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, path_text, mesh_outlines,
                  foreign_objects, hidden_foreign) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
@@ -791,6 +792,7 @@ XML::Node *Builder::text(Node const &n)
     }
     auto e = create("svg:text");
     if (story.paragraph_styles_expanded) ++paragraph_styled_text;
+    if (story.path) ++path_text;
     e->setAttribute("xml:space", "preserve");
     // Type an appearance drew isn't the object's own text: its story is told apart.
     e->setAttribute(n.text_proxy ? "proof:ai-drawn-story" : "proof:ai-story", std::to_string(*n.story));
@@ -917,10 +919,24 @@ XML::Node *Builder::text(Node const &n)
     }
     e->setAttribute("style", common_style);
     for (auto const &line : story.lines) {
-        auto span = create("svg:tspan");
+        auto span = create(story.path ? "svg:textPath" : "svg:tspan");
+        if (story.path) {
+            auto p = create("svg:path");
+            auto const id = unique("textPath");
+            p->setAttribute("id", id);
+            p->setAttribute("d", sp_svg_write_path(story.path->outline));
+            append(_defs, p);
+            span->setAttribute("xlink:href", "#" + id);
+            auto const start = story.path->start, end = story.path->end;
+            span->setAttribute("startOffset", num(line.alignment == 2 ? (start + end) / 2 : line.alignment == 1 ? end : start));
+            span->setAttribute("proof:path-start", num(start));
+            span->setAttribute("proof:path-end", num(end));
+        }
         // Explicit ATE line positions must remain SVG positions. role="line"
         // asks Inkscape to reflow the line and discard a single x/y pair.
-        span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
+        if (!story.path) {
+            span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
+        }
         if (line.tabs) line.tabs->write(span);
         // The line's origin is its left end, its right end or its middle. Which of those a
         // line starts at depends on the way it reads.
@@ -2012,6 +2028,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     if (b.paragraph_styled_text) {
         notes.push_back(count(b.paragraph_styled_text, "text object's", "text objects'") +
                         " paragraph styles came in as inline formatting; named style definitions and links aren't kept");
+    }
+    if (b.path_text) {
+        notes.push_back(count(b.path_text, "path text object's", "path text objects'") +
+                        " start and end brackets are kept as distances along the editable path; Illustrator's parameter brackets were left out");
     }
     if (b.overflowing_text) {
         notes.push_back(count(b.overflowing_text, "text frame holds", "text frames hold") +

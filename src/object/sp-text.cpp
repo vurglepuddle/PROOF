@@ -886,7 +886,20 @@ void SPText::rebuildLayout()
 #if DEBUG_TEXTLAYOUT_DUMPASTEXT
                 g_print("%s", layout.dumpAsText().c_str());
 #endif
-                layout.fitToPathAlign(textpath->startOffset, *textpath->originalPath);
+                std::optional<std::pair<double, double>> active;
+                auto const start = textpath->getRepr()->attribute("proof:path-start");
+                auto const end = textpath->getRepr()->attribute("proof:path-end");
+                if (start || end) {
+                    // Malformed metadata hides the active portion rather than revealing
+                    // text the original document did not draw.
+                    active = std::pair{0.0, -1.0};
+                    char *after_start = nullptr, *after_end = nullptr;
+                    double const a = start ? g_ascii_strtod(start, &after_start) : -1;
+                    double const b = end ? g_ascii_strtod(end, &after_end) : -1;
+                    if (start && end && after_start != start && after_end != end && !*after_start && !*after_end &&
+                        std::isfinite(a) && std::isfinite(b) && a >= 0 && b >= a) active = std::pair{a, b};
+                }
+                layout.fitToPathAlign(textpath->startOffset, *textpath->originalPath, active);
             }
         }
     }

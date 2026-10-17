@@ -621,7 +621,7 @@ void laid_lines(Value const &v, Geom::Point const &at, unsigned depth, std::vect
 
 /// A frame's outline: its segments one after another, each four points (a start, two
 /// handles and an end).
-Geom::PathVector frame_outline(Value const &points)
+Geom::PathVector frame_outline(Value const &points, bool keep_parameters = false)
 {
     if (points.kind != Value::Array || points.list.empty() || points.list.size() % 8 || points.list.size() > 8 * 8192) {
         throw Bad("invalid text frame outline");
@@ -644,7 +644,7 @@ Geom::PathVector frame_outline(Value const &points)
             finish();
             path = Geom::Path(p[0]);
         }
-        if (p[1] == p[0] && p[2] == p[3]) {
+        if (!keep_parameters && p[1] == p[0] && p[2] == p[3]) {
             path->appendNew<Geom::LineSegment>(p[3]);
         } else {
             path->appendNew<Geom::CubicBezier>(p[1], p[2], p[3]);
@@ -669,12 +669,14 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     // carries its gutters (7, 8) and its first-baseline rule (10): the lines are placed as
     // Illustrator laid them out, so neither is needed to draw them.
     bool const area = carries.dict.count("0") && carries.get("0").num() == 1;
-    if (carries.dict.count("0") && !area) throw Bad("type on a path isn't supported yet");
+    bool const on_path = carries.dict.count("0") && carries.get("0").num() == 2;
+    if (carries.dict.count("0") && !area && !on_path) throw Bad("unsupported text frame kind");
     for (auto const &[k, value] : frame.dict) {
-        if (k != "2" && k != "97" && k != (area ? "1" : "0")) throw Bad("text frame has unsupported geometry or options");
+        if (k != "2" && k != "97" && k != (area || on_path ? "1" : "0")) throw Bad("text frame has unsupported geometry or options");
     }
     for (auto const &[k, value] : carries.dict) {
-        if (k == "2" || (area && (k == "0" || k == "7" || k == "8" || k == "10"))) continue;
+        if (k == "2" || (area && (k == "0" || k == "7" || k == "8" || k == "10")) ||
+            (on_path && (k == "0" || k == "6" || k == "11"))) continue;
         throw Bad(area ? "area type has options that aren't supported yet" : "area/path text isn't supported yet");
     }
     auto matrix = carries.dict.count("2") ? carries.get("2").nums(6) : std::vector<double>{1, 0, 0, 1, 0, 0};
@@ -688,6 +690,32 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     out.to_art = Geom::Affine(matrix[0], -matrix[1], matrix[2], -matrix[3],
                               matrix[4] - CANVAS_CENTRE + center.x(), CANVAS_CENTRE + center.y() - matrix[5]);
     if (area) out.frame = frame_outline(frame.get("1").get("0"));
+    if (on_path) {
+        // Only the default option values saved by Illustrator's ordinary pathText
+        // control are understood. Unknown effects, flips and alignments fail closed.
+        if (auto const it = carries.dict.find("11"); it != carries.dict.end()) {
+            if (it->second.kind != Value::Dictionary) throw Bad("invalid path type options");
+            for (auto const &[key, value] : it->second.dict) {
+                bool const known_default = ((key == "4" || key == "18") && value.num() == 10) ||
+                    (key == "22" && value.num() == 0.025) ||
+                    ((key == "6" || key == "7") && !value.flag());
+                if (!known_default) throw Bad("nondefault path type options aren't supported yet");
+            }
+        }
+        PathText path;
+        // Even a straight Illustrator segment retains cubic parameterisation:
+        // t=0.25 is 15.625% along a cubic with handles at its endpoints.
+        path.outline = frame_outline(frame.get("1").get("0"), true);
+        auto const bounds = carries.get("6").nums(2);
+        if (path.outline.size() != 1 || bounds[0] < 0 || bounds[1] <= bounds[0] ||
+            bounds[1] > path.outline[0].size()) throw Bad("invalid or wrapped path type interval");
+        auto const &geometry = path.outline[0];
+        path.start = bounds[0] == 0 ? 0 : geometry.portion(0, bounds[0]).length(0.001);
+        path.end = geometry.portion(0, bounds[1]).length(0.001);
+        if (!std::isfinite(path.start) || !std::isfinite(path.end) || path.end - path.start < 1e-6 || path.end > 1e9)
+            throw Bad("invalid path type length");
+        out.path = std::move(path);
+    }
     // A frame nothing was typed in has no layout: there is nothing of it to draw.
     if (anchors.empty() && std::all_of(text.begin(), text.end(), [](char c) { return c == '\r' || c == '\n' || c == 3 || c == 0; })) {
         out.empty = true;
@@ -695,7 +723,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     }
     if (text.empty()) throw Bad("invalid or oversized story text");
     if (anchors.size() != 1) throw Bad("text has an unsupported layout frame");
-    auto const anchor = anchors[0]->get("0").get("0").nums(2);
+    auto const anchor = on_path ? std::vector<double>{0, 0} : anchors[0]->get("0").get("0").nums(2);
     std::vector<Value const *> lines;
     std::vector<Laid> laid;
     if (area) {
@@ -793,7 +821,13 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         auto offset = line->dict.count("0") ? line->get("0").get("0").nums(2) : std::vector<double>{0, 0};
         auto segment = found.dict.count("0") ? found.get("0").get("0").nums(2) : std::vector<double>{0, 0};
-        out.lines.push_back({Geom::Point(anchor[0] + offset[0] + segment[0], anchor[1] + offset[1]), {}});
+        if (on_path) {
+            if (offset[0] != 0 || offset[1] != 0 || segment[1] != 0)
+                throw Bad("path type has unsupported layout offsets");
+            out.lines.push_back({Geom::Point(0, 0), {}});
+        } else {
+            out.lines.push_back({Geom::Point(anchor[0] + offset[0] + segment[0], anchor[1] + offset[1]), {}});
+        }
     }
     struct Run { std::size_t end; TextStyle style; };
     std::vector<Run> runs;
@@ -841,6 +875,13 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         if (r.style.horizontal_scale != hscale || r.style.vertical_scale != vscale)
             throw Bad("text has different character scales within one story, not supported yet");
     }
+    if (on_path) {
+        if (hscale != 1 || vscale != 1) throw Bad("scaled characters on a path aren't supported yet");
+        for (auto const &r : runs) {
+            if (r.style.baseline_shift != 0 || r.style.position || r.style.underline || r.style.strikethrough)
+                throw Bad("shifted or decorated path type isn't supported yet");
+        }
+    }
     // A common character scale is an editable affine on the story. Compensate
     // explicit baseline positions so glyphs scale without moving their anchors.
     out.to_art = Geom::Scale(hscale, vscale) * out.to_art;
@@ -881,6 +922,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         } else if (cp == '\r' || cp == 3 || cp == '\n') {
             if (!area) ++line;
         } else {
+            if (on_path && (cp == '\t' || reads_from_the_right(cp)))
+                throw Bad("tabs or bidirectional type on a path aren't supported yet");
             if (cp == '\t') {
                 if (line >= out.lines.size()) throw Bad("tab line layout ends early");
                 auto const &p = paragraphs[paragraph];
@@ -943,6 +986,13 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     }
     // Paragraphs with nothing in them past the frame's end hold nothing to keep.
     if (out.overflow.find_first_not_of('\n') == std::string::npos) out.overflow.clear();
+
+    if (on_path) {
+        if (out.lines.size() != 1 || paragraphs.size() != 1 || out.rtl || paragraphs[0].justified)
+            throw Bad("multiple or justified paragraphs on a path aren't supported yet");
+        out.lines[0].alignment = paragraphs[0].alignment;
+        return out;
+    }
 
     // Every line starts where its glyphs do. Centred or right-aligned lines are anchored at
     // their middle or right end instead, to stay there when edited. A text object has one
@@ -1084,6 +1134,9 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
 bool same_drawing(PointText const &a, PointText const &b)
 {
     if (a.empty != b.empty || a.rtl != b.rtl || a.unordered != b.unordered || a.lines.size() != b.lines.size()) return false;
+    if (bool(a.path) != bool(b.path)) return false;
+    if (a.path && (a.path->start != b.path->start || a.path->end != b.path->end ||
+                   a.path->outline * a.to_art != b.path->outline * b.to_art)) return false;
     auto same_style = [](TextStyle const &s, TextStyle const &t) {
         return s.font == t.font && s.design == t.design && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&
                s.fill_opacity == t.fill_opacity && s.stroke_opacity == t.stroke_opacity &&

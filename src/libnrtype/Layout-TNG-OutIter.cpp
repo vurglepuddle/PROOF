@@ -386,6 +386,12 @@ Geom::Rect Layout::characterBoundingBox(iterator const &it, double *rotation) co
     Geom::Point top_left, bottom_right;
     unsigned char_index = it._char_index;
 
+    if (_path_fitted && char_index >= _characters.size()) {
+        Geom::Point cursor; double height, angle;
+        queryCursorShape(it, cursor, height, angle);
+        if (rotation) *rotation = angle;
+        return Geom::Rect(cursor - Geom::Point(0, height), cursor);
+    }
     if (_path_fitted) {
         double cluster_half_width = 0.0;
         for (int glyph_index = _characters[char_index].in_glyph ; glyph_index >= 0 && _glyphs.size() != glyph_index ; glyph_index++) {

@@ -674,7 +674,8 @@ Glib::ustring Layout::dumpAsText() const
 }
 #endif //DEBUG_TEXTLAYOUT_DUMPASTEXT
 
-void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path)
+void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
+                            std::optional<std::pair<double, double>> const &active)
 {
     double offset = 0.0;
 
@@ -713,6 +714,14 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path)
         }
     }
 
+    // Geometry and length are shared by every cluster, including long edited stories.
+    auto const pathv = path.MakePathVector();
+    if (pathv.empty()) return;
+    bool const closed = pathv[0].closed();
+    double const path_length = const_cast<Path &>(path).Length();
+
+    // A hidden cluster must not be undone by a later visible one on a closed path.
+    bool truncated = false;
     for (unsigned char_index = 0 ; char_index < _characters.size() ; ) {
         Span const &span = _characters[char_index].span(this);
 
@@ -732,14 +741,7 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path)
         }
 
         double start_offset = offset + span.x_start + _characters[char_index].x;
-        Geom::PathVector pathv = path.MakePathVector();
-        if (pathv.empty()) {
-            return;
-        }
-
-        if (pathv[0].closed()) {
-            start_offset = const_cast<Path&>(path).Length() + start_offset;
-        }
+        if (closed) start_offset += path_length;
 
         double cluster_width = 0.0;
         size_t const current_cluster_glyph_index = _characters[char_index].in_glyph;
@@ -757,13 +759,16 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path)
         int unused = 0;
         double midpoint_offset = (start_offset + end_offset) * 0.5;
 
-        if (auto const path_len = const_cast<Path &>(path).Length(); pathv[0].closed() && path_len > Geom::EPSILON) {
-            midpoint_offset = std::fmod((start_offset + end_offset) * 0.5, path_len);
+        if (closed && path_length > Geom::EPSILON) {
+            midpoint_offset = std::fmod((start_offset + end_offset) * 0.5, path_length);
         }
 
         // as far as I know these functions are const, they're just not marked as such
         Path::cut_position *midpoint_otp = const_cast<Path&>(path).CurvilignToPosition(1, &midpoint_offset, unused);
-        if (midpoint_offset >= 0.0 && midpoint_otp != nullptr && midpoint_otp[0].piece >= 0) {
+        double const unwrapped_midpoint = (start_offset + end_offset) * 0.5 -
+            (closed ? path_length : 0);
+        bool const within_active = !active || (unwrapped_midpoint >= active->first && unwrapped_midpoint <= std::min(active->second, path_length));
+        if (within_active && midpoint_offset >= 0.0 && midpoint_otp != nullptr && midpoint_otp[0].piece >= 0) {
             Geom::Point midpoint;
             Geom::Point tangent;
             const_cast<Path&>(path).PointAndTangentAt(midpoint_otp[0].piece, midpoint_otp[0].t, midpoint, tangent);
@@ -818,10 +823,14 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path)
                     _glyphs[glyph_index].rotation += rotation;
                 }
             }
-            _input_truncated = false;
         } else {  // outside the bounds of the path: hide the glyphs
+            // PDF output consumes the glyph visibility flag, whereas canvas and
+            // editing use the character's glyph reference. Keep both in sync.
+            for (size_t glyph_index = current_cluster_glyph_index; glyph_index < next_cluster_glyph_index; ++glyph_index) {
+                _glyphs[glyph_index].hidden = true;
+            }
             _characters[char_index].in_glyph = -1;
-            _input_truncated = true;
+            truncated = true;
         }
         g_free(midpoint_otp);
 
@@ -833,6 +842,7 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path)
         _span.x_end += offset;
     }
 
+    _input_truncated = truncated;
     _path_fitted = &path;
 }
 
@@ -845,7 +855,8 @@ Geom::PathVector Layout::convertToCurves(iterator const &from_glyph, iterator co
 {
     Geom::PathVector curve;
 
-    for (int glyph_index = from_glyph._glyph_index ; glyph_index < to_glyph._glyph_index ; glyph_index++) {
+    for (int glyph_index = std::max(0, from_glyph._glyph_index) ; glyph_index < to_glyph._glyph_index ; glyph_index++) {
+        if (_characters[_glyphs[glyph_index].in_character].in_glyph == -1) continue;
         Span const &span = _glyphs[glyph_index].span(this);
         Geom::Affine glyph_matrix = _glyphs[glyph_index].transform(*this);
         Geom::PathVector const *pathv = span.font->PathVector(_glyphs[glyph_index].glyph);
@@ -863,7 +874,8 @@ Geom::PathVector Layout::convertToSVG(iterator const &from_glyph, iterator const
 {
     Geom::PathVector curve;
 
-    for (int glyph_index = from_glyph._glyph_index; glyph_index < to_glyph._glyph_index; glyph_index++) {
+    for (int glyph_index = std::max(0, from_glyph._glyph_index); glyph_index < to_glyph._glyph_index; glyph_index++) {
+        if (_characters[_glyphs[glyph_index].in_character].in_glyph == -1) continue;
         Span const &span = _glyphs[glyph_index].span(this);
         Geom::Affine glyph_matrix = _glyphs[glyph_index].transform(*this);
         auto glyph_id = _glyphs[glyph_index].glyph;

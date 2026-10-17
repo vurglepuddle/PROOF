@@ -79,17 +79,22 @@ struct TextLine
     std::optional<Text::LeftTabStops> tabs; ///< Live left-aligned paragraph tabs.
 };
 
+/// Ordinary path type retains its full geometry and active text interval.
+struct PathText
+{
+    Geom::PathVector outline; ///< Full editable path, in text layout space.
+    double start = 0, end = 0; ///< Active portion, as distances along that path.
+};
+
 /**
- * A story as Illustrator laid it out: point type, or area type in one frame.
- *
- * Area type keeps Illustrator's own lines: the text document records where each line
- * starts and how many characters it holds, so a paragraph breaks where it broke there.
- * The frame is kept beside the lines; nothing here flows text into it again.
+ * A story as Illustrator laid it out: point, area, or ordinary path type in one frame.
+ * Area type retains recorded line breaks; path type stays attached to its full path.
  */
 struct PointText
 {
     Geom::Affine to_art; ///< Text layout (y down) to art space (y up).
     std::vector<TextLine> lines;
+    std::optional<PathText> path; ///< Ordinary baseline-aligned type on a path.
     bool area = false;      ///< Area type.
     bool rtl = false;       ///< Its paragraphs read from right to left (Hebrew, Arabic).
     /// It has letters of a script read from the right that Illustrator set from the left,
