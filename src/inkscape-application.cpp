@@ -52,6 +52,7 @@
 #include <giomm/file.h>
 #include <glibmm/i18n.h>  // Internationalization
 #include <gtkmm/application.h>
+#include <gtkmm/window.h>
 
 #include "inkscape-version-info.h"
 #include "inkscape-window.h"
@@ -105,6 +106,7 @@
 #include "ui/dialog/startup.h"
 #include "ui/error-reporter.h"
 #include "ui/interface.h"                 // sp_ui_error_dialog
+#include "ui/startup-splash.h"
 #include "ui/tools/shortcuts.h"
 #include "ui/widget/desktop-widget.h"
 #include "util/scope_exit.h"
@@ -780,6 +782,7 @@ InkscapeApplication::InkscapeApplication()
     // Interface
     _start_main_option_section(_("Interface"));
     gapp->add_main_option_entry(T::OptionType::BOOL,     "with-gui",               'g', N_("With graphical user interface (required by some actions)"),                 "");
+    gapp->add_main_option_entry(T::OptionType::BOOL,     "no-splash",             '\0', N_("Do not show the PROOF loading splash"),                                              "");
     gapp->add_main_option_entry(T::OptionType::BOOL,     "batch-process",         '\0', N_("Close GUI after executing all actions"),                                    "");
     _start_main_option_section();
     gapp->add_main_option_entry(T::OptionType::BOOL,     "shell",                 '\0', N_("Start Inkscape in interactive shell mode"),                                 "");
@@ -1006,6 +1009,15 @@ void InkscapeApplication::process_document(SPDocument *document, std::string out
  */
 void InkscapeApplication::on_startup()
 {
+    // Local options have already resolved GUI/headless mode, and forwarded launches
+    // never reach on_startup. Batch automation should not show a splash either.
+    if (_with_gui && !_no_splash && !_batch_process && !_use_shell && !_auto_export &&
+        _command_line_actions_input.empty()) {
+        _startup_splash = std::make_unique<Inkscape::UI::StartupSplash>(
+            Glib::build_filename(get_inkscape_datadir(), "inkscape", "screens", "proof-startup.png"));
+        _watchStartupSplash();
+    }
+
     // Autosave
     Inkscape::AutoSave::getInstance().init(this);
 
@@ -1013,6 +1025,7 @@ void InkscapeApplication::on_startup()
     Inkscape::Application::create(_with_gui);
 
     // Extensions
+    if (_startup_splash) _startup_splash->set_message(_("Loading tools and extensions\u2026"));
     if (_no_extensions) {
         Inkscape::Extension::shallow_init();
     } else {
@@ -1052,6 +1065,9 @@ void InkscapeApplication::on_startup()
 // Open document window with default document or pipe. Either this or on_open() is called.
 void InkscapeApplication::on_activate()
 {
+    auto splash_guard = scope_exit([this] { _finishStartupSplash(); });
+    if (_startup_splash) _startup_splash->set_message(_("Preparing workspace\u2026"));
+
     std::string output;
     // Create new document, either from pipe or from template.
     SPDocument *document = nullptr;
@@ -1110,6 +1126,9 @@ void InkscapeApplication::windowClose(InkscapeWindow *window)
 // type_vec_files == std::vector<Glib::RefPtr<Gio::File> >
 void InkscapeApplication::on_open(Gio::Application::type_vec_files const &files, Glib::ustring const &hint)
 {
+    auto splash_guard = scope_exit([this] { _finishStartupSplash(); });
+    if (_startup_splash) _startup_splash->set_message(_("Opening document\u2026"));
+
     // on_activate isn't called in this instance
     if(_pdf_poppler)
         INKSCAPE.set_pdf_poppler(_pdf_poppler);
@@ -1494,6 +1513,7 @@ InkscapeApplication::on_handle_local_options(const Glib::RefPtr<Glib::VariantDic
     }
 
     _no_extensions = options->contains("no-extensions");
+    _no_splash = options->contains("no-splash");
 
     // Can't do this until after app is registered!
     // if (options->contains("action-list")) {
@@ -2060,6 +2080,34 @@ void InkscapeApplication::init_extension_action_data() {
         app->get_action_effect_data().add_data(aid, is_filter, sub_menu_list, menu_name);
         g_free(ellipsized_name);
     }
+}
+
+void InkscapeApplication::_finishStartupSplash()
+{
+    if (_startup_splash) {
+        // Let GTK show the editor (or welcome/import/error window) before removing
+        // the indicator. Also reached on failed or cancelled document opens.
+        Glib::signal_idle().connect_once([this] {
+            _startup_splash.reset();
+            _splash_windows.disconnect();
+        }, Glib::PRIORITY_LOW);
+    }
+}
+
+void InkscapeApplication::_watchStartupSplash()
+{
+    // The splash covers PROOF's own loading. The first window PROOF shows ends it: the
+    // editor, the welcome screen, or a dialog that asks about a file being opened (the PDF
+    // import dialog runs inside on_open, before it returns). The owner, 2026-10-17: "it
+    // loads > then you load whatever files".
+    auto toplevels = Gtk::Window::get_toplevels();
+    _splash_windows = toplevels->signal_items_changed().connect([this, toplevels](guint at, guint, guint added) {
+        for (guint i = at; i < at + added; ++i) {
+            if (auto window = std::dynamic_pointer_cast<Gtk::Window>(toplevels->get_object(i))) {
+                window->signal_map().connect([this] { _finishStartupSplash(); });
+            }
+        }
+    });
 }
 
 /// Create and show the start screen. It will self-destruct.

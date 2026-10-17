@@ -187,6 +187,17 @@ StartScreen::StartScreen()
     enlist_recent_files();
     enlist_keys();
     filter_themes(themes);
+    // PROOF: a profile from before PROOF's theme keeps Inkscape's default, "colorful", which
+    // nobody chose in PROOF: the welcome screen showed it although PROOF heads the list (the
+    // owner, 2026-10-17). Move such a profile to PROOF's theme once; Colorful chosen later stays.
+    bool adopt_proof_theme = false;
+    if (!prefs->getBool("/options/boot/proofThemeAdopted", false)) {
+        prefs->setBool("/options/boot/proofThemeAdopted", true);
+        if (prefs->getString("/options/boot/theme") == "colorful") {
+            prefs->setString("/options/boot/theme", "proof");
+            adopt_proof_theme = true;
+        }
+    }
     set_active_combo("themes", prefs->getString("/options/boot/theme"));
     set_active_combo("canvas", prefs->getString("/options/boot/canvas"));
 
@@ -214,6 +225,7 @@ StartScreen::StartScreen()
     keys->signal_changed().connect(sigc::mem_fun(*this, &StartScreen::keyboard_changed));
     themes->signal_changed().connect(sigc::mem_fun(*this, &StartScreen::theme_changed));
     dark_toggle->property_active().signal_changed().connect(sigc::mem_fun(*this, &StartScreen::theme_changed));
+    if (adopt_proof_theme) theme_changed(); // Apply the theme the list now shows.
     save->signal_clicked().connect(sigc::bind(sigc::mem_fun(*this, &StartScreen::notebook_next), save));
 
     // "Supported by You" tab

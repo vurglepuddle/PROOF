@@ -38,6 +38,9 @@ class SPDesktop;
 
 namespace Inkscape {
 class Selection;
+namespace UI {
+class StartupSplash;
+}
 namespace UI::Dialog {
 class StartScreen;
 }
@@ -187,6 +190,12 @@ protected:
     void _start_main_option_section(const Glib::ustring& section_name = "");
     
 private:
+    std::unique_ptr<Inkscape::UI::StartupSplash> _startup_splash;
+    sigc::connection _splash_windows;
+    bool _no_splash = false;
+    void _finishStartupSplash();
+    void _watchStartupSplash();
+
     void init_extension_action_data();
     std::vector<Glib::RefPtr<Gio::SimpleAction>> _effect_actions;
     bool _no_extensions = false;

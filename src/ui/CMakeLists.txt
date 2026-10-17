@@ -21,6 +21,7 @@ target_sources(inkscape_base PRIVATE
 	simple-pref-pusher.cpp
 	shortcuts.cpp
 	snapshot-utils.cpp
+	startup-splash.cpp
 	svg-renderer.cpp
 	syntax.cpp
 	themes.cpp
