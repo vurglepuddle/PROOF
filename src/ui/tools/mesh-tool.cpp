@@ -34,6 +34,8 @@
 
 #include "object/sp-defs.h"
 #include "object/sp-mesh-gradient.h"
+#include "object/mesh-object.h"
+#include "object/sp-path.h"
 #include "object/sp-namedview.h"
 #include "object/sp-text.h"
 #include "style.h"
@@ -834,7 +836,8 @@ void MeshTool::new_default()
         Inkscape::XML::Document *xml_doc = document->getReprDoc();
         SPDefs *defs = document->getDefs();
 
-        auto items= selection->items();
+        auto items = selection->items_vector();
+        std::vector<SPItem *> mesh_items;
         for(auto item : items){
 
             //FIXME: see above
@@ -860,8 +863,17 @@ void MeshTool::new_default()
                                       ((fill_or_stroke_pref == Inkscape::FOR_FILL) ? "fill":"stroke"),
                                       mg, isText);
 
+            if (fill_or_stroke_pref == Inkscape::FOR_FILL &&
+                prefs->getInt("/tools/mesh/mesh_geometry", SP_MESH_GEOMETRY_NORMAL) == SP_MESH_GEOMETRY_NORMAL) {
+                if (auto path = Inkscape::MeshObject::create(item, mg)) {
+                    item = path;
+                }
+            }
+            mesh_items.push_back(item);
+
             item->requestModified(SP_OBJECT_MODIFIED_FLAG|SP_OBJECT_STYLE_MODIFIED_FLAG);
         }
+        selection->setList(mesh_items);
 
         if (css) {
             sp_repr_css_attr_unref(css);
