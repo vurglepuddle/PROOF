@@ -25,6 +25,7 @@
  */
 
 #include "sp-tspan.h"
+#include "libnrtype/tab-stops.h"
 
 #include <glibmm/i18n.h>
 #include <glibmm/regex.h>
@@ -172,6 +173,7 @@ Inkscape::XML::Node* SPTSpan::write(Inkscape::XML::Document *xml_doc, Inkscape::
         repr = xml_doc->createElement("svg:tspan");
     }
 
+    Inkscape::Text::LeftTabStops::copy_attributes(repr, getRepr());
     this->attributes.writeTo(repr);
 
     if ( flags&SP_OBJECT_WRITE_BUILD ) {

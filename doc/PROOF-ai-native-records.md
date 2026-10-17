@@ -2007,3 +2007,110 @@ the finer second drawing. Test:
    2026-10-11.)
 4. **Writer** extensions, in this order: gradients, images, text. They use the
    same tables, and the reader checks the writer's output alongside Illustrator.
+
+## Left-aligned paragraph tabs (2026-10-17)
+
+Adobe's [Tabs documentation](https://helpx.adobe.com/illustrator/desktop/measure-and-align/grids-and-guides/align-graphic-objects-with-tabs.html)
+defines paragraph stops and left, centre, right and character alignment.
+The first implementation reads **left-aligned stops**, including a default
+interval, explicit stops, paragraph indents and different rulers in different
+paragraphs. Area type retains its recorded lines, as before; this does not
+add area-text reflow or a Tabs panel.
+
+**Records.** Small controls saved by Illustrator 29.2.1 with ArialMT
+(Arial Regular 7.00, 2,048 units/em) establish the keys: paragraph feature
+**31** is the default
+interval in points; **30** is a dictionary whose **0** array holds stops.
+Each stop's **0** is its position in points, **1** its alignment (0 left,
+1 centre, 2 right, 3 character), **2** its leader string, and **3** its
+alignment character. Stops inherit through the existing bounded paragraph
+style resolver, then the text document's defaults. A missing interval uses
+36 points. Empty stop dictionaries mean defaults alone.
+
+The ruler's zero is the layout frame F's anchor, rather than the first
+indented glyph. After the last explicit stop, defaults resume on the original
+interval grid, not a grid beginning at that explicit stop. The controls and
+the ten copied tab-stop cases establish these forms; the owner's 871-file
+cached-record census finds exactly one tabbed story, `6724e115c1`. No original
+artwork was checked.
+
+**Editable layout.** Each imported line retains its tab characters and
+carries `proof:tab-origin`, `proof:tab-interval` and `proof:tab-stops` (a
+space-separated list of left-stop positions). Common character scaling is
+compensated in the ruler too. The layout engine measures each tab from the
+current pen position; it is a selectable character with an advance and no
+drawn glyph. Illustrator chooses a stop before the preceding letter's
+tracking, then applies its letter-to-space kerning and tracking after the advance. A tab
+itself has no tracking. This explains why consecutive tabs after a kerned
+letter can reach a different stop from two leading tabs. Text edits keep
+the fields aligned. Ruler-attribute changes invalidate layout, and the attributes survive writing and reopening a text
+or span. These are PROOF SVG extensions; other SVG readers need not honour
+them.
+
+The font preflight excludes a tab from missing-glyph detection: it must not
+mark an otherwise installed font as incomplete and remove the story from
+the page comparison. The edit/reopen test explicitly checks that the story
+is still compared. Ordinary text without these tab attributes keeps its
+existing layout behaviour.
+
+**Bounds and refusals.** At most 1,024 finite, strictly increasing nonnegative
+explicit stops; finite positive default spacing and a finite origin.
+Malformed/unknown active tab settings refuse the import. Right, centre or
+character stops, leaders and non-left-aligned or bidirectional paragraphs
+still refuse with a specific reason. Existing unsupported frame/segment
+rules still apply. The layout extension currently applies to horizontal left-to-right, unwrapped
+text; imported area text uses its already recorded individual lines.
+
+**Focused checks.** Six targeted tests cover UTF-16 text, paragraph-style
+inheritance, common scales, two area paragraphs, edits, ruler changes,
+glyph/character counts, selection rectangles, caret movement, tab-only
+stories, safe bounds after attaching type to a path, reopening, kerning and
+tracking. The importer has 115 tests including its opt-in corpus skip; the reader has 68 including its
+opt-in corpus skip. Thirteen independent synthetic copies: eight supported
+forms open natively, five unsupported forms fall back for the expected
+reasons, no substituted fonts. Three further independent area/scale controls,
+a seven-story leading/consecutive-tab control and four independent tracking
+controls test the same positions against Illustrator's PDF and PROOF's own
+exported PDF. Exported type remains vector text with embedded fonts and
+extractable contents. Final milestone validation is recorded below.
+
+Ten affected copied cases: eight partial-native, two (`72ffd60cdf`,
+`fa084545fa`) now parse their tabs but still fall back at the unchanged
+appearance gate (about 1.5% lightness on artboard 1). The cause of that
+remaining difference is unestablished. Of the eight native files, five
+substitute fonts in at least one tabbed story, so that type's original
+appearance is not qualified. `e24cb1edf7` has 36 missing linked pictures;
+about 48.5% of one artboard is excluded for those links. `5906b294bd` has
+seven missing links and one other substituted-font story; its maximum
+excluded area is about 82%. `6724e115c1` substitutes fonts in two other text
+objects. These exclusions remain unqualified. The counts describe reader
+opening and the stated comparison scope, not whole-document appearance or
+complete editability certification.
+
+The extra upstream ligature/cursor suite initially fails six of twelve with
+system Fontconfig substituting the requested Arabic/CJK fonts. All twelve
+pass in an isolated test profile with the repository's rendering-test fonts
+and Noto Sans CJK JP at `notofonts/noto-cjk` revision
+`f8d157532fbfaeda587e826d4cd5b21a49186f7c`. No system/Illustrator font
+installation or corpus font environment was changed.
+
+The eleven standard suites pass (importer 115 and reader 68, one opt-in corpus
+skip each); interchange/export checks pass 23, 32, 59, 44, 91 and 43
+(`artifacts/focused-suites/20261017-033732`). After the final selection and
+bounds fix for characters without glyphs, the complete importer (114 passes, one skip), reader
+(67 passes, one skip) and isolated ligature/cursor suite (12 passes) were
+rebuilt and rerun. The sixteen native synthetic control documents retain
+vector text in PDF and match both their Illustrator PDFs and PROOF canvas:
+zero unmatched foreground ink beyond the two-pixel tolerance at 144 dpi.
+**Final 871-copy regression:** 860 native (510 partial, 350 unverified),
+11 PDF fallbacks; `6724e115c1` gained, none lost, no errors, timeouts or changed
+inputs. All 859 earlier native cases keep their classification, notes and
+lightness/colour values exactly; the other eleven fallback reasons and
+comparison values are unchanged too. All copies were hash-verified first,
+with the exclusions ledger respected; five larger files remain outside this
+approved under-50-MB subset. One worker, four of sixteen logical CPUs, Below
+Normal priority; 870 comparisons executed and one valid comparison reused,
+10 min 19 s. Run: `artifacts/ai-native-workbench/runs/20261017-004520-233642`;
+authoritative SHA-256 comparison: `artifacts/round23-tabs/owner-comparison-final.json`.
+The original 879-file milestone and excluded cases remain separate.
+No real mouse/keyboard trial was run; the last live baseline is still 2026-10-14.

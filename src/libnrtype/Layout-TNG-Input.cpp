@@ -19,6 +19,8 @@
 #endif
 
 #include "Layout-TNG.h"
+#include "object/sp-object.h"
+#include "xml/node.h"
 #include "font-instance.h"
 #include "style-text.h"
 #include "svg/svg-length.h"
@@ -101,6 +103,16 @@ void Layout::appendText(Glib::ustring const &text,
         }
         auto const *parent = holder->object ? holder->object->parent : nullptr;
         holder = parent && is_part_of_text_subtree(parent) ? parent->style : nullptr;
+    }
+    // The nearest paragraph ruler survives nested style spans and text edits.
+    // Ignore malformed XML settings as a whole.
+    for (auto const *holder = source; holder; holder = holder->parent) {
+        auto const *repr = holder->getRepr();
+        if (repr && repr->attribute("proof:tab-interval")) {
+            new_source->tabs = LeftTabStops::read(repr);
+            break;
+        }
+        if (holder != source && !is_part_of_text_subtree(holder)) break;
     }
     auto const transform = style->text_transform.computed;
     // A word can run on from the text before this one (a span in the middle of a word).

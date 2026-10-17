@@ -14,6 +14,7 @@
 
 #include "ai-native-reader.h"
 #include "type-settings.h"
+#include "libnrtype/tab-stops.h"
 
 namespace Inkscape::Extension::Internal::AiNative {
 
@@ -75,6 +76,7 @@ struct TextLine
     /// Which end of the line `origin` is: 0 left, 1 right, 2 the middle, whichever way the
     /// paragraph reads. It preserves the editable anchor.
     unsigned alignment = 0;
+    std::optional<Text::LeftTabStops> tabs; ///< Live left-aligned paragraph tabs.
 };
 
 /**

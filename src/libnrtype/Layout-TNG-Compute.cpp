@@ -53,7 +53,7 @@ bool Layout::Calculator::_measureUnbrokenSpan(ParagraphInfo const &para,
                                               BrokenSpan *span,
                                               BrokenSpan *last_break_span,
                                               BrokenSpan *last_emergency_break_span,
-                                              double maximum_width) const
+                                              double maximum_width, double inline_position) const
 {
     TRACE(("      start _measureUnbrokenSpan %g\n", maximum_width));
     span->setZero();
@@ -102,6 +102,15 @@ bool Layout::Calculator::_measureUnbrokenSpan(ParagraphInfo const &para,
         // Measure the precomputed flow from para.input_items
         span->end.iter_span++;  // for now, skip to the next span
         return true;
+    }
+
+    if (span->start.iter_span->tab) {
+        auto const tracking = span->start.iter_span->tab_tracking;
+        span->width = text_source->tabs->next(inline_position + span->width - tracking) - inline_position +
+                      span->start.iter_span->tab_kerning + tracking;
+        span->end_glyph_index = span->start.iter_span->glyph_string->num_glyphs;
+        span->end.increment();
+        return span->width <= maximum_width;
     }
 
     // a normal span going with a normal block-progression
@@ -498,7 +507,17 @@ void Layout::Calculator::_outputLine(ParagraphInfo const &para,
             new_span.x_start = current_x;
             new_span.y_offset = _y_offset;  // Offset from baseline due to 'y' and 'dy' attributes (used to simulate multiline text).
 
-            if (_flow._input_stream[unbroken_span.input_index]->Type() == TEXT_SOURCE) {
+            if (unbroken_span.tab) {
+                Layout::Character character;
+                character.the_char = '\t';
+                character.in_span = _flow._spans.size();
+                character.x = 0;
+                character.in_glyph = -1;
+                character.char_attributes = para.char_attributes[unbroken_span.char_index_in_para];
+                _flow._characters.push_back(character);
+                current_x += it_span->width;
+                x_in_span_last = it_span->width;
+            } else if (_flow._input_stream[unbroken_span.input_index]->Type() == TEXT_SOURCE) {
                 // the span is set up, push the glyphs and chars
 
                 InputStreamTextSource const *text_source = static_cast<InputStreamTextSource const *>(_flow._input_stream[unbroken_span.input_index]);
@@ -1340,6 +1359,12 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                 new_span.input_stream_first_character = Glib::ustring::const_iterator(text_source->laid_begin.base() + span_start_byte_in_source);
                 new_span.char_index_in_para = char_index_in_para + char_index_in_source;
                 new_span.input_index = input_index;
+                // Split tabs into individual spans; their width depends on the pen.
+                bool const tabbed = text_source->tabs && para->direction == LEFT_TO_RIGHT &&
+                                    (_block_progression == TOP_TO_BOTTOM || _block_progression == BOTTOM_TO_TOP) &&
+                                    _flow._input_wrap_shapes.empty();
+                new_span.tab = tabbed && *new_span.input_stream_first_character == '\t';
+                if (new_span.tab) new_span.text_bytes = 1;
 
                 // cut at <tspan> attribute changes as well
                 new_span.x._set = false;
@@ -1374,7 +1399,11 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                     if (iter_text.base() - new_span.input_stream_first_character.base() >= (int)new_span.text_bytes) break;
                     if (   i >= text_source->x.size() && i >= text_source->y.size()
                         && i >= text_source->dx.size() && i >= text_source->dy.size()
-                        && i >= text_source->rotate.size() && i >= text_source->reduced.size()) break;
+                        && i >= text_source->rotate.size() && i >= text_source->reduced.size() && !tabbed) break;
+                    if (tabbed && *iter_text == '\t') {
+                        new_span.text_bytes = iter_text.base() - new_span.input_stream_first_character.base();
+                        break;
+                    }
                     // PROOF: and where made-up small capitals begin or end, which are another size.
                     if (   text_source->sizeScale(i) != text_source->sizeScale(char_index_in_source)
                         || (text_source->x.size()  > i && text_source->x[i]._set)
@@ -1551,6 +1580,40 @@ unsigned Layout::Calculator::_buildSpansForPara(ParagraphInfo *para) const
                         new_span.line_height_multiplier = LINE_HEIGHT_NORMAL;
                     }
                     TRACE(("add style init span %lu\n", para->unbroken_spans.size()));
+                }
+                if (new_span.tab && !para->unbroken_spans.empty()) {
+                    auto const &previous = para->unbroken_spans.back();
+                    // Tracking belongs to the preceding character, not the tab.
+                    // Illustrator chooses the stop before that tracking, then
+                    // retains it in the pen position after the tab advance.
+                    if (!previous.tab && _flow._input_stream[previous.input_index]->Type() == TEXT_SOURCE) {
+                        auto const *source = static_cast<InputStreamTextSource const *>(_flow._input_stream[previous.input_index]);
+                        new_span.tab_tracking = source->style->letter_spacing.computed * _flow.getTextLengthMultiplierDue();
+                    }
+                    // Illustrator advances to the ruler stop before applying the
+                    // preceding letter's kerning with a space. This also explains
+                    // why A-tab-tab and two leading tabs can reach different stops.
+                    if (previous.pango_item_index >= 0 && previous.font_size == new_span.font_size &&
+                        para->pango_items[previous.pango_item_index].font == para->pango_items[pango_item_index].font) {
+                        auto const *begin = para->text.data();
+                        auto const *at = begin + byte_index_in_para;
+                        auto const *before = g_utf8_find_prev_char(begin, at);
+                        if (before) {
+                            std::string letter(before, at);
+                            if (letter == "\t") letter = " ";
+                            auto width = [&](std::string const &value) {
+                                auto *glyphs = pango_glyph_string_new();
+                                pango_shape_full(value.data(), value.size(), value.data(), value.size(),
+                                                 &para->pango_items[pango_item_index].item->analysis, glyphs);
+                                double sum = 0;
+                                for (int i = 0; i < glyphs->num_glyphs; ++i) sum += glyphs->glyphs[i].geometry.width;
+                                pango_glyph_string_free(glyphs);
+                                return sum;
+                            };
+                            new_span.tab_kerning = (width(letter + " ") - width(letter) - width(" ")) *
+                                new_span.font_size / (PANGO_SCALE * _font_factory_size_multiplier);
+                        }
+                    }
                 }
                 para->unbroken_spans.push_back(new_span);
 
@@ -1772,7 +1835,9 @@ bool Layout::Calculator::_buildChunksInScanRun(ParagraphInfo const &para,
             }
         }
 
-        bool span_fitted = _measureUnbrokenSpan(para, &new_span, &last_span_at_break, &last_span_at_emergency_break, new_chunk.scanrun_width - new_chunk.text_width);
+        bool span_fitted = _measureUnbrokenSpan(para, &new_span, &last_span_at_break, &last_span_at_emergency_break,
+                                              new_chunk.scanrun_width - new_chunk.text_width,
+                                              new_chunk.x + new_chunk.text_width);
 
         new_chunk.text_width += new_span.width;
         new_chunk.whitespace_count += new_span.whitespace_count;

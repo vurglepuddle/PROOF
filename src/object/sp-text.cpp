@@ -25,6 +25,7 @@
  */
 
 #include "sp-text.h"
+#include "libnrtype/tab-stops.h"
 
 #include <glibmm/i18n.h>
 
@@ -257,6 +258,7 @@ Inkscape::XML::Node *SPText::write(Inkscape::XML::Document *xml_doc, Inkscape::X
             repr->setAttribute("xml:space", "preserve");
         }
 
+        Inkscape::Text::LeftTabStops::copy_attributes(repr, getRepr());
         std::vector<Inkscape::XML::Node *> l;
 
         for (auto& child: children) {

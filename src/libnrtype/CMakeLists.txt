@@ -10,6 +10,7 @@ set(libnrtype_SRC
 	Layout-TNG-Output.cpp
 	Layout-TNG-Scanline-Makers.cpp
 	style-attachments.cpp
+	tab-stops.cpp
 
 	# -------
 	# Headers
@@ -18,6 +19,7 @@ set(libnrtype_SRC
 	Layout-TNG-Scanline-Maker.h
 	Layout-TNG.h
 	style-attachments.h
+	tab-stops.h
 )
 
 include("${CMAKE_CURRENT_LIST_DIR}/CMakeUnit.txt")

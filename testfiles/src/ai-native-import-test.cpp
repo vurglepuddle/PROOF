@@ -1240,8 +1240,195 @@ TEST_F(AiNativeImportTest, StoriesWithoutCharacterRunsUseDocumentDefaults)
     }
     auto tabs = AN::read_text_document(text_setup(text_document("(A\\tB\\r)", 4)), Geom::Point(100, 50));
     ASSERT_EQ(tabs->stories.size(), 1u);
-    EXPECT_FALSE(tabs->stories[0]);
-    EXPECT_NE(tabs->errors[0].find("tab stops"), std::string::npos);
+    ASSERT_TRUE(tabs->stories[0]) << tabs->errors[0];
+    ASSERT_TRUE(tabs->stories[0]->lines[0].tabs);
+    EXPECT_EQ(tabs->stories[0]->lines[0].tabs->interval, 36);
+}
+
+TEST_F(AiNativeImportTest, ParagraphTabStopsResolveDefaultsStylesAndScale)
+{
+    for (double scale : {0.5, 1.0, 2.0}) {
+        auto document = text_document("(A\\tB\\r)", 4, "ArialMT", "/6 " + std::to_string(scale));
+        document = with_paragraphs(document,
+            "<< /0 << /5 << /31 60 /30 << /0 [ << /0 50 /1 0 /2 () /3 (:) >> ] >> >> >> >>",
+            "<< /1 4 /0 << /0 0 >> >>", "/31 36");
+        auto texts = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+        ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+        auto const &line = texts->stories[0]->lines[0];
+        ASSERT_TRUE(line.tabs);
+        EXPECT_DOUBLE_EQ(line.tabs->origin, 8191.5 / scale);
+        EXPECT_DOUBLE_EQ(line.tabs->interval, 60 / scale);
+        ASSERT_EQ(line.tabs->positions.size(), 1u);
+        EXPECT_DOUBLE_EQ(line.tabs->positions[0], 50 / scale);
+        EXPECT_EQ(line.runs[0].text, "A\tB");
+    }
+}
+
+TEST_F(AiNativeImportTest, ParagraphTabStopsRefuseUnsupportedAndMalformedSettings)
+{
+    for (auto features : {"/31 0", "/31 -36", "/31 1e99", "/30 []", "/30 << /9 [] >>",
+                          "/30 << /0 [ << /0 50 /1 1 >> ] >>",
+                          "/30 << /0 [ << /0 50 /1 2 >> ] >>",
+                          "/30 << /0 [ << /0 50 /1 3 /3 (:) >> ] >>",
+                          "/30 << /0 [ << /0 50 /1 0 /2 (.) >> ] >>",
+                          "/30 << /0 [ << /0 50 /1 0 /4 true >> ] >>",
+                          "/30 << /0 [ << /0 -1 /1 0 >> ] >>",
+                          "/30 << /0 [ << /0 50 /1 0 >> << /0 40 /1 0 >> ] >>",
+                          "/0 1", "/0 2", "/35 1"}) {
+        auto document = with_paragraphs(text_document("(A\\tB\\r)", 4), {},
+            "<< /1 4 /0 << /0 << /5 << " + std::string(features) + " >> >> >> >>");
+        auto texts = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+        ASSERT_EQ(texts->stories.size(), 1u);
+        EXPECT_FALSE(texts->stories[0]) << features;
+        EXPECT_FALSE(texts->errors[0].empty());
+    }
+    auto consecutive = AN::read_text_document(text_setup(text_document("(A\\t\\tB\\r)", 5)), Geom::Point(100, 50));
+    ASSERT_TRUE(consecutive->stories[0]) << consecutive->errors[0];
+    EXPECT_EQ(consecutive->stories[0]->lines[0].runs[0].text, "A\t\tB");
+}
+
+TEST_F(AiNativeImportTest, ParagraphTabsKeepUnicodeAndPerParagraphAreaRulers)
+{
+    auto unicode = AN::read_text_document(text_setup(text_document(
+        "(\\376\\377\\330\\075\\336\\000\\000\\011\\000\\102\\000\\015)", 5)), Geom::Point(100, 50));
+    ASSERT_TRUE(unicode->stories[0]) << unicode->errors[0];
+    EXPECT_EQ(unicode->stories[0]->lines[0].runs[0].text, "\xF0\x9F\x98\x80\tB");
+    ASSERT_TRUE(unicode->stories[0]->lines[0].tabs);
+    auto document = area_text_document("(A\\tB\\rC\\tD\\r)", 8, {{0, 10, 4}, {0, 24, 4}}, "ArialMT", {},
+        "/5 << /0 [ << /1 4 /0 << /0 << /5 << /31 36 >> >> >> >> "
+        "<< /1 4 /0 << /0 << /5 << /31 72 >> >> >> >> ] >>");
+    auto texts = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    ASSERT_EQ(texts->stories[0]->lines.size(), 2u);
+    ASSERT_TRUE(texts->stories[0]->lines[0].tabs);
+    ASSERT_TRUE(texts->stories[0]->lines[1].tabs);
+    EXPECT_EQ(texts->stories[0]->lines[0].tabs->interval, 36);
+    EXPECT_EQ(texts->stories[0]->lines[1].tabs->interval, 72);
+}
+
+TEST_F(AiNativeImportTest, ParagraphTabsKeepLetterSpaceKerningAndConsecutiveStops)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto anchors = [&](std::string const &characters, unsigned units, std::string const &style = std::string()) {
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(text_document(characters, units, font, style))));
+        std::vector<double> out;
+        if (!b) return out;
+        b->document->ensureUpToDate();
+        auto reprs = elements(b->document->getReprRoot(), "svg:text");
+        if (reprs.empty()) return out;
+        auto *text = cast<SPText>(b->document->getObjectByRepr(reprs[0]));
+        for (auto it = text->layout.begin();; it.nextCharacter()) {
+            out.push_back(text->layout.characterAnchorPoint(it).x());
+            if (it == text->layout.end()) break;
+        }
+        return out;
+    };
+    // Derive a nonzero pair from ordinary text, whose existing shaping is
+    // independent of the tab implementation; do not assume a font version.
+    for (std::string letter : {"A", "T", "V", "Y"}) {
+        auto single = anchors("(" + letter + "\\r)", 2);
+        auto spaced = anchors("(" + letter + " \\r)", 3);
+        ASSERT_EQ(single.size(), 2u); ASSERT_EQ(spaced.size(), 3u);
+        auto const kern = spaced[1] - single[1];
+        if (kern >= -0.01) continue;
+        auto tab = anchors("(" + letter + "\\tB\\r)", 4);
+        ASSERT_EQ(tab.size(), 4u);
+        EXPECT_NEAR(tab[2], 8191.5 + 36 + kern, 0.002);
+        auto twice = anchors("(" + letter + "\\t\\tB\\r)", 5);
+        ASSERT_EQ(twice.size(), 5u);
+        EXPECT_NEAR(twice[3], 8191.5 + 36, 0.002);
+        auto scaled = anchors("(" + letter + "\\tB\\r)", 4, "/6 2");
+        ASSERT_EQ(scaled.size(), 4u);
+        EXPECT_NEAR(scaled[2], 8191.5 / 2 + 18 + kern, 0.002);
+        auto no_kern = anchors("(" + letter + "\\tB\\r)", 4, "/11 0");
+        ASSERT_EQ(no_kern.size(), 4u);
+        EXPECT_NEAR(no_kern[2], 8191.5 + 36, 0.002);
+        auto tracked = anchors("(" + letter + "\\tB\\r)", 4, "/8 500");
+        ASSERT_EQ(tracked.size(), 4u);
+        EXPECT_NEAR(tracked[2], 8191.5 + 36 + kern + 6, 0.002);
+        auto tracked_twice = anchors("(" + letter + "\\t\\tB\\r)", 5, "/8 500");
+        ASSERT_EQ(tracked_twice.size(), 5u);
+        EXPECT_NEAR(tracked_twice[3], 8191.5 + 72, 0.002);
+        auto negative = anchors("(" + letter + "\\tB\\r)", 4, "/8 -100");
+        ASSERT_EQ(negative.size(), 4u);
+        EXPECT_NEAR(negative[2], 8191.5 + 36 + kern - 1.2, 0.002);
+        auto leading = anchors("(\\t\\tB\\r)", 4, "/8 500");
+        ASSERT_EQ(leading.size(), 4u);
+        EXPECT_NEAR(leading[2], 8191.5 + 72, 0.002);
+        return;
+    }
+    GTEST_SKIP() << "available font has no negative letter-space kerning";
+}
+
+TEST_F(AiNativeImportTest, ParagraphTabsStayAlignedAfterTextAndRulerEditsAndReopen)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto document = with_paragraphs(text_document("(A\\tB\\tC\\r)", 6, font, "/11 0"), {},
+        "<< /1 6 /0 << /0 << /5 << /31 36 /30 << /0 [ << /0 50 /1 0 >> ] >> >> >> >> >>");
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(document)));
+    ASSERT_TRUE(b);
+    auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(reopened);
+    auto texts = elements(reopened->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto *text = cast<SPText>(reopened->getObjectByRepr(texts[0])); ASSERT_TRUE(text);
+    EXPECT_TRUE(attr(texts[0], "proof:glyphs-missing").empty());
+    EXPECT_TRUE(b->substituted_type.empty());
+    auto spans = elements(texts[0], "svg:tspan"); ASSERT_EQ(spans.size(), 1u);
+    auto point = [&](unsigned index) {
+        reopened->ensureUpToDate();
+        auto it = text->layout.begin();
+        for (unsigned i = 0; i < index; ++i) it.nextCharacter();
+        return text->layout.characterAnchorPoint(it).x();
+    };
+    EXPECT_NEAR(point(2), 8191.5 + 50, 0.002);
+    EXPECT_NEAR(point(4), 8191.5 + 72, 0.002);
+    // A tab occupies a selectable character and advance, without a drawn glyph.
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 5u);
+    EXPECT_EQ(text->layout.glyphs().size(), 3u);
+    auto tab = text->layout.begin(); tab.nextCharacter();
+    auto after_tab = tab; after_tab.nextCharacter();
+    auto selection = text->layout.createSelectionShape(tab, after_tab, Geom::Affine());
+    ASSERT_EQ(selection.size(), 4u);
+    EXPECT_GT(Geom::distance(selection[0], selection[1]), 0);
+    Geom::Point before, after; double height, rotation;
+    text->layout.queryCursorShape(tab, before, height, rotation);
+    EXPECT_GT(height, 0);
+    text->layout.queryCursorShape(after_tab, after, height, rotation);
+    EXPECT_GT(after.x(), before.x());
+    spans[0]->firstChild()->setContent("AA\tB\tC");
+    EXPECT_NEAR(point(3), 8191.5 + 50, 0.002);
+    EXPECT_NEAR(point(5), 8191.5 + 72, 0.002);
+    // Updating the ruler invalidates layout without requiring a text edit.
+    spans[0]->setAttribute("proof:tab-interval", "80");
+    EXPECT_NEAR(point(5), 8191.5 + 80, 0.002);
+    auto again = SPDocument::createNewDocFromMem(sp_repr_save_buf(reopened->getReprDoc()).raw());
+    ASSERT_TRUE(again);
+    auto again_spans = elements(again->getReprRoot(), "svg:tspan"); ASSERT_EQ(again_spans.size(), 1u);
+    EXPECT_EQ(attr(again_spans[0], "proof:tab-interval"), "80");
+    EXPECT_EQ(attr(again_spans[0], "proof:tab-stops"), "50");
+    // Selecting a story made entirely of tabs must work without any glyphs.
+    again_spans[0]->firstChild()->setContent("\t\t");
+    again->ensureUpToDate();
+    auto *only_tabs = cast<SPText>(again->getObjectByRepr(elements(again->getReprRoot(), "svg:text")[0]));
+    ASSERT_TRUE(only_tabs->layout.glyphs().empty());
+    EXPECT_EQ(only_tabs->layout.createSelectionShape(only_tabs->layout.begin(), only_tabs->layout.end(), Geom::Affine()).size(), 8u);
+    only_tabs->layout.characterBoundingBox(only_tabs->layout.end(), &rotation);
+    EXPECT_EQ(rotation, 0);
+    // Later attaching imported type to a path must not index a nonexistent tab glyph.
+    auto fitted = SPDocument::createNewDocFromMem(
+        "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
+        "xmlns:proof='urn:x-proof:document:1'><defs><path id='p' d='M0,30 h200'/></defs>"
+        "<text proof:tab-origin='0' proof:tab-interval='36' xml:space='preserve'>"
+        "<textPath xlink:href='#p'>A\tB</textPath></text></svg>");
+    ASSERT_TRUE(fitted); fitted->ensureUpToDate();
+    auto *fitted_text = cast<SPText>(fitted->getObjectByRepr(elements(fitted->getReprRoot(), "svg:text")[0]));
+    auto path_tab = fitted_text->layout.begin(); path_tab.nextCharacter();
+    auto box = fitted_text->layout.characterBoundingBox(path_tab);
+    EXPECT_TRUE(std::isfinite(box.midpoint().x()));
+    EXPECT_TRUE(std::isfinite(box.midpoint().y()));
 }
 
 TEST_F(AiNativeImportTest, InheritedCharacterStyleRemainsEditableAfterReopen)

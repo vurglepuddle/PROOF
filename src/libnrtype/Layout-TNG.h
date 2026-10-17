@@ -27,6 +27,7 @@
 
 #include "livarot/Shape.h"
 #include "style-enums.h"
+#include "tab-stops.h"
 #include "svg/svg-length.h"
 
 namespace Inkscape::Extension::Internal {
@@ -728,6 +729,8 @@ public:
         whatever way their script reads: 0 from the left, 1 from the right, -1 for no
         override. Hebrew typed where nothing puts it in order comes out from the left. */
         int bidi_override = -1;
+        /// PROOF paragraph tab settings, inherited from the nearest text element.
+        std::optional<LeftTabStops> tabs;
         /// The size the character at this place in the source is set at, as a share of the style's.
         double sizeScale(unsigned char_index) const
         {

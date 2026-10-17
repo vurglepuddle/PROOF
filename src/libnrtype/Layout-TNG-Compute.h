@@ -144,6 +144,9 @@ class Layout::Calculator
         double baseline_shift;          /// calculated from the baseline-shift css property
         SPCSSTextOrientation text_orientation;
         unsigned text_bytes;
+        bool tab = false; ///< PROOF: one left-aligned tab, with no drawn glyph.
+        double tab_kerning = 0; ///< Letter-to-space kerning applied after the tab advance.
+        double tab_tracking = 0; ///< Tracking of the preceding non-tab character.
         unsigned char_index_in_para;    /// the index of the first character in this span in the paragraph, for looking up char_attributes
         SVGLength x, y, dx, dy, rotate;  // these are reoriented copies of the <tspan> attributes. We change span when we encounter one.
 
@@ -257,7 +260,7 @@ class Layout::Calculator
                               BrokenSpan *span,
                               BrokenSpan *last_break_span,
                               BrokenSpan *last_emergency_break_span,
-                              double maximum_width) const;
+                              double maximum_width, double inline_position) const;
 
     double _getChunkLeftWithAlignment(ParagraphInfo const &para,
                                       std::vector<ChunkInfo>::const_iterator it_chunk,

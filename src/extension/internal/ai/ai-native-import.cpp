@@ -239,7 +239,9 @@ std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool 
                         // caps made of capitals.
                         auto const cp = run.style.all_caps || run.style.small_caps ? g_unichar_toupper(g_utf8_get_char(at))
                                                                                   : g_utf8_get_char(at);
-                        if (g_unichar_type(cp) != G_UNICODE_FORMAT && !font->font.face->MapUnicodeChar(cp)) {
+                        // A paragraph tab has an advance, supplied by layout, and no glyph.
+                        // It must not exclude the story from the page comparison as missing type.
+                        if (cp != '\t' && g_unichar_type(cp) != G_UNICODE_FORMAT && !font->font.face->MapUnicodeChar(cp)) {
                             check.glyphs_missing.insert({n.text_proxy, *n.story});
                             substituted = true;
                             break;
@@ -919,6 +921,7 @@ XML::Node *Builder::text(Node const &n)
         // Explicit ATE line positions must remain SVG positions. role="line"
         // asks Inkscape to reflow the line and discard a single x/y pair.
         span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
+        if (line.tabs) line.tabs->write(span);
         // The line's origin is its left end, its right end or its middle. Which of those a
         // line starts at depends on the way it reads.
         char const *const anchor = line.alignment == 2 ? "middle" : (line.alignment == 1) != story.rtl ? "end" : "start";

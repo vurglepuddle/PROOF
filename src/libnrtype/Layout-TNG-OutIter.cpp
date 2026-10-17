@@ -388,7 +388,7 @@ Geom::Rect Layout::characterBoundingBox(iterator const &it, double *rotation) co
 
     if (_path_fitted) {
         double cluster_half_width = 0.0;
-        for (int glyph_index = _characters[char_index].in_glyph ; _glyphs.size() != glyph_index ; glyph_index++) {
+        for (int glyph_index = _characters[char_index].in_glyph ; glyph_index >= 0 && _glyphs.size() != glyph_index ; glyph_index++) {
             if (_glyphs[glyph_index].in_character != char_index) break;
             cluster_half_width += _glyphs[glyph_index].advance;
         }
@@ -440,7 +440,7 @@ Geom::Rect Layout::characterBoundingBox(iterator const &it, double *rotation) co
         }
 
         if (rotation) {
-            if (it._glyph_index == -1)
+            if (it._glyph_index == -1 || _glyphs.empty())
                 *rotation = 0.0;
             else if (it._glyph_index == (int)_glyphs.size())
                 *rotation = _glyphs.back().rotation;
@@ -466,11 +466,13 @@ std::vector<Geom::Point> Layout::createSelectionShape(iterator const &it_start, 
         end_char_index = std::min((size_t)it_start._char_index, _characters.size());
     }
     for ( ; char_index < end_char_index ; ) {
-        if (_characters[char_index].in_glyph == -1) {
+        // A ruler tab has no glyph, but its advance is still selectable.
+        if (_characters[char_index].in_glyph == -1 && _characters[char_index].the_char != '\t') {
             char_index++;
             continue;
         }
-        double char_rotation = _glyphs[_characters[char_index].in_glyph].rotation;
+        double char_rotation = _characters[char_index].in_glyph == -1 ? 0.0 :
+                               _glyphs[_characters[char_index].in_glyph].rotation;
         unsigned span_index = _characters[char_index].in_span;
 
         Geom::Point top_left, bottom_right;
@@ -490,7 +492,7 @@ std::vector<Geom::Point> Layout::createSelectionShape(iterator const &it_start, 
                 bottom_right[Geom::X] = span_x + _characters[char_index].x;
 
             double baseline_y = _spans[span_index].line(this).baseline_y + _spans[span_index].baseline_shift;
-            double vertical_scale = _glyphs.back().vertical_scale;
+            double vertical_scale = _glyphs.empty() ? 1.0 : _glyphs.back().vertical_scale;
             double offset_y = _spans[span_index].y_offset;
 
             if (_directions_are_orthogonal(_blockProgression(), TOP_TO_BOTTOM)) {
