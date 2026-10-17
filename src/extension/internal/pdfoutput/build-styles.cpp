@@ -320,10 +320,12 @@ std::optional<std::pair<std::string, CapyPDF_FontId>> Document::get_font(std::sh
  * Generate a solid color, gradient or pattern based on the SPIPaint
  */
 std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle const *context_style,
-                                                  std::optional<double> opacity)
+                                                  std::optional<double> opacity, Geom::OptRect const &bbox)
 {
     if (context_style) {
         if (paint.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_FILL) {
+            // A marker's bounds do not describe its context paint's source.
+            // Preserve that existing placement until the source item is passed.
             return get_paint(context_style->fill, nullptr, opacity);
         } else if (paint.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_STROKE) {
             return get_paint(context_style->stroke, nullptr, opacity);
@@ -343,7 +345,7 @@ std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle
         auto swatch = cast<SPGradient>(paint.href ? paint.href->getObject() : nullptr);
         if (swatch && swatch->isSolid()) {
             return get_color(swatch->getPreviewAverageColor(), opacity);
-        } else if (auto pattern_id = get_pattern(paint.href ? paint.href->getObject() : nullptr, opacity)) {
+        } else if (auto pattern_id = get_pattern(paint.href ? paint.href->getObject() : nullptr, opacity, bbox)) {
             out.set_pattern(*pattern_id);
         } else {
             g_warning("Couldn't generate pattern for fill '%s'", paint.get_value().c_str());
@@ -469,16 +471,18 @@ std::optional<double> DrawContext::get_softmask(double opacity) const
  * @arg map - The style map indicating changes in the PDF remndering stack
  * @arg style - The style to apply to the stream
  */
-void DrawContext::set_paint_style(StyleMap const &map, SPStyle const *style, SPStyle const *context_style)
+void DrawContext::set_paint_style(StyleMap const &map, SPStyle const *style, SPStyle const *context_style,
+                                  Geom::OptRect const &bbox)
 {
     // NOTE: We might find out that fill_opacity.set is important for style cascading
-    if (map.contains(SPAttr::FILL)) {
-        if (auto color = _doc.get_paint(style->fill, context_style, get_softmask(style->fill_opacity.as_double()))) {
+    // An inherited paint server still needs this shape's own placement.
+    if (map.contains(SPAttr::FILL) || (bbox && style->fill.isPaintserver())) {
+        if (auto color = _doc.get_paint(style->fill, context_style, get_softmask(style->fill_opacity.as_double()), bbox)) {
             _ctx.set_nonstroke(*color);
         }
     }
-    if (map.contains(SPAttr::STROKE)) {
-        if (auto color = _doc.get_paint(style->stroke, context_style, get_softmask(style->stroke_opacity.as_double()))) {
+    if (map.contains(SPAttr::STROKE) || (bbox && style->stroke.isPaintserver())) {
+        if (auto color = _doc.get_paint(style->stroke, context_style, get_softmask(style->stroke_opacity.as_double()), bbox)) {
             _ctx.set_stroke(*color);
         }
     }

@@ -59,7 +59,8 @@ public:
     void set_clip_path(std::optional<Geom::PathVector> clip, SPStyle *style = nullptr);
     void set_clip_rectangle(Geom::OptRect const &rect);
 
-    void set_paint_style(StyleMap const &map, SPStyle const *style, SPStyle const *context_style);
+    void set_paint_style(StyleMap const &map, SPStyle const *style, SPStyle const *context_style,
+                         Geom::OptRect const &bbox = {});
 
     Document &get_document() { return _doc; }
     std::optional<double> get_softmask(double opacity) const;

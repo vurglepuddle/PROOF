@@ -28,9 +28,9 @@ file exchange.
   Linked spot swatches retain their ink definitions, and editing an ink updates
   its tints.
 - **Illustrator interchange.** Read supported native `.ai` artwork, checked
-  against its PDF pages. **Save As** writes native layers, paths and inks for
-  the supported subset; **Save a Copy** also offers Illustrator 7 records
-  and PDF-based RGB interchange.
+  against its PDF pages. **Save As** writes native layers, smooth paths, inks
+  and opaque linear fills for the supported subset; **Save a Copy** also
+  offers Illustrator 7 records and PDF-based RGB interchange.
   SVG keeps features the native writer cannot write yet.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
   PDF bleed boxes, and fixes for image transforms and SVG profile imports.
@@ -53,7 +53,7 @@ controls; broader writer qualification remains in progress.
 |---|---|
 | Native reading | Layers, paths, clips, compound paths, gradients, patterns, supported gradient meshes, greyscale opacity masks, embedded foreign PDF vectors, process/spot colours, document ICC profiles, pictures and supported editable type |
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
-| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, overprint and stroke styles |
+| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, opaque process linear gradients, overprint and stroke styles |
 | Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
 | Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers and CMYK inks, without a PDF preview or the bundled PDF backend |
 | Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
@@ -73,13 +73,13 @@ The reader is also checked against real documents, with artwork kept private:
 
 | Dated reader checkpoint | Native comparison passes | PDF fallbacks |
 |---|---:|---:|
-| 2026-10-17 regression: 871 copied files below 50 MB | 860 | 11 |
+| 2026-10-17 milestone: 871 copied files below 50 MB | 862 | 9 |
 | 2026-10-14 separate corpus baseline: 1,395 unique files | 1,241 | 154 |
 
 Both runs completed without errors or timeouts. These are separate corpora and
-dated checkpoints; later mesh and writer changes have focused checks. Of the
-860 passes in the first row, 510 explicitly lose some live editing semantics
-and 350 still need complete-editability review. Passing a visual comparison
+dated checkpoints; the latest milestone includes the mesh and smooth-point
+reader changes. Of the 862 passes in the first row, 512 explicitly lose some
+live editing semantics and 350 still need complete-editability review. Passing a visual comparison
 does not mean every Illustrator control survives.
 
 Opacity masks now support the linked, non-inverted greyscale vector subset:
@@ -120,8 +120,12 @@ Illustrator. See the feature documents for the evidence and its limits.
 ## Still in progress
 
 **Full native `.ai` support is still in progress.** The native writer currently
-refuses live type, gradients, pictures, transparency, masks, patterns and other
-unsupported appearances. Smooth path points are written as corners. The older
+refuses live type, pictures, transparency, masks, patterns and other unsupported
+appearances. Gradient writing is limited to opaque, non-repeating linear fills
+with standard RGB or DeviceCMYK stops and no stroke; radial, spot-ink and
+ICC-tagged gradients remain open.
+Smooth-point flags survive, with auto/symmetric points reduced to smooth and
+Illustrator choosing an open path's first-point type. The older
 PDF-based RGB interchange export does not retain native layers or ink identity.
 Modern `.ai` artwork without PDF-compatible content is not supported yet.
 Many imported appearances and live objects retain their drawn result with

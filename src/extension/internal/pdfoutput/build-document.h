@@ -136,11 +136,12 @@ public:
     std::optional<std::pair<std::string, CapyPDF_FontId>> get_font(std::shared_ptr<FontInstance> font, SPIFontVariationSettings &var);
 
     std::optional<capypdf::Color> get_paint(SPIPaint const &paint, SPStyle const *context_style,
-                                            std::optional<double> opacity);
+                                            std::optional<double> opacity, Geom::OptRect const &bbox = {});
     capypdf::Color get_color(Colors::Color const &color, std::optional<double> opacity);
     capypdf::Color get_shading_color(Colors::Color const &color, std::optional<double> opacity);
 
-    std::optional<CapyPDF_PatternId> get_pattern(SPPaintServer const *paint, std::optional<double> opacity);
+    std::optional<CapyPDF_PatternId> get_pattern(SPPaintServer const *paint, std::optional<double> opacity,
+                                               Geom::OptRect const &bbox = {});
 
     std::optional<CapyPDF_ImageId> get_image(std::string const &filename, capypdf::ImagePdfProperties &props);
     /// PROOF: the picture in `data` as a PDF image when CapyPDF's own reader would get it wrong
@@ -152,8 +153,10 @@ public:
     /// (placed-pages.h), and that page's crop box (PDF units). Nothing otherwise.
     std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> placed_page(std::string const &filename);
 private:
-    std::optional<CapyPDF_PatternId> get_linear_pattern(SPLinearGradient const *linear, std::optional<double> opacity);
-    std::optional<CapyPDF_PatternId> get_radial_pattern(SPRadialGradient const *radial, std::optional<double> opacity);
+    std::optional<CapyPDF_PatternId> get_linear_pattern(SPLinearGradient const *linear, std::optional<double> opacity,
+                                                      Geom::OptRect const &bbox);
+    std::optional<CapyPDF_PatternId> get_radial_pattern(SPRadialGradient const *radial, std::optional<double> opacity,
+                                                      Geom::OptRect const &bbox);
     std::optional<CapyPDF_PatternId> get_mesh_pattern(SPMeshGradient const *mesh, std::optional<double> opacity);
     std::optional<CapyPDF_PatternId> get_tiling_pattern(SPPattern const *pat, Geom::Affine const &transform);
     std::optional<CapyPDF_FunctionId> get_gradient_function(SPGradientVector const &vector,

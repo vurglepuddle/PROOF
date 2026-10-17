@@ -70,6 +70,7 @@ set(TEST_SOURCES
     spot-ink-test
     ai-native-reader-test
     ai-native-import-test
+    ai-native-writer-gradient-test
     box-frame-test
     clip-blend-test
     tiff-pixels-test

@@ -615,6 +615,7 @@ private:
 
     // paths
     void path_op(std::string_view w, Values const &vals);
+    void finish_path();
     void end_path_quietly();
     void paint(std::string_view op, bool hidden, bool guide);
 
@@ -634,6 +635,7 @@ private:
 
     Geom::PathVector _path;
     std::optional<Geom::Path> _current;
+    std::string _path_types, _current_types;
     std::size_t _points = 0;
     bool _clip_next = false;
 
@@ -2507,11 +2509,13 @@ void Reader::path_op(std::string_view w, Values const &vals)
     if (w == "m") {
         auto a = p(2);
         if (!a) return;
-        if (_current) _path.push_back(std::move(*_current));
+        finish_path();
         _current = Geom::Path(*a);
+        _current_types = "c"; // m has no smooth/corner variant.
         return;
     }
     if (!_current) return;
+    auto const before = _current->size_open();
     if (w == "l" || w == "L") {
         if (auto a = p(2)) _current->appendNew<Geom::LineSegment>(*a);
     } else if (w == "c" || w == "C") {
@@ -2524,20 +2528,43 @@ void Reader::path_op(std::string_view w, Values const &vals)
         auto a = p(4), c = p(2);
         if (a && c) _current->appendNew<Geom::CubicBezier>(*a, *c, *c);
     }
+    if (_current->size_open() > before) _current_types += g_ascii_islower(w[0]) ? 's' : 'c';
+}
+
+void Reader::finish_path()
+{
+    if (!_current) return;
+    auto const count = _current->empty() ? 0 : _current->size() + 1;
+    if (_current->closed() && count) {
+        // An explicit segment back to m supplies the seam's type. An implicit
+        // closing line has no operator and leaves m's default corner in force.
+        char const seam = _current_types.size() >= count ? _current_types.back() : 'c';
+        _current_types.resize(count, 'c');
+        _current_types.front() = _current_types.back() = seam;
+    } else {
+        _current_types.resize(count, 'c');
+    }
+    _path_types += _current_types;
+    _current_types.clear();
+    _path.push_back(std::move(*_current));
+    _current.reset();
 }
 
 void Reader::end_path_quietly()
 {
     _path.clear();
     _current.reset();
+    _path_types.clear();
+    _current_types.clear();
     _points = 0;
     _clip_next = false;
 }
 
 void Reader::paint(std::string_view op, bool hidden, bool guide)
 {
-    if (_current) _path.push_back(std::move(*_current));
-    _current.reset();
+    bool const close = !op.empty() && op[0] >= 'a' && op[0] <= 'z';
+    if (_current && close && !_current->closed()) _current->close(true);
+    finish_path();
     Geom::PathVector pv = std::move(_path);
     _path.clear();
     _points = 0;
@@ -2550,13 +2577,12 @@ void Reader::paint(std::string_view op, bool hidden, bool guide)
     auto fill_paint = std::exchange(_pending_fill, std::nullopt);
     auto stroke_paint = std::exchange(_pending_stroke, std::nullopt);
     if (pv.empty()) return;
-    // Lower-case painting closes the path.
-    if (!op.empty() && op[0] >= 'a' && op[0] <= 'z' && !pv.back().closed()) pv.back().close(true);
     char const k = op.empty() ? 'n' : static_cast<char>(g_ascii_tolower(op[0]));
     bool const do_fill = k == 'f' || k == 'b';
     bool const do_stroke = k == 's' || k == 'b';
     auto node = new_node(Node::Kind::Path, _gs);
     node.path = std::move(pv);
+    node.nodetypes = std::exchange(_path_types, {});
     node.evenodd = _gs.evenodd;
     node.clipping = clip;
     node.guide = guide;

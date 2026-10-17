@@ -158,7 +158,10 @@ void DrawContext::paint_item(SPItem const *item, Geom::Affine const &tr, SPStyle
         if (!rasterize) {
             transform(tr);
             // Set styles for cascading
-            set_paint_style(style_map, item->style, context_style);
+            // Gradient units refer to this shape's local geometric bounds, not
+            // the union of all objects which happen to use the same paint server.
+            set_paint_style(style_map, item->style, context_style,
+                            is<SPShape>(item) ? item->geometricBounds() : Geom::OptRect{});
         }
 
         // This text is not affected by the get_text_enabled option.

@@ -11,6 +11,7 @@
  */
 
 #include "ai-native-writer.h"
+#include "ai-native-writer-gradient.h"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +21,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
 
 #include <glib.h>
 #include <2geom/bezier-curve.h>
@@ -51,6 +53,45 @@ namespace {
 using Type = Colors::Space::Type;
 
 constexpr double PX_TO_PT = 0.75;
+
+/// The node tool's best fit when no authored type is given: opposite handles, or a
+/// handle tangent to the neighbouring line. Two straight sides stay a corner.
+bool smooth_join(Geom::Path const &path, std::size_t node)
+{
+    auto const count = path.size();
+    if (!count || (!path.closed() && (node == 0 || node == count))) return false;
+    node %= count;
+    auto prev = (node + count - 1) % count, next = node;
+    // Ellipse construction can leave a microscopic closing line. It rounds to
+    // zero in the records; infer both coincident anchors from the actual sides.
+    auto tiny_line = [&](std::size_t at) {
+        auto const &curve = path[at];
+        return curve.isLineSegment() && Geom::distance(curve.initialPoint(), curve.finalPoint()) < 1e-9;
+    };
+    if (path.closed()) {
+        for (std::size_t i = 0; i < count && tiny_line(prev); ++i) prev = (prev + count - 1) % count;
+        for (std::size_t i = 0; i < count && tiny_line(next); ++i) next = (next + 1) % count;
+    }
+    auto const &before = path[prev];
+    auto const &after = path[next];
+    auto const anchor = after.initialPoint();
+    auto const incoming = dynamic_cast<Geom::CubicBezier const *>(&before);
+    auto const outgoing = dynamic_cast<Geom::CubicBezier const *>(&after);
+    auto back = incoming ? (*incoming)[2] - anchor : Geom::Point();
+    auto front = outgoing ? (*outgoing)[1] - anchor : Geom::Point();
+    bool const back_handle = back.length() > 1e-9, front_handle = front.length() > 1e-9;
+    if (!back_handle && !front_handle) return false;
+    if (!back_handle) {
+        if (!before.isLineSegment()) return false;
+        back = before.initialPoint() - anchor;
+    }
+    if (!front_handle) {
+        if (!after.isLineSegment()) return false;
+        front = after.finalPoint() - anchor;
+    }
+    double const scale = back.length() * front.length();
+    return scale > 0 && Geom::dot(back, front) < 0 && std::abs(Geom::cross(back, front)) <= 1e-6 * scale;
+}
 
 /// A number as Illustrator writes it: up to four decimals, no trailing zeros.
 std::string num(double v)
@@ -119,7 +160,8 @@ private:
     void shape(SPShape const *shape);
     void check_effects(SPItem const *item);
     bool open_clip(SPItem const *item);
-    void path_data(Geom::Path const &path);
+    std::vector<std::string> path_types(SPShape const *shape, Geom::PathVector const &paths, Geom::Affine const &affine);
+    void path_data(Geom::Path const &path, std::string_view types);
     void state(std::string &cache, std::string const &line);
     std::optional<std::string> paint(SPIPaint const &p, SPStyle const *style, bool fill);
     std::optional<std::string> colour(Colors::Color const &c, bool fill);
@@ -131,6 +173,7 @@ private:
     std::ostringstream _body;
     std::set<std::string> _refused;
     std::map<std::string, std::array<double, 4>> _spots;
+    std::vector<std::string> _gradients;
     std::size_t _layers = 0;
     // What has been set already, so each operator is written only when it changes.
     std::string _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule;
@@ -199,22 +242,72 @@ void Writer::state(std::string &cache, std::string const &line)
     _body << line << '\n';
 }
 
-void Writer::path_data(Geom::Path const &path)
+std::vector<std::string> Writer::path_types(SPShape const *shape, Geom::PathVector const &paths, Geom::Affine const &affine)
+{
+    std::vector<std::string> types(paths.size());
+    auto const attr = shape->getAttribute("sodipodi:nodetypes");
+    if (!attr) return types;
+    // The node tool indexes types after converting the local geometry to lines and
+    // cubics. Keep the writer's transformed geometry and its approximation order:
+    // when an arc gains subdivisions, carry the original segment's endpoint type
+    // to its new final piece, and infer the newly inserted joins separately.
+    auto const local = pathv_to_linear_and_cubic_beziers(*shape->curve());
+    std::string_view remaining(attr);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        // The node tool ignores naked movetos. Closed paths duplicate the seam
+        // type, and use the final duplicate when it is present.
+        auto const count = local[i].empty() ? 0 : local[i].size() + 1;
+        auto const take = std::min(count, remaining.size());
+        std::string const authored(remaining.substr(0, take));
+        remaining.remove_prefix(take);
+        if (local[i].size() == paths[i].size()) {
+            types[i] = authored;
+            continue;
+        }
+        types[i].assign(paths[i].empty() ? 0 : paths[i].size() + 1, 'b');
+        if (!authored.empty() && !types[i].empty()) types[i][0] = authored[0];
+        std::size_t from = 1, to = 1;
+        for (auto const &curve : (*shape->curve())[i]) {
+            Geom::Path piece(curve.initialPoint());
+            piece.append(curve);
+            Geom::PathVector const one{piece};
+            auto const old_count = pathv_to_linear_and_cubic_beziers(one)[0].size();
+            auto const new_count = pathv_to_linear_and_cubic_beziers(one * affine)[0].size();
+            if (old_count == new_count) {
+                for (std::size_t j = 0; j < new_count && from + j < authored.size() && to + j < types[i].size(); ++j) {
+                    types[i][to + j] = authored[from + j];
+                }
+            } else if (old_count && new_count && from + old_count <= authored.size() && to + new_count <= types[i].size()) {
+                types[i][to + new_count - 1] = authored[from + old_count - 1];
+            }
+            from += old_count;
+            to += new_count;
+        }
+        if (paths[i].closed() && !types[i].empty() && authored.size() < count) types[i].back() = types[i].front();
+    }
+    return types;
+}
+
+void Writer::path_data(Geom::Path const &path, std::string_view types)
 {
     auto const start = path.initialPoint();
     _body << num(start.x()) << ' ' << num(start.y()) << " m\n";
-    auto segment = [&](Geom::Curve const &c) {
+    auto segment = [&](Geom::Curve const &c, std::size_t node) {
+        char type = node < types.size() ? types[node] : '\0';
+        if (path.closed() && node == path.size() && node >= types.size() && !types.empty()) type = types.front();
+        bool const smooth = type == 's' || type == 'z' || type == 'a' || (type != 'c' && smooth_join(path, node));
         if (auto cubic = dynamic_cast<Geom::CubicBezier const *>(&c)) {
-            _body << std::format("{} {} {} {} {} {} C\n", num((*cubic)[1].x()), num((*cubic)[1].y()),
+            _body << std::format("{} {} {} {} {} {} {}\n", num((*cubic)[1].x()), num((*cubic)[1].y()),
                                  num((*cubic)[2].x()), num((*cubic)[2].y()), num((*cubic)[3].x()),
-                                 num((*cubic)[3].y()));
+                                 num((*cubic)[3].y()), smooth ? 'c' : 'C');
         } else {
-            _body << num(c.finalPoint().x()) << ' ' << num(c.finalPoint().y()) << " L\n";
+            _body << num(c.finalPoint().x()) << ' ' << num(c.finalPoint().y()) << (smooth ? " l\n" : " L\n");
         }
     };
-    for (auto const &c : path) segment(c);
-    // A closed path ends on its start point, so that its last corner stays a corner.
-    if (path.closed() && Geom::distance(path.finalPoint(), start) > 1e-4) segment(path.closingSegment());
+    std::size_t node = 0;
+    // Includes a non-degenerate closing line. Its destination type, or the final
+    // cubic's when it ends at the start, carries the closed seam's semantics.
+    for (auto const &c : path) segment(c, ++node);
 }
 
 /// Opens a clipping group for the item's clipping path: `q`, the path, `W n`. Whether it did.
@@ -235,14 +328,15 @@ bool Writer::open_clip(SPItem const *item)
         refuse("clipping paths other than one path");
         return false;
     }
-    auto const pv = pathv_to_linear_and_cubic_beziers(*shapes[0]->curve() * shapes[0]->transform *
-                                                      item->i2doc_affine() * _to_art);
+    auto const affine = shapes[0]->transform * item->i2doc_affine() * _to_art;
+    auto const pv = pathv_to_linear_and_cubic_beziers(*shapes[0]->curve() * affine);
     if (pv.size() != 1) {
         refuse("clipping paths other than one path");
         return false;
     }
+    auto const types = path_types(shapes[0], pv, affine);
     _body << "q\n";
-    path_data(pv[0]);
+    path_data(pv[0], types[0]);
     _body << "h\nW\nn\n";
     return true;
 }
@@ -252,12 +346,22 @@ void Writer::shape(SPShape const *s)
     auto const *style = s->style;
     if (!s->curve() || s->curve()->empty()) return;
     if (s->hasMarkers()) refuse("markers");
-    auto fill = paint(style->fill, style, true);
+    auto const affine = s->i2doc_affine() * _to_art;
+    std::optional<WrittenGradient> gradient;
+    std::optional<std::string> fill;
+    auto const server = style->fill.isPaintserver() && style->fill.href ? style->fill.href->getObject() : nullptr;
+    if (auto g = cast<SPGradient>(server); g && !g->isSolid()) {
+        gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy);
+        for (auto const &why : gradient->refused) refuse(why);
+        if (!gradient->definition.empty()) _gradients.push_back(gradient->definition);
+        fill = "0 g"; // A compound path's early contours need a plain fill before its final gradient.
+    } else {
+        fill = paint(style->fill, style, true);
+    }
     auto stroke = style->stroke_width.computed > 0 ? paint(style->stroke, style, false) : std::nullopt;
     if (scale24(style->fill_opacity.value) < 1.0 - 1e-6 && fill) refuse("transparency");
     if (scale24(style->stroke_opacity.value) < 1.0 - 1e-6 && stroke) refuse("transparency");
 
-    auto const affine = s->i2doc_affine() * _to_art;
     if (stroke) {
         if (style->vector_effect.stroke) refuse("non-scaling strokes");
         if (!affine.withoutTranslation().preservesAngles(1e-6)) refuse("strokes on stretched or skewed objects");
@@ -293,19 +397,24 @@ void Writer::shape(SPShape const *s)
     state(_rule, style->fill_rule.computed == SP_WIND_RULE_EVENODD ? "1 XR" : "0 XR");
 
     auto const pv = pathv_to_linear_and_cubic_beziers(*s->curve() * affine);
+    auto const types = path_types(s, pv, affine);
     auto op = [&](Geom::Path const &p) {
         char c = fill && stroke ? 'b' : fill ? 'f' : stroke ? 's' : 'n';
         return p.closed() ? c : static_cast<char>(g_ascii_toupper(c));
     };
     if (pv.size() == 1) {
-        path_data(pv[0]);
+        path_data(pv[0], types[0]);
+        if (gradient) _body << gradient->begin;
         _body << op(pv[0]) << '\n';
+        if (gradient) _body << gradient->end;
         return;
     }
     _body << "*u\n";
-    for (auto const &p : pv) {
-        path_data(p);
-        _body << op(p) << '\n';
+    for (std::size_t i = 0; i < pv.size(); ++i) {
+        path_data(pv[i], types[i]);
+        if (gradient && i + 1 == pv.size()) _body << gradient->begin;
+        _body << op(pv[i]) << '\n';
+        if (gradient && i + 1 == pv.size()) _body << gradient->end;
     }
     _body << "*U\n";
 }
@@ -485,7 +594,12 @@ WrittenRecords Writer::write()
                             num(std::ceil(w / 2)), num(h - std::ceil(h / 2)))
              << std::format("%AI5_ArtSize: {} {}\n", num(w), num(h))
              << "%AI5_RulerUnits: 2\n%AI3_DocumentPreview: None\n%AI5_NumLayers: " << _layers << '\n'
-             << "%%EndComments\n%%BeginProlog\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n";
+             << "%%EndComments\n%%BeginProlog\n%%EndProlog\n%%BeginSetup\n";
+        if (!_gradients.empty()) {
+            head << _gradients.size() << " Bn\n";
+            for (auto const &definition : _gradients) head << definition;
+        }
+        head << "%%EndSetup\n";
         out.records = head.str() + _body.str() + "%%PageTrailer\n%%Trailer\n%%EOF\n";
         return out;
     }
@@ -547,7 +661,12 @@ WrittenRecords Writer::write()
              << "%_" << ps_string(name) << " /UnicodeString (Name) ,\n%_; ,\n";
         g_free(uuid);
     }
-    head << "%_; (ArtboardArray) ,\n%_; /Recorded ,\n%_;\n%AI9_EndDocumentData\n%%EndSetup\n";
+    head << "%_; (ArtboardArray) ,\n%_; /Recorded ,\n%_;\n%AI9_EndDocumentData\n";
+    if (!_gradients.empty()) {
+        head << _gradients.size() << " Bn\n";
+        for (auto const &definition : _gradients) head << definition;
+    }
+    head << "%%EndSetup\n";
 
     out.records = head.str() + _body.str() +
                   "%%PageTrailer\ngsave annotatepage grestore showpage\n%%Trailer\n%%EOF\n";

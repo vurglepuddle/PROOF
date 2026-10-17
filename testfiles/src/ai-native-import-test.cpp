@@ -28,6 +28,7 @@
 #include <tiffio.h>
 #include <zlib.h>
 #include <2geom/affine.h>
+#include <2geom/bezier-curve.h>
 #include <2geom/pathvector.h>
 
 #include "colors/cms/profile.h"
@@ -42,6 +43,7 @@
 #include "doc-per-case-test.h"
 #include "document.h"
 #include "file.h"
+#include "helper/geom.h"
 #include "extension/internal/ai/ai-native-fonts.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
@@ -74,6 +76,7 @@
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
 #include "object/sp-root.h"
+#include "object/sp-shape.h"
 #include "object/sp-text.h"
 #include "page-manager.h"
 #include "spot-ink.h"
@@ -5009,7 +5012,237 @@ Geom::OptRect shape_box(SPDocument *doc, XML::Node *repr)
     auto *item = dynamic_cast<SPItem *>(doc->getObjectByRepr(repr));
     return item ? item->documentGeometricBounds() : Geom::OptRect();
 }
+
+/// Compare every anchor and handle, including the seam. Use the writer's previous
+/// transform-then-normalize order so an arc's existing approximation is unchanged.
+void expect_writer_geometry(SPDocument *source, XML::Node *original, SPDocument *imported, XML::Node *result)
+{
+    source->ensureUpToDate();
+    imported->ensureUpToDate();
+    auto const *a = dynamic_cast<SPShape *>(source->getObjectByRepr(original));
+    auto const *b = dynamic_cast<SPShape *>(imported->getObjectByRepr(result));
+    ASSERT_TRUE(a && b && a->curve() && b->curve());
+    Geom::Affine const to_art = Geom::Scale(0.75, -0.75);
+    auto const was = pathv_to_linear_and_cubic_beziers(*a->curve() * a->i2doc_affine() * to_art) * to_art.inverse();
+    auto const now = pathv_to_linear_and_cubic_beziers(*b->curve() * b->i2doc_affine());
+    ASSERT_EQ(was.size(), now.size());
+    for (std::size_t p = 0; p < was.size(); ++p) {
+        SCOPED_TRACE(p);
+        auto count = was[p].size();
+        // A primitive's microscopic closing line already rounded to zero in the
+        // previous writer, and is removed by the reader's ordinary close().
+        if (count == now[p].size() + 1 && was[p].back().isLineSegment() &&
+            Geom::distance(was[p].back().initialPoint(), was[p].back().finalPoint()) < 3e-4) --count;
+        ASSERT_EQ(count, now[p].size());
+        EXPECT_EQ(was[p].closed(), now[p].closed());
+        for (std::size_t s = 0; s < count; ++s) {
+            SCOPED_TRACE(s);
+            auto const *ac = dynamic_cast<Geom::CubicBezier const *>(&was[p][s]);
+            auto const *bc = dynamic_cast<Geom::CubicBezier const *>(&now[p][s]);
+            ASSERT_EQ(ac != nullptr, bc != nullptr);
+            auto point = [](Geom::Point const &x, Geom::Point const &y) {
+                EXPECT_NEAR(x.x(), y.x(), 3e-4);
+                EXPECT_NEAR(x.y(), y.y(), 3e-4);
+            };
+            if (ac && bc) {
+                for (unsigned k = 0; k < 4; ++k) point((*ac)[k], (*bc)[k]);
+            } else {
+                point(was[p][s].initialPoint(), now[p][s].initialPoint());
+                point(was[p][s].finalPoint(), now[p][s].finalPoint());
+            }
+        }
+    }
+}
 } // namespace
+
+TEST_F(AiNativeImportTest, PathOperatorCasesKeepDestinationNodeTypes)
+{
+    // Independently authored records exercise every destination flag, not just the
+    // C/c and L/l forms the writer emits. No flag changes the geometry it reads.
+    std::string const art =
+        "10 10 m 20 10 l 30 10 L 35 10 35 20 40 20 c 45 20 45 10 50 10 C "
+        "55 10 60 20 v 65 20 70 10 V 75 10 80 20 y 85 20 90 10 Y S\n"
+        "10 30 m 10 10 50 10 50 30 C 50 50 10 50 10 30 c f\n"
+        "70 30 m 70 10 110 10 110 30 c f\n"
+        "120 10 m 130 10 L S\n";
+    std::string error;
+    auto read = AN::read(records(layer(art)), error);
+    ASSERT_TRUE(read) << error;
+    auto const &nodes = read->layers[0].children;
+    ASSERT_EQ(nodes.size(), 4u);
+    EXPECT_EQ(nodes[0].nodetypes, "cscscscsc");
+    EXPECT_EQ(nodes[1].nodetypes, "scs"); // explicit cubic destination sets m's seam type
+    EXPECT_EQ(nodes[2].nodetypes, "csc"); // an implicit closing line keeps m's corner
+    EXPECT_EQ(nodes[3].nodetypes, "cc");  // no types leak into the next paint
+    auto const &v = dynamic_cast<Geom::CubicBezier const &>(nodes[0].path[0][4]);
+    EXPECT_EQ(v[1], Geom::Point(50, 10));
+    EXPECT_EQ(v[2], Geom::Point(55, 10));
+    auto const &y = dynamic_cast<Geom::CubicBezier const &>(nodes[0].path[0][6]);
+    EXPECT_EQ(y[1], Geom::Point(75, 10));
+    EXPECT_EQ(y[2], Geom::Point(80, 20));
+    auto b = make(records(layer(art)));
+    ASSERT_TRUE(b);
+    auto paths = elements(b->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 4u);
+    for (std::size_t i = 0; i < paths.size(); ++i) EXPECT_EQ(attr(paths[i], "sodipodi:nodetypes"), nodes[i].nodetypes);
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsPreserveAuthoredSmoothAndCornerPoints)
+{
+    auto doc = svg_document(
+        R"(<path d="M10 30 C15 10 20 10 30 20 C40 30 40 40 50 40 C60 40 70 10 80 10" sodipodi:nodetypes="cscs"/>)"
+        R"(<path d="M10 60 C20 50 30 50 40 60 C50 70 60 70 70 60 C80 50 90 50 100 60" sodipodi:nodetypes="czac"/>)");
+    ASSERT_TRUE(doc);
+    auto const originals = elements(doc->getReprRoot(), "svg:path");
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        SCOPED_TRACE(static_cast<int>(version));
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        std::string error;
+        auto read = AN::read(written.records, error);
+        ASSERT_TRUE(read) << error;
+        auto const &nodes = read->layers[0].children;
+        ASSERT_EQ(nodes.size(), 2u);
+        EXPECT_EQ(nodes[0].nodetypes, "cscs"); // the aligned middle handles still belong to a corner
+        EXPECT_EQ(nodes[1].nodetypes, "cssc"); // AI has one smooth type for s, z and a
+        auto b = make(written.records);
+        ASSERT_TRUE(b);
+        auto const paths = elements(b->document->getReprRoot(), "svg:path");
+        ASSERT_EQ(paths.size(), originals.size());
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            EXPECT_EQ(attr(paths[i], "sodipodi:nodetypes"), nodes[i].nodetypes);
+            expect_writer_geometry(doc.get(), originals[i], b->document.get(), paths[i]);
+        }
+        // The builder's types survive SVG serialization/reopen, and another .ai save.
+        auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+        ASSERT_TRUE(reopened);
+        auto const again = AN::write_records(reopened.get(), version);
+        ASSERT_TRUE(again.refused.empty()) << again.refused.front();
+        auto reread = AN::read(again.records, error);
+        ASSERT_TRUE(reread) << error;
+        ASSERT_EQ(reread->layers[0].children.size(), 2u);
+        EXPECT_EQ(reread->layers[0].children[0].nodetypes, "cscs");
+        EXPECT_EQ(reread->layers[0].children[1].nodetypes, "cssc");
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsPreserveClosedSeamsAndTransformedCompounds)
+{
+    auto doc = svg_document(
+        R"x(<g transform="matrix(1.5 .25 -.5 .75 8 4)"><path d=")x"
+        R"(M10 30 C10 10 50 10 50 30 C50 50 10 50 10 30 Z )"
+        R"(M70 30 C70 10 110 10 110 30 C110 50 70 50 70 30 Z )"
+        R"(M120 30 C110 30 160 50 160 30 Z" sodipodi:nodetypes="ccssscccs"/></g>)");
+    ASSERT_TRUE(doc);
+    auto const original = elements(doc->getReprRoot(), "svg:path")[0];
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        SCOPED_TRACE(static_cast<int>(version));
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto b = make(written.records);
+        ASSERT_TRUE(b);
+        auto const paths = elements(b->document->getReprRoot(), "svg:path");
+        ASSERT_EQ(paths.size(), 1u);
+        // The duplicate at each subpath's end wins over its conflicting first type.
+        // The third seam is carried by an explicit closing line, not a closing cubic.
+        EXPECT_EQ(attr(paths[0], "sodipodi:nodetypes"), "scscscscs");
+        expect_writer_geometry(doc.get(), original, b->document.get(), paths[0]);
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsInferSmoothPointsOnlyWhenTypesAreUnspecified)
+{
+    auto doc = svg_document(
+        R"(<path d="M10 30 C10 10 40 10 40 30 C40 50 70 50 70 30"/>)"
+        R"(<path d="M10 30 C10 10 40 10 40 30 C40 50 70 50 70 30" sodipodi:nodetypes="ccc"/>)"
+        R"(<path d="M10 30 C10 10 40 10 40 30 C40 50 70 50 70 30" sodipodi:nodetypes="cbc"/>)"
+        R"(<path d="M10 30 C10 10 40 10 40 30 C40 50 70 50 70 30" sodipodi:nodetypes="c"/>)");
+    ASSERT_TRUE(doc);
+    auto const originals = elements(doc->getReprRoot(), "svg:path");
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto b = make(written.records);
+        ASSERT_TRUE(b);
+        auto const paths = elements(b->document->getReprRoot(), "svg:path");
+        ASSERT_EQ(paths.size(), 4u);
+        EXPECT_EQ(attr(paths[0], "sodipodi:nodetypes"), "csc");
+        EXPECT_EQ(attr(paths[1], "sodipodi:nodetypes"), "ccc");
+        EXPECT_EQ(attr(paths[2], "sodipodi:nodetypes"), "csc");
+        EXPECT_EQ(attr(paths[3], "sodipodi:nodetypes"), "csc");
+        for (std::size_t i = 0; i < paths.size(); ++i) expect_writer_geometry(doc.get(), originals[i], b->document.get(), paths[i]);
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsKeepPrimitiveSmoothJoinsWithoutMovingTheirHandles)
+{
+    auto doc = svg_document(
+        R"(<ellipse cx="40" cy="40" rx="25" ry="15"/>)"
+        R"(<rect x="80" y="10" width="40" height="60" rx="10" ry="15"/>)"
+        R"(<rect x="140" y="10" width="40" height="60"/>)");
+    ASSERT_TRUE(doc);
+    std::vector<XML::Node *> originals{elements(doc->getReprRoot(), "svg:ellipse")[0],
+                                      elements(doc->getReprRoot(), "svg:rect")[0],
+                                      elements(doc->getReprRoot(), "svg:rect")[1]};
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto b = make(written.records);
+        ASSERT_TRUE(b);
+        auto const paths = elements(b->document->getReprRoot(), "svg:path");
+        ASSERT_EQ(paths.size(), originals.size());
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            auto const types = attr(paths[i], "sodipodi:nodetypes");
+            ASSERT_FALSE(types.empty());
+            EXPECT_EQ(types, std::string(types.size(), i == 2 ? 'c' : 's')) << i;
+            expect_writer_geometry(doc.get(), originals[i], b->document.get(), paths[i]);
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsMapArcEndpointTypesAfterSubdivisionChanges)
+{
+    auto doc = svg_document(
+        R"(<path id="arc" d="M10 30 A20 20 0 0 1 50 30 L70 30 M10 60 C10 50 30 50 30 60 C30 70 50 70 50 60"/>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto *shape = dynamic_cast<SPShape *>(doc->getObjectById("arc"));
+    ASSERT_TRUE(shape && shape->curve());
+    auto const local = pathv_to_linear_and_cubic_beziers(*shape->curve());
+    ASSERT_EQ(local.size(), 2u);
+    // The SBasis approximation subdivides only when its absolute tail error
+    // exceeds 0.1. A moderate enlargement can still use the same two cubics;
+    // choose a bounded enlargement that actually crosses that threshold.
+    Geom::PathVector art;
+    for (int scale : {64, 256, 1024, 4096}) {
+        shape->setAttribute("transform", "scale(" + std::to_string(scale) + ")");
+        doc->ensureUpToDate();
+        art = pathv_to_linear_and_cubic_beziers(*shape->curve() * shape->i2doc_affine() * Geom::Scale(0.75, -0.75));
+        if (art.size() == local.size() && art[0].size() > local[0].size()) break;
+    }
+    ASSERT_EQ(art.size(), 2u);
+    ASSERT_GT(art[0].size(), local[0].size());
+    std::string types(local[0].size() + 1, 's');
+    types.front() = 'c';
+    types[types.size() - 2] = 'c'; // authored corner at the arc/line boundary
+    types += "csc";
+    shape->setAttribute("sodipodi:nodetypes", types);
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto b = make(written.records);
+        ASSERT_TRUE(b);
+        auto const paths = elements(b->document->getReprRoot(), "svg:path");
+        ASSERT_EQ(paths.size(), 1u);
+        auto const result = attr(paths[0], "sodipodi:nodetypes");
+        std::string expected(art[0].size() + 1, 's');
+        expected.front() = 'c';
+        expected[expected.size() - 2] = 'c';
+        expected += "csc";
+        EXPECT_EQ(result, expected);
+        expect_writer_geometry(doc.get(), shape->getRepr(), b->document.get(), paths[0]);
+    }
+}
 
 TEST_F(AiNativeImportTest, WrittenRecordsReadBackAsTheDocument)
 {

@@ -4,8 +4,12 @@
  *
  * Writes the subset Illustrator 29.2.1 has been seen to open as editable art
  * (doc/PROOF-ai-interchange.md, "Native writer"): artboards from the document's pages,
- * layers with their options, groups, paths and compound paths, clipping groups, process
- * colour in CMYK, RGB or grey, spot inks with their tints, overprint and stroke style.
+ * layers with their options, groups, paths and compound paths with corner/smooth flags,
+ * clipping groups, process colour in CMYK, RGB or grey, spot inks with their tints,
+ * opaque pad linear process fills, overprint and stroke style. Gradient-filled shapes
+ * must have no stroke; radial, transparent, spot and mixed-model gradients are refused.
+ * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point
+ * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:
  * nothing goes to Illustrator that it would draw differently.
  * The optional Illustrator 7 form shares that subset, with a single artboard, ASCII layer

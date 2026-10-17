@@ -249,8 +249,9 @@ document (`write_records`), by the recipe above:
   dim. Illustrator shows a layer in its preset colour by index, ignoring the RGB
   beside it, so the nearest of the presets the owner's files pair consistently
   is written (census of 879 files; indexes 4 to 6 vary and are left out).
-- **Objects**: groups `u`/`U`; paths with corners only (`L`, `C`), a closed one
-  ending on its start; compound paths `*u`/`*U` with `XR`; clipping groups `q`,
+- **Objects**: groups `u`/`U`; paths with corner (`L`, `C`) and smooth (`l`, `c`)
+  destinations, including an explicit closed seam; compound paths `*u`/`*U`
+  with `XR`; clipping groups `q`,
   one path, `h W n`, `Q`; hidden `1 Xw`, locked `1 A` (an object's own, not its
   layer's); clones written as copies of what they show.
 - **Paint**: CMYK `k`/`K`, RGB `Xa`/`XA`, spot inks with CMYK alternates `x`/`X`
@@ -258,7 +259,10 @@ document (`write_records`), by the recipe above:
   `%%DocumentCustomColors` and `%%CMYKCustomColor`; overprint `O`/`R` from
   `proof:overprint`; stroke width, cap, join, miter limit and dashes scaled to
   points. `%AI9_ColorModel` follows the document's colour mode.
-- **Refused by name**, writing nothing: type, pictures, gradients, mesh
+- **Linear fills**: opaque pad gradients with RGB or CMYK process stops,
+  including affine transforms and per-object bounding-box coordinates. Their
+  bounded subset and qualification are described below.
+- **Refused by name**, writing nothing: type, pictures, unsupported gradients, mesh
   gradients, patterns, transparency, blend modes, opacity masks, filters,
   markers, context paint, spot inks with RGB or Lab alternates, one ink name
   with two definitions, strokes on stretched or skewed objects, strokes under
@@ -277,16 +281,18 @@ spot as a spot swatch used at 100% and 30%, the dashed round-capped curve, the
 clip, the hole. RGB fills in the CMYK document were converted by Illustrator,
 as it does.
 
-Not yet: type, gradients and pictures; the version 7 form; smooth points (all
-points are written as corners, so Illustrator's direct selection sees corners
-where PROOF had smooth ones).
+At this first records-writer checkpoint, type, gradients, pictures, the
+version 7 form and smooth points remained open: every point was written as a
+corner. Version 7 and the subsequent smooth-point/linear-gradient round are
+documented below. Type and pictures remain unsupported.
 
 ### Native Save As and its container (2026-10-17)
 
 `AiNativeOutput` registers **Adobe Illustrator (native) (*.ai)** for Save As
 and Save. It calls the records writer first; an unsupported object produces a
 message naming the feature and saves nothing. The supported subset is the
-records writer's list above. Smooth-point editing still loses smooth flags.
+records writer's list above, including the later smooth-point and linear-fill
+support described below.
 
 For an accepted document it writes fresh CapyPDF pages from a document copy,
 then appends Illustrator's private data in a PDF incremental update. Each
@@ -384,7 +390,8 @@ CLI checks; actual Illustrator conversion is checked separately.
 The shared writer subset and refusals apply. This variant additionally
 refuses multiple artboards, non-ASCII ink/layer names, individually hidden
 objects, nested layers and image dimming other than 50%. Hidden layers work.
-Artboard names, document ICC profiles and smooth-point flags are not retained.
+Artboard names and document ICC profiles are not retained. Corner/smooth flags
+use the shared writer described below.
 Illustrator opens the legacy control in CMYK and converts its RGB process
 colours; the control's original CMYK numbers and CMYK spot tints survive.
 Keep SVG as the working document and use modern native output for named
@@ -412,7 +419,7 @@ on layers and the SVG root, as well as ordinary objects. Root clipping is
 refused. Page pruning also preserves objects inside both a removed artboard
 and an overlapping retained artboard; unit and CLI checks cover this case.
 
-The 2026-10-17 headless validation passes reader 70 tests with one opt-in
+The initial Illustrator 7 checkpoint on 2026-10-17 passed reader 70 tests with one opt-in
 skip, importer 132 with two, PDF/output 5, and document 86. The legacy output
 smoke passes 44 checks, modern native output 32 and PDF interchange 23.
 The old layer-layout correction was checked on a copied synthetic legacy
@@ -428,3 +435,90 @@ with those properties (10/10 round-trip checks). Illustrator also opens the
 generated A4 control as one precisely sized artboard. GUI Save a Copy (legacy),
 Save As (modern) and plain SVG selection pass, with the input SVG unchanged
 (4/4 checks). Installed-build evidence is recorded in the workspace handoff.
+
+### Smooth points and opaque linear fills (2026-10-17)
+
+Both record variants now write corner/smooth destination flags, and the
+reader/importer retain them. Explicitly marked corners stay corners even when
+their handles align. Smooth interior anchors, closed seams and ellipse anchors
+survive the Illustrator control. SVG auto and symmetric points become ordinary
+smooth points: those additional editing constraints have no separate encoding
+here. An open path's initial `m` has no point-type flag, so Illustrator chooses
+that first point's type; the control's first point became smooth. This is an
+explicit limit, not a claim that every SVG node constraint survives.
+
+`ai-native-writer-gradient.*` adds **opaque pad linear fill gradients** with
+homogeneous standard RGB or DeviceCMYK stops. Stop-only references work;
+`userSpaceOnUse`, `objectBoundingBox`, local numeric geometry and nonsingular
+affine transforms are supported. The placement uses each shape's local
+geometric bounds and the inverse gradient scalar field, so a skewed or
+non-square bounding-box gradient retains its colour bands. Definitions use
+`Bd`/`Bs`/`BD`; each final painted contour has its own `Bb`/`Bg`/paint/`BB`
+instance. The shared encoder uses absolute art-space `Bg` geometry with an
+identity matrix for both forms, without relying on optional imaging matrices.
+Compound paths keep their final gradient paint and clips remain editable.
+Each painted shape currently receives its own gradient definition; shared SVG
+stop-vector links become independently editable gradients in the output.
+
+The writer refuses **any stroke on a gradient-filled shape**, including a
+zero-width stroke, and refuses radial gradients, stop/fill/object transparency,
+spot or Registration stops, mixed stop models, ICC-tagged stops (including
+those assigned a document profile on import), repeat/reflect, hard stops or
+offsets which coincide after rounding, nontrivial inherited geometry/transforms,
+relative user-space lengths, invalid references and degenerate placement.
+SVG offsets are normalized in their original order; they are never sorted to
+repair a decreasing SVG ramp. There are at most 256 effective stops, including
+terminal padding. Unsupported features still produce no records and preserve
+the previous destination.
+
+The PDF side also needed a placement correction: a shared bounding-box
+gradient previously used the combined visual bounds of all its users. Pad
+linear/radial fills on shapes now use each shape's geometric box, including
+when the paint is inherited, with that box included in the pattern cache key.
+This change does not extend repeat/reflect coverage or text gradients. Radial
+PDF placement support does not enable radial native writing.
+Marker context paint retains its previous placement path; the marker's bounds
+must not replace those of the element providing its paint.
+
+**Focused automated checks:** reader 70 passed with one opt-in skip, importer
+138 with two, gradient writer 9, and PDF/output 5. The new CLI controls pass
+20 checks; PDF placement controls pass 11. The marker context-fill and
+context-stroke controls use an analytic ramp and also pass on the previous
+build; forwarding marker bounds failed both before the correction. The separate
+gradient tests exercise both record variants, an affine scalar-field control, shared bounding-box
+instances, a compound hole, clipping, solid-paint state and named refusals.
+
+**Illustrator 29.2.1:** the modern RGB control opens with editable linear fills,
+and nine sampled painted, clipped and hole-interior points agree with the
+reference to within one 8-bit channel value. The modern CMYK control opens
+with exact stops `0/0/100/0`, `0/100/100/0` at 40%, and `100/0/0/0`.
+Smooth interior flags, explicit aligned corners, closed seams and ellipse
+anchors were also inspected. Illustrator converts CMYK stops in an RGB
+document to RGB, and RGB stops in a CMYK document to CMYK; the document colour
+mode therefore matters when checking channel retention.
+
+The modern CMYK and Illustrator 7 controls were then edited in Illustrator:
+their middle CMYK gradient stop became `40/30/20/10`, and each was saved to a
+new PDF-compatible Illustrator file. Both reopen through PROOF's ordinary
+native path, retaining that stop, the other CMYK endpoints, layers, point
+flags, clipping and the compound hole (23 checks, including unchanged original
+exports). This qualifies those generated controls. Imported ICC-tagged gradient
+stops still fall outside this first writer subset, so reading an Illustrator
+save does not yet guarantee that every gradient in it can be written again.
+The records currently carry the process model and channel values; explicit
+outgoing document-profile assignment remains open. PDF gradients use device
+colour spaces. Assigned-profile gradient writing needs separate container,
+PDF and Illustrator qualification before this refusal can be removed.
+
+The build also generates CapyPDF's header as an output with a dependency,
+rather than an always-running target. Two successive header builds retained
+identical bytes and the second retained its timestamp and did no work, avoiding
+needless backend recompilation on later iterations. The pinned submodule is
+unchanged.
+
+The reader milestone rechecked 871 staged copies below 50 MB: 862 native
+(512 partial, 350 still awaiting complete-editability review), nine PDF
+fallbacks, zero errors/timeouts/changed inputs and no native losses. The
+earlier mesh work accounts for two gains; earlier native comparisons stayed
+the same or improved, with unchanged notes. This is reader qualification;
+real-document writer round trips remain separate from the controls above.

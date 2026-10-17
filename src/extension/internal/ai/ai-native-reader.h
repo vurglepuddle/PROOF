@@ -298,6 +298,9 @@ struct Node
 
     // Path (and Compound: the first child's paint is the compound's).
     Geom::PathVector path;
+    /// SVG node types in path order: c for corners, s for smooth destinations.
+    /// Closed subpaths duplicate their seam type, as PROOF's node tool requires.
+    std::string nodetypes;
     bool evenodd = false;
     std::optional<Paint> fill;
     std::optional<Paint> stroke;

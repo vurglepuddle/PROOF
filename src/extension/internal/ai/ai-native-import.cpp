@@ -242,10 +242,17 @@ std::string check_text(Document const &ai, std::vector<Node> const &nodes, bool 
 }
 
 /// Every path of an object and its children, in art space.
-void outline(Node const &n, Geom::PathVector &out)
+void outline(Node const &n, Geom::PathVector &out, std::string *nodetypes = nullptr)
 {
     for (auto const &p : n.path) out.push_back(p);
-    for (auto const &k : n.children) outline(k, out);
+    if (nodetypes) {
+        std::size_t count = 0;
+        for (auto const &p : n.path) if (!p.empty()) count += p.size() + 1;
+        // Generated outlines have no authored types: let the node tool choose its
+        // best fit for them, without shifting a later child's explicit types.
+        *nodetypes += n.nodetypes.size() == count ? n.nodetypes : std::string(count, 'b');
+    }
+    for (auto const &k : n.children) outline(k, out, nodetypes);
 }
 
 /**
@@ -581,7 +588,7 @@ private:
     XML::Node *made(Node const &n);
     XML::Node *layer(Node const &n);
     XML::Node *group(Node const &n);
-    XML::Node *shape(Node const &n, Geom::PathVector const &pv);
+    XML::Node *shape(Node const &n, Geom::PathVector const &pv, std::string const &nodetypes);
     XML::Node *mesh(Node const &n);
     XML::Node *mesh_cells(MeshPatch const &p);
     XML::Node *foreign(Node const &n);
@@ -734,15 +741,16 @@ XML::Node *Builder::made(Node const &n)
             return group(n);
         case Node::Kind::Compound: {
             Geom::PathVector pv;
-            outline(n, pv);
-            return shape(n, pv);
+            std::string nodetypes;
+            outline(n, pv, &nodetypes);
+            return shape(n, pv, nodetypes);
         }
         case Node::Kind::Path:
             if (n.guide) {
                 for (auto const &p : n.path) guides.push_back(p * _to_doc);
                 return nullptr;
             }
-            return shape(n, n.path);
+            return shape(n, n.path, n.nodetypes);
         case Node::Kind::Image:
             return image(n);
         case Node::Kind::Placed:
@@ -1066,13 +1074,15 @@ void Builder::children(XML::Node *parent, std::vector<Node> const &kids, bool cl
 std::string Builder::clip_path(Node const &clip)
 {
     Geom::PathVector pv;
-    outline(clip, pv);
+    std::string nodetypes;
+    outline(clip, pv, &nodetypes);
     auto cp = create("svg:clipPath");
     auto const id = unique("clipPath");
     cp->setAttribute("id", id);
     cp->setAttribute("clipPathUnits", "userSpaceOnUse");
     auto p = create("svg:path");
     p->setAttribute("d", sp_svg_write_path(pv * _to_doc));
+    if (!nodetypes.empty()) p->setAttribute("sodipodi:nodetypes", nodetypes);
     if (clip.evenodd) p->setAttribute("style", "clip-rule:evenodd");
     if (!clip.name.empty()) p->setAttribute("inkscape:label", clip.name);
     append(cp, p);
@@ -1137,11 +1147,12 @@ XML::Node *Builder::masked(XML::Node *art, std::vector<Node> const &mask, bool c
     return wrapper;
 }
 
-XML::Node *Builder::shape(Node const &n, Geom::PathVector const &pv)
+XML::Node *Builder::shape(Node const &n, Geom::PathVector const &pv, std::string const &nodetypes)
 {
     if (pv.empty()) return nullptr;
     auto e = create("svg:path");
     e->setAttribute("d", sp_svg_write_path(pv * _to_doc));
+    if (!nodetypes.empty()) e->setAttribute("sodipodi:nodetypes", nodetypes);
     std::string style = "fill:" + (n.fill ? paint(*n.fill) : std::string("none")) + ";";
     if (n.fill) style += std::string("fill-rule:") + (n.evenodd ? "evenodd" : "nonzero") + ";";
     if (n.stroke) {

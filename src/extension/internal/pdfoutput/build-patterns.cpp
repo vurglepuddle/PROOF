@@ -13,6 +13,10 @@
 #include "build-patterns.h"
 
 #include <array>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <sstream>
 
 #include "object/sp-gradient.h"
 #include "object/sp-linear-gradient.h"
@@ -88,13 +92,24 @@ bool gradient_has_transparency(SPPaintServer const *paint)
  * @arg bbox - The bounding box for this pattern
  * @arg opacity - The total paint opacity, used for softmasking. Only used for soft-masking
  */
-std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *paint, std::optional<double> opacity)
+std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *paint, std::optional<double> opacity,
+                                                      Geom::OptRect const &bbox)
 {
     if (!paint || !paint->isValid())
         return {};
 
     // Patterns are cached so they can be reused
     std::string cache_key = get_id(paint);
+    if (bbox && (is<SPLinearGradient>(paint) || is<SPRadialGradient>(paint))) {
+        // Different instances can share stops, but not an object-bounding-box
+        // placement (or the paintable area used for repeat/reflect).
+        std::ostringstream placement;
+        placement.imbue(std::locale::classic());
+        placement << std::setprecision(std::numeric_limits<double>::max_digits10)
+                  << " [" << bbox->left() << ',' << bbox->top()
+                  << ',' << bbox->right() << ',' << bbox->bottom() << ']';
+        cache_key += placement.str();
+    }
     if (opacity) {
         // Add the opacity of softmasks so they can include their fill/stroke-opacity attrbitues
         // without the cache colliding with either the color gradfient or other uses.
@@ -107,9 +122,9 @@ std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *pain
 
     std::optional<CapyPDF_PatternId> pattern_id;
     if (auto linear = cast<SPLinearGradient>(paint)) {
-        pattern_id = get_linear_pattern(linear, opacity);
+        pattern_id = get_linear_pattern(linear, opacity, bbox);
     } else if (auto radial = cast<SPRadialGradient>(paint)) {
-        pattern_id = get_radial_pattern(radial, opacity);
+        pattern_id = get_radial_pattern(radial, opacity, bbox);
     } else if (auto mesh = cast<SPMeshGradient>(paint)) {
         pattern_id = get_mesh_pattern(mesh, opacity);
     } else if (auto pattern = cast<SPPattern>(paint)) {
@@ -137,9 +152,13 @@ std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *pain
  * @returns A PDF Id of the new gradient object in the PDF document, if created.
  */
 std::optional<CapyPDF_PatternId> Document::get_linear_pattern(SPLinearGradient const *linear,
-                                                              std::optional<double> opacity)
+                                                              std::optional<double> opacity,
+                                                              Geom::OptRect const &item_bbox)
 {
-    auto bbox = linear->getAllItemsBox();
+    // Repeat coverage also includes the stroke outside the geometric bounds.
+    // Keep that existing path until placement and coverage are passed separately.
+    auto bbox = item_bbox && linear->fetchSpread() == SP_GRADIENT_SPREAD_PAD
+                    ? item_bbox : linear->getAllItemsBox();
     if (!bbox) {
         g_warning("Linear gradient has no paintable area: '%s'", get_id(linear).c_str());
         return {};
@@ -201,11 +220,14 @@ std::optional<CapyPDF_PatternId> Document::get_linear_pattern(SPLinearGradient c
  * @returns A PDF Id of the new gradient object in the PDF document, if created.
  */
 std::optional<CapyPDF_PatternId> Document::get_radial_pattern(SPRadialGradient const *radial,
-                                                              std::optional<double> opacity)
+                                                              std::optional<double> opacity,
+                                                              Geom::OptRect const &item_bbox)
 {
-    auto bbox = radial->getAllItemsBox();
+    auto bbox = item_bbox && radial->fetchSpread() == SP_GRADIENT_SPREAD_PAD
+                    ? item_bbox : radial->getAllItemsBox();
     if (!bbox) {
         g_warning("Radial gradient has no paintable area: '%s'", get_id(radial).c_str());
+        return {};
     }
 
     auto color_space = opacity ? CAPY_DEVICE_CS_GRAY : get_default_colorspace();
