@@ -237,6 +237,9 @@ struct LayerOptions
 };
 
 /// One corner of a gradient-mesh patch, in art space.
+/// A tint of a colour given at full strength: inks scale, other models blend towards paper.
+Color tinted(Color c, double t);
+
 struct MeshCorner
 {
     Color color;
@@ -248,6 +251,9 @@ struct MeshPatch
 {
     std::array<MeshCorner, 4> corners;
     Geom::PathVector boundary; ///< Includes every /S and /A boundary node, not only /N corners.
+    /// Each edge, from corner k to corner k + 1, as the cubics its anchors cut it into. An edge
+    /// of more than one cubic makes the patch the Coons patch of its edges, cut into cells there.
+    std::array<std::vector<Geom::CubicBezier>, 4> edges;
     bool outlined = false; ///< Uniform colour, extra boundary nodes: imported as its exact outline.
 };
 

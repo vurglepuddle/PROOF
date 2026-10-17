@@ -1386,12 +1386,16 @@ TEST(AiNativeReader, MeshCornersKeepGeometryColorAndOpacity)
     EXPECT_EQ(ink.layers[0].children[0].mesh.patches[0].corners[0].color, Color::cmyk(0.1, 0.2, 0.3, 0.4));
 }
 
-TEST(AiNativeReader, MeshExtraBoundaryNodesNeedUniformColorAndOpacity)
+TEST(AiNativeReader, MeshExtraBoundaryNodesOutlineAUniformPatchAndCutAChangingOne)
 {
     auto mesh = square_mesh();
     auto const extra = "[4 50 4 40 4 60 1] /S X#\n[6 70 6 60 6 75 1] /A X#\n";
     mesh = changed(mesh, "[0.4", std::string(extra) + "[0.4");
-    EXPECT_NE(read_error(records(layer("L", mesh))).find("gradient meshes"), std::string::npos);
+    auto changing = read_ok(records(layer("L", mesh)));
+    auto const &cut = changing.layers[0].children[0].mesh.patches[0];
+    EXPECT_FALSE(cut.outlined);
+    EXPECT_EQ(cut.edges[0].size(), 3u);
+    EXPECT_EQ(cut.edges[1].size(), 1u);
     for (auto const &v : {"0.4", "0.6", "0.8"}) mesh = changed(mesh, "[" + std::string(v), "[0.2");
     auto doc = read_ok(records(layer("L", mesh)));
     auto const &p = doc.layers[0].children[0].mesh.patches[0];
@@ -1401,6 +1405,73 @@ TEST(AiNativeReader, MeshExtraBoundaryNodesNeedUniformColorAndOpacity)
     EXPECT_EQ(side.controlPoint(0), Geom::Point(4, 50));
     EXPECT_EQ(side.controlPoint(1), Geom::Point(4, 60));
     EXPECT_EQ(side.controlPoint(2), Geom::Point(6, 60));
+}
+
+namespace {
+/// A 1 x 1 mesh laid out as Illustrator 29.2.1 saves one with an anchor bent out of each edge
+/// and a process ink on each corner (mesh-1x1-all, a control made for this, 2026-10-17).
+std::string control_mesh()
+{
+    auto ink = [](char const *cmyk, char const *name) {
+        return std::string("[ [") + cmyk + " /DeviceCMYK (" + name + ") /Separation]\n1 /NChannel] /CS X#\n";
+    };
+    return "/Mesh X!\n2 /Version X#\n/Cartesian /Type X#\n[1 1] /Size X#\n/Data X#\n[0 0] /P X#\n[0] /R X#\n"
+           "[20 90 20 73.3333333333 20 106.6666666667 1] /A X#\n" +
+           ink("0 0 0 1", "Black") + "[1 1 40 40 56.6666666667 40 1 40 56.6666666667 1] /N X#\n"
+           "[90 19.875 73.3333333333 19.875 106.6666666667 19.875 1] /A X#\n" +
+           ink("0 0 1 0", "Yellow") + "[1 1 140 40 140 56.6666666667 1 123.3333333333 40 1] /N X#\n"
+           "[159.75 90 159.75 73.3333333333 159.75 106.6666666667 1] /A X#\n" +
+           ink("0 1 0 0", "Magenta") + "[1 1 140 140 123.3333333333 140 1 140 123.3333333333 1] /N X#\n"
+           "[90 159.875 73.3333333333 159.875 106.6666666667 159.875 1] /A X#\n" +
+           ink("1 0 0 0", "Cyan") + "[1 1 40 140 40 123.3333333333 1 56.6666666667 140 1] /N X#\n/E X#\n/End X!\n";
+}
+}
+
+TEST(AiNativeReader, MeshAnchorsAreListedAlongTheGrid)
+{
+    // An edge's anchors are listed along the mesh's grid, the first handle towards the one
+    // before: with the patch's turn on its first two edges, against it on the other two.
+    auto doc = read_ok(records(layer("L", control_mesh())));
+    auto const &p = doc.layers[0].children[0].mesh.patches[0];
+    EXPECT_FALSE(p.outlined);
+    EXPECT_EQ(p.corners[0].color, Color::cmyk(0, 0, 0, 1));
+    EXPECT_EQ(p.corners[2].color, Color::cmyk(0, 1, 0, 0));
+    auto same = [](Geom::Point a, Geom::Point b) { return Geom::distance(a, b) < 1e-6; };
+    for (auto const &edge : p.edges) ASSERT_EQ(edge.size(), 2u);
+    // The bottom edge, along: from the first corner, the anchor's first handle comes first.
+    EXPECT_TRUE(same(p.edges[0][0][2], {73.3333333333, 19.875}));
+    // The top edge, against: from the third corner, the anchor's second handle comes first.
+    EXPECT_TRUE(same(p.edges[2][0][0], {140, 140}));
+    EXPECT_TRUE(same(p.edges[2][0][2], {106.6666666667, 159.875}));
+    EXPECT_TRUE(same(p.edges[2][1][1], {73.3333333333, 159.875}));
+    // The left edge, listed before the first corner, against: from the fourth corner down.
+    EXPECT_TRUE(same(p.edges[3][0][0], {40, 140}));
+    EXPECT_TRUE(same(p.edges[3][0][2], {20, 106.6666666667}));
+    EXPECT_TRUE(same(p.edges[3][1][3], {40, 40}));
+    ASSERT_EQ(p.boundary[0].size(), 8u);
+
+    // An anchor turned into a corner ends in 0, not 1 (mesh-s-corner).
+    auto corner = read_ok(records(layer("L", changed(control_mesh(), "20 106.6666666667 1]", "35 116.625 0]"))));
+    EXPECT_TRUE(same(corner.layers[0].children[0].mesh.patches[0].edges[3][0][2], {35, 116.625}));
+
+    // A named process colour gives each point a tint of it, blending towards paper in RGB.
+    auto swatch = control_mesh();
+    for (auto const *ink : {"0 0 0 1 /DeviceCMYK (Black)", "0 0 1 0 /DeviceCMYK (Yellow)", "0 1 0 0 /DeviceCMYK (Magenta)",
+                            "1 0 0 0 /DeviceCMYK (Cyan)"}) {
+        swatch = changed(swatch, std::string("[ [") + ink + " /Separation]\n1 /NChannel]",
+                         "[0.2 0.4 0.6 /DeviceRGB (R=51 G=102 B=153) /Process]");
+    }
+    auto named = read_ok(records(layer("L", swatch)));
+    auto const full = named.layers[0].children[0].mesh.patches[0].corners[0].color;
+    EXPECT_EQ(full.model, Color::Model::Rgb);
+    EXPECT_NEAR(full.v[2], 0.6, 1e-9);
+    auto half = read_ok(records(layer("L", changed(swatch, "[1 1 40 40", "[0.5 1 40 40"))));
+    EXPECT_NEAR(half.layers[0].children[0].mesh.patches[0].corners[0].color.v[0], 0.6, 1e-9);
+    EXPECT_FALSE(half.layers[0].children[0].mesh.patches[0].outlined);
+
+    // Spot inks in a mesh aren't read.
+    EXPECT_NE(read_error(records(layer("L", changed(control_mesh(), "(Black)", "(PANTONE 300 C)")))).find("gradient meshes"),
+              std::string::npos);
 }
 
 TEST(AiNativeReader, MeshMalformedAndUnsupportedRecordsFailClosed)

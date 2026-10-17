@@ -1995,6 +1995,56 @@ stack isn't counted, by the same test `]` already applied, so files that read
 before read the same. Test: `ArraysNestedTooDeeplyAreRefused`, which crashed
 the suite before the cap.
 
+### Gradient meshes whose edges bend (2026-10-17)
+
+A mesh patch's edge can bend through anchor points (Illustrator's square points
+on a mesh line, which take no colour), written `/A` or `/S` between the
+patch's corners (`/N`). PROOF drew such a patch only when its colour was
+uniform, as its outline, and joined the anchors in file order. Fifteen control
+meshes saved by Illustrator 29.2.1 for this (the owner's Codex; corner inks C,
+M, Y and K, one feature each: an anchor on each edge, two on one, one slid
+along an edge, one turned into a corner, a deleted line, a star) showed how
+they are written and drawn. Their PDF parts, where Illustrator writes each
+mesh as finer tensor patches, gave the drawing:
+
+- **Order.** Corners run from the lower left (y up) with the patch's turn. An
+  edge's anchors follow the corner it starts from; the last edge's come before
+  the first corner. They are listed along the mesh's grid, the first handle
+  towards the anchor listed before: with the turn on edges 0 and 1, against it
+  on edges 2 and 3. File order drew those two edges wrongly (a zigzag, or a
+  lone anchor's handles swapped). Every run of two or more anchors in the
+  owner's and the collaborator's mesh files fits.
+- **`/S` and `/A`** are drawn alike. `/S` is left where a mesh point was (a
+  deleted line's points; a Mesh tool click into a star), `/A` is added. The
+  last number is 1 for a smooth point and 0 for a corner.
+- **The inside** is the Coons patch of the four edges, its colour the four
+  corners' blended by the patch's parameters (within 2/255 of Illustrator's).
+- **Along a bent edge** each cubic takes a share of the parameter as long as
+  its control polygon: an anchor slid to 80% of a straight edge, its handles
+  kept, sits at 63% (79.875 pt of 126.42), and its colour is 63%.
+- **Colour spaces**: Illustrator 29 writes pure process inks as per-point
+  `[ [c m y k /DeviceCMYK (Cyan) /Separation] ... n /NChannel ]`, and a named
+  process colour as `[r g b /DeviceRGB (name) /Process]` with a tint per point
+  (tinted as elsewhere: inks scale, RGB blends towards paper). Both are read;
+  spot inks in a mesh are not.
+
+So a patch whose colour changes is imported as a mesh gradient cut into cells
+at every anchor (`Builder::mesh_cells`): each cell's sides are exact cubics of
+the same Coons surface, so the cells draw it exactly, and each anchor becomes
+a mesh point with the colour it had between the corners (a note says so).
+Uniform patches stay outlines, now in the right order.
+
+Checks: `MeshAnchorsAreListedAlongTheGrid` (the control's layout, a corner
+anchor, the `/Process` tint, a spot ink refused),
+`MeshExtraBoundaryNodesOutlineAUniformPatchAndCutAChangingOne`,
+`ABentMeshPatchIsCutAtItsAnchorsWithTheSharesIllustratorGives` (read back
+through Inkscape's mesh). All 15 controls open natively against their own
+pages. The owner's three mesh refusals open (0.37%, 0.37%, and 0.13% for the
+243 MB file); the 8 native mesh files stay or come closer to their pages. Of
+the collaborator's 12, 8 open; three now fail only for opacity masks, and
+`f9e2bddc55` draws 1.4% differently, though the same mesh opens in three
+other files at 0.00 to 0.28%.
+
 ## Plan
 
 1. **Native reader** (`src/extension/internal/ai/`), delivered. It covers the operator table

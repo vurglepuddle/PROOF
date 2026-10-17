@@ -501,9 +501,12 @@ struct MeshRead
     bool commented = false, version = false, cartesian = false, data = false;
     std::size_t rows = 0, columns = 0, points = 0;
     std::string space = "DeviceGray"; ///< Omitted /CS means Gray, as in the corpus.
+    std::vector<std::array<double, 4>> inks; ///< /NChannel: each process ink's CMYK.
+    Color swatch; ///< /Process: the named process colour a point's tint is of.
     std::optional<std::pair<std::size_t, std::size_t>> place;
     std::set<std::pair<std::size_t, std::size_t>> places;
     std::vector<MeshCorner> boundary;
+    std::vector<std::size_t> corner_at; ///< Where in `boundary` each corner is.
     std::vector<MeshCorner> corners;
     Mesh mesh;
 };
@@ -1778,10 +1781,62 @@ bool Reader::mesh_marker(Values const &vals, bool hidden)
     return true;
 }
 
+/// A mesh's process inks, `[ [c m y k /DeviceCMYK (Cyan) /Separation] ... n /NChannel ]`: each
+/// one's CMYK. Nothing for anything else, spot inks included.
+static std::optional<std::vector<std::array<double, 4>>> process_inks(std::vector<Value> const &vals)
+{
+    if (vals.size() != 2 || vals[0].kind != Value::Kind::Arr) return {};
+    auto const &a = *vals[0].arr;
+    if (a.size() < 3 || a.back().kind != Value::Kind::Name || a.back().str != "NChannel" ||
+        a[a.size() - 2].kind != Value::Kind::Num || a[a.size() - 2].num != double(a.size() - 2) || a.size() - 2 > 4) {
+        return {};
+    }
+    static std::map<std::string, std::array<double, 4>> const process = {
+        {"Cyan", {1, 0, 0, 0}}, {"Magenta", {0, 1, 0, 0}}, {"Yellow", {0, 0, 1, 0}}, {"Black", {0, 0, 0, 1}}};
+    std::vector<std::array<double, 4>> inks;
+    for (std::size_t i = 0; i + 2 < a.size(); ++i) {
+        if (a[i].kind != Value::Kind::Arr) return {};
+        auto const &s = *a[i].arr;
+        if (s.size() != 7 || s[4].kind != Value::Kind::Name || s[4].str != "DeviceCMYK" ||
+            s[5].kind != Value::Kind::Str || s[6].kind != Value::Kind::Name || s[6].str != "Separation") {
+            return {};
+        }
+        auto const ink = process.find(s[5].str);
+        if (ink == process.end()) return {};
+        for (std::size_t j = 0; j < 4; ++j) {
+            if (s[j].kind != Value::Kind::Num || s[j].num != ink->second[j]) return {};
+        }
+        inks.push_back(ink->second);
+    }
+    return inks;
+}
+
+/// A named process colour, `[r g b /DeviceRGB (name) /Process]` or `[c m y k /DeviceCMYK (name)
+/// /Process]`, whose points give a tint of it.
+static std::optional<Color> process_swatch(std::vector<Value> const &vals)
+{
+    if (vals.size() != 2 || vals[0].kind != Value::Kind::Arr) return {};
+    auto const &a = *vals[0].arr;
+    if (a.size() != 6 && a.size() != 7) return {};
+    auto const n = a.size() - 3;
+    if (a.back().kind != Value::Kind::Name || a.back().str != "Process" || a[n + 1].kind != Value::Kind::Str ||
+        a[n].kind != Value::Kind::Name || a[n].str != (n == 4 ? "DeviceCMYK" : "DeviceRGB")) {
+        return {};
+    }
+    double v[4] = {};
+    for (std::size_t i = 0; i < n; ++i) {
+        if (a[i].kind != Value::Kind::Num || !(a[i].num >= 0 && a[i].num <= 1)) return {};
+        v[i] = a[i].num;
+    }
+    return n == 4 ? Color::cmyk(v[0], v[1], v[2], v[3]) : Color::rgb(v[0], v[1], v[2]);
+}
+
 /** Mesh layout reference: VectorCraft ai/mesh.rs at 0d0ea352 (MIT, see the header).
- * Unlike that reader, keep /S and /A geometry and check every entry. Patches with extra
- * boundary nodes are accepted only when their colour and opacity are uniform: then their
- * exact closed outline draws the same art, without guessing an interior interpolation.
+ * Unlike that reader, keep /S and /A geometry and check every entry. A patch with extra
+ * boundary nodes and uniform colour and opacity is its exact closed outline. One whose
+ * colour changes is the Coons patch of its edges, as Illustrator draws it; the order its
+ * anchors are listed in, and how it is drawn, were read from controls saved by Illustrator
+ * 29.2.1 (`PROOF-ai-native-records.md`, "Gradient meshes whose edges bend").
  */
 void Reader::mesh_entry(Values const &vals)
 {
@@ -1818,11 +1873,21 @@ void Reader::mesh_entry(Values const &vals)
         if (vals.size() != 1 || m.data) bad();
         m.data = true;
     } else if (key == "CS") {
-        if (vals.size() != 2 || vals[0].kind != Value::Kind::Name ||
-            (vals[0].str != "DeviceGray" && vals[0].str != "DeviceRGB" && vals[0].str != "DeviceCMYK")) {
+        // A device space, or process inks as Illustrator 29 writes them, before each point:
+        // [ [c m y k /DeviceCMYK (Cyan) /Separation] ... n /NChannel ]. Spot inks aren't read.
+        m.inks.clear();
+        if (vals.size() == 2 && vals[0].kind == Value::Kind::Name &&
+            (vals[0].str == "DeviceGray" || vals[0].str == "DeviceRGB" || vals[0].str == "DeviceCMYK")) {
+            m.space = vals[0].str;
+        } else if (auto inks = process_inks(vals)) {
+            m.space = "NChannel";
+            m.inks = std::move(*inks);
+        } else if (auto swatch = process_swatch(vals)) {
+            m.space = "Process";
+            m.swatch = *swatch;
+        } else {
             bad(); return;
         }
-        m.space = vals[0].str;
     } else if (key == "P") {
         auto n = array();
         if (m.place || !m.boundary.empty() || !n || n->size() != 2 || !m.data ||
@@ -1837,7 +1902,8 @@ void Reader::mesh_entry(Values const &vals)
     } else if (key == "N" || key == "S" || key == "A") {
         auto n = array();
         bool const corner = key == "N";
-        std::size_t const components = m.space == "DeviceCMYK" ? 4 : m.space == "DeviceRGB" ? 3 : 1;
+        std::size_t const components = m.space == "NChannel" ? m.inks.size() : m.space == "DeviceCMYK" ? 4 :
+                                       m.space == "DeviceRGB" ? 3 : 1; // Gray, and a Process tint
         if (!m.place || !n || n->size() != (corner ? components + 9 : 7) ||
             ++m.points > _limits.max_points || m.boundary.size() >= 4096 ||
             (corner && m.corners.size() >= 4)) { bad(); return; }
@@ -1847,8 +1913,18 @@ void Reader::mesh_entry(Values const &vals)
             for (std::size_t i = 0; i <= components; ++i) {
                 if (v[i] < 0 || v[i] > 1) { bad(); return; }
             }
-            c.color = components == 4 ? Color::cmyk(v[0], v[1], v[2], v[3]) :
-                      components == 3 ? Color::rgb(v[0], v[1], v[2]) : Color::gray(v[0]);
+            if (m.space == "NChannel") {
+                std::array<double, 4> sum{};
+                for (std::size_t i = 0; i < components; ++i) {
+                    for (std::size_t j = 0; j < 4; ++j) sum[j] = std::min(1.0, sum[j] + v[i] * m.inks[i][j]);
+                }
+                c.color = Color::cmyk(sum[0], sum[1], sum[2], sum[3]);
+            } else if (m.space == "Process") {
+                c.color = tinted(m.swatch, v[0]);
+            } else {
+                c.color = components == 4 ? Color::cmyk(v[0], v[1], v[2], v[3]) :
+                          components == 3 ? Color::rgb(v[0], v[1], v[2]) : Color::gray(v[0]);
+            }
             c.opacity = v[components];
             c.point = Geom::Point(v[components + 1], v[components + 2]);
             c.next = Geom::Point(v[components + 3], v[components + 4]);
@@ -1858,31 +1934,68 @@ void Reader::mesh_entry(Values const &vals)
             c.point = Geom::Point(v[0], v[1]);
             c.previous = Geom::Point(v[2], v[3]);
             c.next = Geom::Point(v[4], v[5]);
-            if (v[6] != 1) { bad(); return; }
+            // 1 a smooth point, 0 a corner (its handles apart): drawn alike.
+            if (v[6] != 1 && v[6] != 0) { bad(); return; }
         }
         for (auto const &p : {c.point, c.next, c.previous}) {
             if (std::abs(p.x()) > MAX_SIDE || std::abs(p.y()) > MAX_SIDE) { bad(); return; }
         }
+        if (corner) {
+            m.corner_at.push_back(m.boundary.size());
+            m.corners.push_back(c);
+        }
         m.boundary.push_back(c);
-        if (corner) m.corners.push_back(c);
     } else if (key == "E") {
         if (vals.size() != 1 || !m.place || m.corners.size() != 4 ||
             m.mesh.patches.size() >= _limits.max_mesh_patches) { bad(); return; }
         MeshPatch p;
         std::copy(m.corners.begin(), m.corners.end(), p.corners.begin());
-        p.outlined = m.boundary.size() != 4;
-        if (p.outlined && !std::all_of(m.corners.begin(), m.corners.end(), [&](MeshCorner const &c) {
+        // The corners run from the lower left with the patch's turn. An edge's anchors follow
+        // the corner it starts from, the last edge's come before the first corner, and they
+        // are listed along the mesh's grid, the first handle towards the one listed before:
+        // with the turn on the first two edges, against it on the other two, which are read
+        // back to front with their handles swapped (gradient mesh controls, 2026-10-17).
+        auto const &b = m.boundary;
+        auto const &at = m.corner_at;
+        for (std::size_t k = 0; k < 4; ++k) {
+            std::vector<MeshCorner> run(b.begin() + at[k] + 1, k < 3 ? b.begin() + at[k + 1] : b.end());
+            if (k == 3) run.insert(run.end(), b.begin(), b.begin() + at[0]);
+            if (k >= 2) {
+                std::reverse(run.begin(), run.end());
+                for (auto &a : run) std::swap(a.previous, a.next);
+            }
+            Geom::Point from = p.corners[k].point, out = p.corners[k].next;
+            for (auto const &a : run) {
+                p.edges[k].emplace_back(from, out, a.previous, a.point);
+                from = a.point;
+                out = a.next;
+            }
+            auto const &to = p.corners[(k + 1) % 4];
+            p.edges[k].emplace_back(from, out, to.previous, to.point);
+        }
+        bool const bent = b.size() != 4;
+        bool const uniform = std::all_of(m.corners.begin(), m.corners.end(), [&](MeshCorner const &c) {
             return c.color == m.corners[0].color && c.opacity == m.corners[0].opacity;
-        })) bad();
-        Geom::Path boundary(m.boundary.front().point);
-        for (std::size_t i = 0; i < m.boundary.size(); ++i) {
-            auto const &a = m.boundary[i], &b = m.boundary[(i + 1) % m.boundary.size()];
-            boundary.appendNew<Geom::CubicBezier>(a.next, b.previous, b.point);
+        });
+        p.outlined = bent && uniform;
+        if (bent && !uniform) {
+            // Cut into cells at every anchor: bound how many, and blend one colour model.
+            auto const across = p.edges[0].size() + p.edges[2].size(), down = p.edges[1].size() + p.edges[3].size();
+            if (across * down > _limits.max_mesh_patches ||
+                !std::all_of(m.corners.begin(), m.corners.end(),
+                             [&](MeshCorner const &c) { return c.color.model == m.corners[0].color.model; })) {
+                bad(); return;
+            }
+        }
+        Geom::Path boundary(p.corners[0].point);
+        for (auto const &edge : p.edges) {
+            for (auto const &c : edge) boundary.appendNew<Geom::CubicBezier>(c[1], c[2], c[3]);
         }
         boundary.close(true);
         p.boundary.push_back(std::move(boundary));
         m.mesh.patches.push_back(std::move(p));
         m.boundary.clear();
+        m.corner_at.clear();
         m.corners.clear();
         m.place.reset();
     } else {
@@ -2620,6 +2733,28 @@ Document Reader::finish()
 } // namespace
 
 // ---- public ------------------------------------------------------------------------------
+
+Color tinted(Color c, double t)
+{
+    t = std::clamp(t, 0.0, 1.0);
+    switch (c.model) {
+        case Color::Model::Cmyk:
+            for (int i = 0; i < 4; ++i) c.v[i] *= t;
+            break;
+        case Color::Model::Gray:
+            c.v[0] = 1.0 - t * (1.0 - c.v[0]);
+            break;
+        case Color::Model::Rgb:
+            for (int i = 0; i < 3; ++i) c.v[i] = 1.0 - t * (1.0 - c.v[i]);
+            break;
+        case Color::Model::Lab:
+            c.v[0] = 100.0 - t * (100.0 - c.v[0]);
+            c.v[1] *= t;
+            c.v[2] *= t;
+            break;
+    }
+    return c;
+}
 
 bool place_board_by_page(Document &doc, Geom::Rect const &page, Geom::Rect const &art)
 {

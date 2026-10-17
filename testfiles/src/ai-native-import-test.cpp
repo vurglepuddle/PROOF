@@ -461,6 +461,46 @@ TEST_F(AiNativeImportTest, MeshCmykChannelsAndOpacitySurviveReopen)
     EXPECT_NE(attr(stops[0], "style").find("stop-opacity:0.25"), std::string::npos);
 }
 
+TEST_F(AiNativeImportTest, ABentMeshPatchIsCutAtItsAnchorsWithTheSharesIllustratorGives)
+{
+    // mesh-1x1-slide, a control saved by Illustrator 29.2.1: an anchor slid up the left edge to
+    // 80% of it, its handles kept. Illustrator gives the lower part of the edge 63% of it, as
+    // its control polygon is 79.875 pt of 126.42: its colour there is C 63 K 37.
+    std::string const art =
+        "/Mesh X!\n2 /Version X#\n/Cartesian /Type X#\n[1 1] /Size X#\n/Data X#\n[0 0] /P X#\n"
+        "[40 119.875 40 103.2083333333 40 136.5416666667 1] /A X#\n/DeviceCMYK /CS X#\n"
+        "[0 0 0 1 1 40 40 73.3333333333 40 1 40 56.6666666667 1] /N X#\n"
+        "[0 0 1 0 1 140 40 140 73.3333333333 1 106.6666666667 40 1] /N X#\n"
+        "[0 1 0 0 1 140 140 106.6666666667 140 1 140 106.6666666667 1] /N X#\n"
+        "[1 0 0 0 1 40 140 40 123.3333333333 1 73.3333333333 140 1] /N X#\n/E X#\n/End X!\n";
+    auto b = make(records(layer(art)));
+    ASSERT_TRUE(b);
+    auto *doc = b->document.get();
+    doc->ensureUpToDate();
+    auto gradients = elements(doc->getDefs()->getRepr(), "svg:meshgradient");
+    ASSERT_EQ(gradients.size(), 1u);
+    auto *gradient = dynamic_cast<SPMeshGradient *>(doc->getObjectByRepr(gradients[0]));
+    ASSERT_TRUE(gradient);
+    gradient->ensureArray();
+    ASSERT_EQ(gradient->array.patch_rows(), 2u);
+    ASSERT_EQ(gradient->array.patch_columns(), 1u);
+    SPMeshPatchI lower(&gradient->array.nodes, 0, 0);
+    auto const corner = lower.getPoint(0, 0), anchor = lower.getPoint(3, 0);
+    EXPECT_NEAR(anchor.x(), corner.x(), 1e-6);
+    EXPECT_NEAR(std::abs(anchor.y() - corner.y()), 79.875, 1e-6);
+    double const share = 79.875 / (79.875 + 16.6666666667 + 13.2083333333 + 16.6666666667);
+    auto const color = lower.getColor(3);
+    ASSERT_TRUE(color);
+    auto const v = color->getValues();
+    ASSERT_GE(v.size(), 4u);
+    // Stop colours are written to three decimals.
+    EXPECT_NEAR(v[0], share, 1e-3);
+    EXPECT_NEAR(v[3], 1 - share, 1e-3);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](std::string const &s) {
+        return s.find("cut into cells") != s.npos;
+    }));
+}
+
 TEST_F(AiNativeImportTest, UniformMeshKeepsEveryBoundaryNodeAndSaysItIsOutlined)
 {
     auto b = make(records(layer(mesh_art("DeviceGray", {"0.3", "0.3", "0.3", "0.3"},
