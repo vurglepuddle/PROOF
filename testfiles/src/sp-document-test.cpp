@@ -11,6 +11,7 @@
 #include "inkscape.h"
 #include "object/object-set.h"
 #include "object/sp-root.h"
+#include "page-manager.h"
 #include "style.h"
 #include "util/units.h"
 
@@ -37,6 +38,34 @@ static ImportFileInfo const ImportTestFiles1[] = {
 // Opening a file stamps it with this version. A commit that changes nothing must then find
 // nothing to record: otherwise choosing default paints with nothing selected marks a document
 // just opened as changed, and closing it asks to save.
+TEST(SPDocumentPages, PruningKeepsArtworkSharedWithTheRetainedPage)
+{
+    Application::create(false);
+    static char const svg[] =
+        R"(<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" )"
+        R"(xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" width="200" height="100" viewBox="0 0 200 100">)"
+        R"(<sodipodi:namedview><inkscape:page x="0" y="0" width="200" height="100"/>)"
+        R"(<inkscape:page x="120" y="0" width="80" height="100"/></sodipodi:namedview>)"
+        R"(<rect id="exclusive" x="10" y="10" width="20" height="20"/>)"
+        R"(<rect id="shared" x="130" y="10" width="20" height="20"/></svg>)";
+    auto original = SPDocument::createNewDocFromMem(svg, "");
+    ASSERT_TRUE(original);
+    original->ensureUpToDate();
+    ASSERT_EQ(original->getPageManager().getPages().size(), 2u);
+    auto selected = original->copy();
+    selected->prunePages("2", true);
+    selected->ensureUpToDate();
+    EXPECT_EQ(selected->getObjectById("exclusive"), nullptr);
+    auto *shared = cast<SPItem>(selected->getObjectById("shared"));
+    ASSERT_NE(shared, nullptr);
+    auto bounds = shared->documentGeometricBounds();
+    ASSERT_TRUE(bounds);
+    EXPECT_RECT_NEAR(bounds.value(), Geom::Rect(10, 10, 30, 30), 0.001);
+    EXPECT_NE(original->getObjectById("exclusive"), nullptr);
+    EXPECT_NE(original->getObjectById("shared"), nullptr);
+    EXPECT_EQ(original->getPageManager().getPages().size(), 2u);
+}
+
 TEST(SPDocumentOpening, WhatOpeningDoesIsNotAnEdit)
 {
     Application::create(false);

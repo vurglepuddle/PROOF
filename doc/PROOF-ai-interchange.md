@@ -358,3 +358,73 @@ reopening, editable layers/paths/clips, CMYK, a spot tint, matching PDF page
 pixels, page selection, replacing both halves on a second save, and refusals
 that preserve the previous file. Unit cases also cover multi-block records
 and Save As eligibility. The workspace focused runner includes this smoke test.
+
+
+### Illustrator 7 copy export (2026-10-17)
+
+**Save a Copy → Adobe Illustrator 7** writes one artboard as editable
+standalone records, without a PDF preview or a modern private-data container.
+The output ID is org.inkscape.output.ai.legacy7. It needs no CapyPDF backend
+and uses the same artwork traversal as modern native output, through
+write_records with RecordsVersion::Illustrator7.
+
+The artboard origin is its bottom-left. Layers use the ten-operand layout;
+CMYK spot tints use x/X at every tint. The reader distinguishes those layer
+fields from the modern fourteen-field form. The reference is Adobe Developer
+Support's [Illustrator File Format Specification, 23 February 1998](https://13thmonkey.org/documentation/fonts/AI7FileFormat.pdf),
+sections 2, 5 and 9, together with generated Illustrator controls.
+
+Illustrator's legacy conversion rounds half the artboard size when placing
+its ruler origin. The degenerate TemplateBox uses ceil(width/2) and
+height-ceil(height/2) so that the default artboard matches the crop rectangle.
+A naive centre creates an extra displaced artboard, including with fractional
+print dimensions. Integer, odd and fractional dimensions, including A4, have
+CLI checks; actual Illustrator conversion is checked separately.
+
+The shared writer subset and refusals apply. This variant additionally
+refuses multiple artboards, non-ASCII ink/layer names, individually hidden
+objects, nested layers and image dimming other than 50%. Hidden layers work.
+Artboard names, document ICC profiles and smooth-point flags are not retained.
+Illustrator opens the legacy control in CMYK and converts its RGB process
+colours; the control's original CMYK numbers and CMYK spot tints survive.
+Keep SVG as the working document and use modern native output for named
+artboards and the broader metadata it supports.
+
+CLI page selection can provide one artboard:
+
+~~~text
+inkscape working.svg --export-extension=org.inkscape.output.ai.legacy7 --export-page=2 --export-filename=page-2.ai
+~~~
+
+Validation happens before the destination is touched. A sibling temporary
+file replaces it only after the standalone records are completely written.
+
+Save As and Save a Copy now retain the selected output module. Filename
+suffixes alone cannot distinguish native AI, legacy AI and PDF interchange,
+or PROOF SVG and plain SVG. Each format has its own filter. Selecting a
+format updates the filename suffix before confirmation; All Files retains
+filename-based dispatch. Save As continues to exclude copy-only outputs.
+The GTK chooser is used for these save dialogs: FileDialog returns only the
+path, and the Windows native FileChooserNative getter loses the chosen filter.
+
+Both writers now refuse unsupported opacity, masks, filters and blend modes
+on layers and the SVG root, as well as ordinary objects. Root clipping is
+refused. Page pruning also preserves objects inside both a removed artboard
+and an overlapping retained artboard; unit and CLI checks cover this case.
+
+The 2026-10-17 headless validation passes reader 70 tests with one opt-in
+skip, importer 132 with two, PDF/output 5, and document 86. The legacy output
+smoke passes 44 checks, modern native output 32 and PDF interchange 23.
+The old layer-layout correction was checked on a copied synthetic legacy
+control: layer colours are fixed, with unchanged geometry and paint (5/5).
+All 871 cached owner records use fourteen-operand layers, so no ten-operand
+owner inputs were affected. No new broad corpus acceptance is claimed.
+
+Illustrator 29.2.1 opens the generated legacy control with one correctly
+positioned artboard, editable compound paths, clipping, layer flags/colours,
+CMYK numbers, spot tint and overprint. A process fill edited to 40/30/20/10
+and saved as a new PDF-compatible Illustrator file reopens natively in PROOF
+with those properties (10/10 round-trip checks). Illustrator also opens the
+generated A4 control as one precisely sized artboard. GUI Save a Copy (legacy),
+Save As (modern) and plain SVG selection pass, with the input SVG unchanged
+(4/4 checks). Installed-build evidence is recorded in the workspace handoff.

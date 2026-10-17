@@ -29,7 +29,8 @@ file exchange.
   its tints.
 - **Illustrator interchange.** Read supported native `.ai` artwork, checked
   against its PDF pages. **Save As** writes native layers, paths and inks for
-  the supported subset; **Save a Copy** also offers PDF-based RGB interchange.
+  the supported subset; **Save a Copy** also offers Illustrator 7 records
+  and PDF-based RGB interchange.
   SVG keeps features the native writer cannot write yet.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
   PDF bleed boxes, and fixes for image transforms and SVG profile imports.
@@ -42,7 +43,11 @@ back as native `.ai`, with layers, named artboards and ink values. Illustrator
 does not need to be installed to read or write these files.
 
 Native output contains fresh Illustrator records and compatible PDF 1.7 pages.
-It currently requires PROOF's bundled PDF backend.
+It currently requires PROOF's bundled PDF backend. The optional Illustrator 7
+copy format uses standalone records instead, with stricter limits: one artboard,
+ASCII layer and ink names, and no retained document ICC profile or artboard name.
+Illustrator opening, editing and saving back into PROOF are checked with synthetic
+controls; broader writer qualification remains in progress.
 
 | Capability | Current state |
 |---|---|
@@ -50,6 +55,7 @@ It currently requires PROOF's bundled PDF backend.
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
 | Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, overprint and stroke styles |
 | Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
+| Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers and CMYK inks, without a PDF preview or the bundled PDF backend |
 | Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
 
 Recent reader work adds editable left-aligned paragraph tabs and ordinary text

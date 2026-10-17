@@ -19,25 +19,38 @@
 #include "extension/internal/cairo-render-context.h"
 #include "extension/internal/cairo-renderer.h"
 #include "extension/internal/cairo-renderer-pdf-out.h"
+#include "extension/internal/ai/ai-legacy-output.h"
 #include "extension/db.h"
 #include "extension/output.h"
+#include "ui/dialog/choose-file-utils.h"
+#include <giomm/liststore.h>
+#include <gtkmm/filefilter.h>
+#include <gtkmm/init.h>
 #if defined(WITH_CAPYPDF) && defined(WITH_POPPLER)
 #include "extension/internal/ai/ai-native-output.h"
 #include "extension/internal/pdfoutput/pdf-output.h"
 #endif
 
 #include <limits>
+#include <algorithm>
 
 #include <gtest/gtest.h>
 
 using Inkscape::Extension::Internal::StyleMemory;
 
 // Save As uses the guarded native writer. The older PDF-only format stays copy-only.
-Inkscape::Extension::Output *get_output_extension_for_save(std::string filename, bool allow_save_copy);
+Inkscape::Extension::Output *get_output_extension_for_save(
+    std::string filename, bool allow_save_copy, Inkscape::Extension::Output *selected = nullptr);
 
 TEST(AiInterchangeTest, NativeSaveIsAvailableAndPdfInterchangeRemainsCopyOnly)
 {
     using namespace Inkscape::Extension;
+    if (!db.get("org.inkscape.output.ai.legacy7")) Internal::AiLegacyOutput::init();
+    auto const legacy = dynamic_cast<Output *>(db.get("org.inkscape.output.ai.legacy7"));
+    ASSERT_NE(legacy, nullptr);
+    EXPECT_TRUE(legacy->savecopy_only());
+    EXPECT_TRUE(legacy->causes_dataloss());
+    EXPECT_STREQ(legacy->get_mimetype(), "application/illustrator");
     if (!db.get("org.inkscape.output.ai.pdf")) {
         Internal::CairoRendererPdfOutput::init();
     }
@@ -62,6 +75,28 @@ TEST(AiInterchangeTest, NativeSaveIsAvailableAndPdfInterchangeRemainsCopyOnly)
     EXPECT_TRUE(copy->savecopy_only());
     EXPECT_TRUE(copy->causes_dataloss());
     EXPECT_STREQ(copy->get_id(), "org.inkscape.output.ai.pdf");
+    EXPECT_EQ(get_output_extension_for_save("deliverable.ai", true, legacy), legacy);
+    EXPECT_EQ(get_output_extension_for_save("deliverable.AI", true, legacy), legacy);
+    EXPECT_EQ(get_output_extension_for_save("original.ai", false, legacy), nullptr);
+    EXPECT_EQ(get_output_extension_for_save("working.svg", true, legacy), nullptr);
+    EXPECT_EQ(get_output_extension_for_save("deliverable.ai", true, copy), copy);
+
+    Gtk::init_gtkmm_internals();
+    std::vector<Output *> outputs;
+    auto filters = Inkscape::UI::Dialog::create_export_filters(true, true, &outputs);
+    ASSERT_EQ(filters->get_n_items(), outputs.size());
+    ASSERT_FALSE(outputs.empty());
+    EXPECT_EQ(outputs.front(), nullptr); // All Files keeps filename-based dispatch.
+    auto legacy_it = std::find(outputs.begin(), outputs.end(), legacy);
+    auto copy_it = std::find(outputs.begin(), outputs.end(), copy);
+    ASSERT_NE(legacy_it, outputs.end());
+    ASSERT_NE(copy_it, outputs.end());
+    EXPECT_NE(filters->get_item(legacy_it - outputs.begin())->get_name(),
+              filters->get_item(copy_it - outputs.begin())->get_name());
+    auto save_filters = Inkscape::UI::Dialog::create_export_filters(true, false, &outputs);
+    EXPECT_EQ(save_filters->get_n_items(), outputs.size());
+    EXPECT_EQ(std::find(outputs.begin(), outputs.end(), legacy), outputs.end());
+    EXPECT_EQ(std::find(outputs.begin(), outputs.end(), copy), outputs.end());
 }
 
 TEST(CairoPdfTransformTest, SmallInvertibleImageScaleIsRetained)

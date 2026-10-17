@@ -22,6 +22,7 @@ target_sources(inkscape_base PRIVATE
 	implementation/script.cpp
 
 	internal/ai/ai-native-fonts.cpp
+	internal/ai/ai-legacy-output.cpp
 	internal/ai/ai-native-import.cpp
 	internal/ai/ai-native-lexer.cpp
 	internal/ai/ai-native-reader.cpp
@@ -104,6 +105,7 @@ target_sources(inkscape_base PRIVATE
 	implementation/xslt.h
 
 	internal/ai/ai-native-fonts.h
+	internal/ai/ai-legacy-output.h
 	internal/ai/ai-native-import.h
 	internal/ai/ai-native-lexer.h
 	internal/ai/ai-native-reader.h

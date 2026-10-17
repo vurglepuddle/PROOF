@@ -8,8 +8,11 @@
 #include <glibmm/miscutils.h>
 #include <gtkmm/error.h>
 #include <gtkmm/filedialog.h>
+#include <gtkmm/filechooserdialog.h>
+#include <gtkmm/dialog.h>
 
 #include "choose-file-utils.h"
+#include "io/sys.h"
 #include "preferences.h"
 
 namespace Inkscape {
@@ -86,12 +89,60 @@ using FinishMethod = Glib::RefPtr<Gio::File> (Gtk::FileDialog::*)
 Glib::RefPtr<Gio::File> choose_file_save(Glib::ustring const &title, Gtk::Window *parent,
                                          Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>> const &filters_model,
                                          std::string const &file_name,
-                                         std::string &current_folder)
+                                         std::string &current_folder,
+                                         Glib::RefPtr<Gtk::FileFilter> *selected_filter)
 {
     if (!parent) return {};
 
     if (current_folder.empty()) {
         current_folder = Glib::get_home_dir();
+    }
+
+    if (selected_filter) {
+        // FileDialog returns only a path. Saving needs the chosen output module too:
+        // native AI, legacy AI and PDF interchange all use the same filename suffix.
+        *selected_filter = {};
+        // The Win32 FileChooserNative getter also returns its fallback dialog's
+        // filter, discarding the native selection. Use the chooser that owns it.
+        Gtk::FileChooserDialog chooser(*parent, title, Gtk::FileChooser::Action::SAVE, true);
+        chooser.set_modal(true);
+        chooser.add_button(_("Cancel"), Gtk::ResponseType::CANCEL);
+        chooser.add_button(_("Save"), Gtk::ResponseType::ACCEPT);
+        chooser.set_default_response(Gtk::ResponseType::ACCEPT);
+        chooser.set_current_folder(Gio::File::create_for_path(current_folder));
+        chooser.set_current_name(file_name);
+        if (filters_model) {
+            for (unsigned i = 0; i < filters_model->get_n_items(); ++i) {
+                chooser.add_filter(filters_model->get_item(i));
+            }
+            if (filters_model->get_n_items()) chooser.set_filter(filters_model->get_item(0));
+        }
+        auto filename_connection = chooser.property_filter().signal_changed().connect([&] {
+            auto filter = chooser.get_filter();
+            auto suffix = filter ? static_cast<char const *>(
+                g_object_get_data(G_OBJECT(filter->gobj()), "inkscape-save-suffix")) : nullptr;
+            std::string name = chooser.get_current_name();
+            if (suffix && !name.empty()) {
+                IO::swap_file_extension(name, suffix);
+                chooser.set_current_name(name);
+            }
+        });
+        bool responded = false;
+        Glib::RefPtr<Gio::File> file;
+        auto connection = chooser.signal_response().connect([&](int response) {
+            if (response == static_cast<int>(Gtk::ResponseType::ACCEPT)) {
+                file = chooser.get_file();
+                *selected_filter = chooser.get_filter();
+            }
+            responded = true;
+        });
+        chooser.present();
+        auto context = Glib::MainContext::get_default();
+        while (!responded) context->iteration(true);
+        connection.disconnect();
+        filename_connection.disconnect();
+        if (file && file->get_parent()) current_folder = file->get_parent()->get_path();
+        return file;
     }
 
     auto const file_dialog = create_file_dialog(title, _("Save"));

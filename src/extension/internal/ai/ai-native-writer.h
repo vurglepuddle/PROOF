@@ -8,6 +8,8 @@
  * colour in CMYK, RGB or grey, spot inks with their tints, overprint and stroke style.
  * Anything else in the document is named in `refused`, and then no records are written:
  * nothing goes to Illustrator that it would draw differently.
+ * The optional Illustrator 7 form shares that subset, with a single artboard, ASCII layer
+ * and ink names, and additional refusals where that old format has no supported encoding.
  */
 
 #ifndef SEEN_AI_NATIVE_WRITER_H
@@ -26,7 +28,13 @@ struct WrittenRecords
     std::vector<std::string> refused; ///< What the document has that isn't written yet.
 };
 
-WrittenRecords write_records(SPDocument *document);
+enum class RecordsVersion
+{
+    Modern,       ///< Records for the PDF-compatible container, with named artboards.
+    Illustrator7, ///< Standalone records for a single artboard; no PDF representation.
+};
+
+WrittenRecords write_records(SPDocument *document, RecordsVersion version = RecordsVersion::Modern);
 
 } // namespace Inkscape::Extension::Internal::AiNative
 

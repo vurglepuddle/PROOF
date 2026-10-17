@@ -35,12 +35,14 @@ void set_filter(Gtk::FileDialog &file_dialog, Glib::RefPtr<Gtk::FileFilter> cons
 /// @param filters_model For selection of file types to be shown in dialog.
 /// @param file_name Name of the initial file to show in the dialogʼs text entry.
 /// @param current_folder Path of initial folder to show, updated to parent of selected file if any
+/// @param selected_filter Optional chosen filter; uses FileChooserDialog to retain format selection.
 /// @returns Gio::File for selected file.
 [[nodiscard]]
 Glib::RefPtr<Gio::File> choose_file_save(Glib::ustring const &title, Gtk::Window *parent,
                                          Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>> const &filters_model,
                                          std::string const &file_name,
-                                         std::string &current_folder);
+                                         std::string &current_folder,
+                                         Glib::RefPtr<Gtk::FileFilter> *selected_filter = nullptr);
 
 /// Synchronously run a Gtk::FileDialog to select a file for saving data.
 /// @param mime_type MIME type to use as a file filter in the dialog.

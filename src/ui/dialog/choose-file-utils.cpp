@@ -121,9 +121,10 @@ create_open_filters() {
 
 // Return a list of file filters for the Export dialog.
 // Optionally, return a custom list for the Save dialog (hopefully to disappear).
-// With native dialogs, we can only examine the file path on return.
+// Callers that retain the selected filter can distinguish modules sharing a suffix.
 Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>>
-create_export_filters(bool for_save, bool allow_save_copy) {
+create_export_filters(bool for_save, bool allow_save_copy,
+                      std::vector<Inkscape::Extension::Output *> *filter_outputs) {
 
     auto filters = Gio::ListStore<Gtk::FileFilter>::create();
 
@@ -131,6 +132,7 @@ create_export_filters(bool for_save, bool allow_save_copy) {
     allfiles->set_name(_("All Files"));
     allfiles->add_pattern("*");
     filters->append(allfiles);
+    if (filter_outputs) *filter_outputs = {nullptr};
 
     // Patterns added dynamically below based on which files are supported by output extensions.
     Inkscape::Extension::DB::OutputList extension_list;
@@ -159,7 +161,7 @@ create_export_filters(bool for_save, bool allow_save_copy) {
         Glib::ustring file_extension(extension);
 
         // Don't add entry for duplicate filename extensions.
-        if (std::find(file_extensions.begin(), file_extensions.end(), file_extension) != file_extensions.end()) {
+        if (!filter_outputs && std::find(file_extensions.begin(), file_extensions.end(), file_extension) != file_extensions.end()) {
             // std::cout << "Duplicate extension: " << file_extension << std::endl;
             continue;
         }
@@ -168,22 +170,22 @@ create_export_filters(bool for_save, bool allow_save_copy) {
 
         // For duplicate filename extensions, use simplified name.
         auto name = omod->get_filetypename(true);
-        if (file_extension == "svg") {
+        if (!filter_outputs && file_extension == "svg") {
             name = "SVG (.svg)";
         }
-        else if (file_extension == "svgz") {
+        else if (!filter_outputs && file_extension == "svgz") {
             name = _("Compressed SVG (.svgz)");
         }
-        else if (file_extension == "dxf") {
+        else if (!filter_outputs && file_extension == "dxf") {
             name = "DXF (.dxf)";
         }
-        else if (file_extension == "zip") {
+        else if (!filter_outputs && file_extension == "zip") {
             name = "ZIP (.zip)";
         }
-        else if (file_extension == "pdf") {
+        else if (!filter_outputs && file_extension == "pdf") {
             name = "PDF (.pdf)";
         }
-        else if (file_extension == "png") {
+        else if (!filter_outputs && file_extension == "png") {
             name = "PNG (.png)";
         }
 
@@ -192,6 +194,12 @@ create_export_filters(bool for_save, bool allow_save_copy) {
         filter->set_name(name);
         filter->add_suffix(extension); // Both upper and lower cases.
         filters->append(filter);
+        if (filter_outputs) {
+            filter_outputs->push_back(omod);
+            // The save chooser updates the filename before its overwrite confirmation.
+            g_object_set_data_full(G_OBJECT(filter->gobj()), "inkscape-save-suffix",
+                                   g_strdup(omod->get_extension()), g_free);
+        }
     } // Loop over extension_list
 
     return filters;

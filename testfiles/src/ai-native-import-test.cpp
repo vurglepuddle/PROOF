@@ -10,10 +10,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <GlobalParams.h>
@@ -44,6 +46,7 @@
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
 #include "extension/internal/ai/ai-native-writer.h"
+#include "extension/internal/ai/ai-legacy-output.h"
 #include "libnrtype/font-factory.h"
 #include "libnrtype/font-instance.h"
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
@@ -78,6 +81,7 @@
 #include "svg/svg.h"
 #include "type-settings.h"
 #include "util/units.h"
+#include "util/scope_exit.h"
 #include "xml/node.h"
 #include "xml/repr.h"
 
@@ -5103,6 +5107,226 @@ TEST_F(AiNativeImportTest, WrittenRecordsKeepSpotInksClipsAndArtboards)
     bool clipped = false;
     for (auto *g : elements(imported->getReprRoot(), "svg:g")) clipped = clipped || !attr(g, "clip-path").empty();
     EXPECT_TRUE(clipped);
+}
+
+TEST_F(AiNativeImportTest, LegacyWrittenRecordsKeepTheSingleArtboardGeometryAndPaint)
+{
+    auto doc = svg_document(
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art" inkscape:highlight-color="#4fff4f">)"
+        R"(<rect x="10" y="10" width="40" height="30" style="fill:device-cmyk(0.1 0.2 0.3 0.4);stroke:#000000;stroke-width:2"/>)"
+        R"(<path d="M 60 10 H 100 V 50 H 60 Z M 70 20 V 40 H 90 V 20 Z" style="fill:#ff0000;fill-rule:evenodd"/>)"
+        R"(<g><path d="M 110 10 C 120 0 130 30 140 10" style="fill:none;stroke:device-cmyk(1 0 0 0);stroke-dasharray:8 4;stroke-linecap:round"/></g>)"
+        R"(</g>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Hidden" style="display:none" sodipodi:insensitive="true">)"
+        R"(<rect x="10" y="60" width="20" height="20" fill="#000000"/></g>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_EQ(written.records.find("%!PS-Adobe-3.0\n"), 0u);
+    EXPECT_NE(written.records.find("%AI5_FileFormat 3\n"), std::string::npos);
+    EXPECT_NE(written.records.find("%AI3_Cropmarks: 0 0 150 75\n"), std::string::npos);
+    EXPECT_NE(written.records.find("%AI3_TemplateBox: 75 37 75 37\n"), std::string::npos);
+    EXPECT_NE(written.records.find("1 1 1 1 0 0 2 79 255 79 Lb\n"), std::string::npos);
+    for (auto const marker : {"AI9_", "AI24_", " Xw", "annotatepage", "AIPrivateData"}) {
+        EXPECT_EQ(written.records.find(marker), std::string::npos) << marker;
+    }
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    auto *root = imported->getReprRoot();
+    auto layers = elements(root, "svg:g");
+    ASSERT_GE(layers.size(), 3u);
+    EXPECT_EQ(attr(layers[0], "inkscape:label"), "Art");
+    EXPECT_EQ(attr(layers[0], "inkscape:highlight-color"), "#4fff4f");
+    auto hidden = std::find_if(layers.begin(), layers.end(), [](auto *g) { return attr(g, "inkscape:label") == "Hidden"; });
+    ASSERT_NE(hidden, layers.end());
+    EXPECT_EQ(attr(*hidden, "style"), "display:none");
+    EXPECT_EQ(attr(*hidden, "sodipodi:insensitive"), "true");
+    auto paths = elements(root, "svg:path");
+    ASSERT_EQ(paths.size(), 4u);
+    std::vector<XML::Node *> originals{elements(doc->getReprRoot(), "svg:rect")[0],
+                                      elements(doc->getReprRoot(), "svg:path")[0],
+                                      elements(doc->getReprRoot(), "svg:path")[1],
+                                      elements(doc->getReprRoot(), "svg:rect")[1]};
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        auto const was = shape_box(doc.get(), originals[i]), now = shape_box(imported, paths[i]);
+        ASSERT_TRUE(was && now) << i;
+        EXPECT_NEAR(now->left(), was->left(), 1e-3) << i;
+        EXPECT_NEAR(now->top(), was->top(), 1e-3) << i;
+        EXPECT_NEAR(now->right(), was->right(), 1e-3) << i;
+        EXPECT_NEAR(now->bottom(), was->bottom(), 1e-3) << i;
+    }
+    auto const fill = imported->getObjectByRepr(paths[0])->style->fill.getColor();
+    ASSERT_EQ(fill.getSpace()->getComponentType(), Type::CMYK);
+    for (unsigned i = 0; i < 4; ++i) EXPECT_NEAR(fill[i], 0.1 * (i + 1), 1e-4);
+    EXPECT_NE(attr(paths[1], "style").find("evenodd"), std::string::npos);
+    EXPECT_EQ(sp_svg_read_pathv(attr(paths[1], "d").c_str()).size(), 2u);
+    EXPECT_NE(attr(paths[2], "style").find("stroke-dasharray"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, LegacyWrittenRecordsKeepCmykSpotTintsAndClipping)
+{
+    auto doc = svg_document(
+        R"(<defs><clipPath id="c"><rect x="10" y="10" width="30" height="30"/></clipPath></defs>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"
+        R"(<rect id="spot" x="50" y="10" width="40" height="40" fill="#000000" proof:overprint="fill stroke"/>)"
+        R"x(<g clip-path="url(#c)"><rect x="0" y="0" width="60" height="60" fill="#00ffff"/></g>)x"
+        R"(</g>)");
+    ASSERT_TRUE(doc);
+    auto const id = SpotInk::ensure(doc.get(), {"PROOF Orange", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 0.3});
+    doc->getObjectById("spot")->setAttribute("style", "fill:url(#" + id + ");stroke:url(#" + id + ");stroke-width:2");
+    auto const written = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find("0 0.6 1 0 (PROOF Orange) 0.7 x\n"), std::string::npos);
+    EXPECT_NE(written.records.find("0 0.6 1 0 (PROOF Orange) 0.7 X\n"), std::string::npos);
+    EXPECT_EQ(written.records.find(" Xx\n"), std::string::npos);
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    bool tint = false, clip = false, overprint = false;
+    for (auto *g : elements(b->document->getReprRoot(), "svg:linearGradient")) {
+        if (auto ink = SpotInk::read(g); ink && ink->name == "PROOF Orange") {
+            tint = std::abs(ink->tint - 0.3) < 1e-4;
+        }
+    }
+    for (auto *g : elements(b->document->getReprRoot(), "svg:g")) clip = clip || !attr(g, "clip-path").empty();
+    for (auto *p : elements(b->document->getReprRoot(), "svg:path")) overprint = overprint || attr(p, "proof:overprint") == "fill stroke";
+    EXPECT_TRUE(tint);
+    EXPECT_TRUE(clip);
+    EXPECT_TRUE(overprint);
+}
+
+TEST_F(AiNativeImportTest, LegacyWrittenRecordsUseTheSelectedArtboardsOrigin)
+{
+    auto doc = svg_document(
+        R"(<rect x="130" y="30" width="20" height="10" fill="#ff0000"/>)"
+        R"(<sodipodi:namedview><inkscape:page x="120" y="20" width="80" height="60" inkscape:label="Only"/></sodipodi:namedview>)");
+    ASSERT_TRUE(doc);
+    ASSERT_EQ(doc->getPageManager().getPages().size(), 1u);
+    auto const written = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    std::string error;
+    auto read = AN::read(written.records, error);
+    ASSERT_TRUE(read) << error;
+    ASSERT_EQ(read->artboards.size(), 1u);
+    EXPECT_EQ(read->artboards[0].rect, Geom::Rect(Geom::Point(0, 0), Geom::Point(60, 45)));
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    auto paths = elements(b->document->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    auto box = shape_box(b->document.get(), paths[0]);
+    ASSERT_TRUE(box);
+    EXPECT_NEAR(box->left(), 10, 1e-3);
+    EXPECT_NEAR(box->top(), 10, 1e-3);
+    EXPECT_NEAR(box->width(), 20, 1e-3);
+    EXPECT_NEAR(box->height(), 10, 1e-3);
+}
+
+TEST_F(AiNativeImportTest, LegacyWriterRefusesFeaturesThatNeedTheModernFormat)
+{
+    std::vector<std::pair<std::string, std::string>> cases{
+        {R"(<sodipodi:namedview><inkscape:page x="0" y="0" width="100" height="100"/><inkscape:page x="120" y="0" width="80" height="100"/></sodipodi:namedview>)", "more than one artboard"},
+        {R"(<rect width="10" height="10" style="display:none"/>)", "hidden objects"},
+        {R"(<g inkscape:groupmode="layer" inkscape:label="Caf&#233;"><rect width="10" height="10"/></g>)", "non-ASCII layer names"},
+        {R"(<g inkscape:groupmode="layer"><g inkscape:groupmode="layer"><rect width="10" height="10"/></g></g>)", "nested layers"},
+        {R"(<g inkscape:groupmode="layer" proof:layer-dim="70"><rect width="10" height="10"/></g>)", "layer image dimming"},
+    };
+    for (auto const &[body, reason] : cases) {
+        SCOPED_TRACE(reason);
+        auto doc = svg_document(body);
+        ASSERT_TRUE(doc);
+        auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+        EXPECT_TRUE(legacy.records.empty());
+        EXPECT_TRUE(std::any_of(legacy.refused.begin(), legacy.refused.end(), [&](auto const &r) { return r.find(reason) != std::string::npos; }));
+        EXPECT_TRUE(AN::write_records(doc.get()).refused.empty());
+    }
+    auto doc = svg_document(R"(<rect id="ink" width="10" height="10"/>)");
+    ASSERT_TRUE(doc);
+    auto const id = SpotInk::ensure(doc.get(), {"Caf\xc3\xa9", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 0.3});
+    doc->getObjectById("ink")->setAttribute("style", "fill:url(#" + id + ")");
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "non-ASCII ink names (Illustrator 7)"), legacy.refused.end());
+    EXPECT_TRUE(AN::write_records(doc.get()).refused.empty());
+}
+
+TEST_F(AiNativeImportTest, LegacySaveCopyPreservesTheWorkingDocumentAndPreviousFileOnRefusal)
+{
+    auto doc = svg_document(R"(<rect width="20" height="10" fill="#000000"/>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    doc->setModifiedSinceSave(true);
+    auto const before = sp_repr_save_buf(doc->getReprDoc());
+    gchar *dir = g_dir_make_tmp("proof-legacy-output-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const directory(dir);
+    std::filesystem::path const folder(std::u8string(directory.begin(), directory.end()));
+    g_free(dir);
+    std::string const path = directory + "/previous.ai";
+    std::string const new_path = directory + "/new.ai";
+    auto cleanup = scope_exit([&] {
+        std::error_code error;
+        std::filesystem::remove(folder / "previous.ai", error);
+        std::filesystem::remove(folder / "new.ai", error);
+        std::filesystem::remove(folder, error);
+    });
+    Extension::Internal::AiLegacyOutput output;
+    ASSERT_NO_THROW(output.save(nullptr, doc.get(), path.c_str()));
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), before);
+    EXPECT_TRUE(doc->isModifiedSinceSave());
+    gchar *contents = nullptr;
+    gsize size = 0;
+    ASSERT_TRUE(g_file_get_contents(path.c_str(), &contents, &size, nullptr));
+    std::string const saved(contents, size);
+    g_free(contents);
+    EXPECT_EQ(saved.find("%!PS-Adobe-3.0\n"), 0u);
+    auto refused = svg_document(R"(<text x="10" y="20">Keep live type</text>)");
+    ASSERT_TRUE(refused);
+    EXPECT_THROW(output.save(nullptr, refused.get(), path.c_str()), std::runtime_error);
+    EXPECT_THROW(output.save(nullptr, refused.get(), new_path.c_str()), std::runtime_error);
+    EXPECT_FALSE(std::filesystem::exists(folder / "new.ai"));
+    ASSERT_TRUE(g_file_get_contents(path.c_str(), &contents, &size, nullptr));
+    EXPECT_EQ(std::string(contents, size), saved);
+    g_free(contents);
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(folder), std::filesystem::directory_iterator()), 1);
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsRefuseUnsupportedEffectsOnLayersAndTheRoot)
+{
+    // A layer is written by a different route from ordinary groups. Its effects and the
+    // SVG root's must be checked too, or the PDF and Illustrator artwork can disagree.
+    std::vector<std::pair<std::string, std::string>> effects{
+        {R"(style="opacity:0.5")", "transparency"},
+        {R"(style="mix-blend-mode:multiply")", "blend modes"},
+        {R"x(mask="url(#mask)")x", "opacity masks"},
+        {R"x(filter="url(#blur)")x", "filters"},
+    };
+    std::string const defs =
+        R"(<defs><mask id="mask"><rect width="200" height="100" fill="white"/></mask>)"
+        R"(<filter id="blur"><feGaussianBlur stdDeviation="2"/></filter></defs>)";
+    std::string const rect = R"(<rect x="10" y="10" width="20" height="20" fill="#ff0000"/>)";
+    for (auto const &[attrs, reason] : effects) {
+        for (bool layer : {false, true}) {
+            SCOPED_TRACE(reason + (layer ? " on a layer" : " on the SVG root"));
+            auto const body = layer ? defs + R"(<g inkscape:groupmode="layer" )" + attrs + ">" + rect + "</g>"
+                                    : defs + rect;
+            auto doc = svg_document(body, R"(width="200" height="100" viewBox="0 0 200 100" )" +
+                                             (layer ? "" : attrs));
+            ASSERT_TRUE(doc);
+            for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+                auto const written = AN::write_records(doc.get(), version);
+                EXPECT_TRUE(written.records.empty());
+                EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end());
+            }
+        }
+    }
+    auto doc = svg_document(R"(<defs><clipPath id="clip"><rect width="20" height="20"/></clipPath></defs>)" + rect,
+                            R"x(width="200" height="100" viewBox="0 0 200 100" clip-path="url(#clip)")x");
+    ASSERT_TRUE(doc);
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        auto const written = AN::write_records(doc.get(), version);
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "clipping on the SVG root"), written.refused.end());
+    }
 }
 
 TEST_F(AiNativeImportTest, TheWriterRefusesWhatItCannotWriteByName)

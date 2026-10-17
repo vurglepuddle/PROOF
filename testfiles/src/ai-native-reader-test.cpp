@@ -271,6 +271,24 @@ TEST(AiNativeReader, LayersAndOptions)
     EXPECT_TRUE(doc.cmyk); // %AI9_ColorModel: 2
 }
 
+TEST(AiNativeReader, LegacyLayerColoursUseTheTenOperandLayout)
+{
+    // Adobe's Illustrator 7 specification, section 9.2; no modern reserved fields.
+    auto doc = read_ok(records(layer("Legacy green", "", "0 0 0 0 1 0 2 79 255 79 Lb") +
+                               layer("Custom", "", "1 1 1 1 0 0 -1 12 34 56 Lb")));
+    ASSERT_EQ(doc.layers.size(), 2u);
+    auto const &old = doc.layers[0];
+    EXPECT_FALSE(old.visible);
+    EXPECT_TRUE(old.locked);
+    EXPECT_FALSE(old.layer.preview);
+    EXPECT_FALSE(old.layer.printable);
+    EXPECT_EQ(old.layer.dim, 50);
+    EXPECT_EQ(old.layer.color_index, 2);
+    EXPECT_EQ(old.layer.color_rgb, (std::array<int, 3>{79, 255, 79}));
+    EXPECT_EQ(doc.layers[1].layer.color_index, -1);
+    EXPECT_EQ(doc.layers[1].layer.color_rgb, (std::array<int, 3>{12, 34, 56}));
+}
+
 TEST(AiNativeReader, PathsAndPainting)
 {
     auto doc = read_ok(records(layer("L", "0 g\n2.5 w 1 J 2 j 4 M [3 2] 1 d\n10 10 m\n20 10 l\n30 20 25 30 20 30 c\n15 30 10 20 v\n10 15 10 12 y\nb\n")));

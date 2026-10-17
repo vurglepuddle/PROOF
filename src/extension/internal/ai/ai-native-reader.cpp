@@ -2171,14 +2171,17 @@ void Reader::layer_attrs(Values const &vals)
     a.options.printable = flag(3, true);
     double dim = n.size() > 12 && std::isfinite(n[12]) ? std::clamp(n[12], 0.0, 100.0) : 50.0;
     if (flag(4, false)) a.options.dim = static_cast<int>(std::lround(dim));
-    double const index = n.size() > 7 ? n[7] : 0.0;
+    // The published Illustrator 7 form has ten operands. Modern files insert a field
+    // before the colour index and append the dim percentage and reserved fields.
+    std::size_t const color = n.size() == 10 ? 6 : 7;
+    double const index = n.size() > color ? n[color] : 0.0;
     auto rgb = [&](std::size_t i) { return i < n.size() ? static_cast<int>(std::clamp(n[i], 0.0, 255.0)) : 0; };
     if (index >= 0 && index < 27 && index == std::floor(index)) {
         a.options.color_index = static_cast<int>(index);
     } else {
         a.options.color_index = -1;
     }
-    a.options.color_rgb = {rgb(8), rgb(9), rgb(10)};
+    a.options.color_rgb = {rgb(color + 1), rgb(color + 2), rgb(color + 3)};
 }
 
 int Reader::ink_index(Named const &n, bool by_name)

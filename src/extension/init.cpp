@@ -25,6 +25,7 @@
 #include <glibmm/ustring.h>
 
 #include "db.h"
+#include "internal/ai/ai-legacy-output.h"
 #include "internal/emf-inout.h"
 #include "internal/emf-print.h"
 #include "internal/gif.h"
@@ -200,6 +201,8 @@ init()
     Internal::TemplateVideo::init();
     Internal::TemplateSocial::init();
     Internal::TemplateOther::init();
+
+    Internal::AiLegacyOutput::init();
 
 #ifdef WITH_CAPYPDF
     Internal::PdfOutput::init();

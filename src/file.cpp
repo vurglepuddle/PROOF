@@ -248,8 +248,13 @@ file_save(Gtk::Window &parentWindow,
 /**
  * Returns an output extension suitable for saving (i.e. not a raster extension).
  */
-Inkscape::Extension::Output *get_output_extension_for_save(std::string filename, bool allow_save_copy = false)
+Inkscape::Extension::Output *get_output_extension_for_save(std::string filename, bool allow_save_copy = false,
+                                                        Inkscape::Extension::Output *selected = nullptr)
 {
+    if (selected) {
+        return (allow_save_copy || !selected->savecopy_only()) && selected->can_save_filename(filename.c_str())
+                   ? selected : nullptr;
+    }
     Inkscape::Extension::DB::OutputList extension_list;
     Inkscape::Extension::db.get_output_list(extension_list);
 
@@ -322,14 +327,15 @@ sp_file_save_dialog(Gtk::Window &parentWindow, SPDocument *doc, Inkscape::Extens
         _("Select file to save a copy to") :
         _("Select file to save to");
 
-    // Note, there are currently multiple modules per filename extension (.svg, .dxf, .zip).
-    // We cannot distinguish between them.
     std::string basename = Glib::path_get_basename(save_loc);
     std::string dirname = Glib::path_get_dirname(save_loc);
+    std::vector<Inkscape::Extension::Output *> filter_outputs;
+    auto filters = Inkscape::UI::Dialog::create_export_filters(true, is_copy, &filter_outputs);
+    Glib::RefPtr<Gtk::FileFilter> selected_filter;
     auto file = Inkscape::choose_file_save( dialog_title, &parentWindow,
-                                            Inkscape::UI::Dialog::create_export_filters(true, is_copy),
+                                            filters,
                                             basename,
-                                            dirname);
+                                            dirname, &selected_filter);
 
     if (!file) {
         return false; // Cancelled
@@ -344,8 +350,16 @@ sp_file_save_dialog(Gtk::Window &parentWindow, SPDocument *doc, Inkscape::Extens
         g_free(doc_title);
     }
 
-    // Find output module from file extension.
-    extension = get_output_extension_for_save(file->get_path(), is_copy);
+    // Honour the selected format even when several writers share its suffix.
+    // All Files retains filename-based dispatch.
+    Inkscape::Extension::Output *selected_output = nullptr;
+    for (unsigned i = 0; i < filters->get_n_items(); ++i) {
+        if (filters->get_item(i) == selected_filter) {
+            selected_output = filter_outputs[i];
+            break;
+        }
+    }
+    extension = get_output_extension_for_save(file->get_path(), is_copy, selected_output);
 
     if (!extension) {
         auto display_name = file->get_parse_name();

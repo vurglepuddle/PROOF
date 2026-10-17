@@ -256,7 +256,13 @@ void PageManager::deletePage(SPPage *page, bool content)
             auto const exclusive_items = page->getExclusiveItems();
 
             ObjectSet items_to_delete{_document};
-            items_to_delete.add(exclusive_items.begin(), exclusive_items.end());
+            for (auto *item : exclusive_items) {
+                // Fully inside this page does not mean exclusive to it: artboards can
+                // overlap. Keep artwork that also belongs to a retained page.
+                if (getPagesFor(item, false).size() == 1) {
+                    items_to_delete.add(item);
+                }
+            }
 
             for (auto *item : page->getOverlappingItems()) {
                 // Only delete objects when they rest on one page.

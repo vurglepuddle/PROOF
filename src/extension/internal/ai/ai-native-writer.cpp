@@ -6,6 +6,8 @@
  * (tools/native-ai-spike.py, 2026-10-02; the writer spike, 2026-10-17), in the coordinates
  * of the writer recipe (doc/PROOF-ai-interchange.md): the first artboard's top-left corner
  * is 0,0, y negative downward, in points.
+ * The Illustrator 7 variant uses Adobe's 1998 file-format specification, sections 5 and 9,
+ * and the standalone writer spike: bottom-left origin, ten-operand layers and x/X spot tints.
  */
 
 #include "ai-native-writer.h"
@@ -81,11 +83,31 @@ double scale24(unsigned value)
     return value / double(SP_SCALE24_MAX);
 }
 
+bool ascii(std::string const &s)
+{
+    return std::all_of(s.begin(), s.end(), [](unsigned char c) { return c < 128; });
+}
+
+void ink_comments(std::ostream &head, std::map<std::string, std::array<double, 4>> const &spots)
+{
+    bool first = true;
+    for (auto const &[name, c] : spots) {
+        head << (first ? "%%DocumentCustomColors: " : "%%+ ") << ps_string(name) << '\n';
+        first = false;
+    }
+    first = true;
+    for (auto const &[name, c] : spots) {
+        head << (first ? "%%CMYKCustomColor: " : "%%+ ")
+             << std::format("{} {} {} {} {}\n", num(c[0]), num(c[1]), num(c[2]), num(c[3]), ps_string(name));
+        first = false;
+    }
+}
+
 class Writer
 {
 public:
-    explicit Writer(SPDocument *doc)
-        : _doc(doc)
+    Writer(SPDocument *doc, RecordsVersion version)
+        : _doc(doc), _legacy(version == RecordsVersion::Illustrator7)
     {}
 
     WrittenRecords write();
@@ -95,6 +117,7 @@ private:
     void item(SPItem const *item);
     void contents(SPObject const *parent);
     void shape(SPShape const *shape);
+    void check_effects(SPItem const *item);
     bool open_clip(SPItem const *item);
     void path_data(Geom::Path const &path);
     void state(std::string &cache, std::string const &line);
@@ -103,6 +126,7 @@ private:
     void refuse(std::string what) { _refused.insert(std::move(what)); }
 
     SPDocument *_doc;
+    bool const _legacy;
     Geom::Affine _to_art;
     std::ostringstream _body;
     std::set<std::string> _refused;
@@ -150,6 +174,7 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
             return {};
         }
         std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
+        if (_legacy && !ascii(ink->name)) refuse("non-ASCII ink names (Illustrator 7)");
         auto [known, added] = _spots.emplace(ink->name, cmyk);
         if (!added && known->second != cmyk) {
             refuse("one ink name with two definitions");
@@ -158,6 +183,8 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
         auto const head = std::format("{} {} {} {} {}", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]), num(cmyk[3]),
                                       ps_string(ink->name));
         // The operand is the tint taken from 1: 0 is the ink at full strength.
+        // Illustrator 7 uses x/X for CMYK spots at every tint. Its Xx/XX form is RGB only.
+        if (_legacy) return head + " " + num(1.0 - ink->tint) + " " + (fill ? "x" : "X");
         if (ink->tint >= 1.0 - 1e-6) return head + " 0 " + (fill ? "x" : "X");
         return head + " " + num(1.0 - ink->tint) + " 0 " + (fill ? "Xx" : "XX");
     }
@@ -283,18 +310,25 @@ void Writer::shape(SPShape const *s)
     _body << "*U\n";
 }
 
-void Writer::item(SPItem const *it)
+void Writer::check_effects(SPItem const *it)
 {
     auto const *style = it->style;
     if (scale24(style->opacity.value) < 1.0 - 1e-6) refuse("transparency");
     if (style->mix_blend_mode.set && style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL) refuse("blend modes");
     if (it->getMaskObject()) refuse("opacity masks");
     if (const_cast<SPStyle *>(style)->getFilter()) refuse("filters");
+}
 
+void Writer::item(SPItem const *it)
+{
+    check_effects(it);
     // Only the object's own: a locked layer's objects aren't each locked.
     bool const hidden = it->isHidden();
     bool const locked = it->getAttribute("sodipodi:insensitive") != nullptr;
-    if (hidden) _body << "1 Xw\n";
+    if (hidden) {
+        if (_legacy) refuse("individually hidden objects (Illustrator 7)");
+        else _body << "1 Xw\n";
+    }
     if (locked) _body << "1 A\n";
     bool const clipped = open_clip(it);
 
@@ -315,7 +349,7 @@ void Writer::item(SPItem const *it)
 
     if (clipped) _body << "Q\n";
     if (locked) _body << "0 A\n";
-    if (hidden) _body << "0 Xw\n";
+    if (hidden && !_legacy) _body << "0 Xw\n";
 }
 
 void Writer::contents(SPObject const *parent)
@@ -358,15 +392,29 @@ void Writer::layer(SPGroup const *group)
         return d(p) < d(q);
     });
     auto const dim = attr("proof:layer-dim");
+    auto const label = group->label() ? group->label() : group->defaultLabel();
+    if (_legacy) {
+        if (!ascii(label)) refuse("non-ASCII layer names (Illustrator 7)");
+        if (!dim.empty() && dim != "50") refuse("layer image dimming other than 50% (Illustrator 7)");
+        for (auto const *parent = group->parent; parent; parent = parent->parent) {
+            if (auto ancestor = cast<SPGroup>(parent); ancestor && ancestor->isLayer()) {
+                refuse("nested layers (Illustrator 7)");
+                break;
+            }
+        }
+    }
     // visible, preview, unlocked, printing, dimmed, 0, 1, colour index, its RGB, 0, dim %, 0: as
     // Illustrator 29 writes it (`1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb`).
     _body << "%AI5_BeginLayer\n"
-          << std::format("{} {} {} {} {} 0 1 {} {} {} {} 0 {} 0 Lb\n", group->isHidden() ? 0 : 1,
+          << std::format("{} {} {} {} {} 0 ", group->isHidden() ? 0 : 1,
                          attr("proof:layer-preview") == "false" ? 0 : 1, attr("sodipodi:insensitive").empty() ? 1 : 0,
-                         attr("proof:layer-print") == "false" ? 0 : 1, dim.empty() ? 0 : 1, nearest[0], nearest[1],
-                         nearest[2], nearest[3], dim.empty() ? std::string("50") : dim)
-          << ps_string(group->label() ? group->label() : group->defaultLabel()) << " Ln\n0 A\n0 Xw\n";
-    if (group->style && scale24(group->style->opacity.value) < 1.0 - 1e-6) refuse("transparency");
+                         attr("proof:layer-print") == "false" ? 0 : 1, dim.empty() ? 0 : 1);
+    if (!_legacy) _body << "1 ";
+    _body << std::format("{} {} {} {}", nearest[0], nearest[1], nearest[2], nearest[3]);
+    if (!_legacy) _body << " 0 " << (dim.empty() ? "50" : dim) << " 0";
+    _body << " Lb\n" << ps_string(label) << " Ln\n0 A\n";
+    if (!_legacy) _body << "0 Xw\n";
+    check_effects(group);
     bool const clipped = open_clip(group);
     contents(group);
     if (clipped) _body << "Q\n";
@@ -383,11 +431,16 @@ WrittenRecords Writer::write()
         boards.emplace_back(page->getLabel(), page->getDocumentRect());
     }
     if (boards.empty()) boards.emplace_back("Artboard 1", Geom::Rect(Geom::Point(0, 0), _doc->getDimensions()));
+    if (_legacy && boards.size() != 1) refuse("more than one artboard (Illustrator 7)");
     auto const origin = boards.front().second.corner(0);
     _to_art = Geom::Translate(-origin) * Geom::Scale(PX_TO_PT, -PX_TO_PT);
+    // The standalone format's origin is the single artboard's bottom-left, y upward.
+    if (_legacy) _to_art *= Geom::Translate(0, boards.front().second.height() * PX_TO_PT);
 
     // Items outside any layer go to a layer of their own, as Illustrator keeps every object in one.
     auto const *root = _doc->getRoot();
+    check_effects(root);
+    if (root->getClipObject()) refuse("clipping on the SVG root");
     bool loose = false;
     for (auto const &child : root->children) {
         auto group = cast<SPGroup>(&child);
@@ -399,7 +452,8 @@ WrittenRecords Writer::write()
     }
     if (loose) {
         ++_layers;
-        _body << "%AI5_BeginLayer\n1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb\n(Layer) Ln\n0 A\n0 Xw\n";
+        _body << (_legacy ? "%AI5_BeginLayer\n1 1 1 1 0 0 0 79 128 255 Lb\n(Layer) Ln\n0 A\n"
+                         : "%AI5_BeginLayer\n1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb\n(Layer) Ln\n0 A\n0 Xw\n");
         for (auto const &child : root->children) {
             auto group = cast<SPGroup>(&child);
             if (auto it = cast<SPItem>(&child); it && !(group && group->isLayer())) item(it);
@@ -410,6 +464,29 @@ WrittenRecords Writer::write()
     WrittenRecords out;
     if (!_refused.empty()) {
         out.refused.assign(_refused.begin(), _refused.end());
+        return out;
+    }
+
+    if (_legacy) {
+        double const w = boards.front().second.width() * PX_TO_PT;
+        double const h = boards.front().second.height() * PX_TO_PT;
+        std::ostringstream head;
+        head << "%!PS-Adobe-3.0\n%%Creator: PROOF\n"
+             << std::format("%%BoundingBox: 0 0 {} {}\n%%HiResBoundingBox: 0 0 {} {}\n",
+                            num(std::ceil(w)), num(std::ceil(h)), num(w), num(h))
+             << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n";
+        ink_comments(head, _spots);
+        head << "%AI5_FileFormat 3\n%AI3_ColorUsage: Color\n"
+             << std::format("%AI3_Cropmarks: 0 0 {} {}\n%AI3_TileBox: 0 0 {} {}\n", num(w), num(h), num(w), num(h))
+             // Legacy conversion places the artboard ceil(w/2) left and ceil(h/2) up
+             // from this origin. Match the crop rectangle, including fractional sizes,
+             // or Illustrator creates a second, displaced artboard.
+             << std::format("%AI3_TemplateBox: {} {} {} {}\n", num(std::ceil(w / 2)), num(h - std::ceil(h / 2)),
+                            num(std::ceil(w / 2)), num(h - std::ceil(h / 2)))
+             << std::format("%AI5_ArtSize: {} {}\n", num(w), num(h))
+             << "%AI5_RulerUnits: 2\n%AI3_DocumentPreview: None\n%AI5_NumLayers: " << _layers << '\n'
+             << "%%EndComments\n%%BeginProlog\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n";
+        out.records = head.str() + _body.str() + "%%PageTrailer\n%%Trailer\n%%EOF\n";
         return out;
     }
 
@@ -427,17 +504,7 @@ WrittenRecords Writer::write()
          << std::format("%%BoundingBox: 0 {} {} 0\n%%HiResBoundingBox: 0 {} {} 0\n", num(std::floor(-h)),
                         num(std::ceil(w)), num(-h), num(w))
          << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n";
-    bool first = true;
-    for (auto const &[name, c] : _spots) {
-        head << (first ? "%%DocumentCustomColors: " : "%%+ ") << ps_string(name) << '\n';
-        first = false;
-    }
-    first = true;
-    for (auto const &[name, c] : _spots) {
-        head << (first ? "%%CMYKCustomColor: " : "%%+ ")
-             << std::format("{} {} {} {} {}\n", num(c[0]), num(c[1]), num(c[2]), num(c[3]), ps_string(name));
-        first = false;
-    }
+    ink_comments(head, _spots);
     head << "%AI5_FileFormat 14.0\n%AI12_BuildNumber: 116\n%AI3_ColorUsage: Color\n"
          << std::format("%AI3_Cropmarks: 0 {} {} 0\n", num(-h), num(w))
          << std::format("%AI3_TemplateBox: {} {} {} {}\n", num(cx), num(cy), num(cx), num(cy))
@@ -489,9 +556,9 @@ WrittenRecords Writer::write()
 
 } // namespace
 
-WrittenRecords write_records(SPDocument *document)
+WrittenRecords write_records(SPDocument *document, RecordsVersion version)
 {
-    return Writer(document).write();
+    return Writer(document, version).write();
 }
 
 } // namespace Inkscape::Extension::Internal::AiNative
