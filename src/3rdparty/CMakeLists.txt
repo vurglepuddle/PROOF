@@ -72,10 +72,11 @@ if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
         "s/^#mesondefine CAPYPDF_STATIC$$/#define CAPYPDF_STATIC 1/"
     )
 
-    add_custom_target(capypdf_HEADER
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/capypdf.h"
         COMMAND sed "'${CAPYPDF_HEADER_REGEX}'" "${CMAKE_CURRENT_SOURCE_DIR}/capypdf/include/capypdf.h.in" > "${CMAKE_CURRENT_BINARY_DIR}/capypdf.h"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/capypdf/include/capypdf.h.in"
     )
+    add_custom_target(capypdf_HEADER DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/capypdf.h")
 
     add_dependencies(capypdf_LIB capypdf_HEADER)
 
