@@ -14,6 +14,7 @@
 #define SEEN_GRADIENT_EDITOR_H
 
 #include <gtkmm/menubutton.h>
+#include <sigc++/scoped_connection.h>
 
 #include "color-page.h"
 #include "color-picker-panel.h"
@@ -107,6 +108,7 @@ private:
     int _current_stop_index = 0;
     Gtk::Box &_main_box;
     SPGradient* _gradient = nullptr;
+    sigc::scoped_connection _gradient_release;
     SPDocument* _document = nullptr;
     OperationBlocker _update;
     OperationBlocker _notification;

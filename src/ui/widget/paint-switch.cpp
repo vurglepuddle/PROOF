@@ -164,7 +164,8 @@ public:
         if (desktop) {
             _connection_desktop_gradient_stop_selected =
                 _desktop->connect_gradient_stop_selected([this] (auto stop) {
-                    if (_update.pending()) {
+                    // A mesh's stops belong to its patches: they aren't the gradient editor's.
+                    if (_update.pending() || (stop && !is<SPGradient>(stop->parent))) {
                         return;
                     }
                     auto scoped(_update.block());

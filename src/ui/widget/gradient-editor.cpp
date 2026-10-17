@@ -342,6 +342,11 @@ void GradientEditor::setGradient(SPGradient* gradient) {
     auto scoped2(_notification.block());
     _gradient = gradient;
     _document = gradient ? gradient->document : nullptr;
+    // The editor keeps its gradient while another paint shows, and the gradient can be deleted
+    // meanwhile (left unused when a mesh replaced it): forget it then. A mesh point released on
+    // the canvas reached a deleted one through selectStop and crashed (2026-10-17).
+    _gradient_release.disconnect();
+    if (gradient) _gradient_release = gradient->connectRelease([this](auto) { _gradient = nullptr; });
     set_gradient(gradient);
 }
 
