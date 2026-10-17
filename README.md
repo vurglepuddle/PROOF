@@ -28,24 +28,53 @@ file exchange.
   Linked spot swatches retain their ink definitions, and editing an ink updates
   its tints.
 - **Illustrator interchange.** Read supported native `.ai` artwork, checked
-  against its PDF pages, and export an Illustrator-readable copy through
-  **Save a Copy**. SVG remains the working document format.
+  against its PDF pages. **Save As** writes native layers, paths and inks for
+  the supported subset; **Save a Copy** also offers PDF-based RGB interchange.
+  SVG keeps features the native writer cannot write yet.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
   PDF bleed boxes, and fixes for image transforms and SVG profile imports.
 
 ## Illustrator .ai progress
 
-**Verified on 2026-10-14:** 861 of 879 private corpus files open from
-Illustrator's native records; 18 use their PDF pages. This round gained
-3 native imports and lost none. The corpus contains real documents; source
-names, filenames, artwork and individual reports are kept private.
+**Illustrator interchange now works in both directions for a growing subset.**
+PROOF reads Illustrator's own editable artwork and can write supported artwork
+back as native `.ai`, with layers, named artboards and ink values. Illustrator
+does not need to be installed to read or write these files.
+
+Native output contains fresh Illustrator records and compatible PDF 1.7 pages.
+It currently requires PROOF's bundled PDF backend.
 
 | Capability | Current state |
 |---|---|
-| Native reading | Layers, paths, clipping, compound paths, gradients, patterns, bounded gradient meshes, greyscale opacity masks and embedded foreign PDF vectors, process/spot colours, document ICC profiles, images, linked-image previews and supported editable type |
+| Native reading | Layers, paths, clips, compound paths, gradients, patterns, supported gradient meshes, greyscale opacity masks, embedded foreign PDF vectors, process/spot colours, document ICC profiles, pictures and supported editable type |
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
-| Editability | 511 native imports are explicitly partial; 350 pass the visual check but have not been certified for complete editability |
-| Writing `.ai` | Save a Copy writes PDF-based RGB interchange. Native Illustrator records, CMYK/spot separations and a complete editable return trip are still planned |
+| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, overprint and stroke styles |
+| Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
+| Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
+
+Recent reader work adds editable left-aligned paragraph tabs and ordinary text
+on a path. Gradient meshes with bent edges now open as editable mesh cells;
+the fifteen Illustrator controls and three previously refused mesh documents
+pass their page comparisons. Uniform patches that become outlines are reported
+as partial imports. More complex type, meshes and masks still need work.
+
+Linked Photoshop files (`.psd` and `.psb`) and CMYK TIFFs keep their process-ink
+numbers, depth and cut-out transparency in PDF output. Linked `.ai` and `.pdf`
+files show their first page and print as retained PDF vectors, preserving the
+placed page's fonts and inks. Changed or missing links are reported.
+
+The reader is also checked against real documents, with artwork kept private:
+
+| Dated reader checkpoint | Native comparison passes | PDF fallbacks |
+|---|---:|---:|
+| 2026-10-17 regression: 871 copied files below 50 MB | 860 | 11 |
+| 2026-10-14 separate corpus baseline: 1,395 unique files | 1,241 | 154 |
+
+Both runs completed without errors or timeouts. These are separate corpora and
+dated checkpoints; later mesh and writer changes have focused checks. Of the
+860 passes in the first row, 510 explicitly lose some live editing semantics
+and 350 still need complete-editability review. Passing a visual comparison
+does not mean every Illustrator control survives.
 
 Opacity masks now support the linked, non-inverted greyscale vector subset:
 Clip on or off, fills/strokes, linear/radial gradients, nested masks and
@@ -61,17 +90,14 @@ Unsupported PDF content retains fallback, including mesh shading and overprint.
 The checks also fixed disappearing unconverted grey PDF strokes by preserving
 them as black-channel CMYK.
 
-Four-corner mesh patches remain editable mesh gradients.
-Uniform patches with extra boundary nodes retain their exact outlines as paths
-and are reported as partial imports. Three more complex mesh files still use
-PDF fallback. Other remaining families include foreign-format
+Other remaining reader families include foreign-format
 objects, advanced type, symbols and unreadable images. Brushes, blends,
 compound shapes and many appearances currently keep their drawn result rather
 than all of Illustrator's live controls.
 
 For agents and contributors, start with the
 [native-record reference and implementation history](doc/PROOF-ai-native-records.md)
-and [interchange/export limits and writer plan](doc/PROOF-ai-interchange.md).
+and [native writing and interchange limits](doc/PROOF-ai-interchange.md).
 The [native reader and importer](src/extension/internal/ai/) build the editable
 document; [the PDF comparison and fallback](src/extension/internal/pdfinput/ai-native-open.cpp)
 decide whether it is accepted. Regression fixtures are in
@@ -80,22 +106,23 @@ decide whether it is accepted. Regression fixtures are in
 [canvas/vector PDF mask checks](testfiles/cli_tests/ai-opacity-mask-smoke.py) and
 [foreign PDF vector/CMYK checks](testfiles/cli_tests/ai-foreign-pdf-smoke.py).
 
-This milestone passed all nine relevant unit suites, the `.ai` export smoke
-checks (19/19), blend/PDF export checks (32/32), opacity-mask export checks
-(59/59), foreign PDF export checks (44/44), and one full 879-file corpus
-regression. A visual pass is evidence of appearance, not a certificate of full
-editability or a native Illustrator round trip.
+Automated coverage includes reader/importer unit tests and installed-editor
+checks of native saving, reopening, PDF output, masks, linked pictures and
+placed pages. Writer features are also checked by opening controls in
+Illustrator. See the feature documents for the evidence and its limits.
 
 ## Still in progress
 
-**Full native `.ai` support is a goal, not a finished feature.** Current `.ai`
-export is PDF-based RGB interchange: it does not preserve CMYK separations,
-spot-ink identity, native layers, or Illustrator live effects. Modern `.ai`
-artwork without PDF-compatible content is not supported yet. Unsupported
-native records use PDF fallback; many appearances and live objects currently
-retain their drawn result with explicit import notes.
+**Full native `.ai` support is still in progress.** The native writer currently
+refuses live type, gradients, pictures, transparency, masks, patterns and other
+unsupported appearances. Smooth path points are written as corners. The older
+PDF-based RGB interchange export does not retain native layers or ink identity.
+Modern `.ai` artwork without PDF-compatible content is not supported yet.
+Many imported appearances and live objects retain their drawn result with
+explicit import notes.
 
-Spot inks can be imported and edited, but spot separations are not exported yet.
+Native `.ai` writing retains supported spot names and tints; PDF spot-separation
+output and the complete PDF/X workflow remain unfinished.
 ICC-managed vector previews work; complete press soft proofing, overprint
 simulation, and physical print matching remain unqualified. PROOF is in active
 development, so check output on real jobs before relying on it for production.

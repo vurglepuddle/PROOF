@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,20 @@
 #include "libnrtype/font-instance.h"
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
 #include "extension/internal/pdfinput/ai-native-open.h"
+#endif
+#if defined(WITH_POPPLER) && defined(WITH_CAPYPDF)
+#include <cstdint>
+#include <glib/gstdio.h>
+#include <Dict.h>
+#include <PDFDoc.h>
+#include <Page.h>
+
+#include "extension/internal/ai/ai-native-output.h"
+#include "extension/internal/pdfoutput/pdf-output.h"
+#include "extension/db.h"
+#include "extension/output.h"
+#include "extension/internal/pdfinput/ai-private-data.h"
+#include "extension/internal/pdfinput/poppler-transition-api.h"
 #endif
 #include "object/sp-defs.h"
 #include "object/sp-image.h"
@@ -5141,3 +5156,174 @@ TEST_F(AiNativeImportTest, WriterRecordsForIllustrator)
     ASSERT_TRUE(written.refused.empty()) << written.refused.front();
     std::ofstream(std::filesystem::path(out) / "writer-w1.records", std::ios::binary) << written.records;
 }
+
+#if defined(WITH_POPPLER) && defined(WITH_CAPYPDF)
+namespace {
+Extension::Output *native_output_for_test()
+{
+    if (!Extension::db.get("org.inkscape.output.pdf.capypdf")) Extension::Internal::PdfOutput::init();
+    if (!Extension::db.get("org.inkscape.output.ai.native")) Extension::Internal::AiNativeOutput::init();
+    return dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.ai.native"));
+}
+}
+
+TEST_F(AiNativeImportTest, NativeSaveAsRefusesWithoutChangingTheDocumentOrPreviousFile)
+{
+    if (!Extension::Internal::PdfOutput::supports_pdf17()) GTEST_SKIP() << "bundled PDF backend required";
+    auto *native = native_output_for_test();
+    ASSERT_TRUE(native);
+    EXPECT_FALSE(native->savecopy_only());
+    native->set_gui(false);
+    auto doc = svg_document(R"(<text x="10" y="20">Keep live type</text>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    doc->setModifiedSinceSave(true);
+    auto const before = sp_repr_save_buf(doc->getReprDoc());
+    gchar *dir = g_dir_make_tmp("proof-native-refusal-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const path = std::string(dir) + "/previous.ai";
+    g_free(dir);
+    ASSERT_TRUE(g_file_set_contents(path.c_str(), "previous file", -1, nullptr));
+    try {
+        native->save(doc.get(), path.c_str());
+        FAIL() << "live type must be refused";
+    } catch (std::runtime_error const &e) {
+        EXPECT_NE(std::string(e.what()).find("type"), std::string::npos);
+    }
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), before);
+    EXPECT_TRUE(doc->isModifiedSinceSave());
+    gchar *contents = nullptr;
+    ASSERT_TRUE(g_file_get_contents(path.c_str(), &contents, nullptr, nullptr));
+    EXPECT_STREQ(contents, "previous file");
+    g_free(contents);
+}
+
+TEST_F(AiNativeImportTest, NativeSaveDoesNotMutateTheDocumentOrInheritPdfOptions)
+{
+    if (!Extension::Internal::PdfOutput::supports_pdf17()) GTEST_SKIP() << "bundled PDF backend required";
+    auto *native = native_output_for_test();
+    auto *pdf = dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.pdf.capypdf"));
+    ASSERT_TRUE(native && pdf);
+    native->set_gui(false);
+    auto doc = svg_document(R"(<rect x="10" y="10" width="30" height="20" fill="#ff0000"/>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    doc->setModifiedSinceSave(true);
+    auto const before = sp_repr_save_buf(doc->getReprDoc());
+    auto const pages = doc->getPageManager().getPageCount();
+    gchar *dir = g_dir_make_tmp("proof-native-save-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const path = std::string(dir) + "/saved.ai";
+    g_free(dir);
+    std::string const previous = pdf->get_param_optiongroup("textToPath");
+    pdf->set_param_optiongroup("textToPath", "LaTeX");
+    EXPECT_NO_THROW(native->save(doc.get(), path.c_str()));
+    EXPECT_TRUE(pdf->get_param_optiongroup_is("textToPath", "LaTeX"));
+    pdf->set_param_optiongroup("textToPath", previous.c_str());
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), before);
+    EXPECT_TRUE(doc->isModifiedSinceSave());
+    EXPECT_EQ(doc->getPageManager().getPageCount(), pages);
+    unsigned files = 0;
+    for (auto const &entry : std::filesystem::directory_iterator(std::filesystem::path(path).parent_path())) {
+        if (entry.is_regular_file()) ++files;
+    }
+    EXPECT_EQ(files, 1u) << "no LaTeX sidecar or incomplete temporary file";
+    std::string error;
+    auto records = Extension::Internal::read_ai_native_records(path, {}, 64 << 20, error);
+    ASSERT_TRUE(records) << error;
+    EXPECT_NE(records->text.find("%%Creator: PROOF"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, PrivateDataGoesOnEveryPageAndReadsBack)
+{
+    // Two pages, as a PDF export leaves them, with nothing of Illustrator's.
+    std::map<int, std::string> objects;
+    objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objects[2] = "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>";
+    objects[3] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /LastModified (D:20000101000000Z) >>";
+    objects[4] = "<< /Length 24 >>\nstream\n0 0 0 1 k 0 0 10 10 re f\nendstream";
+    objects[5] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 100] /Contents 4 0 R >>";
+    std::ostringstream pdf;
+    pdf << "%PDF-1.7\n";
+    std::vector<std::size_t> offsets(objects.size() + 1);
+    for (auto const &[n, body] : objects) {
+        offsets[n] = std::size_t(pdf.tellp());
+        pdf << n << " 0 obj\n" << body << "\nendobj\n";
+    }
+    auto const xref = pdf.tellp();
+    pdf << "xref\n0 " << offsets.size() << "\n0000000000 65535 f \n";
+    for (std::size_t n = 1; n < offsets.size(); ++n) pdf << std::setw(10) << std::setfill('0') << offsets[n] << " 00000 n \n";
+    pdf << "trailer\n<< /Size " << offsets.size() << " /Root 1 0 R >>\nstartxref\n" << xref << "\n%%EOF\n";
+    gchar *dir = g_dir_make_tmp("proof-native-output-XXXXXX", nullptr);
+    ASSERT_NE(dir, nullptr);
+    std::string const path = std::string(dir) + "/written.ai";
+    g_free(dir);
+    auto const bytes = pdf.str();
+    ASSERT_TRUE(g_file_set_contents(path.c_str(), bytes.data(), bytes.size(), nullptr));
+
+    // Records that don't compress below 64 KiB, so they take several blocks.
+    std::string const header = "%!PS-Adobe-3.0 \r\n%%Creator: PROOF\r\n%AI5_FileFormat 14.0\r\n%%EndComments\r\n";
+    std::string records = header;
+    std::uint32_t state = 12345;
+    for (int line = 0; line < 5000; ++line) {
+        records += "%_";
+        for (int i = 0; i < 60; ++i) {
+            state = state * 1664525u + 1013904223u;
+            records += "0123456789abcdef"[state >> 28];
+        }
+        records += "\r\n";
+    }
+    std::string error;
+    ASSERT_TRUE(AN::add_private_data(path, records, error)) << error;
+
+    auto const back = Extension::Internal::read_ai_native_records(path, {}, 64 << 20, error);
+    ASSERT_TRUE(back) << error;
+    EXPECT_EQ(back->encoding, "AI24 Zstandard");
+    EXPECT_TRUE(back->text == records);
+
+    if (!globalParams) globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
+    auto doc = _POPPLER_MAKE_SHARED_PDFDOC(path.c_str());
+    ASSERT_TRUE(doc && doc->isOk());
+    ASSERT_EQ(doc->getNumPages(), 2);
+    Ref holder{-1, -1};
+    for (int i = 1; i <= 2; ++i) {
+        auto *page = doc->getPage(i);
+        ASSERT_TRUE(page);
+        // The page keeps what it had.
+        EXPECT_NEAR(page->getMediaBox().x2, i == 1 ? 200 : 300, 1e-9);
+        Object const object = doc->getXRef()->fetch(page->getRef());
+        Object const modified = object.dictLookup("LastModified");
+        ASSERT_TRUE(modified.isString());
+        EXPECT_NE(std::string(modified.getString()), "D:20000101000000Z");
+        Object const piece = object.dictLookup("PieceInfo");
+        ASSERT_TRUE(piece.isDict());
+        Object const &named = piece.getDict()->lookupNF("Illustrator");
+        ASSERT_TRUE(named.isRef());
+        if (i == 1) holder = named.getRef();
+        EXPECT_EQ(named.getRef(), holder) << "every page names the one copy";
+    }
+    Object const illustrator = doc->getXRef()->fetch(holder);
+    Object const priv = illustrator.dictLookup("Private");
+    ASSERT_TRUE(priv.isDict());
+    Object const blocks = priv.dictLookup("NumBlock");
+    ASSERT_TRUE(blocks.isInt());
+    EXPECT_GE(blocks.getInt(), 2);
+    EXPECT_TRUE(priv.dictLookup("AIPrivateData" + std::to_string(blocks.getInt())).isStream());
+    EXPECT_TRUE(priv.dictLookup("AIPrivateData" + std::to_string(blocks.getInt() + 1)).isNull());
+    EXPECT_EQ(priv.dictLookup("ContainerVersion").getInt(), 12);
+    Object meta = priv.dictLookup("AIMetaData");
+    ASSERT_TRUE(meta.isStream());
+    std::string meta_text;
+    meta.getStream()->fillString(meta_text);
+    EXPECT_EQ(meta_text, header);
+
+    // Records without a header aren't Illustrator's; nothing is added.
+    GStatBuf before;
+    ASSERT_EQ(g_stat(path.c_str(), &before), 0);
+    EXPECT_FALSE(AN::add_private_data(path, "%_no header\r\n", error));
+    EXPECT_EQ(error, "the records have no header");
+    GStatBuf after;
+    ASSERT_EQ(g_stat(path.c_str(), &after), 0);
+    EXPECT_EQ(before.st_size, after.st_size);
+}
+#endif

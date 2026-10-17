@@ -178,6 +178,11 @@ target_sources(inkscape_base PRIVATE
 )
 
 if(WITH_CAPYPDF)
+    if(WITH_INTERNAL_CAPYPDF)
+        set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/internal/pdfoutput/pdf-output.cpp"
+            TARGET_DIRECTORY inkscape_base APPEND PROPERTY
+            COMPILE_DEFINITIONS PROOF_CAPYPDF_PDF17)
+    endif()
     target_sources(inkscape_base PRIVATE
 	    internal/pdfoutput/build-document.cpp
 	    internal/pdfoutput/build-drawing.cpp
@@ -188,8 +193,10 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-styles.cpp
         internal/pdfoutput/build-text.cpp
 	    internal/pdfoutput/pdf-output.cpp
+	    internal/pdfoutput/pdf-update.cpp
 	    internal/pdfoutput/placed-pages.cpp
 	    internal/pdfoutput/remember-styles.cpp
+	    internal/ai/ai-native-output.cpp
 
         # Header
 	    internal/pdfoutput/build-document.h
@@ -198,7 +205,9 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-patterns.h
 	    internal/pdfoutput/build-text.h
 	    internal/pdfoutput/pdf-output.h
+	    internal/pdfoutput/pdf-update.h
 	    internal/pdfoutput/placed-pages.h
+	    internal/ai/ai-native-output.h
 	    internal/pdfoutput/remember-styles.h
     )
 endif()

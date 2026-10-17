@@ -23,6 +23,7 @@ public:
     bool check(Inkscape::Extension::Extension *module) override;
     void save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename) override;
     static void init();
+    static bool supports_pdf17();
 };
 
 } // namespace Inkscape::Extension::Internal

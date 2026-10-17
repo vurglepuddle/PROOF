@@ -13,7 +13,9 @@
  */
 
 #include "file-export-cmd.h"
+#include "file-export-status.h"
 
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -94,6 +96,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
                 std::cerr << "InkFileExportCmd::do_export: No export type specified. "
                           << "Append a supported file extension to filename provided with --export-filename or "
                           << "provide one or more extensions separately using --export-type" << std::endl;
+                Inkscape::IO::export_exit_status = 1;
                 return;
             } else {
                 // no extension is fine if --export-type is given
@@ -118,6 +121,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
         if (export_id.empty() && export_area_type != ExportAreaType::Drawing) {
             std::cerr << "InkFileExportCmd::do_export: "
                       << "--export-use-hints can only be used with --export-id or --export-area-drawing." << std::endl;
+            Inkscape::IO::export_exit_status = 1;
             return;
         }
         if (export_type_list.size() > 1 || (export_type_list.size() == 1 && export_type_list[0] != "png")) {
@@ -142,6 +146,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
                 std::cerr << "InkFileExportCmd::do_export: "
                           << "The supplied --export-extension was not found. Specify a file extension "
                           << "to get a list of available extensions for this file type.";
+                Inkscape::IO::export_exit_status = 1;
                 return;
             }
         } else {
@@ -152,6 +157,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
     if (!export_extension.empty() && export_type_list.size() != 1) {
         std::cerr
             << "InkFileExportCmd::do_export: You may only specify one export type if --export-extension is supplied";
+        Inkscape::IO::export_exit_status = 1;
         return;
     }
     Inkscape::Extension::DB::OutputList extension_list;
@@ -169,6 +175,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
         std::cerr << "InkFileExportCmd::do_export: "
                   << "file directory doesn't exist for export: "
                   << path_out.c_str() << std::endl;
+        Inkscape::IO::export_exit_status = 1;
         return;
     }
 
@@ -193,10 +200,11 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
         // For PNG export, there is no extension, so the method below can not be used.
         if (type == "png") {
             if (!export_extension_forced) {
-                do_export_png(doc, filename_out);
+                if (do_export_png(doc, filename_out)) Inkscape::IO::export_exit_status = 1;
             } else {
                 std::cerr << "InkFileExportCmd::do_export: "
                           << "The parameter --export-extension is invalid for PNG export" << std::endl;
+                Inkscape::IO::export_exit_status = 1;
             }
             continue;
         }
@@ -204,7 +212,7 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
         // an extension ID was explicitly given. This makes handling of --export-plain-svg easier (which
         // should also work when multiple file types are given, unlike --export-extension)
         if (type == "svg" && !export_extension_forced) {
-            do_export_svg(doc, filename_out);
+            if (do_export_svg(doc, filename_out)) Inkscape::IO::export_exit_status = 1;
             continue;
         }
 
@@ -225,23 +233,28 @@ InkFileExportCmd::do_export(SPDocument* doc, std::string filename_in)
                 exts_for_fn.emplace_back(oext->get_id());
                 if (!export_extension_forced ||
                     (export_extension == Glib::ustring(oext->get_id()).lowercase())) {
-                    if (type == "svg") {
-                        do_export_vector(doc, filename_out, *oext);
+                    int status = 0;
+                    if (type == "svg" || (type == "ai" && std::string(oext->get_mimetype()) != "application/pdf")) {
+                        // Native Illustrator output has its own writer, without the PDF
+                        // extension's options. Use the same document-copy/page path as SVG.
+                        status = do_export_vector(doc, filename_out, *oext);
                     } else if (type == "ps") {
-                        do_export_ps_pdf(doc, filename_out, "image/x-postscript", *oext);
+                        status = do_export_ps_pdf(doc, filename_out, "image/x-postscript", *oext);
                     } else if (type == "eps") {
-                        do_export_ps_pdf(doc, filename_out, "image/x-e-postscript", *oext);
+                        status = do_export_ps_pdf(doc, filename_out, "image/x-e-postscript", *oext);
                     } else if (type == "pdf" || type == "ai") {
-                        do_export_ps_pdf(doc, filename_out, "application/pdf", *oext);
+                        status = do_export_ps_pdf(doc, filename_out, "application/pdf", *oext);
                     } else {
-                        do_export_extension(doc, filename_out, oext);
+                        status = do_export_extension(doc, filename_out, oext);
                     }
+                    if (status) Inkscape::IO::export_exit_status = 1;
                     exported = true;
                     break;
                 }
             }
         }
         if (!exported) {
+            Inkscape::IO::export_exit_status = 1;
             if (export_extension_forced && extension_for_fn_exists) {
                 // the located extension for this file type did not match the provided --export-extension parameter
                 std::cerr << "InkFileExportCmd::do_export: "
@@ -456,6 +469,12 @@ int InkFileExportCmd::do_export_vector(SPDocument *doc, std::string const &expor
                 std::cerr << "InkFileExportCmd::do_export_vector: Failed to save " << (export_plain_svg ? "" : "Inkscape")
                           << " file to: " << filename_out << std::endl;
                 return 1;
+            } catch (Inkscape::Extension::Output::file_read_only const &) {
+                std::cerr << "Failed to save " << filename_out << ": destination is read only." << std::endl;
+                return 1;
+            } catch (std::exception const &e) {
+                std::cerr << "Failed to save " << filename_out << ": " << e.what() << std::endl;
+                return 1;
             }
         }
         return 0;
@@ -498,6 +517,12 @@ int InkFileExportCmd::do_export_vector(SPDocument *doc, std::string const &expor
         } catch (Inkscape::Extension::Output::save_failed &e) {
             std::cerr << "InkFileExportCmd::do_export_vector: Failed to save " << (export_plain_svg ? "" : "Inkscape")
                       << " file to: " << filename_out << std::endl;
+            return 1;
+        } catch (Inkscape::Extension::Output::file_read_only const &) {
+            std::cerr << "Failed to save " << filename_out << ": destination is read only." << std::endl;
+            return 1;
+        } catch (std::exception const &e) {
+            std::cerr << "Failed to save " << filename_out << ": " << e.what() << std::endl;
             return 1;
         }
     }
@@ -959,6 +984,9 @@ int InkFileExportCmd::do_export_extension(SPDocument *doc, std::string const &fi
 
             std::cerr << __PRETTY_FUNCTION__ << ": Failed to save " << extension->get_id()
                       << " to: " << filename_out << std::endl;
+            return 1;
+        } catch (std::exception const &e) {
+            std::cerr << "Failed to save " << filename_out << ": " << e.what() << std::endl;
             return 1;
         }
     }

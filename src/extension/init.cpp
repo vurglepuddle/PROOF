@@ -44,6 +44,7 @@
 #endif
 #ifdef WITH_CAPYPDF
 #include "internal/pdfoutput/pdf-output.h"
+#include "internal/ai/ai-native-output.h"
 #endif
 #include <cairo.h>
 #ifdef CAIRO_HAS_PDF_SURFACE
@@ -202,6 +203,7 @@ init()
 
 #ifdef WITH_CAPYPDF
     Internal::PdfOutput::init();
+    Internal::AiNativeOutput::init();
 #endif
 #ifdef CAIRO_HAS_PDF_SURFACE
     Internal::CairoRendererPdfOutput::init();

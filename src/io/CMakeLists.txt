@@ -23,6 +23,7 @@ target_sources(inkscape_base PRIVATE
   dir-util.h
   file.h
   file-export-cmd.h
+  file-export-status.h
   recent-files.h
   resource.h
   sandbox.h

@@ -22,6 +22,7 @@
 #endif
 
 #include "inkscape-application.h"
+#include "io/file-export-status.h"
 #include "path-prefix.h"
 #include "preferences.h"
 #include "io/resource.h"
@@ -205,6 +206,7 @@ int main(int argc, char *argv[])
     set_extensions_env();
 
     auto ret = InkscapeApplication().gio_app()->run(argc, argv);
+    if (!ret) ret = Inkscape::IO::export_exit_status;
 
     Inkscape::Preferences::get()->save();
 

@@ -13,6 +13,10 @@
 #include "pdf-output.h"
 
 #include <glib/gstdio.h>
+#include <stdexcept>
+#ifdef PROOF_CAPYPDF_PDF17
+#include "3rdparty/capypdf-version.h"
+#endif
 
 #include "build-document.h"
 #include "build-page.h"
@@ -30,6 +34,15 @@
 
 namespace Inkscape::Extension::Internal {
 
+bool PdfOutput::supports_pdf17()
+{
+#ifdef PROOF_CAPYPDF_PDF17
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool PdfOutput::check(Inkscape::Extension::Extension *)
 {
     return Inkscape::Extension::db.get("org.inkscape.output.pdf.capypdf");
@@ -40,7 +53,22 @@ bool PdfOutput::check(Inkscape::Extension::Extension *)
  */
 void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename)
 {
+#ifdef PROOF_CAPYPDF_PDF17
+    capypdf::proof::DocumentProperties opt;
+#else
     capypdf::DocumentProperties opt;
+#endif
+    // Native Illustrator output admits only features compatible with PDF 1.7.
+    // Select the engine's version before writing, rather than relabeling a PDF 2.0 file.
+    if (mod->get_param_optiongroup_is("PDFversion", "PDF-1.7")) {
+#ifdef PROOF_CAPYPDF_PDF17
+        if (!opt.set_pdf17()) {
+            throw std::runtime_error("The PDF version conflicts with its conformance mode.");
+        }
+#else
+        throw std::runtime_error("This PDF backend cannot write Illustrator-compatible PDF 1.7.");
+#endif
+    }
 
     auto root = doc->getRoot();
     if (!root) {

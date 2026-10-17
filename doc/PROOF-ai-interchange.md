@@ -1,7 +1,9 @@
 # PROOF AI interchange
 
-Writing `.ai` is currently **PDF-based RGB interchange**. It needs no installed
-Illustrator to export, and does not yet write Illustrator's native records.
+Writing `.ai` has two routes. **File → Save As → Adobe Illustrator (native)**
+writes editable Illustrator records and PROOF's PDF pages together for the
+supported subset below. **Illustrator interchange (PDF-based)** remains a
+copy-only RGB export for broader artwork. Neither requires Illustrator to write.
 
 Reading `.ai` now reconstructs supported artwork from Illustrator's own
 records, compares every artboard with its PDF page, and uses the PDF import
@@ -42,8 +44,8 @@ successful opening do not prove visual fidelity, retained layers or ink identity
   and blends can change. Some text is already outlined in the source PDF.
 - Page dimensions round up to whole PDF points; default interchange options
   preserve object dimensions rather than stretching objects to fit the rounding.
-- Non-PDF-compatible modern AI and native AI writing are not implemented. A
-  native writer is proven viable for a small subset; see the spike evidence below.
+- Reading non-PDF-compatible modern AI is not implemented. Native writing
+  supports the subset below and refuses everything else by name.
 - The supplied Typical file still has strong colour differences. Giant File has
   existing import/appearance problems. Neither is certified as a faithful job.
 
@@ -275,10 +277,71 @@ spot as a spot swatch used at 100% and 30%, the dashed round-capped curve, the
 clip, the hole. RGB fills in the CMYK document were converted by Illustrator,
 as it does.
 
-Not yet: the container (PROOF's own PDF page with these records in its
-`PieceInfo`) and the Save As entry; type, gradients and pictures; the version 7
-form; smooth points (all points are written as corners, so Illustrator's
-direct selection sees corners where PROOF had smooth ones).
+Not yet: type, gradients and pictures; the version 7 form; smooth points (all
+points are written as corners, so Illustrator's direct selection sees corners
+where PROOF had smooth ones).
+
+### Native Save As and its container (2026-10-17)
+
+`AiNativeOutput` registers **Adobe Illustrator (native) (*.ai)** for Save As
+and Save. It calls the records writer first; an unsupported object produces a
+message naming the feature and saves nothing. The supported subset is the
+records writer's list above. Smooth-point editing still loses smooth flags.
+
+For an accepted document it writes fresh CapyPDF pages from a document copy,
+then appends Illustrator's private data in a PDF incremental update. Each
+page has `/PieceInfo /Illustrator` and names the same `/Private` dictionary.
+That dictionary contains header comments in `AIMetaData`, Zstandard-compressed
+records prefixed by `%AI24_ZStandard_Data` in 64 KiB `AIPrivateDataN` streams,
+and the container/version fields Illustrator 29 uses. The PDF cross-reference
+writer is shared with placed-page export and retains the original table or
+stream form.
+
+**The PDF envelope is 1.7.** Illustrator 29.2.1 refused the first container
+with CapyPDF's ordinary PDF 2.0 default, even though PROOF read its records.
+A disposable header-only diagnostic confirmed the cause; that diagnostic is
+not the writer. The bundled backend now has a per-document version selector:
+the engine emits PDF 1.7 for native output from the outset. The writer's
+accepted features fit that version. Ordinary PDF export retains PDF 2.0;
+PDF/X and PDF/A version choices cannot be overridden through this selector.
+
+`src/3rdparty/capypdf-compat.cmake` generates a guarded overlay of the pinned
+backend in the build folder. The upstream submodule is untouched. Its changes
+must still match the reviewed source, or configuration stops for review.
+`capypdf-version.*` selects the version on that document's properties only.
+Native output is unavailable with a system backend lacking this capability.
+
+**Checked with Illustrator 29.2.1.** A control saved through the installed
+native writer opens with its two named artboards (one Cyrillic), three editable
+layers including hidden/locked flags, a clipping group, a compound-path hole,
+CMYK fill/stroke numbers and the named spot at 30%. Illustrator's saved copy
+reopens through PROOF's ordinary native open path with the artboards, layers,
+clipping, spot tint and CMYK values retained. This qualifies that synthetic
+subset, not a round trip for every imported document. The actual GUI Save As
+also writes both pages and native data while leaving its input SVG copy intact.
+
+The installed native smoke passes 32 checks, including PDF 1.7, unchanged
+ordinary-PDF defaults, fresh artwork in both halves after an overwrite,
+read-only destinations and failed replacements. The workspace's eleven unit
+suites and eight export suites pass after the version change; earlier reader
+corpus checkpoints remain separate.
+
+The two halves come from the same document at the same save. A unique temporary
+file beside the destination is replaced only after both halves are complete;
+refusals and failed writes leave the previous file intact. Native page options
+are independent of previous PDF/LaTeX choices, and PDF export does not mutate
+the working document. The GUI reports the refusal through its existing save
+error dialog; CLI exports report it on stderr and return failure, without a crash.
+
+CLI native output is explicit; the existing filename-only `.ai` command keeps
+its PDF-based behavior:
+
+```text
+inkscape working.svg --export-extension=org.inkscape.output.ai.native --export-filename=deliverable.ai
+```
+
+`--export-page=2` applies to both the PDF and the native artboard. The writer
+does not reuse private data from an imported file.
 
 ## Automated checks
 
@@ -288,3 +351,10 @@ behaviour. `testfiles/cli_tests/ai-interchange-smoke.py` drives the built execut
 checks page/text/edit round-tripping, an actual raster-scale fixture and optional
 real AI files. It requires test-only pypdf/Pillow and a pdftoppm executable.
 Actual Illustrator automation remains a separate check.
+
+`ai-native-output-smoke.py` checks the installed native writer end to end with
+synthetic artwork: strict PDF structure, two named pages, private data, native
+reopening, editable layers/paths/clips, CMYK, a spot tint, matching PDF page
+pixels, page selection, replacing both halves on a second save, and refusals
+that preserve the previous file. Unit cases also cover multi-block records
+and Save As eligibility. The workspace focused runner includes this smoke test.

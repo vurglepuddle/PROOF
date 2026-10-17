@@ -36,11 +36,14 @@ if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
     target_link_libraries(capypdf_LIB PUBLIC PNG::PNG JPEG::JPEG ZLIB::ZLIB TIFF::TIFF Freetype::Freetype PkgConfig::CAPY_DEPS)
 
     set(SRC capypdf/src)
+    include(capypdf-compat.cmake)
     target_sources(capypdf_LIB PRIVATE
         ${SRC}/pdfcommon.cpp
         ${SRC}/generator.cpp
         ${SRC}/drawcontext.cpp
-        ${SRC}/document.cpp
+        ${CAPYPDF_PROOF_DIR}/document.cpp
+        capypdf-version.cpp
+        capypdf-version.h
         ${SRC}/imagefileops.cpp
         ${SRC}/utils.cpp
         ${SRC}/colorconverter.cpp
@@ -78,6 +81,7 @@ if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
 
     target_include_directories(capypdf_LIB
         PRIVATE
+            ${CAPYPDF_PROOF_DIR}
             capypdf/src
         PUBLIC
             capypdf/include # for capypdf.hpp

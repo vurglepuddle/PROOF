@@ -21,6 +21,10 @@
 #include "extension/internal/cairo-renderer-pdf-out.h"
 #include "extension/db.h"
 #include "extension/output.h"
+#if defined(WITH_CAPYPDF) && defined(WITH_POPPLER)
+#include "extension/internal/ai/ai-native-output.h"
+#include "extension/internal/pdfoutput/pdf-output.h"
+#endif
 
 #include <limits>
 
@@ -28,16 +32,31 @@
 
 using Inkscape::Extension::Internal::StyleMemory;
 
-// File save selection deliberately excludes lossy copy-only formats.
+// Save As uses the guarded native writer. The older PDF-only format stays copy-only.
 Inkscape::Extension::Output *get_output_extension_for_save(std::string filename, bool allow_save_copy);
 
-TEST(AiInterchangeTest, CannotOverwriteImportedOriginalWithOrdinarySave)
+TEST(AiInterchangeTest, NativeSaveIsAvailableAndPdfInterchangeRemainsCopyOnly)
 {
     using namespace Inkscape::Extension;
     if (!db.get("org.inkscape.output.ai.pdf")) {
         Internal::CairoRendererPdfOutput::init();
     }
+#if defined(WITH_CAPYPDF) && defined(WITH_POPPLER)
+    if (Internal::PdfOutput::supports_pdf17()) {
+        if (!db.get("org.inkscape.output.ai.native")) {
+            Internal::PdfOutput::init();
+            Internal::AiNativeOutput::init();
+        }
+        auto native = get_output_extension_for_save("original.ai", false);
+        ASSERT_NE(native, nullptr);
+        EXPECT_FALSE(native->savecopy_only());
+        EXPECT_STREQ(native->get_id(), "org.inkscape.output.ai.native");
+    } else {
+        EXPECT_EQ(get_output_extension_for_save("original.ai", false), nullptr);
+    }
+#else
     EXPECT_EQ(get_output_extension_for_save("original.ai", false), nullptr);
+#endif
     auto copy = get_output_extension_for_save("deliverable.ai", true);
     ASSERT_NE(copy, nullptr);
     EXPECT_TRUE(copy->savecopy_only());
