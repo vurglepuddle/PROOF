@@ -316,6 +316,35 @@ backend in the build folder. The upstream submodule is untouched. Its changes
 must still match the reviewed source, or configuration stops for review.
 `capypdf-version.*` selects the version on that document's properties only.
 Native output is unavailable with a system backend lacking this capability.
+Several passages of one file now apply in turn, each still required to match
+the pinned source exactly once.
+
+**File and folder names in any script (2026-10-18).** On Windows, PDF export
+and native Save As wrote nothing into a folder named in Cyrillic, and the
+export still reported success. The collaborator's workspace sits under such a
+folder. GLib hands file names over as UTF-8; CapyPDF opened them with the
+narrow C runtime, `CreateFileA` and FreeType's own file access, which read
+them in the ANSI code page. Overlays of `utils`, `imagefileops`, `mmapper`,
+`pdfwriter`, `capi` and `document` now open by UTF-8 name: through
+`std::filesystem::path` and the wide calls (`_wfopen`, `CreateFileW`,
+`TIFFOpenW`) on Windows. A font is mapped that way and handed to FreeType from
+memory. This covers the output and its temporary file, linked PNG, JPEG and
+TIFF pictures, fonts, ICC profiles and embedded files. A temporary file is
+removed when the final rename fails, and `PdfOutput::save` now reports a write
+failure (`save_failed`) instead of only warning, so the command line exits
+non-zero and a Save As says the file wasn't saved. PROOF's own reads and
+writes of these files already used GLib's UTF-8 calls.
+
+`testfiles/cli_tests/unicode-path-export-smoke.py` (the focused runner's
+twelfth export check, synthetic art only) writes into folders and files named
+in Cyrillic, the collaborator's `0х000`, Chinese, Japanese, Korean, Hebrew,
+German with umlauts, emoji with joiners, and punctuation (`& # % [ ] { } ~ ! @
++ = , '`). It checks a PDF with a linked PNG, a linked JPEG and a placed PDF
+page, a native `.ai` with Illustrator's records, a PNG and a plain SVG in each,
+no temporary files left over, and that an unwritable PDF fails. Against the
+build before this, PDF and `.ai` failed in all seven folders while PNG and SVG
+passed, and a PDF that couldn't be written exited 0 with no file (a missing
+folder was already refused by the command line). This build passes 66/66.
 
 **Checked with Illustrator 29.2.1.** A control saved through the installed
 native writer opens with its two named artboards (one Cyrillic), three editable

@@ -160,6 +160,8 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
         throw Inkscape::Extension::Output::save_failed();
     } catch (std::exception &ex) {
         g_warning("Couldn't save pdf file: %s", ex.what());
+        // PROOF: say so. Only warning left the save looking done with no file written.
+        throw Inkscape::Extension::Output::save_failed();
     }
 }
 

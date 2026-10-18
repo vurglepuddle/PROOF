@@ -44,19 +44,19 @@ if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
         ${CAPYPDF_PROOF_DIR}/document.cpp
         capypdf-version.cpp
         capypdf-version.h
-        ${SRC}/imagefileops.cpp
-        ${SRC}/utils.cpp
+        ${CAPYPDF_PROOF_DIR}/imagefileops.cpp
+        ${CAPYPDF_PROOF_DIR}/utils.cpp
         ${SRC}/colorconverter.cpp
         ${SRC}/fontsubsetter.cpp
         ${SRC}/ft_subsetter.cpp
         ${SRC}/cffsubsetter.cpp
         ${SRC}/bitfiddling.cpp
-        ${SRC}/capi.cpp
+        ${CAPYPDF_PROOF_DIR}/capi.cpp
         ${SRC}/errorhandling.cpp
-        ${SRC}/pdfwriter.cpp
+        ${CAPYPDF_PROOF_DIR}/pdfwriter.cpp
         ${SRC}/objectformatter.cpp
         ${SRC}/commandstreamformatter.cpp
-        ${SRC}/mmapper.cpp
+        ${CAPYPDF_PROOF_DIR}/mmapper.cpp
         ${SRC}/xmlformatter.cpp
     )
 
