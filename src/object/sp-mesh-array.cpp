@@ -39,9 +39,11 @@
  */
 
 #include "sp-mesh-array.h"
+#include "mesh-object.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <glibmm.h>
 
@@ -70,6 +72,7 @@
 // For default color
 #include "style.h"
 #include "svg/css-ostringstream.h"
+#include "svg/stringstream.h"
 
 #include "xml/document.h"                            // for Document
 #include "xml/node.h"                                // for Node
@@ -900,8 +903,17 @@ void SPMeshNodeArray::write( SPMeshGradient *mg )
     SPMeshPatchI patch0( &(array->nodes), 0, 0 );
     Geom::Point current_p = patch0.getPoint( 0, 0 ); // Side 0, point 0
 
-    mesh->setAttributeSvgDouble("x", current_p[X] );
-    mesh->setAttributeSvgDouble("y", current_p[Y] );
+    // A mesh object's outline is serialized separately as a path. Preserve
+    // the mesh coordinates across reopening so an inner edit cannot rewrite
+    // that outline merely because the mesh was rounded to six digits.
+    auto set_coordinate = [mesh](char const *name, double value) {
+        Inkscape::SVGOStringStream os;
+        os.precision(std::numeric_limits<double>::max_digits10);
+        os << value;
+        mesh->setAttribute(name, os.str());
+    };
+    set_coordinate("x", current_p[X]);
+    set_coordinate("y", current_p[Y]);
 
     Geom::Point current_p2( mg->x.computed, mg->y.computed );
 
@@ -924,7 +936,8 @@ void SPMeshNodeArray::write( SPMeshGradient *mg )
             // Add tensor
             if( patchi.tensorIsSet() ) {
 
-                std::stringstream is;
+                Inkscape::SVGOStringStream is;
+                is.precision(std::numeric_limits<double>::max_digits10);
 
                 for( unsigned k = 0; k < 4; ++k ) {
                     Geom::Point p = patchi.getTensorPoint( k ) - patchi.getPoint( k, 0 );
@@ -950,7 +963,8 @@ void SPMeshNodeArray::write( SPMeshGradient *mg )
                 Inkscape::XML::Node *stop = xml_doc->createElement("svg:stop");
 
                 // Add path
-                std::stringstream is;
+                Inkscape::SVGOStringStream is;
+                is.precision(std::numeric_limits<double>::max_digits10);
                 char path_type = patchi.getPathType( k ); 
                 is << path_type;
 
@@ -1012,6 +1026,7 @@ void SPMeshNodeArray::write( SPMeshGradient *mg )
             }
         }
     }
+    Inkscape::MeshObject::sync_users(mg_array);
 }
 
 /**

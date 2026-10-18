@@ -46,6 +46,7 @@
 #include "object/sp-gradient-reference.h"
 #include "object/sp-linear-gradient.h"
 #include "object/sp-mesh-gradient.h"
+#include "object/mesh-object.h"
 #include "object/sp-radial-gradient.h"
 #include "object/sp-stop.h"
 #include "object/sp-text.h"
@@ -1454,6 +1455,8 @@ void sp_item_gradient_set_coords(SPItem *item, GrPointType point_type, guint poi
         }
         if( write_repr ) {
             mg->array.write( mg );
+        } else if (fill_or_stroke == Inkscape::FOR_FILL) {
+            Inkscape::MeshObject::sync(item, mg, false);
         }
     }
 
