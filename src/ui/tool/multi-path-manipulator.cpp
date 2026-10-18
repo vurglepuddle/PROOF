@@ -21,6 +21,7 @@
 #include "document-undo.h"
 #include "live_effects/lpeobject.h"
 #include "node.h"
+#include "object/mesh-object.h"
 #include "object/sp-path.h"
 #include "path-manipulator.h"
 #include "ui/icon-names.h"
@@ -174,6 +175,12 @@ void MultiPathManipulator::setItems(std::set<ShapeRecord> const &s)
     // add newly selected items
     for (auto const &r : shapes) {
         if (!(is<SPPath>(r.object) || is<LivePathEffectObject>(r.object) || PathManipulator::canEditShape(r.object))) {
+            continue;
+        }
+        // A mesh object's outline follows its mesh: Direct Selection shows its
+        // mesh points (the gradient dragger), as Illustrator does, not path anchors
+        // or Live Corners that would move the outline away from the mesh.
+        if (r.role == SHAPE_ROLE_NORMAL && MeshObject::is_mesh_object(r.object)) {
             continue;
         }
         auto newpm = std::make_shared<PathManipulator>(*this, r.object,

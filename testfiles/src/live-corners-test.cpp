@@ -300,3 +300,57 @@ TEST(LiveCorners, SplittingASideAndAddingASubpathKeepUnrelatedCornersLive)
     ASSERT_TRUE(loaded);
     expectEqual(loaded->render(), edited);
 }
+
+TEST(LiveCorners, DraggingAHandleUnderAStaleNoisyRecordNeverThrows)
+{
+    // A saved drawing (2026-10-18): four rounds on a mesh object's outline, then
+    // its anchors dragged while the mesh stayed. The record's frame carries
+    // floating noise. Dragging a Bezier handle of the visible path then threw
+    // "Non-contiguous path" from reconcileTopology inside the drag, and PROOF aborted.
+    char const *record =
+        "1|M 50.06378131,58.85876475 C 25.37014911,21.31093392 328.7972665,28.41457857 "
+        "264.8644647,53.78473286 338.9453303,91.33256712 164.736902,113.6583057 164.736902,141.0580762 "
+        "H 50.06378131 Z|0,0,27.213632721051866,0,0;0,1,27.213632721051866,0,0;"
+        "0,2,27.213632721051866,0,0;0,3,27.213632721051866,0,0;|0.99999999976117582,"
+        "4.6829207178693707e-13,-7.8301809480761464e-11,0.99999999984046595,"
+        "-82.199285648178318,47.695899776351141";
+    auto const saved = sp_svg_read_pathv(
+        "m -32.4976892,98.92449096 c 11.67904089,-17.9955191 116.13464404,-21.66682564 "
+        "178.2093715,-16.14148757 34.9793856,3.11355263 63.4645259,43.30233451 31.8793696,58.65256321 "
+        "-21.9987809,10.6912981 -54.5496498,20.4110583 -75.2772179,30.2341594 "
+        "-15.24658376,7.2255817 -30.11776256,17.08425 -46.98985036,17.08425 H -4.921871629 "
+        "c -15.029674341,0 -27.213632721,-12.1839584 -27.213632721,-27.2136327 v -46.8389935 "
+        "c 0,-5.3708142 -3.28603923,-11.2716706 -0.36218485,-15.77685884 z");
+    // Direct Selection holds anchors in canvas space; the round trip leaves noise.
+    double const px = 96 / 25.4;
+    auto const canvas = Geom::Affine(Geom::Scale(px * .7821689113)) * Geom::Translate(277.4, 181.2);
+    unsigned tried = 0;
+    for (std::size_t i = 0; i < saved[0].size_default(); ++i) {
+        if (!dynamic_cast<Geom::CubicBezier const *>(&saved[0][i])) continue;
+        for (unsigned handle : {1u, 2u}) {
+            for (auto delta : {Geom::Point(.6, -.4), Geom::Point(-2.5, 1.5), Geom::Point(9, 4)}) {
+                auto model = Model::read(record);
+                ASSERT_TRUE(model);
+                Geom::Path dragged(saved[0].initialPoint());
+                for (std::size_t j = 0; j < saved[0].size_default(); ++j) {
+                    std::unique_ptr<Geom::Curve> curve(saved[0][j].duplicate());
+                    if (j == i) {
+                        auto cubic = static_cast<Geom::CubicBezier *>(curve.get());
+                        cubic->setPoint(handle, (*cubic)[handle] + delta);
+                    }
+                    curve->setInitial(dragged.finalPoint());
+                    dragged.append(*curve);
+                }
+                dragged.close();
+                Geom::PathVector edited{dragged};
+                edited *= canvas;
+                edited *= canvas.inverse();
+                bool kept = false;
+                EXPECT_NO_THROW(kept = model->reconcile(edited)) << "curve " << i << " handle " << handle;
+                if (kept) expectEqual(model->render(), edited);
+                ++tried;
+            }
+        }
+    }
+    EXPECT_GT(tried, 0u);
+}

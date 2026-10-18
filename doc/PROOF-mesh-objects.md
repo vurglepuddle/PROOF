@@ -112,3 +112,31 @@ require an announced idle keyboard/mouse. No production artwork is needed.
 Windows PDF qualification used an ASCII output folder. A separate local
 failure with Cyrillic export paths was isolated using the same binary and
 recorded for the owner; Unicode output paths are not fixed by this round.
+
+## Direct Selection edits the mesh, not the outline (owner's side, 2026-10-18)
+
+The owner's first trial pulled a mesh object's outline off its mesh twice.
+In Direct Selection, a drag starting inside a corner caught the Live Corners
+widget and rounded all four corners of the path, and a drag of all eight
+anchors moved the path alone. The mesh stayed where it was each time, so the
+fill showed only where the two overlapped. Touching an anchor handle of that
+path then crashed PROOF (see [Live Corners](PROOF-live-corners.md), same date).
+
+Direct Selection now builds no path editor for a marked mesh object, so it
+shows no path anchors, handles or corner widgets on it. Its mesh points, which
+the gradient dragger shows in Direct Selection (`/tools/nodes/gradientdrag`, on
+by default), move the outline through the same synchronisation as the Mesh
+tool. This is Illustrator's behaviour: its Direct Selection edits mesh points,
+and a mesh object has no Live Corners. Clip and mask paths of a mesh object
+remain editable. `MeshObject::is_mesh_object()` tells the two kinds of path apart.
+
+A file saved before this change can hold an outline that is no longer the
+mesh's, with a Live Corners record and anchor types for it. The next mesh edit
+writes the mesh's outline and drops both attributes in the same undo step;
+nothing is changed on opening.
+
+Checks: `test_sp-gradient` 17/17, with
+`AMeshEditRepairsAnOutlineRoundedOrMovedAwayFromItsMesh`. The private live
+check `tools/mesh-object-check.py` adds three Direct Selection steps: a drag
+from inside a corner leaves the outline and adds no Live Corners record; a
+mesh corner drag moves the outline; one Undo restores it.

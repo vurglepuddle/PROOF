@@ -96,3 +96,24 @@ corner/selection/colour/closing run passes 142/142 across 12 suites.
 
 Reference: [Adobe Live Corners tutorial](https://www.adobe.com/learn/illustrator/web/live-corners-in-illustrator)
 and the owner's workspace `brief/direct-selection-brief.md`.
+
+## A stale record no longer crashes a handle drag (2026-10-18)
+
+Dragging a Bezier handle of a rounded path whose stored record had drifted
+from the path (rounding noise in the record's frame, about 1e-10, after the
+anchors moved) crashed PROOF. `Model::reconcileTopology` accepted a join
+between two rebuilt pieces within 1e-5 and then appended the second piece, and
+`Geom::Path::append` throws on any gap at all ("Non-contiguous path"). The
+exception left a GTK signal handler, and glibmm aborted. The owner met it on a
+mesh object (see [Mesh objects](PROOF-mesh-objects.md), same date), but any
+rounded path in that state could reach it.
+
+The piece is now snapped onto the end of the path before it is appended, as
+`Model::reconcile` already did, and both rebuilds close a path whose end lies
+within the same tolerance of its start exactly. Otherwise a hair-width closing
+segment would be written out as an extra anchor on top of the first.
+
+`LiveCorners.DraggingAHandleUnderAStaleNoisyRecordNeverThrows` uses the
+owner's record and path, drags each handle by three amounts through the
+canvas transform's round trip, and requires no exception and an exact rebuild.
+It threw on every handle before the change; the suite now passes 19/19.

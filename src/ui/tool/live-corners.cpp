@@ -61,6 +61,16 @@ bool same(Geom::PathVector const &a, Geom::PathVector const &b)
     return true;
 }
 
+// A rebuilt outline can end a hair from its start. Closing it as it stands
+// would add a stray closing segment, written out as an extra anchor.
+void closeExactly(Geom::Path &path, bool closed)
+{
+    if (closed && !path.empty() && Geom::are_near(path.finalPoint(), path.initialPoint(), 1e-5)) {
+        path.setFinal(path.initialPoint());
+    }
+    path.close(closed);
+}
+
 std::vector<std::string> split(std::string const &value, char separator)
 {
     std::vector<std::string> parts;
@@ -384,7 +394,7 @@ bool Model::reconcile(Geom::PathVector const &edited)
             }
             base.append(*curve);
         }
-        base.close(local[p].closed());
+        closeExactly(base, local[p].closed());
         updated.source.push_back(std::move(base));
     }
     // New ordinary cusp anchors may be rounded again. Avoid duplicate entries.
@@ -461,6 +471,8 @@ bool Model::reconcileTopology(Geom::PathVector const &edited)
             else curve.reset(local[p][i].duplicate());
             if (!started) { base.start(curve->initialPoint()); started = true; }
             else if (!Geom::are_near(base.finalPoint(), curve->initialPoint(), 1e-5)) return false;
+            // Within tolerance is not exact: Geom::Path::append throws on any gap.
+            else curve->setInitial(base.finalPoint());
             if (retained[i]) {
                 auto corner = corners[*retained[i]];
                 corner.path = p;
@@ -470,7 +482,7 @@ bool Model::reconcileTopology(Geom::PathVector const &edited)
             base.append(*curve);
         }
         if (!started) base.start(local[p].initialPoint());
-        base.close(local[p].closed());
+        closeExactly(base, local[p].closed());
         updated.source.push_back(std::move(base));
     }
     auto fresh = fromPath(updated.source);

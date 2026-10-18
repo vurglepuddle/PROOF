@@ -141,6 +141,13 @@ bool fit_outline(SPShape *shape, SPMeshGradient *mesh)
 
 } // namespace
 
+bool is_mesh_object(SPObject const *object)
+{
+    auto path = cast<SPPath>(object);
+    auto marker = path ? path->getRepr()->attribute(ATTRIBUTE) : nullptr;
+    return marker && std::strcmp(marker, "true") == 0;
+}
+
 bool sync(SPItem *item, SPMeshGradient *mesh, bool write_repr)
 {
     auto path = cast<SPPath>(item);
@@ -149,8 +156,7 @@ bool sync(SPItem *item, SPMeshGradient *mesh, bool write_repr)
         mesh->getUnits() != SP_GRADIENT_UNITS_USERSPACEONUSE) {
         return false;
     }
-    auto marker = path->getRepr()->attribute(ATTRIBUTE);
-    if (!marker || std::strcmp(marker, "true") != 0 || path->hasPathEffect()) {
+    if (!is_mesh_object(path) || path->hasPathEffect()) {
         return false;
     }
     auto source = cast<SPMeshGradient>(mesh->getArray());
@@ -173,6 +179,10 @@ bool sync(SPItem *item, SPMeshGradient *mesh, bool write_repr)
     bool curve_changed = !current || sp_svg_write_path(*current) != d;
     if (write_repr && repr_changed) {
         path->setAttribute("d", d);
+        // Rounding or anchor types recorded for an outline that is no longer
+        // the mesh's (files saved before Direct Selection left mesh objects alone).
+        path->removeAttribute("inkscape:live-corners");
+        path->removeAttribute("sodipodi:nodetypes");
     } else if (curve_changed) {
         path->setCurve(std::move(outline));
     }

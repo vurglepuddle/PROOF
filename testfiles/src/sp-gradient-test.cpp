@@ -239,6 +239,34 @@ TEST_F(MeshObjectTest, BoundaryMoveUpdatesOutlineInTheSameUndoStep)
     EXPECT_EQ(outline(), moved);
 }
 
+TEST_F(MeshObjectTest, AMeshEditRepairsAnOutlineRoundedOrMovedAwayFromItsMesh)
+{
+    // Saved 2026-10-18 before Direct Selection left mesh objects alone: Live
+    // Corners rounded the outline, then its anchors moved; the mesh stayed.
+    auto original = outline();
+    EXPECT_TRUE(MeshObject::is_mesh_object(path));
+    EXPECT_FALSE(MeshObject::is_mesh_object(doc->getObjectById("ordinary")));
+    path->setAttribute("d", "M 30,50 C 40,30 120,30 130,50 V 120 H 30 Z");
+    path->setAttribute("inkscape:live-corners", "1|M20,40 H140 V130 H20 Z|0,0,10,0,0;|1,0,0,1,0,0");
+    path->setAttribute("sodipodi:nodetypes", "sssss");
+    doc->ensureUpToDate();
+    DocumentUndo::done(doc.get(), RC_("Undo", "Rounded by Direct Selection"), "");
+    mesh->array.nodes.front().back()->p += Geom::Point(50, -25);
+    mesh->array.write(mesh);
+    EXPECT_NE(outline(), original);
+    EXPECT_FALSE(path->getRepr()->attribute("inkscape:live-corners"));
+    EXPECT_FALSE(path->getRepr()->attribute("sodipodi:nodetypes"));
+    auto bounds = path->curve()->boundsExact();
+    ASSERT_TRUE(bounds);
+    EXPECT_NEAR(bounds->left(), 20, 1e-6);
+    EXPECT_NEAR(bounds->right(), 190, 1e-6);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Move mesh corner"), "");
+    EXPECT_TRUE(DocumentUndo::undo(doc.get()));
+    doc->ensureUpToDate();
+    EXPECT_TRUE(path->getRepr()->attribute("inkscape:live-corners"));
+    EXPECT_STREQ(path->getRepr()->attribute("sodipodi:nodetypes"), "sssss");
+}
+
 TEST_F(MeshObjectTest, InnerGeometryAndColourDoNotRewriteTheBoundary)
 {
     auto original = outline();

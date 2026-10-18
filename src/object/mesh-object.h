@@ -3,6 +3,7 @@
 #define INKSCAPE_OBJECT_MESH_OBJECT_H
 
 class SPItem;
+class SPObject;
 class SPPath;
 class SPMeshGradient;
 
@@ -10,6 +11,10 @@ namespace Inkscape::MeshObject {
 
 inline constexpr char ATTRIBUTE[] = "proof:mesh-object";
 inline constexpr char BOUNDARY_ATTRIBUTE[] = "proof:mesh-boundary";
+
+// A path marked as a mesh object. Its outline is derived from its mesh, so
+// tools edit its mesh points, never the path's own anchors.
+bool is_mesh_object(SPObject const *object);
 
 // Turn a newly mesh-filled shape into a path whose outline belongs to its mesh.
 // The mesh must be constructed on the original shape before converting it.
