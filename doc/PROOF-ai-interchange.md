@@ -417,7 +417,7 @@ print dimensions. Integer, odd and fractional dimensions, including A4, have
 CLI checks; actual Illustrator conversion is checked separately.
 
 The shared writer subset and refusals apply. This variant additionally
-refuses multiple artboards, non-ASCII ink/layer names, individually hidden
+refuses multiple artboards, names outside Windows-1252, individually hidden
 objects, nested layers and image dimming other than 50%. Hidden layers work.
 Artboard names and document ICC profiles are not retained. Corner/smooth flags
 use the shared writer described below.
@@ -663,7 +663,7 @@ its own records; before, it opened from its page.
   definition. Spot and CMYK stops mix; spot and RGB stops don't ("mixed
   gradient colour spaces"). Refused by name: an ink defined in RGB or Lab,
   Registration, a stop that names an ink without a definition, and in
-  Illustrator 7 a non-ASCII ink name.
+  Illustrator 7 an ink name outside Windows-1252.
 - **CMYK stops in a profile**, `icc-color()` in the document's profile, as the
   import leaves every process paint of a CMYK file that has one. They are
   written as their numbers, as solid paint already was. Before, every gradient
@@ -1082,3 +1082,64 @@ embedded pictures **11/11**, links **13/13**; mask, foreign PDF, print-sample,
 placed-page, path-text and Unicode-path regressions also pass. Both final
 legacy controls are byte-identical to the Illustrator-qualified controls.
 No wider artwork corpus was run in this writer round.
+
+### Windows-1252 names in Illustrator 7 (2026-10-21)
+
+Layer and ink names, supplied gradient names and the document title now use
+strict Windows-1252 in standalone output. Characters that fit are retained;
+characters outside that encoding refuse the save by name. There is no
+transliteration, replacement question mark or silent loss of an ink name.
+The converter also refuses invalid UTF-8 input and the five undefined byte
+values 81, 8D, 8F, 90 and 9D. The character table is Microsoft's
+[Windows-1252 mapping, published by Unicode](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP1252.TXT).
+
+The existing PostScript string escaping follows conversion: high bytes and
+control bytes use three-digit octal escapes; parentheses and backslashes
+are escaped. The file remains ASCII. The same encoding is used in layer
+`Ln`, solid fill/stroke ink operands, custom-colour declarations, gradient
+definitions/instances and spot-stop names. The title is now written in a
+`%%Title` header. Modern output retains its existing Unicode bytes and
+broader name repertoire.
+
+The traversal still generates unique gradient identifiers per paint; this
+change does not add retention of SVG gradient labels. The lower-level
+writer's supplied gradient name uses the same strict conversion as its
+references. Unsupported gradient geometry or paint still refuses the save.
+
+The reader selects Windows-1252 for strings and literal names when a known
+old `AI5_FileFormat` header declares version 1 to 3, including the colon
+header form. It no longer guesses that an old name's C3 A9 bytes mean the
+single UTF-8 character U+00E9: in Windows-1252 those bytes are the two
+characters U+00C3 U+00A9. The FE FF pair likewise remains the two Latin
+letters U+00FE U+00FF in that mode. Modern or undeclared records keep the
+existing UTF-8/Windows-1252 heuristic and BOM-marked UTF-16 decoding.
+PDF comparison thresholds and unsupported-feature refusals are unchanged.
+
+Unit coverage includes all 123 defined high-byte mappings, strict refusals,
+escaping, distinct names whose bytes resemble UTF-8, old-header selection,
+the title header, ink names and tints, and gradient definitions/references.
+The installed-editor legacy CLI smoke passes **59/59**. It checks exact
+encoded name/title bytes, three native layer names, named full-strength inks
+and their 30%/60% tints, unchanged UTF-8 source, modern Unicode names, and
+atomic refusals for unsupported layer/ink/title characters. Its first
+58/59 result omitted the valid full-strength definitions from a tint
+assertion; the corrected rerun supersedes it, with no production change.
+
+In Illustrator 29.2.1 on Windows, generated control `33ef4abc4d` keeps all
+three layer names and both ink names exactly, including byte pairs that
+look like UTF-8 or a BOM, euro/ligature characters and escaped punctuation.
+Its two tints remain 30% and 60%. Illustrator's modern saved copy
+`c96227c80c` reopens natively in PROOF with the same logical names. A
+record-only variant `7d868b955a` changes the generated gradient identifier
+to a Windows-1252 name using the same byte escaping as the tested low-level
+writer; Illustrator reads that gradient name and its references exactly.
+This is a synthetic names check, not wider artwork coverage or an actual
+Illustrator 7 application test.
+
+Final checks: all **13 focused unit suites** pass; reader **73 cases, zero
+failures, one opt-in skip**, importer **150 cases, zero failures, two opt-in
+skips**, gradient writer **28/28**. All **18 export smokes** pass with the
+corrected legacy **59/59** rerun superseding its initial assertion failure.
+The existing legacy-picture smoke remains **13/13**; its records differ from
+the previous Illustrator-qualified picture control only by the added title.
+No broader artwork regression or new reader-corpus acceptance is claimed.

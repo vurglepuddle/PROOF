@@ -1829,6 +1829,24 @@ TEST(AiNativeReader, LatinText)
     EXPECT_EQ(text_of("\xfe\xff\x00\x41\x00\xe9"s), "A\xc3\xa9");
 }
 
+TEST(AiNativeReader, OldFileFormatNamesUseWindows1252WithoutGuessingUtf8)
+{
+    auto const art = layer("\\303\\251", "0 g\n" + rect(0, 0, 1, 1) + "f\n");
+    for (auto const header : {"%AI5_FileFormat 3\n", "%AI5_FileFormat: 3\n"}) {
+        auto input = records(art);
+        auto const start = input.find("%AI5_FileFormat 14.0\n");
+        input.replace(start, std::string("%AI5_FileFormat 14.0\n").size(), header);
+        auto const doc = read_ok(input);
+        ASSERT_EQ(doc.layers.size(), 1u);
+        EXPECT_EQ(doc.layers[0].name, "\xc3\x83\xc2\xa9");
+    }
+    auto const modern = read_ok("%AI5_FileFormat 14.0\n" + records(art));
+    ASSERT_EQ(modern.layers.size(), 1u);
+    EXPECT_EQ(modern.layers[0].name, "\xc3\xa9");
+    EXPECT_EQ(text_of("\xc3\xa9", true), "\xc3\x83\xc2\xa9");
+    EXPECT_EQ(text_of("\xfe\xff", true), "\xc3\xbe\xc3\xbf");
+}
+
 // ---- the corpus (opt-in) -----------------------------------------------------------------
 
 #ifdef WITH_POPPLER

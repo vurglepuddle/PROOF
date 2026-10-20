@@ -115,6 +115,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-writer.h
 	internal/ai/ai-native-writer-gradient.h
 	internal/ai/ai-native-writer-picture.h
+	internal/ai/ai-native-writer-string.h
 	internal/bluredge.h
 	internal/cairo-ps-out.h
 	internal/cairo-render-context.h

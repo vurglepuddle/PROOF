@@ -16,8 +16,8 @@
  * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:
  * nothing goes to Illustrator that it would draw differently.
- * The optional Illustrator 7 form shares that subset, with a single artboard, ASCII layer
- * and ink names, opaque embedded rasters, and additional refusals where that old format
+ * The optional Illustrator 7 form shares that subset, with a single artboard, strict
+ * Windows-1252 names, opaque embedded rasters, and additional refusals where that old format
  * has no supported encoding. A colour-model comment advises newer Illustrator's legacy
  * converter; version 7 ignores that later metadata.
  */

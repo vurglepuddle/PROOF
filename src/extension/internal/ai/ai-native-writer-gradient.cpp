@@ -21,6 +21,7 @@
  * stroke". Its "along" and "across" have no SVG counterpart and aren't written.
  */
 #include "ai-native-writer-gradient.h"
+#include "ai-native-writer-string.h"
 
 #include <algorithm>
 #include <array>
@@ -395,9 +396,8 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         return refused("gradient interpolation other than RGB or CMYK");
     }
     if (unique_name.empty()) return refused("gradients without a generated name");
-    if (legacy && !std::all_of(unique_name.begin(), unique_name.end(), [](unsigned char c) { return c < 128; })) {
-        return refused("non-ASCII gradient names (Illustrator 7)");
-    }
+    auto const name_bytes = legacy ? legacy_name_bytes(unique_name) : std::optional(unique_name);
+    if (!name_bytes) return refused("gradient names outside Windows-1252 (Illustrator 7)");
 
     bool const bbox_units = gradient->getUnits() == SP_GRADIENT_UNITS_OBJECTBOUNDINGBOX;
     std::vector<SVGLength const *> lengths;
@@ -424,7 +424,7 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     }
     matrix *= item_to_art;
     if (!regular(matrix)) return refused("singular or nonfinite gradient transforms");
-    auto const name = ps_string(unique_name);
+    auto const name = ps_string(*name_bytes);
     // A stroke's instance opens with `1 Bb`: 804 about an S or s in Illustrator's files between
     // the owner's set and the collaborator's (and 66 notes that paint nothing); a fill's with `Bb`.
     std::string const open = stroke ? "1 Bb\n" : "Bb\n";
@@ -479,16 +479,15 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
             if (!a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK) {
                 return refused("spot inks defined in RGB or Lab");
             }
-            if (legacy && !std::all_of(ink->name.begin(), ink->name.end(), [](unsigned char c) { return c < 128; })) {
-                return refused("non-ASCII ink names (Illustrator 7)");
-            }
+            auto const ink_bytes = legacy ? legacy_name_bytes(ink->name) : std::optional(ink->name);
+            if (!ink_bytes) return refused("ink names outside Windows-1252 (Illustrator 7)");
             std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
             for (auto const v : cmyk) {
                 if (!std::isfinite(v) || v < 0 || v > 1) return refused("out-of-range gradient colours");
             }
             if (!std::isfinite(ink->tint)) return refused("out-of-range gradient colours");
             stops.push_back(std::format("{} {} {} {} {} {} 3 50 {} %_Bs\n", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]),
-                                        num(cmyk[3]), ps_string(ink->name), num(1.0 - ink->tint), num(offset * 100)));
+                                        num(cmyk[3]), ps_string(*ink_bytes), num(1.0 - ink->tint), num(offset * 100)));
             out.inks.emplace_back(ink->name, cmyk);
             continue;
         }

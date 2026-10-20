@@ -46,7 +46,7 @@ does not need to be installed to read or write these files.
 Native output contains fresh Illustrator records and compatible PDF 1.7 pages.
 It currently requires PROOF's bundled PDF backend. The optional Illustrator 7
 copy format uses standalone records instead, with stricter limits: one artboard,
-ASCII layer and ink names, opaque 8-bit embedded pictures, and no retained
+Windows-1252 names, opaque 8-bit embedded pictures, and no retained
 document ICC profile or artboard name. Picture transparency and links remain
 refused in this format.
 Illustrator opening, editing and saving back into PROOF are checked with synthetic

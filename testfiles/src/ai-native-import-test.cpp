@@ -49,6 +49,7 @@
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
 #include "extension/internal/ai/ai-native-writer.h"
+#include "extension/internal/ai/ai-native-writer-string.h"
 #include "extension/internal/ai/ai-legacy-output.h"
 #include "libnrtype/font-factory.h"
 #include "libnrtype/font-instance.h"
@@ -5478,7 +5479,7 @@ TEST_F(AiNativeImportTest, LegacyWriterRefusesFeaturesThatNeedTheModernFormat)
     std::vector<std::pair<std::string, std::string>> cases{
         {R"(<sodipodi:namedview><inkscape:page x="0" y="0" width="100" height="100"/><inkscape:page x="120" y="0" width="80" height="100"/></sodipodi:namedview>)", "more than one artboard"},
         {R"(<rect width="10" height="10" style="display:none"/>)", "hidden objects"},
-        {R"(<g inkscape:groupmode="layer" inkscape:label="Caf&#233;"><rect width="10" height="10"/></g>)", "non-ASCII layer names"},
+        {R"(<g inkscape:groupmode="layer" inkscape:label="&#20013;"><rect width="10" height="10"/></g>)", "layer names outside Windows-1252"},
         {R"(<g inkscape:groupmode="layer"><g inkscape:groupmode="layer"><rect width="10" height="10"/></g></g>)", "nested layers"},
         {R"(<g inkscape:groupmode="layer" proof:layer-dim="70"><rect width="10" height="10"/></g>)", "layer image dimming"},
     };
@@ -5493,11 +5494,94 @@ TEST_F(AiNativeImportTest, LegacyWriterRefusesFeaturesThatNeedTheModernFormat)
     }
     auto doc = svg_document(R"(<rect id="ink" width="10" height="10"/>)");
     ASSERT_TRUE(doc);
-    auto const id = SpotInk::ensure(doc.get(), {"Caf\xc3\xa9", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 0.3});
+    auto const id = SpotInk::ensure(doc.get(), {"Ink \xe4\xb8\xad", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 0.3});
     doc->getObjectById("ink")->setAttribute("style", "fill:url(#" + id + ")");
     auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
     EXPECT_TRUE(legacy.records.empty());
-    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "non-ASCII ink names (Illustrator 7)"), legacy.refused.end());
+    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "ink names outside Windows-1252 (Illustrator 7)"), legacy.refused.end());
+    EXPECT_TRUE(AN::write_records(doc.get()).refused.empty());
+}
+
+TEST(AiNativeWriterStrings, AllDefinedWindows1252CharactersAndStrictRefusals)
+{
+    std::string const utf8 =
+        "\xe2\x82\xac\xe2\x80\x9a\xc6\x92\xe2\x80\x9e\xe2\x80\xa6\xe2\x80\xa0\xe2\x80\xa1"
+        "\xcb\x86\xe2\x80\xb0\xc5\xa0\xe2\x80\xb9\xc5\x92\xc5\xbd\xe2\x80\x98\xe2\x80\x99"
+        "\xe2\x80\x9c\xe2\x80\x9d\xe2\x80\xa2\xe2\x80\x93\xe2\x80\x94\xcb\x9c\xe2\x84\xa2"
+        "\xc5\xa1\xe2\x80\xba\xc5\x93\xc5\xbe\xc5\xb8\xc2\xa0\xc2\xa1\xc2\xa2\xc2\xa3\xc2"
+        "\xa4\xc2\xa5\xc2\xa6\xc2\xa7\xc2\xa8\xc2\xa9\xc2\xaa\xc2\xab\xc2\xac\xc2\xad\xc2"
+        "\xae\xc2\xaf\xc2\xb0\xc2\xb1\xc2\xb2\xc2\xb3\xc2\xb4\xc2\xb5\xc2\xb6\xc2\xb7\xc2"
+        "\xb8\xc2\xb9\xc2\xba\xc2\xbb\xc2\xbc\xc2\xbd\xc2\xbe\xc2\xbf\xc3\x80\xc3\x81\xc3"
+        "\x82\xc3\x83\xc3\x84\xc3\x85\xc3\x86\xc3\x87\xc3\x88\xc3\x89\xc3\x8a\xc3\x8b\xc3"
+        "\x8c\xc3\x8d\xc3\x8e\xc3\x8f\xc3\x90\xc3\x91\xc3\x92\xc3\x93\xc3\x94\xc3\x95\xc3"
+        "\x96\xc3\x97\xc3\x98\xc3\x99\xc3\x9a\xc3\x9b\xc3\x9c\xc3\x9d\xc3\x9e\xc3\x9f\xc3"
+        "\xa0\xc3\xa1\xc3\xa2\xc3\xa3\xc3\xa4\xc3\xa5\xc3\xa6\xc3\xa7\xc3\xa8\xc3\xa9\xc3"
+        "\xaa\xc3\xab\xc3\xac\xc3\xad\xc3\xae\xc3\xaf\xc3\xb0\xc3\xb1\xc3\xb2\xc3\xb3\xc3"
+        "\xb4\xc3\xb5\xc3\xb6\xc3\xb7\xc3\xb8\xc3\xb9\xc3\xba\xc3\xbb\xc3\xbc\xc3\xbd\xc3"
+        "\xbe\xc3\xbf";
+    std::string const expected =
+        "\x80\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8e\x91\x92\x93\x94\x95\x96\x97"
+        "\x98\x99\x9a\x9b\x9c\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac"
+        "\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0"
+        "\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4"
+        "\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8"
+        "\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc"
+        "\xfd\xfe\xff";
+    EXPECT_EQ(AN::legacy_name_bytes(utf8), expected);
+    EXPECT_EQ(AN::legacy_name_bytes("ASCII (A) \\ B"), "ASCII (A) \\ B");
+    EXPECT_EQ(AN::legacy_name_bytes(""), "");
+    for (std::string const bad : {"\xe4\xb8\xad", "\xf0\x9f\x98\x80", "\xce\xa9", "\xc3", "\xff",
+                                  "\xc2\x81", "\xc2\x8d", "\xc2\x8f", "\xc2\x90", "\xc2\x9d"}) {
+        EXPECT_FALSE(AN::legacy_name_bytes(bad));
+    }
+}
+
+TEST_F(AiNativeImportTest, LegacyNamesKeepWindows1252AndDistinctUtf8LookingBytes)
+{
+    std::string const label = "Caf\xc3\xa9 \xe2\x82\xac \xc5\x92 \xc5\xb8 \xe2\x80\x93 (A) \\ B";
+    std::string const ambiguous = "\xc3\x83\xc2\xa9"; // U+00C3 U+00A9, encoded as C3 A9 in Windows-1252.
+    auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label=")" + label +
+                            R"("><rect id="first" width="10" height="10"/></g>)" +
+                            R"(<g inkscape:groupmode="layer" inkscape:label=")" + ambiguous +
+                            R"("><rect id="second" x="20" width="10" height="10"/></g>)");
+    ASSERT_TRUE(doc);
+    for (auto const &[id, name] : std::vector<std::pair<std::string, std::string>>{{"first", label}, {"second", ambiguous}}) {
+        auto ink = SpotInk::ensure(doc.get(), {name, Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 0.3});
+        doc->getObjectById(id)->setAttribute("style", "fill:url(#" + ink + ");stroke:url(#" + ink + ");stroke-width:1");
+    }
+    doc->setDocumentFilename("Title Caf\xc3\xa9 \xe2\x82\xac.svg");
+    for (auto version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        SCOPED_TRACE(version == AN::RecordsVersion::Modern ? "modern" : "legacy");
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        if (version == AN::RecordsVersion::Illustrator7) {
+            EXPECT_NE(written.records.find("%%Title: (Title Caf\\351 \\200.svg)\n"), std::string::npos);
+            EXPECT_NE(written.records.find("(\\303\\251) Ln\n"), std::string::npos);
+            EXPECT_NE(written.records.find("(Caf\\351 \\200 \\214 \\237 \\226 \\(A\\) \\\\ B) Ln\n"), std::string::npos);
+        }
+        std::string error;
+        auto read = AN::read(written.records, error);
+        ASSERT_TRUE(read) << error;
+        ASSERT_EQ(read->layers.size(), 2u);
+        EXPECT_EQ(read->layers[0].name, label);
+        EXPECT_EQ(read->layers[1].name, ambiguous);
+        ASSERT_EQ(read->inks.size(), 2u);
+        EXPECT_EQ(read->inks[0].name, label);
+        EXPECT_EQ(read->inks[1].name, ambiguous);
+        EXPECT_NEAR(read->layers[1].children.at(0).fill->tint, .3, 1e-6);
+        EXPECT_NEAR(read->layers[1].children.at(0).stroke->tint, .3, 1e-6);
+        auto imported = make(written.records);
+        ASSERT_TRUE(imported);
+        auto const layers = elements(imported->document->getReprRoot(), "svg:g");
+        EXPECT_TRUE(std::any_of(layers.begin(), layers.end(), [&](auto node) {
+            auto name = node->attribute("inkscape:label");
+            return name && ambiguous == name;
+        }));
+    }
+    doc->setDocumentFilename("Title \xe4\xb8\xad.svg");
+    auto const refused = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(refused.records.empty());
+    EXPECT_EQ(refused.refused, std::vector<std::string>{"document titles outside Windows-1252 (Illustrator 7)"});
     EXPECT_TRUE(AN::write_records(doc.get()).refused.empty());
 }
 

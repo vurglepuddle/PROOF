@@ -955,6 +955,42 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsAreWrittenAsTintsOfTheirInk)
     }
 }
 
+TEST_F(AiNativeWriterGradientTest, LegacyGradientAndStopNamesUseStrictWindows1252)
+{
+    std::string const name = "Ramp \xc3\x83\xc2\xa9 \xe2\x82\xac (A) \\ B";
+    std::string const ink_name = "Ink \xc3\x83\xc2\xa9";
+    auto const stops = R"x(<stop offset="0" style="stop-color:device-cmyk(0 1 0.8 0.1)" proof:ink=")x" + ink_name +
+                       R"x(" proof:ink-alternate="device-cmyk(0 1 0.8 0.1)"/>)x" +
+                       R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x";
+    auto doc = document(geometry, stops);
+    ASSERT_TRUE(doc);
+    for (bool legacy : {false, true}) {
+        auto const result = AN::write_gradient(shape(doc.get()), Geom::identity(), name, legacy);
+        ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+        ASSERT_EQ(result.inks.size(), 1u);
+        EXPECT_EQ(result.inks[0].first, ink_name);
+        if (legacy) {
+            EXPECT_NE(result.definition.find("(Ramp \\303\\251 \\200 \\(A\\) \\\\ B)"), std::string::npos);
+            EXPECT_NE(result.begin.find("(Ramp \\303\\251 \\200 \\(A\\) \\\\ B)"), std::string::npos);
+            EXPECT_NE(result.definition.find("(Ink \\303\\251)"), std::string::npos);
+        }
+        std::string error;
+        auto parsed = AN::read(std::string(legacy ? "%AI5_FileFormat 3\n" : "%AI5_FileFormat 14.0\n") +
+                               "%%BoundingBox: 0 0 300 200\n1 Bn\n" + result.definition +
+                               "%AI5_BeginLayer\n1 1 1 1 0 0 0 79 128 255 Lb\n(Art) Ln\n0 g\n"
+                               "20 30 m 180 30 L 180 110 L 20 110 L\n" + result.begin + "f\n" +
+                               AN::gradient_end('f') + "LB\n%AI5_EndLayer--\n%%EOF\n", error);
+        ASSERT_TRUE(parsed) << error;
+        ASSERT_EQ(parsed->gradients.size(), 1u);
+        EXPECT_EQ(parsed->gradients[0].name, name);
+        ASSERT_EQ(parsed->inks.size(), 1u);
+        EXPECT_EQ(parsed->inks[0].name, ink_name);
+        EXPECT_EQ(parsed->layers.at(0).children.at(0).fill->gradient.gradient, 0);
+    }
+    expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Ramp \xe4\xb8\xad", true),
+                   "gradient names outside Windows-1252 (Illustrator 7)");
+}
+
 TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
 {
     struct Case { std::string stops, swatch, reason; bool legacy_only = false; };
@@ -971,7 +1007,7 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
          "Registration in gradients"},
         {ink(brand, "0") + process_end, "device-cmyk(0 1 1 0)", "one ink name with two definitions"},
         {ink(R"x(proof:ink="Фирменный" proof:ink-alternate="device-cmyk(0 1 0.8 0.1)")x", "0") + process_end,
-         cmyk_swatch, "non-ASCII ink names (Illustrator 7)", true},
+         cmyk_swatch, "ink names outside Windows-1252 (Illustrator 7)", true},
     };
     for (auto const &test : cases) {
         SCOPED_TRACE(test.reason);

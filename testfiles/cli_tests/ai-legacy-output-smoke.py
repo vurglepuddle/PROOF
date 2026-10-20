@@ -6,6 +6,7 @@ Actual Illustrator opening/editing is separate acceptance, not established by th
 import argparse
 import base64
 import hashlib
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -130,6 +131,56 @@ def main():
     check("spot identity and tint retained", any(g.get(proof_ns + "ink") == "PROOF Orange" and
           abs(float(g.get(proof_ns + "ink-tint", "1")) - 0.3) < 1e-6 for g in root.iter()))
 
+    # Representable names stay Windows-1252, including pairs that resemble UTF-8.
+    named_layer = "Caf\u00e9 \u20ac \u0152 \u0178 \u2013 (A) \\ B"
+    ambiguous = "\u00c3\u00a9"
+    bom_letters = "\u00fe\u00ff"
+    named_ink = "Ink Caf\u00e9 \u20ac (P) \\ Q"
+    named_body = f'''<defs>
+      <linearGradient id="one" inkscape:swatch="solid" proof:ink="{escape(named_ink, quote=True)}"
+        proof:ink-alternate="device-cmyk(0 0.6 1 0)" proof:ink-tint="0.3">
+        <stop offset="0" style="stop-color:device-cmyk(0 0.18 0.3 0)"/></linearGradient>
+      <linearGradient id="two" inkscape:swatch="solid" proof:ink="{ambiguous}"
+        proof:ink-alternate="device-cmyk(1 0.2 0 0)" proof:ink-tint="0.6">
+        <stop offset="0" style="stop-color:device-cmyk(0.6 0.12 0 0)"/></linearGradient>
+      <linearGradient id="ramp" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" style="stop-color:device-cmyk(0 1 0 0)"/>
+        <stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/></linearGradient>
+      </defs><g inkscape:groupmode="layer" inkscape:label="{escape(named_layer, quote=True)}">
+        <rect x="10" y="10" width="60" height="30" fill="url(#one)" stroke="url(#two)" stroke-width="2"/>
+        <rect x="80" y="10" width="70" height="30" fill="url(#ramp)"/></g>
+      <g inkscape:groupmode="layer" inkscape:label="{ambiguous}">
+        <rect x="10" y="50" width="60" height="30" fill="url(#two)"/></g>
+      <g inkscape:groupmode="layer" inkscape:label="{bom_letters}">
+        <rect x="80" y="50" width="30" height="30" fill="url(#one)"/></g>'''
+    named_source = out / "Title Caf\u00e9 \u20ac.svg"
+    named_source.write_text(document(named_body), encoding="utf-8")
+    named_hash = hashlib.sha256(named_source.read_bytes()).hexdigest()
+    named_ai = out / "names.ai"
+    named_records = export("names-save", named_source, named_ai, legacy)
+
+    def ps_name(name):
+        return b'(' + b''.join(b'\\' + bytes([c]) if c in (40, 41, 92) else
+                              ('\\%03o' % c).encode() if c < 32 or c >= 127 else bytes([c])
+                              for c in name.encode('cp1252')) + b')'
+
+    check("legacy title uses Windows-1252 octal bytes", b'%%Title: ' + ps_name(named_source.name) + b'\n' in named_records)
+    check("legacy layer and ink names use Windows-1252 bytes", all(ps_name(n) in named_records
+          for n in (named_layer, named_ink, ambiguous, bom_letters)) and all(c < 128 for c in named_records))
+    named_svg = out / "names-reopened.svg"
+    export("names-reopen", named_ai, named_svg)
+    named_root = ET.parse(named_svg).getroot()
+    check("legacy native layers keep distinct logical names", [g.get(ink_ns + "label") for g in named_root.iter(svg_ns + "g")
+          if g.get(ink_ns + "groupmode") == "layer"] == [named_layer, ambiguous, bom_letters])
+    check("legacy native spot names and tints retained",
+          {(g.get(proof_ns + "ink"), round(float(g.get(proof_ns + "ink-tint", "1")), 2))
+           for g in named_root.iter() if g.get(proof_ns + "ink")} ==
+          {(named_ink, 1), (named_ink, 0.3), (ambiguous, 1), (ambiguous, 0.6)})
+    check("named control reopens from records", b"opens from its PDF page" not in (out / "names-reopen.log").read_bytes())
+    check("named UTF-8 working document unchanged", hashlib.sha256(named_source.read_bytes()).hexdigest() == named_hash)
+    (out / "expected-names.json").write_text(json.dumps(dict(layers=[named_layer, ambiguous, bom_letters],
+        inks=[named_ink, ambiguous]), indent=2) + '\n', encoding='utf-8')
+
     # Illustrator's legacy conversion rounds half the page size for its ruler origin.
     # Exercise odd and fractional dimensions, including a common A4 print page.
     for label, width, height, template in (
@@ -149,8 +200,8 @@ def main():
         check(label + ": page dimensions retained", len(view) == 4 and
               abs(view[2] - width) < 1e-4 and abs(view[3] - height) < 1e-4)
 
-    def refused(label, svg, reason):
-        path = out / (label + ".svg")
+    def refused(label, svg, reason, title=None):
+        path = out / (title or label + ".svg")
         path.write_text(svg, encoding="utf-8")
         before = ai.read_bytes()
         result = run(label, path, ai, legacy)
@@ -188,7 +239,18 @@ def main():
           "#00ff00" in shared_paths[0].get("style", ""))
     refused("live-type", document('<text x="10" y="20">Keep live type</text>'), "type")
     refused("hidden-object", document('<rect width="20" height="20" style="display:none"/>'), "hidden objects")
-    refused("unicode-layer", document('<g inkscape:groupmode="layer" inkscape:label="Caf&#233;"><rect width="20" height="20"/></g>'), "non-ASCII layer names")
+    refused("unicode-layer", document('<g inkscape:groupmode="layer" inkscape:label="&#20013;"><rect width="20" height="20"/></g>'),
+            "layer names outside Windows-1252")
+    refused("unicode-ink", document(named_body.replace(escape(named_ink, quote=True), "&#20013;")),
+            "ink names outside Windows-1252")
+    refused("unicode-title", document('<rect width="20" height="20"/>'),
+            "document titles outside Windows-1252", title="\u4e2d.svg")
+    broad = out / "unicode-layer.svg"
+    modern_ai, modern_svg = out / "modern-names.ai", out / "modern-names.svg"
+    export("modern-broad-names", broad, modern_ai, "--export-extension=org.inkscape.output.ai.native")
+    export("modern-broad-reopen", modern_ai, modern_svg)
+    check("modern Unicode layer names remain supported", any(g.get(ink_ns + "label") == "\u4e2d"
+          for g in ET.parse(modern_svg).getroot().iter(svg_ns + "g")))
 
     edited = out / "edited.svg"
     edited.write_text(document(body.replace("0.1 0.2 0.3 0.4", "0.4 0.3 0.2 0.1")), encoding="utf-8")

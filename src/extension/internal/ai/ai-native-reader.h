@@ -425,8 +425,9 @@ std::optional<Document> read(std::string_view records, std::string &error, Limit
 /// character; the "_000..._" suffix that makes ids unique goes.
 std::string xml_name(std::string_view id);
 
-/// Text from the records' bytes: UTF-8, else Windows-1252; UTF-16BE with a byte order mark.
-std::string text_of(std::string_view bytes);
+/// Text from record bytes: BOM-marked UTF-16BE, otherwise UTF-8 then Windows-1252.
+/// An old file-format header selects Windows-1252 without guessing UTF-8 or a Unicode BOM.
+std::string text_of(std::string_view bytes, bool windows_1252 = false);
 
 /**
  * Put the one artboard of a document whose records list none where its page lies.

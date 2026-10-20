@@ -45,11 +45,12 @@ struct Value
     enum class Kind { Num, Str, Name, Arr, Dict, Mark } kind = Kind::Num;
     double num = 0.0;
     std::string str; ///< Str: bytes; Name: text.
+    bool legacy_text = false; ///< The old file-format header declares Windows-1252 names.
     std::shared_ptr<Array> arr;
     ObjPtr obj;
 
     static Value number(double v) { Value x; x.kind = Kind::Num; x.num = v; return x; }
-    static Value string(std::string s) { Value x; x.kind = Kind::Str; x.str = std::move(s); return x; }
+    static Value string(std::string s, bool legacy = false) { Value x; x.kind = Kind::Str; x.str = std::move(s); x.legacy_text = legacy; return x; }
     static Value name(std::string s) { Value x; x.kind = Kind::Name; x.str = std::move(s); return x; }
     static Value mark() { Value x; x.kind = Kind::Mark; return x; }
 
@@ -57,7 +58,7 @@ struct Value
     /// A string's or name's text.
     std::optional<std::string> text() const
     {
-        if (kind == Kind::Str) return text_of(str);
+        if (kind == Kind::Str) return text_of(str, legacy_text);
         if (kind == Kind::Name) return str;
         return {};
     }
@@ -675,6 +676,7 @@ private:
     bool _layerless = false;
     bool _one_layer = false; ///< That layer is open.
     bool _obj_hidden = false;
+    bool _legacy_strings = false; ///< FileFormat 1 to 3: names are Windows-1252, not guessed UTF-8.
     bool _palette = false; ///< In %AI5_BeginPalette: swatches register their inks.
 };
 
@@ -701,8 +703,8 @@ void Reader::token(Token &t, bool hidden)
 {
     switch (t.kind) {
         case Token::Kind::Number: push(Value::number(t.number)); break;
-        case Token::Kind::String: push(Value::string(std::move(t.string))); break;
-        case Token::Kind::Name: push(Value::name(text_of(t.view))); break;
+        case Token::Kind::String: push(Value::string(std::move(t.string), _legacy_strings)); break;
+        case Token::Kind::Name: push(Value::name(text_of(t.view, _legacy_strings))); break;
         case Token::Kind::Word: op(t.view, hidden); break;
         case Token::Kind::Comment: comment(t.view, t.hidden, t.data); break;
         case Token::Kind::Data: image(t.view, hidden); break;
@@ -815,6 +817,9 @@ void Reader::comment(std::string_view c, bool hidden, std::string_view data)
         auto n = numbers_in(value("AI3_TemplateBox:"));
         if (n.size() >= 2) _template_center = std::pair{n[0], n[1]};
         if (auto r = four(value("AI3_TemplateBox:"))) _template = r;
+    } else if (_frames.empty() && (starts("AI5_FileFormat ") || starts("AI5_FileFormat:"))) {
+        auto const n = numbers_in(value(starts("AI5_FileFormat:") ? "AI5_FileFormat:" : "AI5_FileFormat"));
+        _legacy_strings = n.size() == 1 && n[0] >= 1 && n[0] <= 3 && n[0] == std::floor(n[0]);
     } else if (starts("AI9_ColorModel:")) {
         auto v = value("AI9_ColorModel:");
         while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
@@ -1411,7 +1416,7 @@ void Reader::pattern_section()
     bool headed = false, ended = false;
     auto t = _lex.next();
     if (t && t->kind == Token::Kind::String && !t->hidden) {
-        pattern.name = text_of(t->string);
+        pattern.name = text_of(t->string, _legacy_strings);
         headed = true;
         for (auto &v : box) {
             t = _lex.next();
@@ -2819,9 +2824,9 @@ bool place_board_by_page(Document &doc, Geom::Rect const &page, Geom::Rect const
     return true;
 }
 
-std::string text_of(std::string_view bytes)
+std::string text_of(std::string_view bytes, bool windows_1252)
 {
-    if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xfe && static_cast<unsigned char>(bytes[1]) == 0xff) {
+    if (!windows_1252 && bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xfe && static_cast<unsigned char>(bytes[1]) == 0xff) {
         auto *s = g_convert(bytes.data() + 2, bytes.size() - 2, "UTF-8", "UTF-16BE", nullptr, nullptr, nullptr);
         if (s) {
             std::string out(s);
@@ -2829,7 +2834,7 @@ std::string text_of(std::string_view bytes)
             return out;
         }
     }
-    if (g_utf8_validate(bytes.data(), bytes.size(), nullptr)) return std::string(bytes);
+    if (!windows_1252 && g_utf8_validate(bytes.data(), bytes.size(), nullptr)) return std::string(bytes);
     auto *s = g_convert(bytes.data(), bytes.size(), "UTF-8", "WINDOWS-1252", nullptr, nullptr, nullptr);
     if (s) {
         std::string out(s);

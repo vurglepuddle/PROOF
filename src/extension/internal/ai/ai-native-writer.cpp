@@ -13,6 +13,7 @@
 #include "ai-native-writer.h"
 #include "ai-native-writer-gradient.h"
 #include "ai-native-writer-picture.h"
+#include "ai-native-writer-string.h"
 
 #include <algorithm>
 #include <array>
@@ -125,26 +126,6 @@ double scale24(unsigned value)
     return value / double(SP_SCALE24_MAX);
 }
 
-bool ascii(std::string const &s)
-{
-    return std::all_of(s.begin(), s.end(), [](unsigned char c) { return c < 128; });
-}
-
-void ink_comments(std::ostream &head, std::map<std::string, std::array<double, 4>> const &spots)
-{
-    bool first = true;
-    for (auto const &[name, c] : spots) {
-        head << (first ? "%%DocumentCustomColors: " : "%%+ ") << ps_string(name) << '\n';
-        first = false;
-    }
-    first = true;
-    for (auto const &[name, c] : spots) {
-        head << (first ? "%%CMYKCustomColor: " : "%%+ ")
-             << std::format("{} {} {} {} {}\n", num(c[0]), num(c[1]), num(c[2]), num(c[3]), ps_string(name));
-        first = false;
-    }
-}
-
 class Writer
 {
 public:
@@ -167,6 +148,8 @@ private:
     std::optional<std::string> paint(SPIPaint const &p, SPStyle const *style, bool fill);
     std::optional<std::string> colour(Colors::Color const &c, bool fill);
     bool declare_ink(std::string const &name, std::array<double, 4> const &cmyk);
+    std::string encoded_name(std::string const &text, std::string_view what);
+    void ink_comments(std::ostream &head);
     void refuse(std::string what) { _refused.insert(std::move(what)); }
 
     SPDocument *_doc;
@@ -182,6 +165,32 @@ private:
     // What has been set already, so each operator is written only when it changes.
     std::string _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule;
 };
+
+std::string Writer::encoded_name(std::string const &text, std::string_view what)
+{
+    if (!_legacy) return ps_string(text);
+    auto const bytes = legacy_name_bytes(text);
+    if (!bytes) {
+        refuse(std::string(what) + " outside Windows-1252 (Illustrator 7)");
+        return {};
+    }
+    return ps_string(*bytes);
+}
+
+void Writer::ink_comments(std::ostream &head)
+{
+    bool first = true;
+    for (auto const &[name, c] : _spots) {
+        head << (first ? "%%DocumentCustomColors: " : "%%+ ") << encoded_name(name, "ink names") << '\n';
+        first = false;
+    }
+    first = true;
+    for (auto const &[name, c] : _spots) {
+        head << (first ? "%%CMYKCustomColor: " : "%%+ ")
+             << std::format("{} {} {} {} {}\n", num(c[0]), num(c[1]), num(c[2]), num(c[3]), encoded_name(name, "ink names"));
+        first = false;
+    }
+}
 
 std::optional<std::string> Writer::colour(Colors::Color const &c, bool fill)
 {
@@ -221,10 +230,9 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
             return {};
         }
         std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
-        if (_legacy && !ascii(ink->name)) refuse("non-ASCII ink names (Illustrator 7)");
         if (!declare_ink(ink->name, cmyk)) return {};
         auto const head = std::format("{} {} {} {} {}", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]), num(cmyk[3]),
-                                      ps_string(ink->name));
+                                      encoded_name(ink->name, "ink names"));
         // The operand is the tint taken from 1: 0 is the ink at full strength.
         // Illustrator 7 uses x/X for CMYK spots at every tint. Its Xx/XX form is RGB only.
         if (_legacy) return head + " " + num(1.0 - ink->tint) + " " + (fill ? "x" : "X");
@@ -238,6 +246,10 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
 /// Adds a spot ink to those the file declares; false, refused, when the name has another definition.
 bool Writer::declare_ink(std::string const &name, std::array<double, 4> const &cmyk)
 {
+    if (_legacy && !legacy_name_bytes(name)) {
+        refuse("ink names outside Windows-1252 (Illustrator 7)");
+        return false;
+    }
     auto [known, added] = _spots.emplace(name, cmyk);
     if (!added && known->second != cmyk) {
         refuse("one ink name with two definitions");
@@ -538,7 +550,6 @@ void Writer::layer(SPGroup const *group)
     auto const dim = attr("proof:layer-dim");
     auto const label = group->label() ? group->label() : group->defaultLabel();
     if (_legacy) {
-        if (!ascii(label)) refuse("non-ASCII layer names (Illustrator 7)");
         if (!dim.empty() && dim != "50") refuse("layer image dimming other than 50% (Illustrator 7)");
         for (auto const *parent = group->parent; parent; parent = parent->parent) {
             if (auto ancestor = cast<SPGroup>(parent); ancestor && ancestor->isLayer()) {
@@ -556,7 +567,7 @@ void Writer::layer(SPGroup const *group)
     if (!_legacy) _body << "1 ";
     _body << std::format("{} {} {} {}", nearest[0], nearest[1], nearest[2], nearest[3]);
     if (!_legacy) _body << " 0 " << (dim.empty() ? "50" : dim) << " 0";
-    _body << " Lb\n" << ps_string(label) << " Ln\n0 A\n";
+    _body << " Lb\n" << encoded_name(label, "layer names") << " Ln\n0 A\n";
     if (!_legacy) _body << "0 Xw\n";
     check_effects(group);
     bool const clipped = open_clip(group);
@@ -569,6 +580,7 @@ WrittenRecords Writer::write()
 {
     // Shapes such as rectangles have their path only once the document is up to date.
     _doc->ensureUpToDate();
+    auto const title = encoded_name(_doc->getDocumentName() ? _doc->getDocumentName() : "Untitled", "document titles");
     // Artboards: the document's pages, or its own size when it has none.
     std::vector<std::pair<std::string, Geom::Rect>> boards;
     for (auto const *page : _doc->getPageManager().getPages()) {
@@ -625,11 +637,11 @@ WrittenRecords Writer::write()
         double const w = boards.front().second.width() * PX_TO_PT;
         double const h = boards.front().second.height() * PX_TO_PT;
         std::ostringstream head;
-        head << "%!PS-Adobe-3.0\n%%Creator: PROOF\n"
+        head << "%!PS-Adobe-3.0\n%%Creator: PROOF\n%%Title: " << title << '\n'
              << std::format("%%BoundingBox: 0 0 {} {}\n%%HiResBoundingBox: 0 0 {} {}\n",
                             num(std::ceil(w)), num(std::ceil(h)), num(w), num(h))
              << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n";
-        ink_comments(head, _spots);
+        ink_comments(head);
         // Newer Illustrator converts legacy rasters into the document's colour model on
         // open. Keep the source mode as an advisory comment; version 7 ignores this later
         // comment (1998 specification, section 1.5), while the artwork remains version 7.
@@ -655,12 +667,12 @@ WrittenRecords Writer::write()
     double const w = extent_w, h = extent_h, cx = template_x, cy = template_y;
     std::ostringstream head;
     head << "%!PS-Adobe-3.0 \n%%Creator: PROOF\n%%AI8_CreatorVersion: 29.2.1\n%%For: () ()\n"
-         << "%%Title: " << ps_string(_doc->getDocumentName() ? _doc->getDocumentName() : "Untitled") << '\n'
+         << "%%Title: " << title << '\n'
          << "%%Canvassize: 16383\n"
          << std::format("%%BoundingBox: 0 {} {} 0\n%%HiResBoundingBox: 0 {} {} 0\n", num(std::floor(-h)),
                         num(std::ceil(w)), num(-h), num(w))
          << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n";
-    ink_comments(head, _spots);
+    ink_comments(head);
     head << "%AI5_FileFormat 14.0\n%AI12_BuildNumber: 116\n%AI3_ColorUsage: Color\n"
          << std::format("%AI3_Cropmarks: 0 {} {} 0\n", num(-h), num(w))
          << std::format("%AI3_TemplateBox: {} {} {} {}\n", num(cx), num(cy), num(cx), num(cy))
