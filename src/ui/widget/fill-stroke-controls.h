@@ -40,6 +40,10 @@ private:
     std::vector<sigc::connection> connectPaint(bool fill);
     bool queryStyle(SPStyle &style, bool fill) const;
     void draw(Cairo::RefPtr<Cairo::Context> const &cr, int width, int height, bool fill);
+    // The small commands round the tiles, drawn like them: default paints and swap over them,
+    // Illustrator's Color, Gradient and None under them.
+    enum class Glyph { Defaults, Swap, Color, Gradient, None };
+    void drawGlyph(Cairo::RefPtr<Cairo::Context> const &cr, Glyph glyph);
     void setNone();
     void setDefaults();
     void swapPaint();
@@ -51,8 +55,11 @@ private:
     Gtk::Fixed _targets;
     Gtk::MenuButton _fill, _stroke;
     Gtk::DrawingArea _fill_preview, _stroke_preview;
-    Gtk::Box _commands{Gtk::Orientation::HORIZONTAL};
-    Gtk::Button _defaults, _swap, _none;
+    struct Small {
+        Gtk::Button button;
+        Gtk::DrawingArea area;
+    };
+    std::array<Small, 5> _small; // in Glyph order
     std::array<Preview, 2> _preview;
     std::optional<PaintPopoverManager::Registration> _fill_registration, _stroke_registration;
     sigc::scoped_connection _selection_changed, _selection_modified;

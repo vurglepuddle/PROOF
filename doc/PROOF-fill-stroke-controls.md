@@ -85,3 +85,32 @@ switching, spot/pattern/gradient editing through the new sidebar, and stroke
 editing on mixed text/groups need broader acceptance runs.
 
 Reference: [Adobe fill/stroke controls](https://helpx.adobe.com/illustrator/desktop/paint-and-fill/learn-painting-basics/fill-and-stroke-controls.html).
+
+## A compact pass: the commands round the tiles (2026-10-20)
+
+The owner: "The bottom part of it extends the menu, cause it's 3 buttons in a
+row." The row of three 16 px buttons under the tiles needed 54 px with its
+margins, wider than the 42 px tools column, so it widened it. The commands now
+sit round the tiles, drawn with Cairo like them, after Illustrator
+(`Illustrator_reference/size_reference.png`) and, for the swap, another
+application the owner chose (`Illustrator_reference/color_flip.png`):
+
+- **Over the tiles**, 12 px: the default paints at the left (a white square in
+  front of a black ring, as the tiles show fill and stroke) and swap at the
+  right, two curved arrows chasing each other.
+- **Under the tiles**, Illustrator's three 8 px squares, 2 px apart:
+  **Color** (white), **Gradient** (a white-to-black ramp) and **None** (white
+  crossed out in red). None does what `/` does. Color and Gradient are drawn
+  faint and can't be clicked yet: in Illustrator they give the active target
+  its last solid colour (`,`) and its last gradient (`.`), which PROOF doesn't
+  remember yet (todo). Their tooltips say so.
+
+The whole control is 30 px wide, the tile pair's width, and 58 px high; the
+tiles are unchanged. Tooltips, accessible names and the actions (D, Shift+X,
+/, X) are as before.
+
+Checked on the installed build at 1920 x 1080, 100%: the tools column stays
+42 px wide, the control lies within x 6 to 34. The paint live checks pass:
+layout 7/7, defaults 7/7, selection 13/13 and controls 27/27; the controls check
+now also clicks None, swap and the default paints and compares each with its
+key, and clicks Color and Gradient, which change nothing.

@@ -32,6 +32,13 @@ constexpr int tile = 20;
 constexpr int overlap = 10;  // how far the stroke's tile lies down and right of the fill's
 constexpr double corner = 3; // a tile's corner radius
 constexpr double band = 5;   // width of the stroke tile's ring
+// Over the tiles, the default paints at the left and swap at the right, 12 px as in Illustrator;
+// under them, the paint kinds: 8 px squares 2 px apart. Nothing is wider than the tile pair, so
+// the tools column keeps its width (the owner, 2026-10-20: three buttons in a row widened it).
+constexpr int glyph = 12;
+constexpr int kind = 10;                         // a paint kind's square and the gap after it
+constexpr int above = glyph + 2;                 // where the tiles start
+constexpr int below = above + tile + overlap + 4; // where the paint kinds start
 unsigned paint_session = 0;
 
 void rounded(Cairo::RefPtr<Cairo::Context> const &cr, double x, double y, double w, double h, double r)
@@ -69,8 +76,8 @@ FillStrokeControls::FillStrokeControls() : Gtk::Box(Gtk::Orientation::VERTICAL, 
         styled = true;
     }
 
-    _targets.set_size_request(tile + overlap, tile + overlap);
-    _targets.set_halign(Gtk::Align::CENTER); // The row of commands under it is wider.
+    _targets.set_size_request(tile + overlap, below + kind);
+    _targets.set_halign(Gtk::Align::CENTER);
     append(_targets);
     _fill.set_name("FillPaint");
     _stroke.set_name("StrokePaint");
@@ -79,8 +86,8 @@ FillStrokeControls::FillStrokeControls() : Gtk::Box(Gtk::Orientation::VERTICAL, 
     for (auto area : {&_fill_preview, &_stroke_preview}) area->set_size_request(tile, tile);
     _fill_preview.set_draw_func([this](auto const &cr, int w, int h) { draw(cr, w, h, true); });
     _stroke_preview.set_draw_func([this](auto const &cr, int w, int h) { draw(cr, w, h, false); });
-    _targets.put(_stroke, overlap, overlap);
-    _targets.put(_fill, 0, 0);
+    _targets.put(_stroke, overlap, above + overlap);
+    _targets.put(_fill, 0, above);
     _fill.set_tooltip_text(_("Fill: click to activate, double-click to edit (X switches target)"));
     _stroke.set_tooltip_text(_("Stroke: click to activate, double-click to edit (X switches target)"));
     gtk_accessible_update_property(GTK_ACCESSIBLE(_fill.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, _("Fill paint"), -1);
@@ -106,21 +113,36 @@ FillStrokeControls::FillStrokeControls() : Gtk::Box(Gtk::Orientation::VERTICAL, 
     _stroke_registration.emplace(manager.register_button(_stroke, false,
         [this] { setupPaint(false); }, [this] { return connectPaint(false); }));
 
-    _defaults.set_icon_name("object-fill");
-    _swap.set_icon_name("object-flip-horizontal");
-    _none.set_icon_name("paint-none");
-    _defaults.set_tooltip_text(_("Default fill and stroke (D)"));
-    _swap.set_tooltip_text(_("Swap fill and stroke (Shift+X)"));
-    _none.set_tooltip_text(_("No paint on the active target (/)"));
-    for (auto button : {&_defaults, &_swap, &_none}) {
-        button->set_has_frame(false);
-        button->set_size_request(16, 20);
-        _commands.append(*button);
+    struct Place {
+        Glyph glyph;
+        int x, y, size;
+        char const *tooltip, *label;
+    };
+    Place const places[] = {
+        {Glyph::Defaults, 0, 0, glyph, N_("Default fill and stroke (D)"), N_("Default fill and stroke")},
+        {Glyph::Swap, tile + overlap - glyph, 0, glyph, N_("Swap fill and stroke (Shift+X)"), N_("Swap fill and stroke")},
+        // Illustrator's , and . : the last solid colour and the last gradient of the active
+        // target. Not remembered yet (todo.md), so not offered yet.
+        {Glyph::Color, 0, below, kind, N_("Color: the active target's last solid color (not available yet)"), N_("Color")},
+        {Glyph::Gradient, kind, below, kind, N_("Gradient: the active target's last gradient (not available yet)"), N_("Gradient")},
+        {Glyph::None, 2 * kind, below, kind, N_("None: no paint on the active target (/)"), N_("None")},
+    };
+    for (auto const &place : places) {
+        auto &[button, area] = _small[static_cast<int>(place.glyph)];
+        area.set_size_request(place.size, place.size);
+        area.set_draw_func([this, which = place.glyph](auto const &cr, int, int) { drawGlyph(cr, which); });
+        button.set_child(area);
+        button.set_has_frame(false);
+        button.set_focus_on_click(false);
+        button.set_tooltip_text(_(place.tooltip));
+        gtk_accessible_update_property(GTK_ACCESSIBLE(button.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, _(place.label), -1);
+        _targets.put(button, place.x, place.y);
     }
-    _defaults.signal_clicked().connect(sigc::mem_fun(*this, &FillStrokeControls::setDefaults));
-    _swap.signal_clicked().connect(sigc::mem_fun(*this, &FillStrokeControls::swapPaint));
-    _none.signal_clicked().connect(sigc::mem_fun(*this, &FillStrokeControls::setNone));
-    append(_commands);
+    _small[static_cast<int>(Glyph::Color)].button.set_sensitive(false);
+    _small[static_cast<int>(Glyph::Gradient)].button.set_sensitive(false);
+    _small[static_cast<int>(Glyph::Defaults)].button.signal_clicked().connect(sigc::mem_fun(*this, &FillStrokeControls::setDefaults));
+    _small[static_cast<int>(Glyph::Swap)].button.signal_clicked().connect(sigc::mem_fun(*this, &FillStrokeControls::swapPaint));
+    _small[static_cast<int>(Glyph::None)].button.signal_clicked().connect(sigc::mem_fun(*this, &FillStrokeControls::setNone));
     set_sensitive(false);
 }
 
@@ -357,6 +379,79 @@ void FillStrokeControls::draw(Cairo::RefPtr<Cairo::Context> const &cr, int width
             cr->line_to(8.5, 7);
         }
         cr->stroke();
+    }
+}
+
+void FillStrokeControls::drawGlyph(Cairo::RefPtr<Cairo::Context> const &cr, Glyph which)
+{
+    auto const foreground = get_color();
+    auto ink = [&] { cr->set_source_rgba(foreground.get_red(), foreground.get_green(), foreground.get_blue(), 1); };
+    auto paper = [&] { cr->set_source_rgb(0.98, 0.98, 0.98); };
+    // Not offered yet: drawn faint.
+    bool const faint = !_small[static_cast<int>(which)].button.get_sensitive();
+    if (faint) cr->push_group();
+    cr->set_line_width(1);
+    switch (which) {
+        case Glyph::Defaults:
+            // A white fill in front of a black stroke's ring, as the tiles show them.
+            ink();
+            cr->set_line_width(2);
+            cr->rectangle(5, 5, 6, 6);
+            cr->stroke();
+            cr->set_line_width(1);
+            cr->rectangle(0.5, 0.5, 7, 7);
+            paper();
+            cr->fill_preserve();
+            ink();
+            cr->stroke();
+            break;
+        case Glyph::Swap:
+            // Two curved arrows chasing each other (Illustrator_reference/color_flip.png).
+            ink();
+            cr->set_line_width(1.3);
+            cr->move_to(1.5, 7);
+            cr->curve_to(1.5, 3.5, 3.5, 2, 8, 2);
+            cr->move_to(10.5, 5);
+            cr->curve_to(10.5, 8.5, 8.5, 10, 4, 10);
+            cr->stroke();
+            cr->move_to(11.5, 2);
+            cr->line_to(8, -0.5);
+            cr->line_to(8, 4.5);
+            cr->close_path();
+            cr->move_to(0.5, 10);
+            cr->line_to(4, 7.5);
+            cr->line_to(4, 12.5);
+            cr->close_path();
+            cr->fill();
+            break;
+        case Glyph::Color:
+        case Glyph::Gradient:
+        case Glyph::None:
+            // An 8 px square, Illustrator's: white, a ramp, white crossed out in red.
+            cr->rectangle(0.5, 0.5, 7, 7);
+            if (which == Glyph::Gradient) {
+                auto ramp = Cairo::LinearGradient::create(0.5, 0, 7.5, 0);
+                ramp->add_color_stop_rgb(0, 1, 1, 1);
+                ramp->add_color_stop_rgb(1, 0, 0, 0);
+                cr->set_source(ramp);
+            } else {
+                paper();
+            }
+            cr->fill_preserve();
+            ink();
+            cr->stroke();
+            if (which == Glyph::None) {
+                cr->set_source_rgb(0.95, 0.05, 0.05);
+                cr->set_line_width(1.5);
+                cr->move_to(1, 7);
+                cr->line_to(7, 1);
+                cr->stroke();
+            }
+            break;
+    }
+    if (faint) {
+        cr->pop_group_to_source();
+        cr->paint_with_alpha(0.35);
     }
 }
 
