@@ -2308,3 +2308,47 @@ Illustrator automation is left idle after the owner's flicker report. Future
 controls require announced, serial document operations with at least ten
 seconds idle after completion, rather than rapid create/save/close batches.
 The old rapid helpers are disabled; saved controls remain intact.
+
+## Gradient records as Illustrator reads them, and rules from a VectorCraft delta (2026-10-20)
+
+Counted over the owner's 871 staged copies and, separately, the collaborator's
+failure pack (140 copies under 100 MB), then put to Illustrator 29.2.1 for the
+radial writer (`PROOF-ai-interchange.md`, "Radial gradients"):
+
+- **Stop order.** A linear definition lists its stops last first (6,906
+  definitions), a radial one first first (4,482), without exception, and
+  Illustrator takes them in that order. The reader pairs each colour with its
+  own ramp point and sorts, so it reads both; anything that writes must follow
+  the order.
+- **`Bh` on every radial instance**, right after `Bb` (13,194 and 53,128
+  instances), never on a linear one. Its `x y` is the focal offset in art space;
+  its angle and share, through `Bm`, give the same offset in all 191 off-centre
+  instances that have `Bm` (187 and 4): "Gradient placement" above holds.
+- **`Bg`'s eleventh number** is the ellipse's aspect ratio, y radius over x.
+  The reader doesn't need it: every radial art instance in both sets has `Bm`,
+  which is whole.
+- **Illustrator reads `Bg`, not `Bm`, and reads `Bg` two ways by `%%Creator`.**
+  Its own files have `Bg`'s origin and length relative to the object's bounds
+  (origin `0 0` is the box's centre, length 1 is √((half-width² +
+  half-height²)/2)) and its matrix on its y-down canvas; files from other
+  applications have art-space values, no turn from the angle, and the canvas
+  centred at 4320. The reader takes `Xm`/`Bm` where they are and `Bg` as art
+  space only without them, which suits files from other applications; an
+  Illustrator file with an art instance lacking both would need the relative
+  reading, and none has turned up.
+- **After `%AI5_EndRaster`** Illustrator ends the raster with a paint operator:
+  `N` in 292 and 95 files, `F` in 4 of the pack's (Illustrator 17 and 24). No
+  path is open there, so neither paints. VectorCraft found that without one,
+  Illustrator dropped a clipped picture and all the art after it (`e5c90543`).
+- **Feather in an art style** is `(Adobe Fuzzy Mask) 1 0 /Filter`,
+  `(FuzzyEffect.aip) /PluginFileName`, `(Feather) /Title`, `<points> /Real
+  (Radius)`: 600 and 70 files. VectorCraft's `8f7486b9` looks for `Adobe
+  Feather` and `rad`, which neither set has. For the art-styles round.
+- **The variable library** (`variableSets` under `/Document`) is in every
+  modern file, with one empty `variableSet`; none of either set has a
+  `variable` or `sampleDataSet`. Reading it, or saying it wasn't read, needs
+  Illustrator control files.
+
+Census tools: `tools\ai-records-census.py` (now with `--max-mb`, default the
+everyday 100) and the delta report, `audit-results\vectorcraft-delta-2026-10-20.md`
+in the workspace.

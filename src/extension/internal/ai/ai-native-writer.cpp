@@ -170,6 +170,8 @@ private:
     SPDocument *_doc;
     bool const _legacy;
     Geom::Affine _to_art;
+    /// The art origin on the y-down canvas where Illustrator applies a gradient's Bg matrix.
+    Geom::Point _canvas;
     std::ostringstream _body;
     std::set<std::string> _refused;
     std::map<std::string, std::array<double, 4>> _spots;
@@ -351,7 +353,7 @@ void Writer::shape(SPShape const *s)
     std::optional<std::string> fill;
     auto const server = style->fill.isPaintserver() && style->fill.href ? style->fill.href->getObject() : nullptr;
     if (auto g = cast<SPGradient>(server); g && !g->isSolid()) {
-        gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy);
+        gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas);
         for (auto const &why : gradient->refused) refuse(why);
         if (!gradient->definition.empty()) _gradients.push_back(gradient->definition);
         fill = "0 g"; // A compound path's early contours need a plain fill before its final gradient.
@@ -545,6 +547,15 @@ WrittenRecords Writer::write()
     _to_art = Geom::Translate(-origin) * Geom::Scale(PX_TO_PT, -PX_TO_PT);
     // The standalone format's origin is the single artboard's bottom-left, y upward.
     if (_legacy) _to_art *= Geom::Translate(0, boards.front().second.height() * PX_TO_PT);
+    // The document's extent from the first artboard's top-left, and Illustrator's canvas around
+    // it: the template box at its centre. Illustrator reads a file another application wrote on
+    // the 8640-point canvas of its versions 3 to 8, its centre at 4320 4320 and y down, and
+    // applies a gradient's Bg matrix there (doc/PROOF-ai-interchange.md, "Radial gradients").
+    Geom::Rect extent = boards.front().second;
+    for (auto const &[name, rect] : boards) extent.unionWith(rect);
+    double const extent_w = (extent.right() - origin.x()) * PX_TO_PT, extent_h = (extent.bottom() - origin.y()) * PX_TO_PT;
+    double const template_x = extent_w / 2 + 0.5, template_y = -extent_h / 2 - 0.5;
+    _canvas = {4320 - template_x, 4320 + template_y};
 
     // Items outside any layer go to a layer of their own, as Illustrator keeps every object in one.
     auto const *root = _doc->getRoot();
@@ -604,11 +615,7 @@ WrittenRecords Writer::write()
         return out;
     }
 
-    // The document's extent from the first artboard's top-left, and Illustrator's canvas around it.
-    Geom::Rect extent = boards.front().second;
-    for (auto const &[name, rect] : boards) extent.unionWith(rect);
-    double const w = (extent.right() - origin.x()) * PX_TO_PT, h = (extent.bottom() - origin.y()) * PX_TO_PT;
-    double const cx = w / 2 + 0.5, cy = -h / 2 - 0.5;
+    double const w = extent_w, h = extent_h, cx = template_x, cy = template_y;
     bool const cmyk = Colors::DocumentColors::mode(_doc) == Type::CMYK;
 
     std::ostringstream head;

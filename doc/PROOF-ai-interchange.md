@@ -551,3 +551,87 @@ fallbacks, zero errors/timeouts/changed inputs and no native losses. The
 earlier mesh work accounts for two gains; earlier native comparisons stayed
 the same or improved, with unchanged notes. This is reader qualification;
 real-document writer round trips remain separate from the controls above.
+
+### Radial gradients (2026-10-20)
+
+Both writers now write opaque pad **radial** fills with standard RGB or
+DeviceCMYK stops, on the same terms as linear ones (`ai-native-writer-gradient.cpp`,
+`radial_instance`): circles with or without a focal point in both forms;
+ellipses, turned or not, in the modern form. Illustrator 7 records refuse an
+ellipse by name ("elliptical radial gradients (Illustrator 7)"), as does SVG 2's
+focal circle `fr` in either form ("radial gradients with a focal radius"). A
+focal point outside the circle is written on it, where the canvas draws it.
+
+**What Illustrator writes**, counted over the owner's 871 staged copies and,
+separately, the collaborator's failure pack (140 copies under 100 MB):
+
+- Every radial instance is `Bb`, `x y angle share Bh`, `Bg`, then `Bm` before
+  the paint: 13,194 radial instances in 716 files and 53,128 in 76, all with
+  `Bh` right after `Bb` (`0 0 0 0 Bh` at the centre); no linear one has it.
+  VectorCraft drew the same rule from the 1998 specification (`c0e6d8eb`).
+- **A radial definition lists its stops first first, a linear one last first**:
+  4,482 radial definitions ascending and 6,906 linear ones descending, without
+  exception. Illustrator takes them in that order whatever their ramp points
+  say; a radial written last first opened inside out in Illustrator 29 while
+  PROOF's reader, which pairs each colour with its own ramp point, read it right.
+- `Bg` has an eleventh number in Illustrator's own files, the ellipse's aspect
+  ratio (y radius over x), 1 in most, from 0.09 to 11.2 in others.
+
+**How Illustrator reads them** (Illustrator 29.2.1, synthetic controls whose
+records were varied with `tools\ai-records-rewrite.py`; evidence local in
+`spike\files\radial-2026-10-20\` and `artifacts\ai-radial-output\`):
+
+- **It reads `Bg`, never `Bm`.** A file without `Bm` draws the same; `Bm` is the
+  PostScript placement, and Illustrator writes it again on saving.
+- **It reads `Bg` two ways, by the file's `%%Creator`.** In a file whose creator
+  is Illustrator, `Bg`'s origin and length are relative to the object's
+  bounds: origin `0 0` is the box's centre and length 1 is
+  √((half-width² + half-height²)/2). In a file from any other application, as
+  PROOF's are, they are art-space values and **`Bg`'s angle turns nothing**: an
+  ellipse lies along x, its x radius the length, its y radius the aspect ratio
+  times that. Illustrator's own lines put into a PROOF file drew nothing (a
+  circle of one point at the origin); the same lines with only the creator line
+  changed to Illustrator's drew in place, and PROOF's own lines then didn't.
+- **`Bg`'s matrix is applied on Illustrator's canvas, y down.** For a file read
+  the second way, the art origin there is (4320 − template box x, 4320 +
+  template box y): the centre of the 8640-point canvas of Illustrator 3 to 8.
+  Measured on one document from a pure translation and two turns (each placed
+  to a hundredth of a point as the rule predicts) and from Illustrator's own
+  `/RulerOrigin`, then confirmed on a second document of another size, with
+  two artboards and six turned ellipses.
+
+PROOF therefore writes an ellipse lying along x with angle 0 (y's radius may be
+the larger, as Illustrator's own aspect ratios above 1 are), and a turned one
+with `Bg`'s matrix turning it about its centre on that canvas, to ten decimal
+places: the turn is about a point some 4,000 points out, where four places put
+the ellipse a fifth of a point off. `Bm` is the whole placement, its x axis
+along the ellipse's first axis and mirrored as most of Illustrator's are; `Bh`'s
+angle and share are taken in it, which is the same as taking them in the
+unturned ellipse, as Illustrator does. PROOF's reader takes `Bm`, so it reads
+both its own files and Illustrator's.
+
+Claiming Illustrator as creator would let PROOF use the relative form, but it
+would misstate the file's producer; that is the owner's decision and has not
+been taken.
+
+**Checks.** Unit tests (`ai-native-writer-gradient-test.cpp`, 13): a circle with
+a focal point in both forms, a turned and sheared ellipse whose `Bg` is checked
+against Illustrator's reading as measured above, an ellipse along y, a focal
+point outside the circle, stop order in both kinds, and the refusals. The CLI
+smoke `ai-radial-output-smoke.py` (19 checks) writes both forms from six
+controls, reopens them natively, compares them with the canvas (within 1),
+requires the modern file's PDF page to be PROOF's own PDF export of the same
+drawing, compares that page with the canvas on the RGB shapes (Poppler's radial
+shading and the canvas's dithering differ by up to 11 there), and checks the
+named refusals keep the previous file.
+
+**Illustrator 29.2.1** opened the smoke's modern file with six editable radial
+fills; inside each RGB shape its drawing is within 3 to 7 of the canvas (median
+0 to 3), and the six turned ellipses of the second document within 4 (median
+0). Its own saved copy reopens in PROOF natively, within 1 of the canvas on the
+RGB shapes and within 8 of Illustrator's drawing on the CMYK ones. CMYK stops in
+an RGB document are converted to RGB by Illustrator on opening, so their colours
+differ from PROOF's (median 23); placement does not. The Illustrator 7 file
+opens converted, as any version 7 file does, into a CMYK document: centres and
+focal points within 0.4 px of the canvas, and its saved copy reopens natively
+with them in place.

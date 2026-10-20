@@ -10,7 +10,7 @@ class SPShape;
 
 namespace Inkscape::Extension::Internal::AiNative {
 
-/** An opaque process linear fill, prepared independently for one shape.
+/** An opaque process linear or radial fill, prepared independently for one shape.
  *
  * definition belongs in Setup; the caller writes the total gradient count with Bn once.
  * begin/end bracket the final contour's fill operator, after its path data. They must
@@ -18,8 +18,10 @@ namespace Inkscape::Extension::Internal::AiNative {
  * effects and the PDF half; it must pass the shape's complete local-to-art transform.
  *
  * Requires an up-to-date document. Supports pad, standard RGB or DeviceCMYK stops,
- * stop-only hrefs and nonsingular affine geometry. Anything else is refused by name,
- * and all three record strings are empty. Neither the document nor its XML is edited.
+ * stop-only hrefs and nonsingular affine geometry; a radial's focal point, and in the
+ * modern form its ellipse (Illustrator 7 takes circles). Anything else is refused by
+ * name, and all three record strings are empty. Neither the document nor its XML is
+ * edited.
  */
 struct WrittenGradient
 {
@@ -29,8 +31,11 @@ struct WrittenGradient
     std::vector<std::string> refused;
 };
 
+/// `canvas` is the art origin on the y-down canvas where Illustrator applies a gradient's own
+/// matrix (4320 less the template box's x, 4320 plus its y): a turned ellipse is turned there.
 WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to_art,
-                               std::string const &unique_name, bool legacy = false);
+                               std::string const &unique_name, bool legacy = false,
+                               Geom::Point const &canvas = {});
 
 } // namespace Inkscape::Extension::Internal::AiNative
 

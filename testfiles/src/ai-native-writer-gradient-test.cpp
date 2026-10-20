@@ -111,6 +111,8 @@ TEST_F(AiNativeWriterGradientTest, ProcessStopsReadBackInBothRecordVersions)
             ASSERT_TRUE(result.refused.empty()) << result.refused.front();
             EXPECT_EQ(result.end, "0 BB\n");
             EXPECT_EQ(result.definition.find(" Bn"), std::string::npos); // Caller writes the total count once.
+            // A linear's stops last first, as Illustrator writes and reads them.
+            EXPECT_GT(result.definition.find(" 50 0 %_Bs\n"), result.definition.find(" 50 100 %_Bs\n"));
             std::string error;
             auto ai = read(result, error);
             ASSERT_TRUE(ai) << error;
@@ -290,7 +292,9 @@ TEST_F(AiNativeWriterGradientTest, UnsupportedPaintAndOpacityAreRefusedWithoutRe
         {geometry, R"x(<stop offset="0" stop-color="red"/><stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x", "", "linearGradient", "mixed gradient colour spaces"},
         {geometry, R"(<stop offset="0" stop-color="red" proof:ink="Ink"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "spot inks in gradients"},
         {geometry, "", "", "linearGradient", "gradients without stops"},
-        {"", rgb_stops, "", "radialGradient", "radial gradients"},
+        {R"(gradientUnits="userSpaceOnUse" cx="50" cy="50" r="40" fr="5")", rgb_stops, "", "radialGradient", "radial gradients with a focal radius"},
+        {R"(gradientUnits="userSpaceOnUse" cx="50" cy="50" r="0")", rgb_stops, "", "radialGradient", "zero-radius or nonfinite radial gradients"},
+        {R"(gradientUnits="userSpaceOnUse" cx="50%" cy="50" r="40")", rgb_stops, "", "radialGradient", "viewport-relative gradient lengths"},
         {R"(gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="100%" y2="0")", rgb_stops, "", "linearGradient", "viewport-relative gradient lengths"},
         {R"(x1="0" y1="0" x2="10px" y2="0")", rgb_stops, "", "linearGradient", "non-normalized object-bounding-box gradient lengths"},
         {R"(gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="0")", rgb_stops, "", "linearGradient", "zero-length or nonfinite linear gradients"},
@@ -345,6 +349,180 @@ TEST_F(AiNativeWriterGradientTest, ReferencesCannotHideUnsupportedPlacementSpots
     auto excessive = document(geometry + R"( xlink:href="#v0")", "", chain);
     ASSERT_TRUE(excessive);
     expect_refusal(AN::write_gradient(shape(excessive.get()), Geom::identity(), "Chain"), "cyclic or excessive gradient references");
+}
+
+namespace {
+
+/// The reader's unit circle onto the art for a radial placement, and the focal point's offset
+/// from the centre in art space as Bh's angle and share give it through that circle.
+struct ReadRadial
+{
+    Geom::Affine unit;
+    Geom::Point focus;
+};
+
+ReadRadial read_radial(AN::GradientPlacement const &p)
+{
+    if (p.bm_given) {
+        double const a = p.hilight_angle * std::acos(-1.0) / 180;
+        auto const in_unit = Geom::Point(std::cos(a), -std::sin(a)) * p.hilight_length;
+        return {p.bm, in_unit * p.bm.withoutTranslation()};
+    }
+    // Without Bm: Bg's circle about its origin, then Bg's matrix; Bh's x y is the offset.
+    return {Geom::Affine(p.length, 0, 0, p.length, p.origin.x(), p.origin.y()) * p.bg, p.hilight};
+}
+
+/// Does the reader's circle draw the same ellipse as `expected` (both carry the unit circle)?
+void expect_same_ellipse(Geom::Affine const &read, Geom::Affine const &expected)
+{
+    auto const back = expected.inverse();
+    for (int k = 0; k < 12; ++k) {
+        double const t = k * std::acos(-1.0) / 6;
+        auto const on = Geom::Point(std::cos(t), std::sin(t)) * read * back;
+        EXPECT_NEAR(Geom::L2(on), 1.0, 2e-4) << "angle " << k * 30;
+    }
+    EXPECT_NEAR(read[4], expected[4], 1e-4);
+    EXPECT_NEAR(read[5], expected[5], 1e-4);
+}
+
+std::string const radial_circle =
+    R"(gradientUnits="userSpaceOnUse" cx="100" cy="70" r="50" fx="120" fy="55")";
+
+} // namespace
+
+TEST_F(AiNativeWriterGradientTest, RadialCircleAndFocalPointReadBackInBothRecordVersions)
+{
+    for (bool legacy : {false, true}) {
+        SCOPED_TRACE(legacy ? "AI7" : "modern");
+        auto doc = document(radial_circle, rgb_stops, "", "", "radialGradient");
+        ASSERT_TRUE(doc);
+        auto const *s = shape(doc.get());
+        ASSERT_TRUE(s);
+        auto const to_art = s->i2doc_affine() * Geom::Affine(0.75, 0, 0, -0.75, -8, 23);
+        auto const result = AN::write_gradient(s, to_art, "Radial", legacy);
+        ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+        // As Illustrator writes every radial instance: Bb, Bh, Bg, then (modern) Bm.
+        auto const bh = result.begin.find(" Bh\n"), bg = result.begin.find(" Bg\n"), bm = result.begin.find(" Bm\n");
+        ASSERT_NE(bh, std::string::npos);
+        ASSERT_NE(bg, std::string::npos);
+        EXPECT_EQ(result.begin.rfind("Bb\n", 0), 0u);
+        EXPECT_LT(bh, bg);
+        EXPECT_EQ(bm == std::string::npos, legacy);
+        if (!legacy) EXPECT_LT(bg, bm);
+        EXPECT_NE(result.definition.find(" 1 3 Bd\n"), std::string::npos); // Radial, three stops.
+        // Illustrator takes a radial's stops in the order listed: first first, as it writes them.
+        EXPECT_LT(result.definition.find(" 50 0 %_Bs\n"), result.definition.find(" 50 40 %_Bs\n"));
+        EXPECT_LT(result.definition.find(" 50 40 %_Bs\n"), result.definition.find(" 50 100 %_Bs\n"));
+        std::string error;
+        auto ai = read(result, error);
+        ASSERT_TRUE(ai) << error;
+        ASSERT_EQ(ai->gradients.size(), 1u);
+        EXPECT_TRUE(ai->gradients[0].radial);
+        ASSERT_EQ(ai->gradients[0].stops.size(), 3u);
+        EXPECT_EQ(ai->gradients[0].stops[0].color, AN::Color::rgb(1, 0, 0));
+        EXPECT_EQ(ai->gradients[0].stops[2].color, AN::Color::rgb(0, 0, 1));
+        auto const &p = ai->layers[0].children[0].fill->gradient;
+        EXPECT_EQ(p.bm_given, !legacy);
+        EXPECT_FALSE(p.xm);
+        EXPECT_TRUE(p.bg.isIdentity());
+        auto const expected = Geom::Affine(50, 0, 0, 50, 100, 70) * to_art;
+        auto const got = read_radial(p);
+        expect_same_ellipse(got.unit, expected);
+        auto const focus = Geom::Point(0.4, -0.3) * expected.withoutTranslation();
+        EXPECT_NEAR(got.focus.x(), focus.x(), 1e-3);
+        EXPECT_NEAR(got.focus.y(), focus.y(), 1e-3);
+        // Bh's x y is the same offset in both forms.
+        EXPECT_NEAR(p.hilight.x(), focus.x(), 1e-3);
+        EXPECT_NEAR(p.hilight.y(), focus.y(), 1e-3);
+        // The share of the radius: 0.5, at most 1.
+        EXPECT_NEAR(p.hilight_length, 0.5, 1e-4);
+        EXPECT_NEAR(p.origin.x(), expected[4], 1e-4);
+        EXPECT_NEAR(p.origin.y(), expected[5], 1e-4);
+        EXPECT_NEAR(p.length, 50 * 0.75, 1e-4);
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, RadialEllipseIsWholeInBmAndRefusedInIllustrator7)
+{
+    auto doc = document(radial_circle + R"x( gradientTransform="matrix(1.5 .3 -.2 .6 10 5)")x", rgb_stops, "", "",
+                        "radialGradient");
+    ASSERT_TRUE(doc);
+    auto const *s = shape(doc.get());
+    ASSERT_TRUE(s);
+    auto const to_art = s->i2doc_affine() * Geom::Affine(1, 0, 0, -1, 0, 200);
+    Geom::Point const canvas(4158.25, 4199.5);
+    auto const result = AN::write_gradient(s, to_art, "Ellipse", false, canvas);
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    std::string error;
+    auto ai = read(result, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &p = ai->layers[0].children[0].fill->gradient;
+    ASSERT_TRUE(p.bm_given);
+    auto const expected = Geom::Affine(50, 0, 0, 50, 100, 70) * Geom::Affine(1.5, .3, -.2, .6, 10, 5) * to_art;
+    auto const got = read_radial(p);
+    expect_same_ellipse(got.unit, expected);
+    auto const focus = Geom::Point(0.4, -0.3) * expected.withoutTranslation();
+    EXPECT_NEAR(got.focus.x(), focus.x(), 1e-3);
+    EXPECT_NEAR(got.focus.y(), focus.y(), 1e-3);
+    // Bm's axes are the ellipse's, at right angles. Bg has the ellipse as Illustrator reads it
+    // from a file another application wrote: lying along x, its x radius Bg's length, the
+    // eleventh number y's over x's, Bg's angle turning nothing; then Bg's matrix applied on
+    // Illustrator's y-down canvas, where the art origin is `canvas`.
+    auto const x = Geom::Point(p.bm[0], p.bm[1]), y = Geom::Point(p.bm[2], p.bm[3]);
+    EXPECT_NEAR(Geom::dot(x, y), 0, 1e-2);
+    EXPECT_EQ(p.angle, 0);
+    EXPECT_NEAR(Geom::L2(x), p.length, 1e-3);
+    auto const bg = result.begin.substr(0, result.begin.find(" Bg\n"));
+    auto const aspect = std::stod(bg.substr(bg.rfind(' ') + 1));
+    EXPECT_NEAR(aspect, Geom::L2(y) / Geom::L2(x), 2e-4);
+    EXPECT_FALSE(p.bg.isIdentity(1e-3)); // This one is turned.
+    auto const lying = Geom::Affine(p.length, 0, 0, aspect * p.length, p.origin.x(), p.origin.y());
+    auto const flip = Geom::Scale(1, -1);
+    auto const on_canvas = flip * Geom::Translate(canvas) * p.bg * Geom::Translate(-canvas) * flip;
+    expect_same_ellipse(lying * on_canvas, expected);
+
+    expect_refusal(AN::write_gradient(s, to_art, "Ellipse", true), "elliptical radial gradients (Illustrator 7)");
+}
+
+TEST_F(AiNativeWriterGradientTest, RadialEllipseAlongYNeedsNoTurn)
+{
+    auto doc = document(R"x(gradientUnits="userSpaceOnUse" cx="0" cy="0" r="20" gradientTransform="translate(100 70) scale(.5 1)")x",
+                        rgb_stops, "", "", "radialGradient");
+    ASSERT_TRUE(doc);
+    auto const result = AN::write_gradient(shape(doc.get()), Geom::Affine(1, 0, 0, -1, 0, 200), "Tall", false, {4000, 4000});
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    std::string error;
+    auto ai = read(result, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &p = ai->layers[0].children[0].fill->gradient;
+    EXPECT_TRUE(p.bg.isIdentity());
+    EXPECT_EQ(p.angle, 0);
+    EXPECT_NEAR(p.length, 10, 1e-4); // The x radius, the smaller.
+    EXPECT_NE(result.begin.find(" 0 10 1 0 0 1 0 0 2 Bg\n"), std::string::npos) << result.begin;
+    EXPECT_NE(result.begin.find("10 0 0 -20 100 130 Bm\n"), std::string::npos) << result.begin;
+}
+
+TEST_F(AiNativeWriterGradientTest, RadialFocalPointOutsideTheCircleIsWrittenOnIt)
+{
+    auto doc = document(R"(gradientUnits="userSpaceOnUse" cx="100" cy="70" r="20" fx="160" fy="70")", rgb_stops, "", "",
+                        "radialGradient");
+    ASSERT_TRUE(doc);
+    for (bool legacy : {false, true}) {
+        auto const result = AN::write_gradient(shape(doc.get()), Geom::identity(), "Outside", legacy);
+        ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+        std::string error;
+        auto ai = read(result, error);
+        ASSERT_TRUE(ai) << error;
+        auto const &p = ai->layers[0].children[0].fill->gradient;
+        EXPECT_NEAR(p.hilight_length, 1, 1e-6);
+        EXPECT_NEAR(Geom::L2(p.hilight), 20, 1e-4);
+    }
+    auto centred = document(R"(gradientUnits="userSpaceOnUse" cx="100" cy="70" r="20")", rgb_stops, "", "",
+                            "radialGradient");
+    ASSERT_TRUE(centred);
+    auto const result = AN::write_gradient(shape(centred.get()), Geom::identity(), "Centred");
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    EXPECT_NE(result.begin.find("Bb\n0 0 0 0 Bh\n"), std::string::npos);
 }
 
 TEST_F(AiNativeWriterGradientTest, SingularNonfiniteAndExcessiveInputsFailClosed)
