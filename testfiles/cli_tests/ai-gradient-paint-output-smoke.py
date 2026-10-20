@@ -36,13 +36,16 @@ HEAD = '''<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org
   <stop offset="0.5" style="stop-color:device-cmyk(0 1 1 0)"/>
   <stop offset="1" style="stop-color:device-cmyk(1 0.2 0 0.3)"/></linearGradient>
   <linearGradient id="la" xlink:href="#rgb" gradientUnits="userSpaceOnUse" x1="30" y1="0" x2="190" y2="0"/>
-  <radialGradient id="rb" xlink:href="#rgb" gradientUnits="userSpaceOnUse" cx="310" cy="70" r="90" fx="330" fy="50"/>
+  <radialGradient id="rb" xlink:href="#rgb" gradientUnits="userSpaceOnUse" cx="310" cy="70" r="90"/>
+  <radialGradient id="rf" xlink:href="#rgb" gradientUnits="userSpaceOnUse" cx="310" cy="70" r="90" fx="330" fy="50"/>
   <linearGradient id="lc" xlink:href="#cmyk"/>
   <linearGradient id="ld" xlink:href="#rgb" gradientUnits="userSpaceOnUse" x1="200" y1="160" x2="300" y2="260"/>
   <linearGradient id="le" xlink:href="#rgb"/>
   <linearGradient id="lf" xlink:href="#rgb" x1="0" y1="0" x2="0" y2="1"/>
   <radialGradient id="rt" xlink:href="#rgb" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="60"
     gradientTransform="translate(110 290) rotate(15) scale(1 0.4)"/>
+  <radialGradient id="rt_off" xlink:href="#rgb" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="60"
+    gradientTransform="translate(125 280) rotate(15) scale(1 0.4)"/>
   <linearGradient id="spot" gradientUnits="userSpaceOnUse" x1="20" y1="0" x2="200" y2="0">
   <stop style="stop-color:device-cmyk(0 1 0.8 0.1)" proof:ink="Brand Red" proof:ink-alternate="device-cmyk(0 1 0.8 0.1)"/>
   <stop offset="0.5" style="stop-color:device-cmyk(0 0.2 0.16 0.02)" proof:ink="Brand Red"
@@ -212,6 +215,10 @@ def main():
             d = deltas(canvas, prefix.with_suffix('.png'), STROKE_POINTS + FILL_POINTS)
             check('modern: PDF page matches canvas (RGB shapes)', max(d) <= PDF_TOLERANCE, d)
             refusals = [
+                ('focal', STROKES.replace('stroke="url(#rb)"', 'stroke="url(#rf)"'),
+                 b'radial gradient strokes with an offset focal point'),
+                ('turned-offset', STROKES.replace('stroke="url(#rt)"', 'stroke="url(#rt_off)"'),
+                 b'off-centre rotated radial gradient strokes'),
                 ('both', FILLS.replace('stroke="#000000"', 'stroke="url(#la)"'),
                  b'gradients on both the fill and the stroke'),
                 ('filled', STROKES.replace('fill="none" stroke="url(#la)"', 'fill="#00ff00" stroke="url(#la)"'),

@@ -672,7 +672,8 @@ opened with `1 Bb`, about `S` (`1 BB`) or `s` (`2 BB`), linear or radial,
 turned ellipses included. That is "within stroke", Illustrator's default and
 what an SVG stroke gradient means; its "along" and "across" have no SVG
 counterpart. Illustrator 7 had no gradient strokes (they came with CS6), so its
-export refuses them by name.
+export refuses them by name. After the Illustrator gate below, radial strokes
+with an offset focal point are refused too: Illustrator 29 centres them on open.
 
 Refused by name until Illustrator controls show their form: **a gradient on both
 the fill and the stroke**, and **a gradient stroke on a filled path**. Every
@@ -723,9 +724,8 @@ that profile with its stop numbers, drawn as before (0 apart; at the working
 profile it was 11 to 16). The linear smoke's stroke refusal is now the
 both-gradients one.
 
-**Illustrator** has not opened these files yet: the owner was away, and opening
-files there needs their approval. Until it has, these forms are PROOF's reading
-of Illustrator's own files, not a qualification.
+**Illustrator qualification** is recorded in the gate below. The earlier
+headless checks alone did not establish Illustrator's rendering or profile assignment.
 
 ### Embedded pictures (2026-10-20)
 
@@ -791,4 +791,87 @@ transparency over a grey box, a turned JPEG, an embedded CMYK TIFF and a
 clipped picture with a shape after it reopen from their records drawn exactly
 as the canvas (0 apart over the whole page) with the TIFF's CMYK numbers equal;
 the page is PROOF's own PDF export, within 4 of the canvas at the RGB pictures.
-Illustrator has not opened it yet.
+Illustrator's actual open/save/reopen results are recorded below.
+
+### Illustrator gate and writer controls (2026-10-20)
+
+Illustrator 29.2.1 opened the modern gradient-paint control, its Illustrator 7
+counterpart, the profiled CMYK control and the embedded-picture control. The
+owner approved these checks. Calls were serialized with ten-second pauses
+after document I/O.
+
+- Gradient strokes, ordinary strokes on gradient fills and spot tints are
+  editable in Illustrator. An offset radial stroke focus was lost: the
+  re-saved records changed `15 15 45 0.3143 Bh` to `0 0 0 0 Bh`, with a
+  visible difference of up to 67 channel values at the probes. The writer
+  now refuses this case by name and preserves an existing destination.
+  Centred radial strokes and focal points on fills remain supported.
+- Removing that focus alone was insufficient: Illustrator also expands a
+  radial stroke gradient from the path bounds to the stroked bounds. The
+  writer now compensates `Bg` in the gradient's unturned frame: the radius
+  uses the ratio of the two bounds' diagonals, and the centre reverses their
+  box mapping. `Bm` retains the actual imaging geometry for PROOF's reader.
+  The original rectangle's radius of 67.5 became 75.4096 in Illustrator;
+  writing `Bg` radius 60.4200 restores it. A centred rotated ellipse and an
+  off-centre unrotated circle likewise match within 3 channel values.
+  **Off-centre rotated radial strokes remain refused**: the extra control
+  still differed by up to 18. Do not relax this refusal without an actual
+  Illustrator comparison. Fills keep their prior placement support.
+- The modern Illustrator copy `fee7740403` falls back to its PDF page in
+  PROOF (3.7% lightness, 3.5% colour). The comparison images isolate the
+  disagreement to the two spot gradients: the PDF preview draws their spot
+  portions white while Illustrator and the native drawing retain the ink.
+  This remains the existing spot-gradient preview issue; the visual gate
+  and its thresholds are unchanged. It is not a qualified native reopen.
+- Illustrator 7 opens and re-saves the control (`a65c903f3f`). Illustrator
+  converts its RGB to CMYK on open; placement agrees, with the expected
+  colour differences. This is distinct from preserving RGB values.
+- PROOF retains the embedded page-resource profile on its own reopen.
+  Illustrator instead shows **Don't Color Manage This Document** in Assign
+  Profile. Renaming the space `/CS0` and selecting it in page content did
+  not fix this; that experiment was removed. At the owner's request this
+  remains a follow-up: they normally embed profiles in print PDFs as needed.
+  No Illustrator profile-assignment acceptance is claimed.
+- Embedded pictures render within 2-3 channel values at RGB probes (alpha,
+  rotation and clipping included); the CMYK TIFF differs by at most 11,
+  median 2, after Illustrator converts it to the RGB document's space.
+  Its saved copy `e8a098efe2` reopens natively in PROOF (0.2% page comparison).
+  RGB pictures match the original canvas exactly. CMYK sample preservation
+  is verified on PROOF's output, not on Illustrator's RGB conversion.
+
+The owner's saved CMYK control `af7ea26f97` settles two further forms:
+
+- A solid fill and gradient stroke use the solid fill paint, path, `1 Bb`,
+  the gradient instance, `b`, `2 BB`. They do not require appearance records.
+- Gradients on both use the path, `Bb` and the fill instance, `2 BB`, then
+  `1 Bb` and the stroke instance, `b`, `2 BB`. These are consecutive blocks
+  for the same path; the first does not contain a separate paint operator.
+- Three links use `%AI5_BeginPlace`, `%%FileType: 1`, `[matrix] llx lly urx
+  ury 4 4 0`, the path and backquote, `%%IncludeFile:`, optional relative-path
+  and preview records, `~`, `%AI5_EndPlace`. A 120 by 80 pixel TIFF at 300 ppi
+  has a 28.8 by 19.2 point box and scale 1. A 100 by 50 pixel PNG at 150 ppi
+  has a pixel-sized box and scale 0.48; at 250% its matrix scale is 1.2 and
+  its box is unchanged. Use the transformed stored box; do not infer its
+  units from the file type or multiply by resolution a second time.
+
+These controls establish the next writer forms; filled gradient strokes,
+dual gradients and linked pictures are still refused until implemented and
+independently checked. Artwork and comparison images remain local.
+
+**CLI qualification must select the exporter explicitly**:
+`--export-extension=org.inkscape.output.ai.native`. A diagnostic generated
+using only an `.ai` suffix selected PDF interchange, contained no `/PieceInfo`
+records and prompted Illustrator to reinterpret an unknown PDF shading.
+The owner confirmed the actual native control opened without that warning.
+Verify the container as well as the tool's success response; a modal warning
+can coexist with a reported successful open.
+
+**Gate follow-up checks:** gradient writer 23/23; importer 143 cases with
+zero failures and two opt-in skips; gradient-paint CLI smoke 31/31 (including
+both new safe refusals); radial-fill CLI regression 22/22. The final native
+control `63c0cc01dd` opened in Illustrator and all RGB probes differ by at most
+3, including both corrected radial strokes. The earlier full focused run's
+other twelve unit suites and all sixteen export smokes passed; its first
+version of the new unit fixture failed because it used unsupported geometry
+inheritance, then was corrected and superseded by these final unit results.
+The square-tile layout and paint behavior live checks pass 7/7 and 27/27.

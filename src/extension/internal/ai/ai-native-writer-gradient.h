@@ -22,8 +22,10 @@ namespace Inkscape::Extension::Internal::AiNative {
  *
  * Requires an up-to-date document. Supports pad, standard RGB or DeviceCMYK stops, tints of
  * spot inks defined in CMYK (with each other and CMYK stops), stop-only hrefs and nonsingular
- * affine geometry; a radial's focal point, and in the modern form its ellipse (Illustrator 7
- * takes circles) and gradients on strokes (Illustrator CS6 brought them). Anything else is
+ * affine geometry; a radial fill's focal point, and in the modern form its ellipse (Illustrator 7
+ * takes circles) and gradients on strokes (Illustrator CS6 brought them; radial strokes must
+ * have a centred focal point, and a turned ellipse must be centred on its path bounds).
+ * Anything else is
  * refused by name, and both record strings are empty. Neither the document nor its XML is
  * edited.
  */

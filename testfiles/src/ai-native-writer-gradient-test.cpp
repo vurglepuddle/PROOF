@@ -635,6 +635,98 @@ TEST_F(AiNativeWriterGradientTest, GradientStrokesAndStrokedGradientFillsReadBac
     EXPECT_EQ(strokes.refused, std::vector<std::string>{"gradients on strokes (Illustrator 7)"});
 }
 
+TEST_F(AiNativeWriterGradientTest, RadialStrokeFocalPointsAreRefusedWithoutChangingFillSupport)
+{
+    // Illustrator 29 re-saved a noncentral stroke highlight as `0 0 0 0 Bh` and drew it
+    // centred. Exercise both axes, an outside focus and inherited stops; fills still work.
+    for (auto const &focus : {std::string{}, std::string(R"(fx="230" fy="90")"),
+                             std::string(R"(fx="240")"), std::string(R"(fy="80")"),
+                             std::string(R"(fx="330" fy="90")")}) {
+        SCOPED_TRACE(focus);
+        auto doc = SPDocument::createNewDocFromMem(
+            R"x(<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+                width="320" height="180"><defs>
+                <radialGradient id="base">)x" + rgb_stops + R"x(</radialGradient>
+                <radialGradient id="g" xlink:href="#base" gradientUnits="userSpaceOnUse"
+                    cx="230" cy="90" r="50" )x" + focus + R"x(/></defs>
+                <rect id="shape" x="190" y="50" width="80" height="80" fill="url(#g)" stroke="url(#g)"/>
+                </svg>)x");
+        ASSERT_TRUE(doc);
+        doc->ensureUpToDate();
+        auto const *item = shape(doc.get());
+        ASSERT_TRUE(item);
+        auto const fill = AN::write_gradient(item, Geom::identity(), "Fill");
+        EXPECT_TRUE(fill.refused.empty());
+        EXPECT_FALSE(fill.begin.empty());
+        auto const stroke = AN::write_gradient(item, Geom::identity(), "Stroke", false, {}, true);
+        if (focus.empty() || focus == R"(fx="230" fy="90")") {
+            EXPECT_TRUE(stroke.refused.empty());
+            EXPECT_NE(stroke.begin.find("0 0 0 0 Bh\n"), std::string::npos);
+        } else {
+            expect_refusal(stroke, "radial gradient strokes with an offset focal point");
+        }
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, RadialStrokesCompensateIllustratorsStrokedBoundsExpansion)
+{
+    auto doc = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" width="430" height="400"><defs>
+            <radialGradient id="g" gradientUnits="userSpaceOnUse" cx="310" cy="70" r="90">)x" +
+        rgb_stops + R"x(</radialGradient>
+            <radialGradient id="off" gradientUnits="userSpaceOnUse" cx="330" cy="80" r="90">)x" +
+        rgb_stops + R"x(</radialGradient>
+            <radialGradient id="turned" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="60"
+                gradientTransform="translate(110 290) rotate(15) scale(1 0.4)">)x" + rgb_stops +
+        R"x(</radialGradient></defs>
+            <rect x="230" y="20" width="160" height="100" fill="none" stroke="url(#g)" stroke-width="16"/>
+            <rect x="230" y="20" width="160" height="100" fill="none" stroke="url(#off)" stroke-width="16"/>
+            <path d="M20 290L200 290" fill="none" stroke="url(#turned)" stroke-width="20"/>
+            </svg>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &nodes = ai->layers[0].children;
+    ASSERT_EQ(nodes.size(), 3u);
+    for (auto const &node : nodes) ASSERT_TRUE(node.stroke);
+    auto const &centred = nodes[0].stroke->gradient;
+    auto const &offset = nodes[1].stroke->gradient;
+    auto const &turned = nodes[2].stroke->gradient;
+    // These Bg values were independently checked against Illustrator's exported pictures.
+    // Bm remains the full imaging geometry; applying the correction there would double it.
+    EXPECT_NEAR(centred.length, 60.4200, 1e-4);
+    EXPECT_NEAR(offset.length, 60.4200, 1e-4);
+    EXPECT_NEAR(offset.origin.x(), 246.1364, 1e-4);
+    EXPECT_NEAR(offset.origin.y(), -58.9655, 1e-4);
+    EXPECT_NEAR(turned.length, 42.4555, 1e-4);
+    expect_same_ellipse(read_radial(centred).unit, Geom::Affine(67.5, 0, 0, 67.5, 232.5, -52.5));
+    expect_same_ellipse(read_radial(offset).unit, Geom::Affine(67.5, 0, 0, 67.5, 247.5, -60));
+    expect_same_ellipse(read_radial(turned).unit,
+                        Geom::Affine(43.4667, -11.6469, -4.6587, -17.3867, 82.5, -217.5));
+}
+
+TEST_F(AiNativeWriterGradientTest, OffCentreRotatedRadialStrokesAreRefusedButFillsRemainSupported)
+{
+    auto doc = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" width="430" height="400"><defs>
+            <radialGradient id="g" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="60"
+                gradientTransform="translate(125 280) rotate(15) scale(1 0.4)">)x" + rgb_stops +
+        R"x(</radialGradient></defs><path id="shape" d="M20 290L200 290"
+            fill="url(#g)" stroke="url(#g)" stroke-width="20"/></svg>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const *item = shape(doc.get());
+    ASSERT_TRUE(item);
+    auto const to_art = item->i2doc_affine() * Geom::Affine(.75, 0, 0, -.75, 0, 0);
+    EXPECT_TRUE(AN::write_gradient(item, to_art, "Fill").refused.empty());
+    expect_refusal(AN::write_gradient(item, to_art, "Stroke", false, {}, true),
+                   "off-centre rotated radial gradient strokes");
+}
+
 TEST_F(AiNativeWriterGradientTest, CompoundPathStrokeGradientIsOnItsFinalContour)
 {
     auto doc = stroked(R"x(<path d="M10 10H90V90H10Z M30 30V70H70V30Z" fill="none" stroke="url(#l)" stroke-width="4"/>)x");

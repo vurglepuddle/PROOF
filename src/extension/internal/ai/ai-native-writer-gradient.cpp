@@ -207,7 +207,8 @@ std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient cons
  */
 std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient const *gradient, Geom::Affine const &matrix,
                                                            std::string const &name, bool legacy, Geom::Point const &canvas,
-                                                           std::string const &open)
+                                                           std::string const &open, SPShape const *stroke_shape,
+                                                           Geom::Affine const &item_to_art)
 {
     double const pi = std::acos(-1.0);
     double const r = gradient->r.computed;
@@ -250,6 +251,9 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
     // The focal point in the unit circle. The canvas draws one outside the circle on it.
     Geom::Point focus((gradient->fx.computed - centre.x()) / r, (gradient->fy.computed - centre.y()) / r);
     if (!std::isfinite(focus.x()) || !std::isfinite(focus.y())) return refused("nonfinite radial gradient focal points");
+    // Illustrator 29 drops a stroke's noncentral Bh focal point on open (verified by its
+    // rendering and re-saved records). Fills retain it; refuse strokes rather than change them.
+    if (stroke_shape && Geom::L2(focus) > 1e-9) return refused("radial gradient strokes with an offset focal point");
     if (Geom::L2(focus) > 1) focus /= Geom::L2(focus);
     auto const offset = focus * unit.withoutTranslation();
     auto const in_bm = offset * bm.withoutTranslation().inverse();
@@ -278,7 +282,42 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
         if (t.back() == '.') t.pop_back();
         return t == "-0" ? std::string("0") : t;
     };
-    out += std::format("1 {} {} {} 0 {} {} {} {} {} {} {}", name, num(unit[4]), num(unit[5]), num(rx), fine(turned[0]),
+    Geom::Point origin(unit[4], unit[5]);
+    double length = rx;
+    if (stroke_shape) {
+        // Illustrator normalizes a stroke's Bg against the path bounds, then draws it against
+        // the stroked bounds. Undo that expansion in the gradient's unturned frame. Bm stays
+        // the actual imaging geometry for the PDF/native reader. Verified in Illustrator 29
+        // with a circle, a turned ellipse and an off-centre placement (2026-10-20).
+        auto const unturn = Geom::Translate(-origin) * Geom::Affine(cosine, -sine, sine, cosine, 0, 0) *
+                            Geom::Translate(origin);
+        auto const frame = item_to_art * unturn;
+        auto const path = stroke_shape->geometricBounds(frame);
+        auto const stroked = stroke_shape->visualBounds(frame, false, false, false);
+        if (!path || !stroked) return refused("radial gradient strokes without bounds");
+        double const path_diagonal = std::hypot(path->width(), path->height());
+        double const stroke_diagonal = std::hypot(stroked->width(), stroked->height());
+        if (!std::isfinite(path_diagonal) || !std::isfinite(stroke_diagonal) ||
+            path_diagonal <= 0 || stroke_diagonal <= 0) return refused("radial gradient strokes without bounds");
+        // Off-centre turned ellipses need another placement convention: Illustrator still
+        // moves their centre after this correction. Keep the qualified centred case only.
+        if (turn != 0 && Geom::L2(origin - path->midpoint()) > 1e-6 * std::max(path_diagonal, 1.0)) {
+            return refused("off-centre rotated radial gradient strokes");
+        }
+        length *= path_diagonal / stroke_diagonal;
+        for (unsigned i = 0; i < 2; ++i) {
+            if (path->dimensions()[i] <= 1e-9 || stroked->dimensions()[i] <= 1e-9) {
+                if (std::abs(origin[i] - path->midpoint()[i]) > 1e-6) {
+                    return refused("radial gradient strokes offset from degenerate path bounds");
+                }
+            } else {
+                origin[i] = path->min()[i] + (origin[i] - stroked->min()[i]) *
+                            path->dimensions()[i] / stroked->dimensions()[i];
+            }
+        }
+        if (!std::isfinite(length) || num(length) == "0") return refused("zero-radius or nonfinite radial gradients");
+    }
+    out += std::format("1 {} {} {} 0 {} {} {} {} {} {} {}", name, num(origin.x()), num(origin.y()), num(length), fine(turned[0]),
                        fine(turned[1]), fine(turned[2]), fine(turned[3]), fine(turned[4]), fine(turned[5]));
     if (legacy) return out + " Bg\n";
     return out + std::format(" {} Bg\n{} {} {} {} {} {} Bm\n", num(ry / rx), num(bm[0]), num(bm[1]), num(bm[2]),
@@ -356,7 +395,7 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     // the owner's set and the collaborator's (and 66 notes that paint nothing); a fill's with `Bb`.
     std::string const open = stroke ? "1 Bb\n" : "Bb\n";
     auto instance = linear ? linear_instance(linear, matrix, name, open)
-                           : radial_instance(radial, matrix, name, legacy, canvas, open);
+                           : radial_instance(radial, matrix, name, legacy, canvas, open, stroke ? shape : nullptr, item_to_art);
     if (auto *why = std::get_if<WrittenGradient>(&instance)) return std::move(*why);
 
     auto const *effective = gradient->getGradientVector();

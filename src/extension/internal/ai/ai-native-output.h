@@ -27,10 +27,11 @@ namespace AiNative {
  * every page, all pages naming one copy. The update is prepared before appending; use a
  * temporary PDF so a write failure cannot damage a previous save. `error` says why it failed.
  *
- * `profile`, the document's ICC profile when it has one of its own, goes where Illustrator keeps
- * it: a colour space based on it among each page's own resources. Illustrator and PROOF's
- * reader take a file's profile from there (doc/PROOF-ai-native-records.md, "The document's own
- * colour profile"); PROOF's PDF export names it only inside the page's form.
+ * `profile`, the document's ICC profile when it has one of its own, is added as a colour space
+ * among each page's own resources. PROOF's reader takes the file's profile from there
+ * (doc/PROOF-ai-native-records.md, "The document's own colour profile"); PROOF's PDF export
+ * names it only inside the page's form. Illustrator 29 opens this output without assigning
+ * the embedded profile; preserving that assignment in Illustrator remains unqualified.
  */
 bool add_private_data(std::string const &path, std::string const &records, std::string &error,
                       std::string const &profile = {});
