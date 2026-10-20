@@ -1,6 +1,6 @@
 # Fill and stroke controls in the tools sidebar
 
-The tools sidebar contains two overlapping rounded squares: a solid fill target
+The tools sidebar contains two overlapping squares: a solid fill target
 and a hollow stroke target. A red diagonal marks None. The active target appears
 in front; click either exposed square to activate it, or double-click to open
 the existing native paint editor. Mixed paints have an indicator rather than
@@ -114,3 +114,8 @@ Checked on the installed build at 1920 x 1080, 100%: the tools column stays
 layout 7/7, defaults 7/7, selection 13/13 and controls 27/27; the controls check
 now also clicks None, swap and the default paints and compares each with its
 key, and clicks Color and Gradient, which change nothing.
+
+**Square tiles** (2026-10-20, the same day). The tiles had 3 px rounded
+corners. The owner: "yes, let's make them square, rounded corners look weird,
+after all." They are square now, as in Illustrator, and the small buttons'
+hover backgrounds too (`border-radius: 0`).

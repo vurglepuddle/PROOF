@@ -30,7 +30,6 @@ namespace {
 // Illustrator (Illustrator_reference/size_reference.png: 18 px tiles, 28 px the pair).
 constexpr int tile = 20;
 constexpr int overlap = 10;  // how far the stroke's tile lies down and right of the fill's
-constexpr double corner = 3; // a tile's corner radius
 constexpr double band = 5;   // width of the stroke tile's ring
 // Over the tiles, the default paints at the left and swap at the right, 12 px as in Illustrator;
 // under them, the paint kinds: 8 px squares 2 px apart. Nothing is wider than the tile pair, so
@@ -41,14 +40,10 @@ constexpr int above = glyph + 2;                 // where the tiles start
 constexpr int below = above + tile + overlap + 4; // where the paint kinds start
 unsigned paint_session = 0;
 
-void rounded(Cairo::RefPtr<Cairo::Context> const &cr, double x, double y, double w, double h, double r)
+// Square corners, as Illustrator's tiles (the owner, 2026-10-20: "rounded corners look weird").
+void square(Cairo::RefPtr<Cairo::Context> const &cr, double x, double y, double w, double h)
 {
-    cr->begin_new_sub_path();
-    cr->arc(x + w - r, y + r, r, -M_PI_2, 0);
-    cr->arc(x + w - r, y + h - r, r, 0, M_PI_2);
-    cr->arc(x + r, y + h - r, r, M_PI_2, M_PI);
-    cr->arc(x + r, y + r, r, M_PI, 3 * M_PI_2);
-    cr->close_path();
+    cr->rectangle(x, y, w, h);
 }
 
 void rgba(Cairo::RefPtr<Cairo::Context> const &cr, uint32_t c)
@@ -70,7 +65,7 @@ FillStrokeControls::FillStrokeControls() : Gtk::Box(Gtk::Orientation::VERTICAL, 
     static bool styled = false;
     if (!styled) {
         css->load_from_data(
-            ".proof-paint-controls button { padding: 0; min-width: 0; min-height: 0; }"
+            ".proof-paint-controls button { padding: 0; min-width: 0; min-height: 0; border-radius: 0; }"
             ".proof-paint-controls menubutton > button { background: none; border: none; box-shadow: none; }");
         Gtk::StyleContext::add_provider_for_display(get_display(), css, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
         styled = true;
@@ -322,8 +317,8 @@ void FillStrokeControls::draw(Cairo::RefPtr<Cairo::Context> const &cr, int width
     double w = width - 3, h = height - 3;
     cr->save();
     auto outline = [&] {
-        rounded(cr, 1.5, 1.5, w, h, corner);
-        if (!fill) rounded(cr, 1.5 + band, 1.5 + band, w - 2 * band, h - 2 * band, corner / 2);
+        square(cr, 1.5, 1.5, w, h);
+        if (!fill) square(cr, 1.5 + band, 1.5 + band, w - 2 * band, h - 2 * band);
     };
     outline();
     cr->set_fill_rule(Cairo::Context::FillRule::EVEN_ODD);
@@ -358,7 +353,7 @@ void FillStrokeControls::draw(Cairo::RefPtr<Cairo::Context> const &cr, int width
     cr->stroke();
     if (preview.kind == Preview::Kind::None) {
         cr->save();
-        rounded(cr, 1.5, 1.5, w, h, corner);
+        square(cr, 1.5, 1.5, w, h);
         cr->clip();
         cr->set_source_rgb(0.95, 0.05, 0.05);
         cr->set_line_width(2.5);
