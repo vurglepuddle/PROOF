@@ -364,27 +364,21 @@ void Writer::shape(SPShape const *s)
     };
     bool const fill_gradient = is_gradient(style->fill);
     bool const stroke_gradient = style->stroke_width.computed > 0 && is_gradient(style->stroke);
-    // One instance brackets one paint operator. A gradient fill with a plain stroke is b or B in
-    // it (1,009 times in the owner's files); a gradient stroke is always about an unfilled path
-    // in Illustrator's files. The other two combinations it writes only through its appearance
-    // records: refused until Illustrator controls show them.
-    if (fill_gradient && stroke_gradient) {
-        refuse("gradients on both the fill and the stroke");
-        return;
-    }
-    if (stroke_gradient && !style->fill.isNone()) {
-        refuse("gradient strokes on filled objects");
-        return;
-    }
-    std::optional<WrittenGradient> gradient;
+    // The fill and stroke have independent instances. Illustrator's filled-stroke control
+    // closes the fill instance before opening the stroke's, with one final b/B operator on
+    // the same path (doc/PROOF-ai-interchange.md, "Filled and dual-gradient strokes").
+    std::optional<WrittenGradient> fill_instance, stroke_instance;
     std::optional<std::string> fill, stroke;
-    if (fill_gradient || stroke_gradient) {
-        gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas,
-                                  stroke_gradient);
-        for (auto const &why : gradient->refused) refuse(why);
-        for (auto const &[name, cmyk] : gradient->inks) declare_ink(name, cmyk);
-        if (!gradient->definition.empty()) _gradients.push_back(gradient->definition);
-    }
+    auto prepare_gradient = [&](bool on_stroke) {
+        auto gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas,
+                                       on_stroke, on_stroke && fill_gradient);
+        for (auto const &why : gradient.refused) refuse(why);
+        for (auto const &[name, cmyk] : gradient.inks) declare_ink(name, cmyk);
+        if (!gradient.definition.empty()) _gradients.push_back(gradient.definition);
+        return gradient;
+    };
+    if (fill_gradient) fill_instance = prepare_gradient(false);
+    if (stroke_gradient) stroke_instance = prepare_gradient(true);
     // A compound path's early contours need a plain paint before its final gradient.
     fill = fill_gradient ? std::optional<std::string>("0 g") : paint(style->fill, style, true);
     if (stroke_gradient) {
@@ -440,10 +434,14 @@ void Writer::shape(SPShape const *s)
     auto contour = [&](std::size_t i) {
         path_data(pv[i], types[i]);
         bool const last = i + 1 == pv.size();
-        if (gradient && last) _body << gradient->begin;
         auto const c = op(pv[i]);
+        if (fill_instance && last) {
+            _body << fill_instance->begin;
+            if (stroke_instance) _body << gradient_end(c);
+        }
+        if (stroke_instance && last) _body << stroke_instance->begin;
         _body << c << '\n';
-        if (gradient && last) _body << gradient_end(c);
+        if ((fill_instance || stroke_instance) && last) _body << gradient_end(c);
     };
     if (pv.size() == 1) {
         contour(0);

@@ -65,6 +65,7 @@ std::optional<AN::Document> read(AN::WrittenGradient const &gradient, std::strin
 
 double scalar(AN::GradientPlacement const &placement, Geom::Point const &point)
 {
+    if (placement.xm) return (point * placement.xm->inverse()).x();
     double const angle = placement.angle * std::acos(-1.0) / 180;
     auto const delta = point - placement.origin;
     return (delta.x() * std::cos(angle) + delta.y() * std::sin(angle)) / placement.length;
@@ -711,20 +712,23 @@ TEST_F(AiNativeWriterGradientTest, RadialStrokesCompensateIllustratorsStrokedBou
 
 TEST_F(AiNativeWriterGradientTest, OffCentreRotatedRadialStrokesAreRefusedButFillsRemainSupported)
 {
-    auto doc = SPDocument::createNewDocFromMem(
-        R"x(<svg xmlns="http://www.w3.org/2000/svg" width="430" height="400"><defs>
-            <radialGradient id="g" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="60"
-                gradientTransform="translate(125 280) rotate(15) scale(1 0.4)">)x" + rgb_stops +
-        R"x(</radialGradient></defs><path id="shape" d="M20 290L200 290"
-            fill="url(#g)" stroke="url(#g)" stroke-width="20"/></svg>)x");
-    ASSERT_TRUE(doc);
-    doc->ensureUpToDate();
-    auto const *item = shape(doc.get());
-    ASSERT_TRUE(item);
-    auto const to_art = item->i2doc_affine() * Geom::Affine(.75, 0, 0, -.75, 0, 0);
-    EXPECT_TRUE(AN::write_gradient(item, to_art, "Fill").refused.empty());
-    expect_refusal(AN::write_gradient(item, to_art, "Stroke", false, {}, true),
-                   "off-centre rotated radial gradient strokes");
+    for (auto const *path : {"M20 290L200 290", "M20 250H200V330H20Z M40 270V310H180V270Z"}) {
+        SCOPED_TRACE(path);
+        auto doc = SPDocument::createNewDocFromMem(
+            R"x(<svg xmlns="http://www.w3.org/2000/svg" width="430" height="400"><defs>
+                <radialGradient id="g" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="60"
+                    gradientTransform="translate(125 280) rotate(15) scale(1 0.4)">)x" + rgb_stops +
+            R"x(</radialGradient></defs><path id="shape" d=")x" + path +
+            R"x(" fill="url(#g)" stroke="url(#g)" stroke-width="20"/></svg>)x");
+        ASSERT_TRUE(doc);
+        doc->ensureUpToDate();
+        auto const *item = shape(doc.get());
+        ASSERT_TRUE(item);
+        auto const to_art = item->i2doc_affine() * Geom::Affine(.75, 0, 0, -.75, 0, 0);
+        EXPECT_TRUE(AN::write_gradient(item, to_art, "Fill").refused.empty());
+        expect_refusal(AN::write_gradient(item, to_art, "Stroke", false, {}, true),
+                       "off-centre rotated radial gradient strokes");
+    }
 }
 
 TEST_F(AiNativeWriterGradientTest, CompoundPathStrokeGradientIsOnItsFinalContour)
@@ -746,16 +750,90 @@ TEST_F(AiNativeWriterGradientTest, CompoundPathStrokeGradientIsOnItsFinalContour
     EXPECT_EQ(compound.children[1].stroke->kind, AN::Paint::Kind::Gradient);
 }
 
-TEST_F(AiNativeWriterGradientTest, GradientStrokesThatNeedAppearancesAreRefusedByName)
+TEST_F(AiNativeWriterGradientTest, FilledAndDualGradientStrokesKeepIndependentPaintsOnOnePath)
+{
+    auto doc = stroked(R"x(<rect x="10" y="10" width="80" height="40" fill="#336699"
+                            stroke="url(#l)" stroke-width="4" stroke-dasharray="8 4"/>
+        <path d="M10 80L90 80L50 120" fill="#00ff00" stroke="url(#l)" stroke-width="6"/>
+        <rect x="190" y="50" width="80" height="80" fill="url(#l)" stroke="url(#r)" stroke-width="6"/>
+        <path d="M190 20L270 20L230 40" fill="url(#r)" stroke="url(#l)" stroke-width="4"/>
+        <rect x="10" y="140" width="80" height="20" fill="#000000"/>)x");
+    ASSERT_TRUE(doc);
+    auto const result = AN::write_records(doc.get());
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    EXPECT_EQ(occurrences(result.records, "\nBb\n"), 2u);
+    EXPECT_EQ(occurrences(result.records, "\n1 Bb\n"), 4u);
+    EXPECT_EQ(occurrences(result.records, "\nb\n2 BB\n"), 2u);
+    EXPECT_EQ(occurrences(result.records, "\nB\n1 BB\n"), 2u);
+    EXPECT_EQ(occurrences(result.records, " BB\n"), 6u);
+    EXPECT_EQ(occurrences(result.records, "\n2 BB\n1 Bb\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, "\n1 BB\n1 Bb\n"), 1u);
+    std::string error;
+    auto ai = AN::read(result.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->gradients.size(), 6u);
+    auto const &nodes = ai->layers.at(0).children;
+    ASSERT_EQ(nodes.size(), 5u); // Both paints belong to one path, with no duplicate art.
+    for (unsigned i = 0; i < 4; ++i) {
+        SCOPED_TRACE(i);
+        ASSERT_TRUE(nodes[i].fill);
+        ASSERT_TRUE(nodes[i].stroke);
+        EXPECT_EQ(nodes[i].fill->kind, i < 2 ? AN::Paint::Kind::Solid : AN::Paint::Kind::Gradient);
+        EXPECT_EQ(nodes[i].stroke->kind, AN::Paint::Kind::Gradient);
+        EXPECT_EQ(nodes[i].path.at(0).closed(), i % 2 == 0);
+    }
+    EXPECT_EQ(nodes[0].fill->color, AN::Color::rgb(.2, .4, .6));
+    EXPECT_EQ(nodes[0].stroke_style.dash, (std::vector<double>{6, 3}));
+    EXPECT_NEAR(scalar(nodes[2].fill->gradient, {60, -60}), .5, 2e-6);
+    auto const radial_stroke = read_radial(nodes[2].stroke->gradient);
+    expect_same_ellipse(radial_stroke.unit, Geom::Affine(37.5, 0, 0, 37.5, 172.5, -67.5));
+    EXPECT_NE(nodes[2].fill->gradient.gradient, nodes[2].stroke->gradient.gradient);
+    ASSERT_TRUE(nodes[4].fill);
+    EXPECT_EQ(nodes[4].fill->kind, AN::Paint::Kind::Solid);
+    EXPECT_EQ(nodes[4].fill->color, AN::Color::rgb(0, 0, 0));
+    EXPECT_FALSE(nodes[4].stroke);
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_EQ(legacy.refused, std::vector<std::string>{"gradients on strokes (Illustrator 7)"});
+}
+
+TEST_F(AiNativeWriterGradientTest, CompoundDualGradientUsesItsFinalContourAndKeepsTheHole)
+{
+    auto doc = stroked(R"x(<path d="M10 10H90V90H10Z M30 30V70H70V30Z" fill="url(#r)"
+                          fill-rule="evenodd" stroke="url(#l)" stroke-width="4"/>)x");
+    ASSERT_TRUE(doc);
+    auto const result = AN::write_records(doc.get());
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    EXPECT_EQ(occurrences(result.records, "\nBb\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, "\n1 Bb\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, "\n2 BB\n1 Bb\n"), 1u);
+    std::string error;
+    auto ai = AN::read(result.records, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &compound = ai->layers.at(0).children.at(0);
+    EXPECT_EQ(compound.kind, AN::Node::Kind::Compound);
+    ASSERT_EQ(compound.children.size(), 2u);
+    EXPECT_TRUE(compound.evenodd);
+    ASSERT_TRUE(compound.fill);
+    ASSERT_TRUE(compound.stroke);
+    EXPECT_EQ(compound.fill->kind, AN::Paint::Kind::Gradient);
+    EXPECT_EQ(compound.stroke->kind, AN::Paint::Kind::Gradient);
+    EXPECT_TRUE(ai->gradients.at(compound.fill->gradient.gradient).radial);
+    EXPECT_FALSE(ai->gradients.at(compound.stroke->gradient.gradient).radial);
+}
+
+TEST_F(AiNativeWriterGradientTest, GradientStrokeLimitsAreRefusedByName)
 {
     struct Case { std::string shape, reason; };
     std::vector<Case> const cases{
-        {R"x(<rect x="10" y="10" width="80" height="40" fill="url(#l)" stroke="url(#r)" stroke-width="4"/>)x",
-         "gradients on both the fill and the stroke"},
-        {R"x(<rect x="10" y="10" width="80" height="40" fill="#ff0000" stroke="url(#l)" stroke-width="4"/>)x",
-         "gradient strokes on filled objects"},
         {R"x(<path d="M10 10H90" fill="none" stroke="url(#l)" stroke-width="4" stroke-opacity=".5"/>)x",
          "gradient transparency"},
+        {R"x(<rect x="10" y="10" width="80" height="40" fill="url(#l)" stroke="url(#r)"
+                  stroke-width="4" paint-order="stroke fill"/>)x", "strokes painted under their fill"},
+        {R"x(<rect x="10" y="10" width="80" height="40" fill="#ff0000" stroke="url(#l)"
+                  stroke-width="4" transform="scale(2 1)"/>)x", "strokes on stretched or skewed objects"},
+        {R"x(<path d="M10 10V90" fill="none" stroke="url(#l)" stroke-width="4"/>)x",
+         "linear gradient strokes without bounds along their ramp"},
     };
     for (auto const &test : cases) {
         SCOPED_TRACE(test.reason);
@@ -765,6 +843,52 @@ TEST_F(AiNativeWriterGradientTest, GradientStrokesThatNeedAppearancesAreRefusedB
         EXPECT_TRUE(written.records.empty());
         EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), test.reason), written.refused.end());
     }
+}
+
+TEST_F(AiNativeWriterGradientTest, LinearStrokeBoundsDoNotMoveTheNativeScalarField)
+{
+    for (bool compound : {false, true}) {
+        SCOPED_TRACE(compound);
+        auto doc = stroked(compound
+            ? R"x(<path d="M10 10H90V50H10Z M30 20V40H70V20Z" fill="#336699" stroke="url(#l)" stroke-width="4"/>)x"
+            : R"x(<rect x="10" y="10" width="80" height="40" fill="#336699" stroke="url(#l)" stroke-width="4"/>)x");
+        ASSERT_TRUE(doc);
+        auto const result = AN::write_records(doc.get());
+        ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+        std::string error;
+        auto ai = AN::read(result.records, error);
+        ASSERT_TRUE(ai) << error;
+        auto const &node = ai->layers.at(0).children.at(0);
+        ASSERT_TRUE(node.stroke);
+        auto const &placement = node.stroke->gradient;
+        ASSERT_TRUE(placement.xm);
+        EXPECT_NEAR((*placement.xm)[0], 105, 1e-6);
+        EXPECT_NEAR((*placement.xm)[4], 7.5, 1e-6);
+        EXPECT_NEAR(scalar(placement, {60, -30}), .5, 1e-6);
+        // A simple path expands by 3 art units; Illustrator leaves a compound's ramp alone.
+        EXPECT_NEAR(placement.length, compound ? 105 : 105 * 60. / 63., 1e-4);
+        EXPECT_NEAR(placement.origin.x(), compound ? 7.5 : 7.5 + 1.5 * 60. / 63., 1e-4);
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, DualRadialKeepsTheFillFocusAndCentresTheStroke)
+{
+    auto doc = stroked(R"x(<defs><radialGradient id="focus" gradientUnits="userSpaceOnUse"
+        cx="230" cy="90" r="50" fx="240" fy="80">)x" + rgb_stops +
+        R"x(</radialGradient></defs><rect x="190" y="50" width="80" height="80"
+        fill="url(#focus)" stroke="url(#r)" stroke-width="6"/>)x");
+    ASSERT_TRUE(doc);
+    auto const result = AN::write_records(doc.get());
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    // Illustrator shares Bh across the pair. A second zero Bh would erase the fill focus.
+    EXPECT_EQ(occurrences(result.records, " Bh\n"), 1u);
+    std::string error;
+    auto ai = AN::read(result.records, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &node = ai->layers.at(0).children.at(0);
+    ASSERT_TRUE(node.fill && node.stroke);
+    EXPECT_NEAR(node.fill->gradient.hilight_length, std::sqrt(.08), 1e-4);
+    EXPECT_DOUBLE_EQ(node.stroke->gradient.hilight_length, 0);
 }
 
 namespace {

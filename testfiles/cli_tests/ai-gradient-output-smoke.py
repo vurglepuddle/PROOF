@@ -100,14 +100,17 @@ def main():
         for label, replacement, reason in [
             ('alpha', 'stop-color="#ff0000" stop-opacity="0.5"', b'gradient transparency'),
             ('repeat', 'stop-color="#ff0000"', b'repeating or reflected gradients'),
-            ('stroke', 'stop-color="#ff0000"', b'gradients on both the fill and the stroke'),
+            ('stroke', 'stop-color="#ff0000"', b'gradient transparency' if name == 'modern'
+             else b'gradients on strokes (Illustrator 7)'),
         ]:
             unsupported = svg.replace('stop-color="#ff0000"', replacement)
             if label == 'repeat':
                 unsupported = unsupported.replace('id="g"', 'id="g" spreadMethod="repeat"')
             if label == 'stroke':
-                # A plain stroke is written now (b with 2 BB); a gradient on both is not yet.
-                unsupported = unsupported.replace('fill="url(#g)"', 'fill="url(#g)" stroke="url(#g)"')
+                # Opaque dual gradients are supported in modern AI; transparent strokes
+                # remain refused, and Illustrator 7 refuses all gradient strokes.
+                unsupported = unsupported.replace('fill="url(#g)"',
+                                                  'fill="url(#g)" stroke="url(#g)" stroke-opacity="0.5"')
             path = out / (name + '-' + label + '.svg')
             path.write_text(unsupported)
             kept = ai.read_bytes()

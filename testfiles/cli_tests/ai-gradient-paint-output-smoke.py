@@ -3,9 +3,9 @@ fills with plain strokes, and tints of spot inks in gradients. Synthetic artwork
 
 Illustrator writes a stroke's gradient as the fill's instance opened with `1 Bb`, about an S or
 s, and ends any instance with what its operator does to the stroke: `0 BB` after f, `1 BB` after
-S or B, `2 BB` after s or b (Adobe's 1998 specification, table 10). Every gradient stroke in
-Illustrator's files is on an unfilled path; a gradient fill with a plain stroke is a b or B in
-the fill's instance. A spot stop is its ink's CMYK, name and tint (from 1), colour style 3.
+S or B, `2 BB` after s or b (Adobe's 1998 specification, table 10). A gradient fill with a plain
+stroke is a b or B in the fill's instance. Filled/dual-gradient stroke controls are checked
+separately. A spot stop is its ink's CMYK, name and tint (from 1), colour style 3.
 
 The modern control has linear and radial strokes, open and closed, a CMYK one, a compound path
 and a turned elliptical radial, two gradient fills with plain strokes, and a spot ink's tints
@@ -219,10 +219,6 @@ def main():
                  b'radial gradient strokes with an offset focal point'),
                 ('turned-offset', STROKES.replace('stroke="url(#rt)"', 'stroke="url(#rt_off)"'),
                  b'off-centre rotated radial gradient strokes'),
-                ('both', FILLS.replace('stroke="#000000"', 'stroke="url(#la)"'),
-                 b'gradients on both the fill and the stroke'),
-                ('filled', STROKES.replace('fill="none" stroke="url(#la)"', 'fill="#00ff00" stroke="url(#la)"'),
-                 b'gradient strokes on filled objects'),
                 ('alpha', STROKES.replace('stroke-width="24"', 'stroke-width="24" stroke-opacity="0.5"'),
                  b'gradient transparency'),
             ]

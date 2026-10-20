@@ -7,9 +7,9 @@
  * layers with their options, groups, paths and compound paths with corner/smooth flags,
  * clipping groups, process colour in CMYK, RGB or grey, spot inks with their tints,
  * opaque pad linear and radial process fills and strokes, overprint and stroke style. A
- * gradient-filled shape may have a plain stroke; a gradient stroke needs an unfilled path
- * and the modern form. Gradient stops may be tints of spot inks defined in CMYK; transparent
- * and mixed RGB/CMYK gradients are refused. Pictures the document holds itself are embedded
+ * gradient-filled shape may have a plain stroke; the modern form also supports gradient
+ * strokes with a plain or gradient fill. Gradient stops may be tints of spot inks defined in
+ * CMYK; transparent and mixed RGB/CMYK gradients are refused. Pictures the document holds itself are embedded
  * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
  * linked. Missing links and linked formats outside that subset are refused.
  * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point

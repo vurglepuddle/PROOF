@@ -29,7 +29,8 @@ file exchange.
   its tints.
 - **Illustrator interchange.** Read supported native `.ai` artwork, checked
   against its PDF pages. **Save As** writes native layers, smooth paths, inks
-  and opaque linear fills for the supported subset; **Save a Copy** also
+  and supported linear/radial gradient fills and strokes, embedded pictures
+  and local raster links; **Save a Copy** also
   offers Illustrator 7 records and PDF-based RGB interchange.
   SVG keeps features the native writer cannot write yet.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
@@ -53,7 +54,7 @@ controls; broader writer qualification remains in progress.
 |---|---|
 | Native reading | Layers, paths, clips, compound paths, gradients, patterns, supported gradient meshes, greyscale opacity masks, embedded foreign PDF vectors, process/spot colours, document ICC profiles, pictures and supported editable type |
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
-| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, opaque process linear gradients, overprint and stroke styles |
+| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, opaque linear/radial gradient fills and strokes (including both on one path), supported spot/ICC stops, embedded pictures and local PNG/JPEG/classic TIFF/PSD links, overprint and stroke styles |
 | Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
 | Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers and CMYK inks, without a PDF preview or the bundled PDF backend |
 | Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
@@ -120,11 +121,15 @@ Illustrator. See the feature documents for the evidence and its limits.
 ## Still in progress
 
 **Full native `.ai` support is still in progress.** The native writer currently
-refuses live type, linked pictures, transparency, masks, patterns and other
-unsupported appearances; pictures the document holds itself are written. Gradient writing covers opaque, non-repeating linear and radial
-fills and strokes with RGB, CMYK (in the document's profile too) and spot-ink
-stops; a gradient on both the fill and the stroke, or on the stroke of a filled
-path, is refused for now.
+refuses live type, transparency, masks, patterns and other unsupported
+appearances. Embedded pictures and local PNG/JPEG/classic TIFF/PSD links are
+written; native cached link previews, packaging and other linked formats
+remain queued. Gradient writing covers opaque, non-repeating linear/radial
+fills and strokes, separately or together, with RGB, CMYK (in the document's
+profile too) and supported spot-ink stops. Offset stroke focal points,
+off-centre rotated radial strokes and reversed paint order remain refused.
+Illustrator profile assignment and the spot-gradient PDF preview disagreement
+remain explicit limits; see [the interchange document](doc/PROOF-ai-interchange.md).
 Smooth-point flags survive, with auto/symmetric points reduced to smooth and
 Illustrator choosing an open path's first-point type. The older
 PDF-based RGB interchange export does not retain native layers or ink identity.

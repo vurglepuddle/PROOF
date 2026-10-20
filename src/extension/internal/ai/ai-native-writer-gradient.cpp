@@ -3,8 +3,9 @@
  *
  * Adobe's 1998 format, section 3.5, provides editable Bg geometry independently of
  * the optional imaging matrices. Collapse the SVG affine scalar field to an absolute
- * art-space vector and use identity Bg: no legacy canvas-relative matrix convention
- * or modern Xm interpretation is needed. See doc/PROOF-ai-interchange.md. Actual
+ * art-space vector and use identity Bg. A modern stroke also carries its original
+ * placement in Xm while Bg compensates Illustrator's stroked bounds. See
+ * doc/PROOF-ai-interchange.md. Actual
  * Illustrator and native/PDF parity require qualification beyond synthetic readback.
  *
  * A radial instance is written as Illustrator writes every one: Bb, the highlight Bh,
@@ -167,7 +168,8 @@ std::vector<std::optional<SpotInk::Ink>> stop_inks(SPGradient const *gradient, s
 /// A linear gradient's instance: Bb, then Bg with the absolute art-space vector of the scalar
 /// field `matrix` carries the gradient's own onto.
 std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient const *gradient, Geom::Affine const &matrix,
-                                                           std::string const &name, std::string const &open)
+                                                           std::string const &name, std::string const &open,
+                                                           SPShape const *stroke_shape, Geom::Affine const &item_to_art)
 {
     Geom::Point const p0(gradient->x1.computed, gradient->y1.computed);
     Geom::Point const d(gradient->x2.computed - p0.x(), gradient->y2.computed - p0.y());
@@ -179,14 +181,39 @@ std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient cons
     double const nn = n.x() * n.x() + n.y() * n.y();
     if (!std::isfinite(nn) || nn <= 0) return refused("zero-length or nonfinite linear gradients");
     auto const vector = n / nn;
-    auto const origin = p0 * matrix;
-    double const length = std::hypot(vector.x(), vector.y());
+    auto origin = p0 * matrix;
+    double length = std::hypot(vector.x(), vector.y());
     double const angle = std::atan2(vector.y(), vector.x()) * 180.0 / std::acos(-1.0);
     if (!std::isfinite(origin.x()) || !std::isfinite(origin.y()) || !std::isfinite(length) || num(length) == "0") {
         return refused("zero-length or nonfinite linear gradients");
     }
-    return std::format("{}1 {} {} {} {} {} 1 0 0 1 0 0 Bg\n", open, name, num(origin.x()), num(origin.y()), num(angle),
-                       num(length));
+    std::string imaging;
+    if (stroke_shape) {
+        // Keep the actual scalar field for native/PDF readers. Illustrator takes Bg instead,
+        // expanding a simple path's gradient to its stroked bounds in the gradient's frame.
+        // Compound paths do not get that expansion (Illustrator 29, 2026-10-21).
+        imaging = std::format("{} {} {} {} {} {} Xm\n", num(vector.x()), num(vector.y()), num(vector.y()),
+                              num(-vector.x()), num(origin.x()), num(origin.y()));
+        if (stroke_shape->curve()->size() == 1) {
+            double const cosine = vector.x() / length, sine = vector.y() / length;
+            Geom::Affine const frame(cosine, -sine, sine, cosine, 0, 0);
+            auto const path = stroke_shape->geometricBounds(item_to_art * frame);
+            auto const stroked = stroke_shape->visualBounds(item_to_art * frame, false, false, false);
+            if (!path || !stroked || !std::isfinite(path->width()) || !std::isfinite(stroked->width()) ||
+                path->width() <= 1e-9 || stroked->width() <= 1e-9) {
+                return refused("linear gradient strokes without bounds along their ramp");
+            }
+            auto at = origin * frame;
+            at.x() = path->left() + (at.x() - stroked->left()) * path->width() / stroked->width();
+            origin = at * frame.inverse();
+            length *= path->width() / stroked->width();
+            if (!std::isfinite(origin.x()) || !std::isfinite(origin.y()) || !std::isfinite(length) || num(length) == "0") {
+                return refused("zero-length or nonfinite linear gradient strokes");
+            }
+        }
+    }
+    return std::format("{}1 {} {} {} {} {} 1 0 0 1 0 0 Bg\n{}", open, name, num(origin.x()), num(origin.y()), num(angle),
+                       num(length), imaging);
 }
 
 /** A radial gradient's instance, as Illustrator writes every radial one: Bb, the highlight
@@ -208,7 +235,7 @@ std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient cons
 std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient const *gradient, Geom::Affine const &matrix,
                                                            std::string const &name, bool legacy, Geom::Point const &canvas,
                                                            std::string const &open, SPShape const *stroke_shape,
-                                                           Geom::Affine const &item_to_art)
+                                                           Geom::Affine const &item_to_art, bool after_gradient_fill)
 {
     double const pi = std::acos(-1.0);
     double const r = gradient->r.computed;
@@ -260,7 +287,9 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
     double const share = std::min(Geom::L2(in_bm), 1.0);
     std::string out = open;
     if (num(share) == "0") {
-        out += "0 0 0 0 Bh\n";
+        // Illustrator shares Bh between consecutive fill/stroke instances: resetting the
+        // centred stroke would also erase the fill's focal point. Its stroke remains centred.
+        if (!after_gradient_fill) out += "0 0 0 0 Bh\n";
     } else {
         out += std::format("{} {} {} {} Bh\n", num(offset.x()), num(offset.y()),
                            num(std::atan2(-in_bm.y(), in_bm.x()) * 180 / pi), num(share));
@@ -289,6 +318,7 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
         // the stroked bounds. Undo that expansion in the gradient's unturned frame. Bm stays
         // the actual imaging geometry for the PDF/native reader. Verified in Illustrator 29
         // with a circle, a turned ellipse and an off-centre placement (2026-10-20).
+        // Compound paths do not get the expansion (2026-10-21).
         auto const unturn = Geom::Translate(-origin) * Geom::Affine(cosine, -sine, sine, cosine, 0, 0) *
                             Geom::Translate(origin);
         auto const frame = item_to_art * unturn;
@@ -304,15 +334,17 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
         if (turn != 0 && Geom::L2(origin - path->midpoint()) > 1e-6 * std::max(path_diagonal, 1.0)) {
             return refused("off-centre rotated radial gradient strokes");
         }
-        length *= path_diagonal / stroke_diagonal;
-        for (unsigned i = 0; i < 2; ++i) {
-            if (path->dimensions()[i] <= 1e-9 || stroked->dimensions()[i] <= 1e-9) {
-                if (std::abs(origin[i] - path->midpoint()[i]) > 1e-6) {
-                    return refused("radial gradient strokes offset from degenerate path bounds");
+        if (stroke_shape->curve()->size() == 1) {
+            length *= path_diagonal / stroke_diagonal;
+            for (unsigned i = 0; i < 2; ++i) {
+                if (path->dimensions()[i] <= 1e-9 || stroked->dimensions()[i] <= 1e-9) {
+                    if (std::abs(origin[i] - path->midpoint()[i]) > 1e-6) {
+                        return refused("radial gradient strokes offset from degenerate path bounds");
+                    }
+                } else {
+                    origin[i] = path->min()[i] + (origin[i] - stroked->min()[i]) *
+                                path->dimensions()[i] / stroked->dimensions()[i];
                 }
-            } else {
-                origin[i] = path->min()[i] + (origin[i] - stroked->min()[i]) *
-                            path->dimensions()[i] / stroked->dimensions()[i];
             }
         }
         if (!std::isfinite(length) || num(length) == "0") return refused("zero-radius or nonfinite radial gradients");
@@ -336,12 +368,14 @@ std::string gradient_end(char op)
 }
 
 WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to_art,
-                               std::string const &unique_name, bool legacy, Geom::Point const &canvas, bool stroke)
+                               std::string const &unique_name, bool legacy, Geom::Point const &canvas, bool stroke,
+                               bool after_gradient_fill)
 {
     if (!shape || !shape->style) return refused("gradients without a shape");
     auto const *style = shape->style;
     // Illustrator 7's records have no gradient strokes: they came with Illustrator CS6.
     if (stroke && legacy) return refused("gradients on strokes (Illustrator 7)");
+    if (stroke && (!shape->curve() || shape->curve()->empty())) return refused("gradient strokes without a path");
     SPIPaint const &paint = stroke ? static_cast<SPIPaint const &>(style->stroke) : style->fill;
     auto const paint_opacity = stroke ? style->stroke_opacity.as_double() : style->fill_opacity.as_double();
     if (style->opacity.as_double() < 1.0 - 1e-6 || paint_opacity < 1.0 - 1e-6) return refused("gradient transparency");
@@ -394,8 +428,9 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     // A stroke's instance opens with `1 Bb`: 804 about an S or s in Illustrator's files between
     // the owner's set and the collaborator's (and 66 notes that paint nothing); a fill's with `Bb`.
     std::string const open = stroke ? "1 Bb\n" : "Bb\n";
-    auto instance = linear ? linear_instance(linear, matrix, name, open)
-                           : radial_instance(radial, matrix, name, legacy, canvas, open, stroke ? shape : nullptr, item_to_art);
+    auto instance = linear ? linear_instance(linear, matrix, name, open, stroke ? shape : nullptr, item_to_art)
+                           : radial_instance(radial, matrix, name, legacy, canvas, open, stroke ? shape : nullptr,
+                                             item_to_art, stroke && after_gradient_fill);
     if (auto *why = std::get_if<WrittenGradient>(&instance)) return std::move(*why);
 
     auto const *effective = gradient->getGradientVector();

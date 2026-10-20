@@ -15,9 +15,10 @@ namespace Inkscape::Extension::Internal::AiNative {
 /** An opaque process linear or radial fill or stroke, prepared independently for one shape.
  *
  * definition belongs in Setup; the caller writes the total gradient count with Bn once.
- * begin opens the instance before the final contour's paint operator, after its path data,
- * and gradient_end() closes it after that operator. Neither may be cached as ordinary paint
- * state. The caller handles compound paths, ancestor effects and the PDF half; it must pass
+ * begin opens the instance after the final contour's path data. gradient_end() closes it
+ * after the paint operator, or before the stroke's instance when both paints are gradients.
+ * Neither may be cached as ordinary paint state. The caller handles compound paths,
+ * ancestor effects and the PDF half; it must pass
  * the shape's complete local-to-art transform.
  *
  * Requires an up-to-date document. Supports pad, standard RGB or DeviceCMYK stops, tints of
@@ -42,9 +43,11 @@ struct WrittenGradient
 /// `canvas` is the art origin on the y-down canvas where Illustrator applies a gradient's own
 /// matrix (4320 less the template box's x, 4320 plus its y): a turned ellipse is turned there.
 /// `stroke` writes the shape's stroke paint, opening with `1 Bb` as Illustrator does.
+/// `after_gradient_fill` keeps the preceding fill's highlight: Illustrator shares Bh between
+/// the two instances, so a centred radial stroke must not reset that fill's focal point.
 WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to_art,
                                std::string const &unique_name, bool legacy = false,
-                               Geom::Point const &canvas = {}, bool stroke = false);
+                               Geom::Point const &canvas = {}, bool stroke = false, bool after_gradient_fill = false);
 
 /// What closes an instance after the paint operator `op`, by whether that strokes the path:
 /// `0 BB` after f or F, `1 BB` after S or B, `2 BB` after s or b (Adobe's 1998 specification,

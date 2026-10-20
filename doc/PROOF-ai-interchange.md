@@ -675,10 +675,10 @@ counterpart. Illustrator 7 had no gradient strokes (they came with CS6), so its
 export refuses them by name. After the Illustrator gate below, radial strokes
 with an offset focal point are refused too: Illustrator 29 centres them on open.
 
-Refused by name until Illustrator controls show their form: **a gradient on both
-the fill and the stroke**, and **a gradient stroke on a filled path**. Every
-gradient stroke in Illustrator's files is on an unfilled path; the others it
-writes only through its appearance records.
+At this stage, gradients on both paints and gradient strokes on filled paths
+were refused. The later owner control establishes both without appearance
+records; they are delivered below, "Filled and dual-gradient strokes"
+(2026-10-21). The census below had only unfilled gradient-stroke paths.
 
 **What Illustrator writes**, counted on the owner's 871 copies and, separately,
 the collaborator's pack (140 files under 100 MB):
@@ -854,9 +854,10 @@ The owner's saved CMYK control `af7ea26f97` settles two further forms:
   its box is unchanged. Use the transformed stored box; do not infer its
   units from the file type or multiply by resolution a second time.
 
-These controls establish the next writer forms; filled gradient strokes,
-dual gradients and linked pictures are still refused until implemented and
-independently checked. Artwork and comparison images remain local.
+These controls established the next writer forms. Linked raster pictures
+and filled/dual-gradient strokes are delivered in the 2026-10-21 sections
+below, with independent Illustrator qualification. Artwork and comparison
+images remain local.
 
 **CLI qualification must select the exporter explicitly**:
 `--export-extension=org.inkscape.output.ai.native`. A diagnostic generated
@@ -950,3 +951,67 @@ scripts pass. After the last format guards, the importer was rerun:
 The installed writer produces the Illustrator-qualified control's same
 records apart from its generated artboard UUID. The final format checks
 explicitly preserve a prior destination for PSB and BigTIFF refusals.
+
+### Filled and dual-gradient strokes (2026-10-21)
+
+Modern native Save As writes a plain fill with a gradient stroke and
+independent gradients on both paints. They remain **one editable path**,
+including an open path or a compound path with holes. Each paint gets its
+own definition and placement; the path is not duplicated or flattened.
+Existing spot/ICC stop handling and safe refusals apply to each paint.
+
+The owner's control `af7ea26f97` establishes the sequence. With a plain fill,
+write its colour, the path, `1 Bb`, the stroke instance, `b`, `2 BB`. With two
+gradients, write the path, `Bb` and the fill instance, `2 BB`, `1 Bb` and the
+stroke instance, `b`, `2 BB`. The fill block has no separate paint operator.
+For an open path use `B` and `1 BB` instead. A compound path puts both
+instances on its final contour. Paint order remains fill then stroke;
+reversed paint order is refused.
+
+**Linear stroke placement:** Illustrator expands a simple path's ramp from
+its geometric bounds to its stroked bounds, measured in the ramp's frame.
+Compensate `Bg`'s origin and length there. Keep the actual whole scalar field
+in `Xm` for the native/PDF reader; Illustrator ignores that imaging matrix
+on open and uses `Bg`. A ramp with no path extent along its axis is refused.
+Compound paths receive no such expansion, so neither linear nor radial
+strokes compensate their bounds. This also corrects existing linear stroke
+writing; horizontal butt-cap lines and earlier compound controls retain
+their prior placement.
+
+**Radial fill highlights:** Illustrator shares `Bh` across consecutive fill
+and stroke instances. A zero highlight on the centred radial stroke would
+also erase the fill's noncentral focus. Omit that reset after a gradient
+fill; PROOF's reader starts each stroke instance centred, and Illustrator
+retains the fill focus and centres the stroke. Stroke focal points remain
+refused. Off-centre rotated radial strokes remain refused on simple and
+compound paths. No reader thresholds change.
+
+**Actual Illustrator 29.2.1:** synthetic native control `4604c1bc74` has two
+plain fills with linear/radial strokes and seven dual gradients covering
+all four linear/radial pairs, an open triangle, a compound hole, a
+rotated/scaled shape and a clip. A black shape follows to check paint state.
+All 49 interior probes agree within **one RGB channel value** at 96 dpi,
+without image resizing. Focal radial fills retain their offset.
+Illustrator's saved copy `a34ac433f9` opens natively in PROOF with **0.000%
+lightness and colour differences** at the unchanged reader gate; editability
+is still classified `NATIVE_UNVERIFIED`.
+
+The headless check verifies independent instances on one path, open geometry
+and holes, whole-page native-reopen pixels (maximum 1), PDF probes (maximum
+4), unchanged source hashes and destination-preserving refusals: Illustrator
+7, reversed paint order, fill/stroke transparency, radial stroke focus and
+stretched strokes. Two initial PDF probes were exactly on antialias edges
+and were moved inward; production thresholds and the established radial PDF
+tolerance are unchanged. Unit cases also cover independent geometry, dash
+style, following plain paint, compound placement and shared highlights.
+
+An extra Illustrator render control gives the radial fill a different centre,
+size and rotation from its radial stroke; all 49 probes still differ by at
+most 1. After the final refusal-guard review, the installed writer's control
+records match the qualified control apart from the generated artboard UUID.
+
+Final checks: **13 focused unit suites** pass (gradient writer **27/27**;
+importer 146 cases, zero failures, two opt-in skips). All **17 export smokes**
+pass, with the linear smoke's corrected **20/20** rerun superseding two stale
+refusal assertions; gradient paint **29/29**, dual gradients **13/13**,
+radial fills **22/22**, embedded pictures **11/11**, linked pictures **13/13**.
