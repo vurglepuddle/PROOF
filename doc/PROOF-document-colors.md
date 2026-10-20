@@ -18,7 +18,11 @@ name in the title bar, for example `poster.svg (CMYK)`.
   (since 2026-10-11): the profile is taken from the file's PDF part, where
   Illustrator keeps it. A file that carries none is in the working profile,
   as in Illustrator. See "The document's own colour profile" in
-  [PROOF-ai-native-records.md](PROOF-ai-native-records.md).
+  [PROOF-ai-native-records.md](PROOF-ai-native-records.md). Native Save As
+  writes the document's profile there too (since 2026-10-20), so PROOF's own
+  `.ai` reopens in it; before, it reopened in the working profile. See
+  [PROOF-ai-interchange.md](PROOF-ai-interchange.md), "Gradient strokes, spot
+  and ICC-tagged gradients, and the document's profile".
 - **100% black shows as its profile makes it**, a dark grey, like every other
   colour: what Illustrator calls displaying all blacks accurately. There is no
   setting that shows it as the screen's black.

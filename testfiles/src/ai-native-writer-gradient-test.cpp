@@ -19,6 +19,8 @@
 #include "extension/internal/ai/ai-native-reader.h"
 #include "extension/internal/ai/ai-native-writer.h"
 #include "extension/internal/ai/ai-native-writer-gradient.h"
+#include "colors/spaces/base.h"
+#include "object/sp-gradient.h"
 #include "object/sp-shape.h"
 
 namespace AN = Inkscape::Extension::Internal::AiNative;
@@ -57,7 +59,7 @@ std::optional<AN::Document> read(AN::WrittenGradient const &gradient, std::strin
     return AN::read("%!PS-Adobe-3.0\n%%BoundingBox: 0 0 300 200\n%AI3_Cropmarks: 0 0 300 200\n"
                     "%%EndComments\n%%BeginSetup\n1 Bn\n" + gradient.definition +
                     "%%EndSetup\n%AI5_BeginLayer\n1 1 1 1 0 0 0 79 128 255 Lb\n(Art) Ln\n"
-                    "0 g\n20 30 m 180 30 L 180 110 L 20 110 L\n" + gradient.begin + "f\n" + gradient.end +
+                    "0 g\n20 30 m 180 30 L 180 110 L 20 110 L\n" + gradient.begin + "f\n" + AN::gradient_end('f') +
                     "LB\n%AI5_EndLayer--\n%%PageTrailer\n%%EOF\n", error);
 }
 
@@ -72,7 +74,6 @@ void expect_refusal(AN::WrittenGradient const &result, std::string const &reason
 {
     EXPECT_TRUE(result.definition.empty());
     EXPECT_TRUE(result.begin.empty());
-    EXPECT_TRUE(result.end.empty());
     ASSERT_FALSE(result.refused.empty());
     EXPECT_NE(std::find(result.refused.begin(), result.refused.end(), reason), result.refused.end());
 }
@@ -109,7 +110,7 @@ TEST_F(AiNativeWriterGradientTest, ProcessStopsReadBackInBothRecordVersions)
             ASSERT_TRUE(doc);
             auto const result = AN::write_gradient(shape(doc.get()), Geom::identity(), "G(test)\\name", legacy);
             ASSERT_TRUE(result.refused.empty()) << result.refused.front();
-            EXPECT_EQ(result.end, "0 BB\n");
+            EXPECT_EQ(result.begin.rfind("Bb\n", 0), 0u); // A fill's instance opens with Bb alone.
             EXPECT_EQ(result.definition.find(" Bn"), std::string::npos); // Caller writes the total count once.
             // A linear's stops last first, as Illustrator writes and reads them.
             EXPECT_GT(result.definition.find(" 50 0 %_Bs\n"), result.definition.find(" 50 100 %_Bs\n"));
@@ -285,12 +286,11 @@ TEST_F(AiNativeWriterGradientTest, UnsupportedPaintAndOpacityAreRefusedWithoutRe
         {geometry + R"( spreadMethod="repeat")", rgb_stops, "", "linearGradient", "repeating or reflected gradients"},
         {geometry + R"( spreadMethod="reflect")", rgb_stops, "", "linearGradient", "repeating or reflected gradients"},
         {geometry + R"( color-interpolation="linearRGB")", rgb_stops, "", "linearGradient", "gradient interpolation other than RGB or CMYK"},
-        {geometry, rgb_stops, R"(stroke="#000000" stroke-width="0")", "linearGradient", "strokes on gradient-filled objects"},
         {geometry, rgb_stops, R"(fill-opacity=".5")", "linearGradient", "gradient transparency"},
         {geometry, rgb_stops, R"(opacity=".5")", "linearGradient", "gradient transparency"},
         {geometry, R"(<stop offset="0" stop-color="red"/><stop offset=".5" stop-color="green" stop-opacity=".4"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "gradient transparency"},
         {geometry, R"x(<stop offset="0" stop-color="red"/><stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x", "", "linearGradient", "mixed gradient colour spaces"},
-        {geometry, R"(<stop offset="0" stop-color="red" proof:ink="Ink"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "spot inks in gradients"},
+        {geometry, R"(<stop offset="0" stop-color="red" proof:ink="Ink"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "spot ink stops without a definition"},
         {geometry, "", "", "linearGradient", "gradients without stops"},
         {R"(gradientUnits="userSpaceOnUse" cx="50" cy="50" r="40" fr="5")", rgb_stops, "", "radialGradient", "radial gradients with a focal radius"},
         {R"(gradientUnits="userSpaceOnUse" cx="50" cy="50" r="0")", rgb_stops, "", "radialGradient", "zero-radius or nonfinite radial gradients"},
@@ -330,7 +330,7 @@ TEST_F(AiNativeWriterGradientTest, ReferencesCannotHideUnsupportedPlacementSpots
         auto doc = document(R"(xlink:href="#v" gradientUnits="userSpaceOnUse")", "", vector);
         ASSERT_TRUE(doc);
         expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Inherited"),
-                       std::string(extra).find("proof:ink") != std::string::npos ? "spot inks in gradients" :
+                       std::string(extra).find("proof:ink") != std::string::npos ? "spot ink swatches used as gradients" :
                                                                                 "inherited gradient geometry or transforms");
     }
     auto missing = document(geometry + R"( xlink:href="#missing")");
@@ -540,4 +540,271 @@ TEST_F(AiNativeWriterGradientTest, SingularNonfiniteAndExcessiveInputsFailClosed
     auto excessive = document(geometry, stops);
     ASSERT_TRUE(excessive);
     expect_refusal(AN::write_gradient(shape(excessive.get()), Geom::identity(), "TooMany"), "excessive or missing gradient stops");
+}
+
+namespace {
+
+std::unique_ptr<SPDocument> stroked(std::string const &shapes)
+{
+    auto out = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><defs>)x"
+        R"x(<linearGradient id="l" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="150" y2="0">)x" + rgb_stops +
+        R"x(</linearGradient><radialGradient id="r" gradientUnits="userSpaceOnUse" cx="230" cy="90" r="50">)x" +
+        rgb_stops + "</radialGradient></defs>" + shapes + "</svg>");
+    if (out) out->ensureUpToDate();
+    return out;
+}
+
+} // namespace
+
+TEST_F(AiNativeWriterGradientTest, InstanceEndsSayWhetherTheOperatorStrokes)
+{
+    // Adobe's 1998 specification, table 10, and Illustrator's own files: f and F 0, S and B 1,
+    // s and b 2.
+    EXPECT_EQ(AN::gradient_end('f'), "0 BB\n");
+    EXPECT_EQ(AN::gradient_end('F'), "0 BB\n");
+    EXPECT_EQ(AN::gradient_end('S'), "1 BB\n");
+    EXPECT_EQ(AN::gradient_end('B'), "1 BB\n");
+    EXPECT_EQ(AN::gradient_end('s'), "2 BB\n");
+    EXPECT_EQ(AN::gradient_end('b'), "2 BB\n");
+}
+
+TEST_F(AiNativeWriterGradientTest, GradientStrokesAndStrokedGradientFillsReadBack)
+{
+    auto doc = stroked(R"x(<path d="M10 20 L150 40" fill="none" stroke="url(#l)" stroke-width="8"/>)x"
+                       R"x(<rect x="190" y="50" width="80" height="80" fill="none" stroke="url(#r)" stroke-width="6"/>)x"
+                       R"x(<rect x="10" y="80" width="100" height="60" fill="url(#l)" stroke="#000000" stroke-width="2"/>)x"
+                       R"x(<path d="M10 160 L100 170 L60 175" fill="url(#l)" stroke="#000000" stroke-width="2"/>)x");
+    ASSERT_TRUE(doc);
+    auto const result = AN::write_records(doc.get(), AN::RecordsVersion::Modern);
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    // As Illustrator writes them: a stroke's instance opens with `1 Bb` about S or s, a fill's
+    // with Bb about b or B; the end says whether the operator strokes, and closes first.
+    EXPECT_EQ(occurrences(result.records, "\n1 Bb\n"), 2u);
+    EXPECT_EQ(occurrences(result.records, "\nBb\n"), 2u);
+    EXPECT_EQ(occurrences(result.records, "\nS\n1 BB\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, "\ns\n2 BB\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, "\nb\n2 BB\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, "\nB\n1 BB\n"), 1u);
+    EXPECT_EQ(occurrences(result.records, " BB\n"), 4u);
+
+    std::string error;
+    auto ai = AN::read(result.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->layers.size(), 1u);
+    auto const &nodes = ai->layers[0].children;
+    ASSERT_EQ(nodes.size(), 4u);
+    for (std::size_t i : {0u, 1u}) {
+        SCOPED_TRACE(i);
+        EXPECT_FALSE(nodes[i].fill);
+        ASSERT_TRUE(nodes[i].stroke);
+        EXPECT_EQ(nodes[i].stroke->kind, AN::Paint::Kind::Gradient);
+    }
+    EXPECT_NEAR(nodes[0].stroke_style.width, 6, 1e-6);
+    EXPECT_NEAR(nodes[1].stroke_style.width, 4.5, 1e-6);
+    EXPECT_FALSE(nodes[0].path[0].closed());
+    EXPECT_TRUE(nodes[1].path[0].closed());
+    // The stroke's ramp is where the SVG has it: halfway at x 80, in art space (x .75, y −.75).
+    EXPECT_NEAR(scalar(nodes[0].stroke->gradient, {60, -22.5}), .5, 2e-6);
+    EXPECT_NEAR(scalar(nodes[0].stroke->gradient, {7.5, -15}), 0, 2e-6);
+    auto const radial = read_radial(nodes[1].stroke->gradient);
+    expect_same_ellipse(radial.unit, Geom::Affine(37.5, 0, 0, 37.5, 172.5, -67.5));
+    ASSERT_EQ(ai->gradients.size(), 4u); // One definition per painted shape.
+    EXPECT_FALSE(ai->gradients.at(nodes[0].stroke->gradient.gradient).radial);
+    EXPECT_TRUE(ai->gradients.at(nodes[1].stroke->gradient.gradient).radial);
+    for (std::size_t i : {2u, 3u}) {
+        SCOPED_TRACE(i);
+        ASSERT_TRUE(nodes[i].fill);
+        EXPECT_EQ(nodes[i].fill->kind, AN::Paint::Kind::Gradient);
+        ASSERT_TRUE(nodes[i].stroke);
+        EXPECT_EQ(nodes[i].stroke->kind, AN::Paint::Kind::Solid);
+        EXPECT_EQ(nodes[i].stroke->color, AN::Color::rgb(0, 0, 0));
+        EXPECT_NEAR(nodes[i].stroke_style.width, 1.5, 1e-6);
+    }
+    EXPECT_TRUE(nodes[2].path[0].closed());
+    EXPECT_FALSE(nodes[3].path[0].closed());
+
+    // Illustrator 7 has gradient fills with plain strokes, and no gradient strokes.
+    auto fills = stroked(R"x(<rect x="10" y="80" width="100" height="60" fill="url(#l)" stroke="#000000" stroke-width="2"/>)x");
+    ASSERT_TRUE(fills);
+    auto const legacy = AN::write_records(fills.get(), AN::RecordsVersion::Illustrator7);
+    ASSERT_TRUE(legacy.refused.empty()) << legacy.refused.front();
+    EXPECT_EQ(occurrences(legacy.records, "\nb\n2 BB\n"), 1u);
+    auto const strokes = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(strokes.records.empty());
+    EXPECT_EQ(strokes.refused, std::vector<std::string>{"gradients on strokes (Illustrator 7)"});
+}
+
+TEST_F(AiNativeWriterGradientTest, CompoundPathStrokeGradientIsOnItsFinalContour)
+{
+    auto doc = stroked(R"x(<path d="M10 10H90V90H10Z M30 30V70H70V30Z" fill="none" stroke="url(#l)" stroke-width="4"/>)x");
+    ASSERT_TRUE(doc);
+    auto const result = AN::write_records(doc.get(), AN::RecordsVersion::Modern);
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    EXPECT_EQ(occurrences(result.records, "\n1 Bb\n"), 1u);
+    EXPECT_NE(result.records.find("0 G\n"), std::string::npos); // The early contour's plain stroke.
+    EXPECT_LT(result.records.find("\n1 Bb\n"), result.records.find("\ns\n2 BB\n*U\n"));
+    std::string error;
+    auto ai = AN::read(result.records, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &compound = ai->layers[0].children.at(0);
+    EXPECT_EQ(compound.kind, AN::Node::Kind::Compound);
+    ASSERT_EQ(compound.children.size(), 2u);
+    ASSERT_TRUE(compound.children[1].stroke);
+    EXPECT_EQ(compound.children[1].stroke->kind, AN::Paint::Kind::Gradient);
+}
+
+TEST_F(AiNativeWriterGradientTest, GradientStrokesThatNeedAppearancesAreRefusedByName)
+{
+    struct Case { std::string shape, reason; };
+    std::vector<Case> const cases{
+        {R"x(<rect x="10" y="10" width="80" height="40" fill="url(#l)" stroke="url(#r)" stroke-width="4"/>)x",
+         "gradients on both the fill and the stroke"},
+        {R"x(<rect x="10" y="10" width="80" height="40" fill="#ff0000" stroke="url(#l)" stroke-width="4"/>)x",
+         "gradient strokes on filled objects"},
+        {R"x(<path d="M10 10H90" fill="none" stroke="url(#l)" stroke-width="4" stroke-opacity=".5"/>)x",
+         "gradient transparency"},
+    };
+    for (auto const &test : cases) {
+        SCOPED_TRACE(test.reason);
+        auto doc = stroked(test.shape);
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get(), AN::RecordsVersion::Modern);
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), test.reason), written.refused.end());
+    }
+}
+
+namespace {
+
+std::string const brand = R"x(proof:ink="Brand Red" proof:ink-alternate="device-cmyk(0 1 0.8 0.1)")x";
+
+/// Spot stops as the .ai import writes them: the ink, its full-strength alternate and the tint
+/// on the <stop>, its colour the tint shown. `swatch` is the alternate of a solid swatch of the
+/// same ink.
+std::unique_ptr<SPDocument> spotted(std::string const &stops, std::string const &swatch = "device-cmyk(0 1 0.8 0.1)")
+{
+    auto out = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" xmlns:proof="urn:x-proof:document:1" )x"
+        R"x(xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="320" height="180" viewBox="0 0 320 180">)x"
+        R"x(<defs><linearGradient id="s" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="150" y2="0">)x" + stops +
+        R"x(</linearGradient><linearGradient id="sw" inkscape:swatch="solid" proof:ink="Brand Red" proof:ink-alternate=")x" +
+        swatch + R"x("><stop style="stop-color:)x" + swatch + R"x("/></linearGradient></defs>)x"
+        R"x(<rect x="10" y="10" width="140" height="60" fill="url(#s)"/>)x"
+        R"x(<rect x="170" y="10" width="60" height="60" fill="url(#sw)"/></svg>)x");
+    if (out) out->ensureUpToDate();
+    return out;
+}
+
+std::string const spot_stops =
+    R"x(<stop offset="0" style="stop-color:device-cmyk(0 1 0.8 0.1)" )x" + brand + "/>" +
+    R"x(<stop offset="0.5" style="stop-color:device-cmyk(0 0.3 0.24 0.03)" proof:ink-tint="0.3" )x" + brand + "/>" +
+    R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x";
+
+} // namespace
+
+TEST_F(AiNativeWriterGradientTest, SpotStopsAreWrittenAsTintsOfTheirInk)
+{
+    auto doc = spotted(spot_stops);
+    ASSERT_TRUE(doc);
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        SCOPED_TRACE(version == AN::RecordsVersion::Modern ? "modern" : "AI7");
+        auto const result = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+        // The ink is declared once, for the solid swatch and the gradient alike.
+        EXPECT_EQ(occurrences(result.records, "%%DocumentCustomColors: (Brand Red)\n"), 1u);
+        EXPECT_EQ(occurrences(result.records, "%%CMYKCustomColor: 0 1 0.8 0.1 (Brand Red)\n"), 1u);
+        EXPECT_EQ(occurrences(result.records, "(Brand Red)"), 5u);
+        // Full-strength CMYK, the name, the tint taken from 1, colour style 3.
+        EXPECT_NE(result.records.find("0 1 0.8 0.1 (Brand Red) 0 3 50 0 %_Bs\n"), std::string::npos);
+        EXPECT_NE(result.records.find("0 1 0.8 0.1 (Brand Red) 0.7 3 50 50 %_Bs\n"), std::string::npos);
+        EXPECT_NE(result.records.find("1 0 0 0 1 50 100 %_Bs\n"), std::string::npos);
+
+        std::string error;
+        auto ai = AN::read(result.records, error);
+        ASSERT_TRUE(ai) << error;
+        ASSERT_EQ(ai->gradients.size(), 1u);
+        auto const &stops = ai->gradients[0].stops;
+        ASSERT_EQ(stops.size(), 3u);
+        ASSERT_GE(stops[0].ink, 0);
+        EXPECT_EQ(stops[1].ink, stops[0].ink);
+        EXPECT_EQ(stops[2].ink, -1);
+        EXPECT_NEAR(stops[0].tint, 1, 1e-6);
+        EXPECT_NEAR(stops[1].tint, 0.3, 1e-6);
+        EXPECT_EQ(stops[2].color, AN::Color::cmyk(1, 0, 0, 0));
+        auto const &ink = ai->inks.at(stops[0].ink);
+        EXPECT_EQ(ink.name, "Brand Red");
+        EXPECT_EQ(ink.kind, AN::Ink::Kind::Spot);
+        EXPECT_EQ(ink.color, AN::Color::cmyk(0, 1, 0.8, 0.1));
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
+{
+    struct Case { std::string stops, swatch, reason; bool legacy_only = false; };
+    auto const ink = [](std::string const &attrs, std::string const &offset) {
+        return R"x(<stop offset=")x" + offset + R"x(" style="stop-color:device-cmyk(0 1 0.8 0.1)" )x" + attrs + "/>";
+    };
+    std::string const process_end = R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x";
+    std::string const cmyk_swatch = "device-cmyk(0 1 0.8 0.1)";
+    std::vector<Case> const cases{
+        {ink(brand, "0") + R"(<stop offset="1" stop-color="#00ff00"/>)", cmyk_swatch, "mixed gradient colour spaces"},
+        {ink(R"(proof:ink="Brand Red" proof:ink-alternate="#ff0000")", "0") + process_end, cmyk_swatch,
+         "spot inks defined in RGB or Lab"},
+        {ink(R"x(proof:ink="All" proof:ink-alternate="device-cmyk(1 1 1 1)")x", "0") + process_end, cmyk_swatch,
+         "Registration in gradients"},
+        {ink(brand, "0") + process_end, "device-cmyk(0 1 1 0)", "one ink name with two definitions"},
+        {ink(R"x(proof:ink="Фирменный" proof:ink-alternate="device-cmyk(0 1 0.8 0.1)")x", "0") + process_end,
+         cmyk_swatch, "non-ASCII ink names (Illustrator 7)", true},
+    };
+    for (auto const &test : cases) {
+        SCOPED_TRACE(test.reason);
+        auto doc = spotted(test.stops, test.swatch);
+        ASSERT_TRUE(doc);
+        for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+            auto const written = AN::write_records(doc.get(), version);
+            bool const refused = !test.legacy_only || version == AN::RecordsVersion::Illustrator7;
+            EXPECT_EQ(written.records.empty(), refused);
+            EXPECT_EQ(std::find(written.refused.begin(), written.refused.end(), test.reason) != written.refused.end(),
+                      refused);
+        }
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, IccCmykStopsAreWrittenAsTheirNumbers)
+{
+    // As the import leaves a CMYK file with its own profile: every process paint in it, stops too.
+    auto const path = std::string(INKSCAPE_TESTS_DIR "/data/colors/default_cmyk.icc");
+    auto doc = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" )x"
+        R"x(xmlns:proof="urn:x-proof:document:1" proof:color-mode="CMYK" proof:color-profile="Press" )x"
+        R"x(width="320" height="180" viewBox="0 0 320 180"><defs>)x"
+        R"x(<color-profile id="p" name="Press" xlink:href="file:///)x" + path + R"x("/>)x"
+        R"x(<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="150" y2="0">)x"
+        R"x(<stop offset="0" style="stop-color:#cd2468 icc-color(Press, 0.05, 1, 0.45, 0.22)"/>)x"
+        R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/></linearGradient></defs>)x"
+        R"x(<rect x="10" y="10" width="140" height="60" fill="url(#g)"/>)x"
+        R"x(<rect x="170" y="10" width="60" height="60" style="fill:#cd2468 icc-color(Press, 0.05, 1, 0.45, 0.22)"/></svg>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const *g = cast<SPGradient>(doc->getObjectById("g"));
+    ASSERT_TRUE(g && g->getGradientVector()->stops.front().color);
+    auto const space = g->getGradientVector()->stops.front().color->getSpace();
+    ASSERT_TRUE(space);
+    ASSERT_EQ(space->getType(), Inkscape::Colors::Space::Type::CMS); // Really in the profile.
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        SCOPED_TRACE(version == AN::RecordsVersion::Modern ? "modern" : "AI7");
+        auto const result = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+        EXPECT_NE(result.records.find("0.05 1 0.45 0.22 1 50 0 %_Bs\n"), std::string::npos);
+        EXPECT_NE(result.records.find("1 0 0 0 1 50 100 %_Bs\n"), std::string::npos);
+        EXPECT_NE(result.records.find("0.05 1 0.45 0.22 k\n"), std::string::npos); // The solid, as before.
+        std::string error;
+        auto ai = AN::read(result.records, error);
+        ASSERT_TRUE(ai) << error;
+        ASSERT_EQ(ai->gradients.size(), 1u);
+        ASSERT_EQ(ai->gradients[0].stops.size(), 2u);
+        EXPECT_EQ(ai->gradients[0].stops[0].color, AN::Color::cmyk(0.05, 1, 0.45, 0.22));
+        EXPECT_EQ(ai->gradients[0].stops[1].color, AN::Color::cmyk(1, 0, 0, 0));
+    }
 }

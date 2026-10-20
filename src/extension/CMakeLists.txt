@@ -29,6 +29,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-text.cpp
 	internal/ai/ai-native-writer.cpp
 	internal/ai/ai-native-writer-gradient.cpp
+	internal/ai/ai-native-writer-picture.cpp
 	internal/bluredge.cpp
 	internal/cairo-ps-out.cpp
 	internal/cairo-render-context.cpp
@@ -113,6 +114,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-text.h
 	internal/ai/ai-native-writer.h
 	internal/ai/ai-native-writer-gradient.h
+	internal/ai/ai-native-writer-picture.h
 	internal/bluredge.h
 	internal/cairo-ps-out.h
 	internal/cairo-render-context.h

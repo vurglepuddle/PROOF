@@ -12,6 +12,7 @@
 
 #include "ai-native-writer.h"
 #include "ai-native-writer-gradient.h"
+#include "ai-native-writer-picture.h"
 
 #include <algorithm>
 #include <array>
@@ -165,6 +166,7 @@ private:
     void state(std::string &cache, std::string const &line);
     std::optional<std::string> paint(SPIPaint const &p, SPStyle const *style, bool fill);
     std::optional<std::string> colour(Colors::Color const &c, bool fill);
+    bool declare_ink(std::string const &name, std::array<double, 4> const &cmyk);
     void refuse(std::string what) { _refused.insert(std::move(what)); }
 
     SPDocument *_doc;
@@ -220,11 +222,7 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
         }
         std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
         if (_legacy && !ascii(ink->name)) refuse("non-ASCII ink names (Illustrator 7)");
-        auto [known, added] = _spots.emplace(ink->name, cmyk);
-        if (!added && known->second != cmyk) {
-            refuse("one ink name with two definitions");
-            return {};
-        }
+        if (!declare_ink(ink->name, cmyk)) return {};
         auto const head = std::format("{} {} {} {} {}", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]), num(cmyk[3]),
                                       ps_string(ink->name));
         // The operand is the tint taken from 1: 0 is the ink at full strength.
@@ -235,6 +233,17 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
     }
     refuse(is<SPMeshGradient>(server) ? "mesh gradients" : is<SPPattern>(server) ? "patterns" : "gradients");
     return {};
+}
+
+/// Adds a spot ink to those the file declares; false, refused, when the name has another definition.
+bool Writer::declare_ink(std::string const &name, std::array<double, 4> const &cmyk)
+{
+    auto [known, added] = _spots.emplace(name, cmyk);
+    if (!added && known->second != cmyk) {
+        refuse("one ink name with two definitions");
+        return false;
+    }
+    return true;
 }
 
 void Writer::state(std::string &cache, std::string const &line)
@@ -349,18 +358,40 @@ void Writer::shape(SPShape const *s)
     if (!s->curve() || s->curve()->empty()) return;
     if (s->hasMarkers()) refuse("markers");
     auto const affine = s->i2doc_affine() * _to_art;
-    std::optional<WrittenGradient> gradient;
-    std::optional<std::string> fill;
-    auto const server = style->fill.isPaintserver() && style->fill.href ? style->fill.href->getObject() : nullptr;
-    if (auto g = cast<SPGradient>(server); g && !g->isSolid()) {
-        gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas);
-        for (auto const &why : gradient->refused) refuse(why);
-        if (!gradient->definition.empty()) _gradients.push_back(gradient->definition);
-        fill = "0 g"; // A compound path's early contours need a plain fill before its final gradient.
-    } else {
-        fill = paint(style->fill, style, true);
+    auto const is_gradient = [](SPIPaint const &p) {
+        auto const g = cast<SPGradient>(p.isPaintserver() && p.href ? p.href->getObject() : nullptr);
+        return g && !g->isSolid();
+    };
+    bool const fill_gradient = is_gradient(style->fill);
+    bool const stroke_gradient = style->stroke_width.computed > 0 && is_gradient(style->stroke);
+    // One instance brackets one paint operator. A gradient fill with a plain stroke is b or B in
+    // it (1,009 times in the owner's files); a gradient stroke is always about an unfilled path
+    // in Illustrator's files. The other two combinations it writes only through its appearance
+    // records: refused until Illustrator controls show them.
+    if (fill_gradient && stroke_gradient) {
+        refuse("gradients on both the fill and the stroke");
+        return;
     }
-    auto stroke = style->stroke_width.computed > 0 ? paint(style->stroke, style, false) : std::nullopt;
+    if (stroke_gradient && !style->fill.isNone()) {
+        refuse("gradient strokes on filled objects");
+        return;
+    }
+    std::optional<WrittenGradient> gradient;
+    std::optional<std::string> fill, stroke;
+    if (fill_gradient || stroke_gradient) {
+        gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas,
+                                  stroke_gradient);
+        for (auto const &why : gradient->refused) refuse(why);
+        for (auto const &[name, cmyk] : gradient->inks) declare_ink(name, cmyk);
+        if (!gradient->definition.empty()) _gradients.push_back(gradient->definition);
+    }
+    // A compound path's early contours need a plain paint before its final gradient.
+    fill = fill_gradient ? std::optional<std::string>("0 g") : paint(style->fill, style, true);
+    if (stroke_gradient) {
+        stroke = "0 G";
+    } else if (style->stroke_width.computed > 0) {
+        stroke = paint(style->stroke, style, false);
+    }
     if (scale24(style->fill_opacity.value) < 1.0 - 1e-6 && fill) refuse("transparency");
     if (scale24(style->stroke_opacity.value) < 1.0 - 1e-6 && stroke) refuse("transparency");
 
@@ -404,20 +435,22 @@ void Writer::shape(SPShape const *s)
         char c = fill && stroke ? 'b' : fill ? 'f' : stroke ? 's' : 'n';
         return p.closed() ? c : static_cast<char>(g_ascii_toupper(c));
     };
+    // The instance brackets the final contour's paint operator; its end says whether that
+    // operator strokes the path, and closes it first.
+    auto contour = [&](std::size_t i) {
+        path_data(pv[i], types[i]);
+        bool const last = i + 1 == pv.size();
+        if (gradient && last) _body << gradient->begin;
+        auto const c = op(pv[i]);
+        _body << c << '\n';
+        if (gradient && last) _body << gradient_end(c);
+    };
     if (pv.size() == 1) {
-        path_data(pv[0], types[0]);
-        if (gradient) _body << gradient->begin;
-        _body << op(pv[0]) << '\n';
-        if (gradient) _body << gradient->end;
+        contour(0);
         return;
     }
     _body << "*u\n";
-    for (std::size_t i = 0; i < pv.size(); ++i) {
-        path_data(pv[i], types[i]);
-        if (gradient && i + 1 == pv.size()) _body << gradient->begin;
-        _body << op(pv[i]) << '\n';
-        if (gradient && i + 1 == pv.size()) _body << gradient->end;
-    }
+    for (std::size_t i = 0; i < pv.size(); ++i) contour(i);
     _body << "*U\n";
 }
 
@@ -452,8 +485,14 @@ void Writer::item(SPItem const *it)
         if (!clipped) _body << "U\n";
     } else if (auto s = cast<SPShape>(it)) {
         shape(s);
-    } else if (is<SPImage>(it)) {
-        refuse("pictures");
+    } else if (auto image = cast<SPImage>(it)) {
+        if (_legacy) {
+            refuse("pictures (Illustrator 7)");
+        } else {
+            auto const written = write_picture(image, image->i2doc_affine() * _to_art);
+            for (auto const &why : written.refused) refuse(why);
+            _body << written.records;
+        }
     } else {
         refuse("type");
     }

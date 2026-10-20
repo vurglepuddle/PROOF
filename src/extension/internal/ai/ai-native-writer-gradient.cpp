@@ -11,6 +11,13 @@
  * Bg, and in the modern form the whole placement Bm (the unit circle onto the art).
  * Illustrator itself reads Bg, an ellipse there by its aspect ratio and, turned, by Bg's
  * matrix on its canvas (see radial_instance). Illustrator 7 records get circles only.
+ *
+ * A stop that is a tint of a spot ink (proof:ink on the <stop>, as the .ai import writes it) is
+ * written as one, colour style 3, and the ink handed back for the file to declare.
+ *
+ * A stroke's gradient is the same instance opened with `1 Bb` about the stroke operator, the
+ * gradient spread over the stroke's area as SVG spreads it: Illustrator's default, "within
+ * stroke". Its "along" and "across" have no SVG counterpart and aren't written.
  */
 #include "ai-native-writer-gradient.h"
 
@@ -33,6 +40,7 @@
 #include "object/sp-radial-gradient.h"
 #include "object/sp-shape.h"
 #include "object/sp-stop.h"
+#include "spot-ink.h"
 #include "style.h"
 #include "xml/node.h"
 
@@ -106,16 +114,14 @@ std::optional<std::string> check_references(SPGradient const *gradient)
     if (is<SPRadialGradient>(gradient)) placement.assign(radial.begin(), radial.end());
     for (auto const *g = gradient; g;) {
         if (!visited.insert(g).second || visited.size() > MAX_REFS) return "cyclic or excessive gradient references";
-        if (ink_metadata(g)) return "spot inks in gradients";
+        // A spot swatch is a one-stop gradient; its stops are read from <stop>s (stop_inks).
+        if (ink_metadata(g)) return "spot ink swatches used as gradients";
         if (g != gradient) {
             for (auto const *key : placement) {
                 if (!gradient->getRepr()->attribute(key) && g->getRepr()->attribute(key)) {
                     return "inherited gradient geometry or transforms";
                 }
             }
-        }
-        for (auto const &child : g->children) {
-            if (is<SPStop>(&child) && ink_metadata(&child)) return "spot inks in gradients";
         }
         auto const *next = g->ref ? g->ref->getObject() : nullptr;
         if (!next && (g->getRepr()->attribute("xlink:href") || g->getRepr()->attribute("href"))) {
@@ -127,10 +133,41 @@ std::optional<std::string> check_references(SPGradient const *gradient)
     return {};
 }
 
+/** The spot ink of each effective stop, or none, beside SPGradient::rebuildVector's stops: the
+ * <stop>s of the first gradient along the references that has any, with a copy of the first
+ * at 0 and of the last at 1 when they don't reach there. Empty when they don't line up, and
+ * with `undefined` set when a stop names an ink without a definition that can be read. */
+std::vector<std::optional<SpotInk::Ink>> stop_inks(SPGradient const *gradient, std::size_t effective, bool &undefined)
+{
+    auto const *owner = gradient;
+    for (std::size_t i = 0; owner && !owner->hasStops() && i <= MAX_REFS; ++i) {
+        owner = owner->ref ? owner->ref->getObject() : nullptr;
+    }
+    std::vector<std::optional<SpotInk::Ink>> inks;
+    std::vector<double> offsets;
+    if (!owner) return inks;
+    for (auto const &child : owner->children) {
+        if (auto const *stop = cast<SPStop>(&child)) {
+            inks.push_back(SpotInk::read(stop->getRepr()));
+            if (!inks.back() && ink_metadata(stop)) {
+                undefined = true;
+                return {};
+            }
+            double const offset = offsets.empty() ? stop->offset : std::max<double>(stop->offset, offsets.back());
+            offsets.push_back(std::clamp(offset, 0.0, 1.0));
+        }
+    }
+    if (inks.empty()) return inks;
+    if (offsets.front() > 0.0) inks.insert(inks.begin(), inks.front());
+    if (offsets.back() < 1.0) inks.push_back(inks.back());
+    if (inks.size() != effective) inks.clear();
+    return inks;
+}
+
 /// A linear gradient's instance: Bb, then Bg with the absolute art-space vector of the scalar
 /// field `matrix` carries the gradient's own onto.
 std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient const *gradient, Geom::Affine const &matrix,
-                                                           std::string const &name)
+                                                           std::string const &name, std::string const &open)
 {
     Geom::Point const p0(gradient->x1.computed, gradient->y1.computed);
     Geom::Point const d(gradient->x2.computed - p0.x(), gradient->y2.computed - p0.y());
@@ -148,7 +185,7 @@ std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient cons
     if (!std::isfinite(origin.x()) || !std::isfinite(origin.y()) || !std::isfinite(length) || num(length) == "0") {
         return refused("zero-length or nonfinite linear gradients");
     }
-    return std::format("Bb\n1 {} {} {} {} {} 1 0 0 1 0 0 Bg\n", name, num(origin.x()), num(origin.y()), num(angle),
+    return std::format("{}1 {} {} {} {} {} 1 0 0 1 0 0 Bg\n", open, name, num(origin.x()), num(origin.y()), num(angle),
                        num(length));
 }
 
@@ -169,7 +206,8 @@ std::variant<std::string, WrittenGradient> linear_instance(SPLinearGradient cons
  * Illustrator takes them in the ellipse before its turn, which is the same.
  */
 std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient const *gradient, Geom::Affine const &matrix,
-                                                           std::string const &name, bool legacy, Geom::Point const &canvas)
+                                                           std::string const &name, bool legacy, Geom::Point const &canvas,
+                                                           std::string const &open)
 {
     double const pi = std::acos(-1.0);
     double const r = gradient->r.computed;
@@ -216,7 +254,7 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
     auto const offset = focus * unit.withoutTranslation();
     auto const in_bm = offset * bm.withoutTranslation().inverse();
     double const share = std::min(Geom::L2(in_bm), 1.0);
-    std::string out = "Bb\n";
+    std::string out = open;
     if (num(share) == "0") {
         out += "0 0 0 0 Bh\n";
     } else {
@@ -249,22 +287,34 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
 
 } // namespace
 
+std::string gradient_end(char op)
+{
+    switch (op) {
+        case 'S': case 'B': return "1 BB\n";
+        case 's': case 'b': return "2 BB\n";
+        default: return "0 BB\n";
+    }
+}
+
 WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to_art,
-                               std::string const &unique_name, bool legacy, Geom::Point const &canvas)
+                               std::string const &unique_name, bool legacy, Geom::Point const &canvas, bool stroke)
 {
     if (!shape || !shape->style) return refused("gradients without a shape");
     auto const *style = shape->style;
-    if (!style->stroke.isNone()) return refused("strokes on gradient-filled objects");
-    if (style->opacity.as_double() < 1.0 - 1e-6 || style->fill_opacity.as_double() < 1.0 - 1e-6) {
-        return refused("gradient transparency");
-    }
-    auto const *server = style->fill.isPaintserver() && style->fill.href ? style->fill.href->getObject() : nullptr;
+    // Illustrator 7's records have no gradient strokes: they came with Illustrator CS6.
+    if (stroke && legacy) return refused("gradients on strokes (Illustrator 7)");
+    SPIPaint const &paint = stroke ? static_cast<SPIPaint const &>(style->stroke) : style->fill;
+    auto const paint_opacity = stroke ? style->stroke_opacity.as_double() : style->fill_opacity.as_double();
+    if (style->opacity.as_double() < 1.0 - 1e-6 || paint_opacity < 1.0 - 1e-6) return refused("gradient transparency");
+    auto const *server = paint.isPaintserver() && paint.href ? paint.href->getObject() : nullptr;
     if (is<SPMeshGradient>(server)) return refused("mesh gradients");
     auto const *linear = cast<SPLinearGradient>(server);
     auto const *radial = cast<SPRadialGradient>(server);
     SPGradient const *gradient = linear;
     if (radial) gradient = radial;
-    if (!gradient || gradient->isSolid()) return refused("fills other than linear or radial gradients");
+    if (!gradient || gradient->isSolid()) {
+        return refused(stroke ? "strokes other than linear or radial gradients" : "fills other than linear or radial gradients");
+    }
     if (auto why = check_references(gradient)) return refused(*why);
     if (gradient->fetchSpread() != SP_GRADIENT_SPREAD_PAD) return refused("repeating or reflected gradients");
     auto const interpolation = gradient->style->color_interpolation.getInterpolationSpace();
@@ -302,25 +352,42 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     matrix *= item_to_art;
     if (!regular(matrix)) return refused("singular or nonfinite gradient transforms");
     auto const name = ps_string(unique_name);
-    auto instance = linear ? linear_instance(linear, matrix, name) : radial_instance(radial, matrix, name, legacy, canvas);
+    // A stroke's instance opens with `1 Bb`: 804 about an S or s in Illustrator's files between
+    // the owner's set and the collaborator's (and 66 notes that paint nothing); a fill's with `Bb`.
+    std::string const open = stroke ? "1 Bb\n" : "Bb\n";
+    auto instance = linear ? linear_instance(linear, matrix, name, open)
+                           : radial_instance(radial, matrix, name, legacy, canvas, open);
     if (auto *why = std::get_if<WrittenGradient>(&instance)) return std::move(*why);
 
     auto const *effective = gradient->getGradientVector();
     if (effective->stops.size() < 2 || effective->stops.size() > MAX_STOPS) return refused("excessive or missing gradient stops");
+    bool undefined = false;
+    auto const inks = stop_inks(gradient, effective->stops.size(), undefined);
+    if (undefined) return refused("spot ink stops without a definition");
+    if (inks.empty()) return refused("invalid gradient stops");
+    WrittenGradient out;
     std::optional<Type> model;
     std::vector<std::string> stops;
     double previous = -1;
-    for (auto const &stop : effective->stops) {
+    for (std::size_t index = 0; index < effective->stops.size(); ++index) {
+        auto const &stop = effective->stops[index];
+        auto const &ink = inks[index];
         if (!stop.color || !std::isfinite(stop.offset)) return refused("invalid gradient stops");
         auto const &color = *stop.color;
         if (!std::isfinite(color.getOpacity()) || color.getOpacity() < 1.0 - 1e-6) return refused("gradient transparency");
         auto const space = color.getSpace();
-        if (!space || (space->getType() != Type::RGB && space->getType() != Type::CSSNAME &&
-                       space->getType() != Type::CMYK)) {
-            return refused("gradient colours other than standard RGB or DeviceCMYK");
+        // CMYK in a profile (the document's, as an import assigns it to every process paint of a
+        // CMYK file) is written as its numbers, as solid paint is; the profile goes with the PDF
+        // half, where PROOF's export keeps the numbers too.
+        bool const icc_cmyk = space && space->getType() == Type::CMS && space->getComponentType() == Type::CMYK;
+        if (!ink && !icc_cmyk && (!space || (space->getType() != Type::RGB && space->getType() != Type::CSSNAME &&
+                                             space->getType() != Type::CMYK))) {
+            return refused("gradient colours other than standard RGB or CMYK");
         }
-        // A CSS colour name is standard sRGB with different spelling, not a named ink.
-        auto const stop_model = space->getType() == Type::CSSNAME ? Type::RGB : space->getType();
+        // A CSS colour name is standard sRGB with different spelling, not a named ink. A spot
+        // ink defined in CMYK goes with CMYK stops, as its tints blend in the canvas and PDF.
+        auto const stop_model = ink || icc_cmyk ? Type::CMYK
+                                : space->getType() == Type::CSSNAME ? Type::RGB : space->getType();
         if (model && *model != stop_model) return refused("mixed gradient colour spaces");
         model = stop_model;
         if (interpolation && interpolation->getType() != stop_model) {
@@ -329,6 +396,28 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         auto const offset = std::round(stop.offset * 1000000.0) / 1000000.0;
         if (offset <= previous) return refused("gradient hard stops or coincident offsets");
         previous = offset;
+        if (ink) {
+            // A tint of a spot ink: its full-strength CMYK, its name, the tint taken from 1 as
+            // x writes it, colour style 3 (Adobe's 1998 specification, Bs; Illustrator writes
+            // the same as the stand-in of its own named stops, `%_BS`).
+            auto const &a = ink->alternate;
+            if (ink->name == "All" || ink->name == "[Registration]") return refused("Registration in gradients");
+            if (!a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK) {
+                return refused("spot inks defined in RGB or Lab");
+            }
+            if (legacy && !std::all_of(ink->name.begin(), ink->name.end(), [](unsigned char c) { return c < 128; })) {
+                return refused("non-ASCII ink names (Illustrator 7)");
+            }
+            std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
+            for (auto const v : cmyk) {
+                if (!std::isfinite(v) || v < 0 || v > 1) return refused("out-of-range gradient colours");
+            }
+            if (!std::isfinite(ink->tint)) return refused("out-of-range gradient colours");
+            stops.push_back(std::format("{} {} {} {} {} {} 3 50 {} %_Bs\n", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]),
+                                        num(cmyk[3]), ps_string(ink->name), num(1.0 - ink->tint), num(offset * 100)));
+            out.inks.emplace_back(ink->name, cmyk);
+            continue;
+        }
         auto const count = *model == Type::CMYK ? 4u : 3u;
         for (unsigned i = 0; i < count; ++i) {
             if (!std::isfinite(color[i]) || color[i] < 0 || color[i] > 1) return refused("out-of-range gradient colours");
@@ -356,10 +445,8 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         for (auto it = stops.rbegin(); it != stops.rend(); ++it) definition << *it;
     }
     definition << "BD\n%AI5_EndGradient\n";
-    WrittenGradient out;
     out.definition = definition.str();
     out.begin = std::get<std::string>(instance);
-    out.end = "0 BB\n";
     return out;
 }
 

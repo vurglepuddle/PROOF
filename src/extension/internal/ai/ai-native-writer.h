@@ -6,8 +6,11 @@
  * (doc/PROOF-ai-interchange.md, "Native writer"): artboards from the document's pages,
  * layers with their options, groups, paths and compound paths with corner/smooth flags,
  * clipping groups, process colour in CMYK, RGB or grey, spot inks with their tints,
- * opaque pad linear process fills, overprint and stroke style. Gradient-filled shapes
- * must have no stroke; radial, transparent, spot and mixed-model gradients are refused.
+ * opaque pad linear and radial process fills and strokes, overprint and stroke style. A
+ * gradient-filled shape may have a plain stroke; a gradient stroke needs an unfilled path
+ * and the modern form. Gradient stops may be tints of spot inks defined in CMYK; transparent
+ * and mixed RGB/CMYK gradients are refused. Pictures the document holds itself are embedded
+ * rasters (ai-native-writer-picture.h); linked ones are refused.
  * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point
  * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:

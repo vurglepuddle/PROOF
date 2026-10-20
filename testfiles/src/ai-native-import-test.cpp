@@ -5595,6 +5595,146 @@ TEST_F(AiNativeImportTest, TheWriterRefusesWhatItCannotWriteByName)
     EXPECT_NE(page.records.find("%AI3_Cropmarks: 0 -841.8898 595.2756 0"), std::string::npos) << page.records.substr(0, 900);
 }
 
+namespace {
+
+/// A PNG of `w` by `h` straight RGBA pixels, as a data: address.
+std::string png_uri(int w, int h, std::vector<std::uint8_t> const &rgba)
+{
+    auto *pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, w, h);
+    auto const stride = gdk_pixbuf_get_rowstride(pb);
+    for (int y = 0; y < h; ++y) std::copy_n(rgba.data() + y * w * 4, w * 4, gdk_pixbuf_get_pixels(pb) + y * stride);
+    gchar *buffer = nullptr;
+    gsize size = 0;
+    gdk_pixbuf_save_to_buffer(pb, &buffer, &size, "png", nullptr, nullptr);
+    g_object_unref(pb);
+    gchar *base64 = g_base64_encode(reinterpret_cast<guchar const *>(buffer), size);
+    std::string out = std::string("data:image/png;base64,") + base64;
+    g_free(base64);
+    g_free(buffer);
+    return out;
+}
+
+void expect_same_box(SPDocument *a, XML::Node *x, SPDocument *b, XML::Node *y)
+{
+    auto const was = shape_box(a, x), now = shape_box(b, y);
+    ASSERT_TRUE(was && now);
+    EXPECT_NEAR(now->left(), was->left(), 1e-3);
+    EXPECT_NEAR(now->top(), was->top(), 1e-3);
+    EXPECT_NEAR(now->right(), was->right(), 1e-3);
+    EXPECT_NEAR(now->bottom(), was->bottom(), 1e-3);
+}
+
+} // namespace
+
+TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirCmykSamples)
+{
+    // An Illustrator CMYK picture, read, written and read again: its inks as they were.
+    std::string const art = "%AI5_BeginRaster\n() 1 XG\n/DeviceCMYK XN\n[2 0 0 -2 50 40] 0 0 2 1 2 1 8 4 0 0 1 0 0\n"
+                            "%%BeginData: 12\nXI\n\x10\x20\x30\x40\x50\x60\x70\x80\n%%EndData\nXH\n%AI5_EndRaster\n";
+    auto b = make(records(layer(art)));
+    ASSERT_TRUE(b);
+    auto const written = AN::write_records(b->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    // As Illustrator writes it: the space, 8 bits CMYK without alpha, kind 2, the count of "XI",
+    // its line end and the samples.
+    EXPECT_NE(written.records.find("%AI5_File:\n%AI5_BeginRaster\n() 0 XG\n/DeviceCMYK XN\n"), std::string::npos);
+    EXPECT_NE(written.records.find(" 2 1 0 Xh\n"), std::string::npos);
+    EXPECT_NE(written.records.find(" 0 0 2 1 2 1 8 4 0 2 1 0 4 4 0 0\n%%BeginData: 11\nXI\n"
+                                   "\x10\x20\x30\x40\x50\x60\x70\x80\n%%EndData\nXH\n%AI5_EndRaster\nN\n"),
+              std::string::npos);
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->images.size(), 1u);
+    EXPECT_EQ(ai->images[0].channels, 4);
+    EXPECT_EQ(ai->images[0].samples, std::string("\x10\x20\x30\x40\x50\x60\x70\x80", 8));
+    EXPECT_TRUE(ai->images[0].alpha.empty());
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const first = elements(b->document->getReprRoot(), "svg:image");
+    auto const second = elements(again->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(first.size(), 1u);
+    ASSERT_EQ(second.size(), 1u);
+    expect_same_box(b->document.get(), first[0], again->document.get(), second[0]);
+    EXPECT_EQ(attr(second[0], "proof:samples"), attr(first[0], "proof:samples"));
+}
+
+TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirRgbAndTransparency)
+{
+    std::vector<std::uint8_t> const clear{255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255,
+                                          10, 20, 30, 255, 40, 50, 60, 0, 70, 80, 90, 255};
+    std::vector<std::uint8_t> opaque(clear);
+    for (std::size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
+    // Stretched and turned; and one fitted into a square box, as preserveAspectRatio's default.
+    auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Pictures">)"
+                            R"(<image x="10" y="20" width="30" height="20" preserveAspectRatio="none" )"
+                            R"x(transform="rotate(15 25 30)" href=")x" + png_uri(3, 2, clear) + R"("/>)"
+                            R"(<image x="100" y="20" width="30" height="30" href=")" + png_uri(3, 2, opaque) + R"("/>)"
+                            R"(</g>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find(" 0 0 3 2 3 2 8 3 1 17 1 0 4 4 0 0\n%%BeginData: 21\nXI\n"), std::string::npos);
+    EXPECT_NE(written.records.find(" 0 0 3 2 3 2 8 3 0 1 1 0 4 4 0 0\n%%BeginData: 21\nXI\n"), std::string::npos);
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->images.size(), 2u);
+    auto const &img = ai->images[0];
+    ASSERT_EQ(img.width, 3);
+    ASSERT_EQ(img.height, 2);
+    ASSERT_EQ(img.channels, 3);
+    ASSERT_EQ(img.alpha.size(), 6u);
+    for (int i = 0; i < 6; ++i) {
+        auto const a = clear[i * 4 + 3];
+        EXPECT_EQ(static_cast<std::uint8_t>(img.alpha[i]), a) << i;
+        if (a == 0) continue; // A clear pixel has no colour to keep.
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(static_cast<std::uint8_t>(img.samples[i * 3 + c]), clear[i * 4 + c], a == 255 ? 0 : 2) << i;
+        }
+    }
+    EXPECT_TRUE(ai->images[1].alpha.empty());
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const before = elements(doc->getReprRoot(), "svg:image");
+    auto const after = elements(again->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(after.size(), 2u);
+    expect_same_box(doc.get(), before[0], again->document.get(), after[0]);
+    // The fitted one lies in the middle of its box, 30 by 20: the picture, not its box, is written.
+    auto const fitted = shape_box(again->document.get(), after[1]);
+    ASSERT_TRUE(fitted);
+    EXPECT_NEAR(fitted->top(), 25, 1e-3);
+    EXPECT_NEAR(fitted->height(), 20, 1e-3);
+    EXPECT_NEAR(fitted->left(), 100, 1e-3);
+    EXPECT_NEAR(fitted->width(), 30, 1e-3);
+}
+
+TEST_F(AiNativeImportTest, PicturesTheWriterCannotWriteAreRefusedByName)
+{
+    std::vector<std::uint8_t> const pixel{10, 20, 30, 255};
+    struct Case { std::string image, reason; };
+    std::vector<Case> const cases{
+        {R"(<image x="0" y="0" width="10" height="10" href="not-there.png"/>)", "linked pictures"},
+        {R"(<image x="0" y="0" width="10" height="10" href="data:image/svg+xml;base64,PHN2Zy8+"/>)", "SVG pictures"},
+        {R"(<image x="0" y="0" width="10" height="20" preserveAspectRatio="xMidYMid slice" href=")" + png_uri(1, 1, pixel) +
+             R"("/>)", "pictures cropped to their box"},
+    };
+    for (auto const &test : cases) {
+        SCOPED_TRACE(test.reason);
+        auto doc = svg_document(test.image);
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), test.reason), written.refused.end());
+    }
+    auto embedded = svg_document(R"(<image x="0" y="0" width="10" height="10" href=")" + png_uri(1, 1, pixel) + R"("/>)");
+    ASSERT_TRUE(embedded);
+    EXPECT_TRUE(AN::write_records(embedded.get()).refused.empty());
+    auto const legacy = AN::write_records(embedded.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_EQ(legacy.refused, std::vector<std::string>{"pictures (Illustrator 7)"});
+}
+
 // Records for checking in Illustrator: written to PROOF_AI_WRITER_OUT when it is set.
 TEST_F(AiNativeImportTest, WriterRecordsForIllustrator)
 {

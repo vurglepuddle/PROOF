@@ -641,3 +641,154 @@ an RGB document through the working CMYK profile, as Illustrator does
 ([document colours](PROOF-document-colors.md), "CMYK paint without a CMYK profile
 of its own"). The smoke's last control, an RGB document mostly cyan, reopens from
 its own records; before, it opened from its page.
+
+### Gradient strokes, spot and ICC-tagged gradients, and the document's profile (2026-10-20)
+
+**Both writers** now write three more kinds of gradient paint
+(`ai-native-writer-gradient.cpp`, `ai-native-writer.cpp`):
+
+- **A gradient fill with a plain stroke.** The fill's instance brackets `b` or
+  `B`, and its end says what the operator does to the stroke: `0 BB` after `f`
+  or `F`, `1 BB` after `S` or `B`, `2 BB` after `s` or `b` (Adobe's 1998
+  specification, table 10: don't stroke, stroke, close and stroke). Illustrator
+  writes it so 1,009 times in the owner's 871 copies and 745 in the
+  collaborator's pack. Before, any stroke on a gradient fill was refused.
+- **Tints of spot inks in gradient stops.** A stop carrying `proof:ink`, as the
+  `.ai` import writes it, goes out as its ink at full strength, its name, the
+  tint taken from 1 and colour style 3: `0 1 0.8 0.1 (Brand Red) 0.8 3 50 50
+  %_Bs` is a 20% tint at the ramp's middle. The ink is declared with the solid
+  spots (`%%DocumentCustomColors`, `%%CMYKCustomColor`), one name one
+  definition. Spot and CMYK stops mix; spot and RGB stops don't ("mixed
+  gradient colour spaces"). Refused by name: an ink defined in RGB or Lab,
+  Registration, a stop that names an ink without a definition, and in
+  Illustrator 7 a non-ASCII ink name.
+- **CMYK stops in a profile**, `icc-color()` in the document's profile, as the
+  import leaves every process paint of a CMYK file that has one. They are
+  written as their numbers, as solid paint already was. Before, every gradient
+  read from such a file was refused.
+
+**The modern form** also writes **gradients on strokes**: the same instance,
+opened with `1 Bb`, about `S` (`1 BB`) or `s` (`2 BB`), linear or radial,
+turned ellipses included. That is "within stroke", Illustrator's default and
+what an SVG stroke gradient means; its "along" and "across" have no SVG
+counterpart. Illustrator 7 had no gradient strokes (they came with CS6), so its
+export refuses them by name.
+
+Refused by name until Illustrator controls show their form: **a gradient on both
+the fill and the stroke**, and **a gradient stroke on a filled path**. Every
+gradient stroke in Illustrator's files is on an unfilled path; the others it
+writes only through its appearance records.
+
+**What Illustrator writes**, counted on the owner's 871 copies and, separately,
+the collaborator's pack (140 files under 100 MB):
+
+- `1 Bb` 663 times in 2 files and 207 in 5. 804 bracket a stroke operator
+  (`S` and `1 BB` 666, `s` and `2 BB` 138); 66 are notes kept after a drawn
+  object (`1 0 Xd`, `1 Bb`, `Bg` with flag 2, "disable rendering", `1 BB`,
+  `6 () XW`). PROOF doesn't write those notes; Illustrator opening the file
+  decides whether it needs them.
+- Stops: 24,722 of the owner's are Illustrator's newer form, colour style 6:
+  the colour, its own style, an opacity, `6`, midpoint, ramp point. Named stops
+  are written twice: a stand-in `… %_BS` of style 3 (`c m y k (name) tint 3`)
+  and the exact `%_… Bs` of style 5 (`(name) tint type 5`) or, for Lab inks, 4.
+  PROOF writes the 1998 form, which Illustrator 29 already reads for process
+  stops.
+
+**The document's profile goes with the file** (`ai-native-output.cpp`). Native
+Save As found the profile nowhere it is looked for: Illustrator keeps a
+document's profile as a colour space based on it among each page's own
+resources (53 of 60 of the owner's files checked; none anywhere else, not in
+the private data, the metadata or an output intent), and PROOF's reader takes
+it from there. PROOF's PDF export names it only inside the page's form. So
+every PROOF `.ai` from a document with a profile of its own reopened in the
+working profile, its numbers kept and its colours not: 11 to 16 apart for the
+test profile against GRACoL 2006. Now each page also names `/CSDocument
+[/ICCBased …]`, one Flate stream of the profile, the page's other resources
+kept. LittleCMS writes the profile's description anew when it saves one; its
+colour tables are the same bytes. The rendering intent isn't carried; the
+import assigns with the working intent, as Illustrator's is a colour setting
+too.
+
+**Checks.** Gradient writer unit tests 20/20 (stroke instances and their ends in
+both forms, compound stroke gradients, spot stops read back as tints of their
+ink in both forms, ICC stops, and the refusals). New CLI smoke
+`ai-gradient-paint-output-smoke.py`, 29/29 in the focused runner: a modern
+control of six gradient strokes (linear, radial with a focal point, CMYK on a
+circle, a compound path, a turned elliptical radial, spot tints), two gradient
+fills with plain strokes and a spot fill, reopened from its own records within
+1 of the canvas, its page PROOF's own PDF export and within 8 of the canvas on
+the RGB shapes; the Illustrator 7 control (fills with plain strokes, the spot
+fill) likewise; a CMYK document in the test data's profile, which reopens in
+that profile with its stop numbers, drawn as before (0 apart; at the working
+profile it was 11 to 16). The linear smoke's stroke refusal is now the
+both-gradients one.
+
+**Illustrator** has not opened these files yet: the owner was away, and opening
+files there needs their approval. Until it has, these forms are PROOF's reading
+of Illustrator's own files, not a qualification.
+
+### Embedded pictures (2026-10-20)
+
+Native Save As now writes a picture the document holds itself (a `data:`
+address) as Illustrator writes an embedded raster
+(`ai-native-writer-picture.cpp`). Counted on the owner's 871 copies (2,752
+rasters in 282 files) and the collaborator's pack (2,007 in 83), every one has
+this form:
+
+```text
+%AI5_File:
+%AI5_BeginRaster
+() 0 XG
+/DeviceRGB XN
+[matrix] w h 0 Xh
+[matrix] 0 0 w h w h 8 type alpha kind 1 0 4 4 0 0
+%%BeginData: n
+XI
+<colour samples><alpha samples>
+%%EndData
+XH
+%AI5_EndRaster
+N
+```
+
+- `type` is the 1998 specification's colour type (1 grey, 3 RGB, 4 CMYK) and
+  `alpha` the alpha channel count. The field the specification calls
+  "reserved" is the colour space (0 grey, 1 RGB, 2 CMYK) plus 16 with an alpha
+  channel, in all 4,759 of Illustrator's.
+- `n` counts `XI`, its line end and the colour samples, not the alpha plane
+  after them (1772 × 1772 × 4 + 3 in one of the owner's).
+- Samples are 8 bits, colour interleaved and straight, CMYK as inks; the alpha
+  plane is one byte a pixel, after them.
+- The matrix carries the pixels, x across and y up from the picture's top-left
+  corner, into art space: the importer's with its third and fourth numbers
+  negated, written to ten places.
+- `N` after `%AI5_EndRaster`: VectorCraft's user found that without it
+  Illustrator drops a clipped picture and what follows (2,732 `N` here; `F`
+  only after the collaborator's 1-bit image masks).
+- `XG` names the file a picture came from and whether it was edited since; an
+  embedded picture has none.
+
+**CMYK numbers are kept.** An Illustrator picture keeps its CMYK samples in
+`proof:samples`, a TIFF beside the RGB it shows; a TIFF or Photoshop file
+embedded in the document is read by PROOF itself (`read_tiff`, `read_psd`).
+Either goes out as its own CMYK, 16-bit samples rounded to 8. Any other
+picture goes out as the RGB it shows, with its transparency as an alpha channel
+when it has any. Where the pixels lie is where PROOF draws and prints them
+(`get_paintbox`), so a picture fitted into its box by `preserveAspectRatio` is
+written as drawn, inside the box.
+
+**Refused by name:** linked pictures (Illustrator writes a link as a placed
+file, its own kind of record; next), embedded SVG pictures, a picture cropped
+by `preserveAspectRatio`'s slice (it needs a clip), and pictures in the
+Illustrator 7 export.
+
+**Checks.** Unit tests in the import suite: an Illustrator CMYK raster read,
+written and read again keeps its samples and place; an RGB PNG with
+transparency, stretched and turned, and an opaque one fitted into a square box,
+read back with their colour, alpha and place; the refusals. New CLI smoke
+`ai-picture-output-smoke.py`, 11/11 in the focused runner: an RGB PNG with
+transparency over a grey box, a turned JPEG, an embedded CMYK TIFF and a
+clipped picture with a shape after it reopen from their records drawn exactly
+as the canvas (0 apart over the whole page) with the TIFF's CMYK numbers equal;
+the page is PROOF's own PDF export, within 4 of the canvas at the RGB pictures.
+Illustrator has not opened it yet.

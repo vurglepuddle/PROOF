@@ -26,8 +26,14 @@ namespace AiNative {
  * `%AI24_ZStandard_Data` in `AIPrivateData` blocks of 64 KiB, under `/PieceInfo /Illustrator` on
  * every page, all pages naming one copy. The update is prepared before appending; use a
  * temporary PDF so a write failure cannot damage a previous save. `error` says why it failed.
+ *
+ * `profile`, the document's ICC profile when it has one of its own, goes where Illustrator keeps
+ * it: a colour space based on it among each page's own resources. Illustrator and PROOF's
+ * reader take a file's profile from there (doc/PROOF-ai-native-records.md, "The document's own
+ * colour profile"); PROOF's PDF export names it only inside the page's form.
  */
-bool add_private_data(std::string const &path, std::string const &records, std::string &error);
+bool add_private_data(std::string const &path, std::string const &records, std::string &error,
+                      std::string const &profile = {});
 
 } // namespace AiNative
 

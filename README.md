@@ -120,10 +120,11 @@ Illustrator. See the feature documents for the evidence and its limits.
 ## Still in progress
 
 **Full native `.ai` support is still in progress.** The native writer currently
-refuses live type, pictures, transparency, masks, patterns and other unsupported
-appearances. Gradient writing is limited to opaque, non-repeating linear fills
-with standard RGB or DeviceCMYK stops and no stroke; radial, spot-ink and
-ICC-tagged gradients remain open.
+refuses live type, linked pictures, transparency, masks, patterns and other
+unsupported appearances; pictures the document holds itself are written. Gradient writing covers opaque, non-repeating linear and radial
+fills and strokes with RGB, CMYK (in the document's profile too) and spot-ink
+stops; a gradient on both the fill and the stroke, or on the stroke of a filled
+path, is refused for now.
 Smooth-point flags survive, with auto/symmetric points reduced to smooth and
 Illustrator choosing an open path's first-point type. The older
 PDF-based RGB interchange export does not retain native layers or ink identity.

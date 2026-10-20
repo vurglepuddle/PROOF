@@ -18,6 +18,7 @@
 #include <memory>
 
 #ifdef WITH_POPPLER
+#include <zlib.h>
 #include <zstd.h>
 #include <GlobalParams.h>
 #include <Object.h>
@@ -30,6 +31,9 @@
 #endif
 
 #include "ai-native-writer.h"
+#include "colors/cms/profile.h"
+#include "colors/document-colors.h"
+#include "colors/spaces/cms.h"
 #include "document.h"
 #include "extension/db.h"
 #include "extension/output.h"
@@ -89,9 +93,20 @@ std::string pdf_date()
 
 } // namespace
 
-bool add_private_data(std::string const &path, std::string const &records, std::string &error)
+bool add_private_data(std::string const &path, std::string const &records, std::string &error,
+                      std::string const &profile)
 {
     error.clear();
+    // The profile's own header says its colour space (ICC.1, 7.2.6).
+    int channels = 0;
+    if (profile.size() >= 132 && profile.compare(36, 4, "acsp") == 0) {
+        auto const space = profile.substr(16, 4);
+        channels = space == "CMYK" ? 4 : space == "RGB " ? 3 : space == "GRAY" ? 1 : 0;
+    }
+    if (!profile.empty() && !channels) {
+        error = "the document's colour profile can't be read";
+        return false;
+    }
     // Illustrator keeps the header comments beside the records too, as they are.
     auto const comments = records.find("%%EndComments");
     if (comments == std::string::npos) {
@@ -152,6 +167,26 @@ bool add_private_data(std::string const &path, std::string const &records, std::
     text << "<< /LastModified (" << date << ") /Private " << ref(private_data) << " >>";
     update.end();
 
+    // The document's profile, once, for every page to name.
+    Ref icc{-1, 0};
+    if (channels) {
+        uLongf length = compressBound(profile.size());
+        std::string packed_profile(length, '\0');
+        if (compress2(reinterpret_cast<Bytef *>(packed_profile.data()), &length,
+                      reinterpret_cast<Bytef const *>(profile.data()), profile.size(), 9) != Z_OK) {
+            error = "the document's colour profile couldn't be compressed";
+            return false;
+        }
+        packed_profile.resize(length);
+        icc = Ref{next++, 0};
+        update.begin(icc);
+        text << "<< /N " << std::to_string(channels) << " /Alternate "
+             << (channels == 4 ? "/DeviceCMYK" : channels == 3 ? "/DeviceRGB" : "/DeviceGray")
+             << " /Filter /FlateDecode /Length " << std::to_string(packed_profile.size()) << " >>\nstream\n"
+             << packed_profile << "\nendstream";
+        update.end();
+    }
+
     // Each page, again, naming the one copy, as Illustrator's files do.
     for (int i = 1; i <= pdf->getNumPages(); ++i) {
         auto *page = pdf->getPage(i);
@@ -167,13 +202,42 @@ bool add_private_data(std::string const &path, std::string const &records, std::
         }
         update.begin(at);
         text << "<<";
+        auto write = [&](Object const &value) {
+            Object copy = value.copy();
+            PDFDoc::writeObject(&copy, &text, xref, 0, nullptr, cryptRC4, 0, at, nullptr);
+        };
         Dict *dict = object.getDict();
         for (int k = 0; k < dict->getLength(); ++k) {
             std::string_view const key = dict->getKey(k);
-            if (key == "PieceInfo" || key == "LastModified") continue;
+            if (key == "PieceInfo" || key == "LastModified" || (icc.num >= 0 && key == "Resources")) continue;
             text << " " << name(key) << " ";
-            Object value = dict->getValNF(k).copy();
-            PDFDoc::writeObject(&value, &text, xref, 0, nullptr, cryptRC4, 0, at, nullptr);
+            write(dict->getValNF(k));
+        }
+        if (icc.num >= 0) {
+            // The page's resources, inherited ones resolved, its colour spaces and the profile's.
+            text << " /Resources <<";
+            if (Dict *resources = page->getResourceDict()) {
+                for (int k = 0; k < resources->getLength(); ++k) {
+                    std::string_view const key = resources->getKey(k);
+                    if (key == "ColorSpace") continue;
+                    text << " " << name(key) << " ";
+                    write(resources->getValNF(k));
+                }
+                text << " /ColorSpace <<";
+                Object const spaces = resources->lookup("ColorSpace");
+                if (spaces.isDict()) {
+                    Dict *named = spaces.getDict();
+                    for (int k = 0; k < named->getLength(); ++k) {
+                        std::string_view const key = named->getKey(k);
+                        if (key == "CSDocument") continue;
+                        text << " " << name(key) << " ";
+                        write(named->getValNF(k));
+                    }
+                }
+            } else {
+                text << " /ColorSpace <<";
+            }
+            text << " /CSDocument [/ICCBased " << ref(icc) << "] >> >>";
         }
         text << " /LastModified (" << date << ") /PieceInfo << /Illustrator " << ref(holder) << " >> >>";
         update.end();
@@ -244,8 +308,16 @@ void AiNativeOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, cha
     auto page_doc = doc->copy();
     page_doc->ensureUpToDate();
     PdfOutput().save(mod, page_doc.get(), part.c_str());
+    // The document's own profile, when it has one: in Illustrator's files every page names it.
+    std::string profile;
+    if (auto const space = Colors::DocumentColors::assignedSpace(doc)) {
+        if (auto const icc = space->getProfile()) {
+            auto const bytes = icc->dumpData();
+            profile.assign(bytes.begin(), bytes.end());
+        }
+    }
     std::string error;
-    if (!AiNative::add_private_data(part, written.records, error)) {
+    if (!AiNative::add_private_data(part, written.records, error, profile)) {
         throw std::runtime_error(Glib::ustring::compose(_("The .ai file couldn't be written: %1."), error).raw());
     }
     if (g_rename(part.c_str(), filename) != 0) {
