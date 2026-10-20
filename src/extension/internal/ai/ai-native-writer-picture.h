@@ -10,14 +10,19 @@ class SPImage;
 
 namespace Inkscape::Extension::Internal::AiNative {
 
-/** A picture the document holds itself, as Illustrator writes an embedded raster.
+/** An embedded raster or a local raster link, as Illustrator writes pictures.
  *
- * `records` is the whole object, from `%AI5_File:` to the `N` after `%AI5_EndRaster`: the
- * picture's colour, its transparency as an alpha channel, at 8 bits, and where it lies.
+ * For an embedded raster, `records` is the whole object, from `%AI5_File:` to the `N`
+ * after `%AI5_EndRaster`: its colour, transparency as an alpha channel, at 8 bits,
+ * and where it lies.
  * CMYK numbers are kept: those an Illustrator picture brought with it (proof:samples) or a
  * TIFF's or Photoshop file's own; any other picture goes out as the RGB it shows. Anything
  * else is refused by name and `records` is empty. The caller passes the picture's complete
  * local-to-art transform and handles its effects, clipping and the PDF half.
+ * A local PNG/JPEG/classic TIFF/PSD link instead uses a placed-file block with absolute file
+ * address and pixel bounds; its file bytes (including CMYK and alpha) remain external.
+ * Missing/unreadable links, unsupported formats (including PSB and BigTIFF), and a changed
+ * modification time are refused.
  */
 struct WrittenPicture
 {

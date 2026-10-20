@@ -28,18 +28,23 @@
 #include "ai-native-writer-picture.h"
 
 #include <cmath>
+#include <array>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <format>
 #include <optional>
+#include <string_view>
 
 #include <glib.h>
+#include <glib/gstdio.h>
 
 #include "display/cairo-utils.h"
 #include "display/psd-pixels.h"
 #include "display/raster-pixels.h"
 #include "display/tiff-pixels.h"
 #include "object/sp-image.h"
+#include "object/uri.h"
 #include "util/uri.h"
 #include "xml/href-attribute-helper.h"
 #include "xml/node.h"
@@ -62,6 +67,44 @@ std::string fine(double v)
     t.erase(t.find_last_not_of('0') + 1);
     if (t.back() == '.') t.pop_back();
     return t == "-0" ? std::string("0") : t;
+}
+
+std::string ps_string(std::string const &s)
+{
+    std::string out = "(";
+    for (unsigned char c : s) {
+        if (c == '(' || c == ')' || c == '\\') {
+            out += '\\';
+            out += static_cast<char>(c);
+        } else if (c < 32 || c >= 127) {
+            out += std::format("\\{:03o}", c);
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    return out + ")";
+}
+
+/// Empty on a qualified raster signature; named refusals for I/O and unsupported formats.
+std::string check_link(std::string const &path)
+{
+    auto *file = g_fopen(path.c_str(), "rb");
+    if (!file) return "missing or unreadable linked pictures";
+    std::array<char, 8> header{};
+    auto const n = std::fread(header.data(), 1, header.size(), file);
+    bool const failed = std::ferror(file);
+    std::fclose(file);
+    if (failed) return "missing or unreadable linked pictures";
+    std::string_view const bytes(header.data(), n);
+    if (bytes.starts_with(std::string_view("\x89PNG\r\n\x1a\n", 8)) ||
+        bytes.starts_with(std::string_view("\xff\xd8\xff", 3)) ||
+        bytes.starts_with(std::string_view("II\x2a\0", 4)) ||
+        bytes.starts_with(std::string_view("MM\0\x2a", 4)) ||
+        bytes.starts_with(std::string_view("8BPS\0\1", 6))) return {};
+    if (bytes.starts_with("8BPS")) return "linked Photoshop versions other than PSD";
+    if (bytes.starts_with(std::string_view("II\x2b\0", 4)) ||
+        bytes.starts_with(std::string_view("MM\0\x2b", 4))) return "linked BigTIFF pictures";
+    return "linked pictures other than PNG, JPEG, TIFF or Photoshop";
 }
 
 /// The bytes of a data: address, and what it holds; nothing for a link.
@@ -144,11 +187,60 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     Base64Data type = Base64Data::NONE;
     auto const bytes = data_of(href, type);
     if (type == Base64Data::SVG) return refused("SVG pictures");
-    // Illustrator writes a link as a placed file of its own kind, not yet written here.
-    if (!bytes) return refused("linked pictures");
+    std::string link;
+    if (!bytes) {
+        try {
+            auto const uri = image->getURI();
+            if (!uri.hasScheme("file") || uri.getFragment() || uri.getQuery()) {
+                return refused("linked pictures without a local file address");
+            }
+            link = uri.toNativeFilename();
+        } catch (...) {
+            return refused("linked pictures without a local file address");
+        }
+        if (!g_path_is_absolute(link.c_str()) || link.size() > 4096 ||
+            link.find_first_of("\r\n") != std::string::npos) return refused("unsupported linked picture paths");
+        if (!g_file_test(link.c_str(), G_FILE_TEST_IS_REGULAR)) {
+            return refused("missing or unreadable linked pictures");
+        }
+        if (auto const why = check_link(link); !why.empty()) return refused(why);
+        if (!image->pixbuf || image->missing) return refused("missing or unreadable linked pictures");
+        GStatBuf status;
+        if (g_stat(link.c_str(), &status) != 0) return refused("missing or unreadable linked pictures");
+        if (image->pixbuf->modificationTime() && status.st_mtime != image->pixbuf->modificationTime()) {
+            return refused("linked pictures changed since they were loaded");
+        }
+    }
     if (!image->pixbuf || image->missing) return refused("pictures that can't be read");
     int const w = image->pixbuf->width(), h = image->pixbuf->height();
     if (w < 1 || h < 1) return refused("pictures that can't be read");
+
+    // Where the pixels lie: as PROOF draws and prints the picture (SPViewBox::get_paintbox).
+    auto const box = image->bbox(Geom::identity(), SPItem::GEOMETRIC_BBOX);
+    auto const paint = box ? image->get_paintbox(w, h, box) : Geom::OptRect();
+    if (!box || !paint || paint->width() <= 0 || paint->height() <= 0) return refused("pictures without a size");
+    auto const grown = *box;
+    if (paint->left() < grown.left() - 1e-6 || paint->top() < grown.top() - 1e-6 ||
+        paint->right() > grown.right() + 1e-6 || paint->bottom() > grown.bottom() + 1e-6) {
+        return refused("pictures cropped to their box");
+    }
+    auto const a = Geom::Affine(paint->width() / w, 0, 0, paint->height() / h, paint->left(), paint->top()) * item_to_art;
+    for (int i = 0; i < 6; ++i) {
+        if (!std::isfinite(a[i])) return refused("singular or nonfinite picture transforms");
+    }
+    if (std::abs(a.det()) < 1e-12) return refused("singular or nonfinite picture transforms");
+    if (!link.empty()) {
+        // A placed file uses the stored box directly (unlike a raster's upside-down rows).
+        // Pixel-sized boxes work for TIFF too, independently of its resolution; verified by
+        // Illustrator 29's open and save of the 300 ppi control (2026-10-21). Keep the absolute
+        // file address so Save As into another folder does not change what the link names.
+        WrittenPicture out;
+        out.records = std::format("%AI5_BeginPlace\n%%FileType: 1\n[{} {} {} {} {} {}] 0 0 {} {} 4 4 0\n"
+                                  "{}`\n%%IncludeFile:{}\n~\n%AI5_EndPlace\n",
+                                  fine(a[0]), fine(a[1]), fine(a[2]), fine(a[3]), fine(a[4]), fine(a[5]),
+                                  w, h, ps_string(link), link);
+        return out;
+    }
 
     // CMYK numbers as they are: what an Illustrator picture brought for print, else the
     // picture's own when it is a TIFF or a Photoshop file, which PROOF reads itself.
@@ -168,21 +260,6 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     if (!samples) samples = from_pixbuf(*image->pixbuf);
     if (samples->alpha.find_first_not_of('\xff') == std::string::npos) samples->alpha.clear();
 
-    // Where the pixels lie: as PROOF draws and prints the picture (SPViewBox::get_paintbox).
-    auto const box = image->bbox(Geom::identity(), SPItem::GEOMETRIC_BBOX);
-    auto const paint = box ? image->get_paintbox(w, h, box) : Geom::OptRect();
-    if (!box || !paint || paint->width() <= 0 || paint->height() <= 0) return refused("pictures without a size");
-    // preserveAspectRatio's slice crops the picture to its box: that wants a clip.
-    auto const grown = *box;
-    if (paint->left() < grown.left() - 1e-6 || paint->top() < grown.top() - 1e-6 ||
-        paint->right() > grown.right() + 1e-6 || paint->bottom() > grown.bottom() + 1e-6) {
-        return refused("pictures cropped to their box");
-    }
-    auto const a = Geom::Affine(paint->width() / w, 0, 0, paint->height() / h, paint->left(), paint->top()) * item_to_art;
-    for (int i = 0; i < 6; ++i) {
-        if (!std::isfinite(a[i])) return refused("singular or nonfinite picture transforms");
-    }
-    if (std::abs(a.det()) < 1e-12) return refused("singular or nonfinite picture transforms");
     // The rows count up in the records and down in the picture.
     auto const matrix =
         std::format("[ {} {} {} {} {} {} ]", fine(a[0]), fine(a[1]), fine(-a[2]), fine(-a[3]), fine(a[4]), fine(a[5]));

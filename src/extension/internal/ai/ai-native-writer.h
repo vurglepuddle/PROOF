@@ -10,7 +10,8 @@
  * gradient-filled shape may have a plain stroke; a gradient stroke needs an unfilled path
  * and the modern form. Gradient stops may be tints of spot inks defined in CMYK; transparent
  * and mixed RGB/CMYK gradients are refused. Pictures the document holds itself are embedded
- * rasters (ai-native-writer-picture.h); linked ones are refused.
+ * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
+ * linked. Missing links and linked formats outside that subset are refused.
  * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point
  * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:

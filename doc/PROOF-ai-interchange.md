@@ -875,3 +875,78 @@ other twelve unit suites and all sixteen export smokes passed; its first
 version of the new unit fixture failed because it used unsupported geometry
 inheritance, then was corrected and superseded by these final unit results.
 The square-tile layout and paint behavior live checks pass 7/7 and 27/27.
+
+### Linked raster pictures (2026-10-21)
+
+Modern native Save As keeps readable local PNG, JPEG, classic TIFF and
+Photoshop PSD pictures **linked** (`ai-native-writer-picture.cpp`), including
+relative SVG addresses saved into another folder and Unicode file names.
+It writes an absolute file address, preserving the external file itself;
+it does not convert its CMYK, alpha, precision or Photoshop layers to a raster
+inside the Illustrator records. The PDF half still draws the current image
+and retains the TIFF/PSD CMYK print samples through the existing PDF exporter.
+
+The placed-file form is:
+
+```
+%AI5_BeginPlace
+%%FileType: 1
+[a b c d tx ty] 0 0 pixel-width pixel-height 4 4 0
+(absolute file address)`
+%%IncludeFile:absolute file address
+~
+%AI5_EndPlace
+```
+
+The matrix maps the picture's pixel bounds directly onto the art. Unlike an
+embedded raster, it does **not** reverse the rows. Use the actual paint box
+inside an SVG image's frame, so `preserveAspectRatio` fitting retains its
+position. Parent transforms, reflection and clipping are handled as for
+embedded pictures. A pixel-sized box works for TIFF independently of its
+resolution: Illustrator 29 opened and re-saved a 120 by 80 pixel, 300 ppi
+control at 28.8 by 19.2 points with that convention. No resolution is applied
+twice. Native file-address strings escape parentheses, backslashes and UTF-8
+bytes using the ordinary PostScript string rules.
+
+**Refused by name:** missing or unreadable links, non-file addresses, unsafe
+or overlong address lines, file signatures outside the supported raster
+subset, slice cropping and all pictures in Illustrator 7. PSB and BigTIFF
+remain outside this first writer slice. Adobe's
+[supported-format list](https://helpx.adobe.com/illustrator/kb/supported-file-formats-illustrator.html)
+names PSD/PDD for placing; PSB has not been qualified here. Reading a PSB in
+PROOF does not qualify writing a link that Illustrator must read.
+
+A changed file modification time is also refused until the picture is
+reloaded. This protects the loaded image/PDF from being paired with a newer
+external link. The check uses the loader's timestamp; it is not a content
+hash or a lock against external edits during saving.
+
+**No cached link preview is written yet.** A missing link at save time is
+refused. If the asset is moved after saving, relink it; the PDF half retains
+the appearance at save time, but no native missing-link preview is promised.
+Relative folder/package metadata is a later portability step; absolute links
+make the current Save As behavior deterministic.
+
+**Qualification:** synthetic control `865102886d` contains seven external
+images: alpha PNG, rotated JPEG, CMYK TIFF at 300 ppi, CMYK PSD, a fitted PNG
+under a Cyrillic/CJK/accented/emoji path, a clipped JPEG and a reflected PNG,
+plus art after the images. Illustrator 29.2.1 finds all seven files as links.
+RGB probes differ by at most 3; TIFF and PSD probes by at most 8, median 2.
+Its saved copy `20b50f558e` reopens natively in PROOF (0.224% lightness,
+0.053% colour difference; editability remains `NATIVE_UNVERIFIED`).
+
+The headless check verifies external links after Save As elsewhere, native
+reopen, exact TIFF/PSD CMYK samples in the PDF, source hashes unchanged, and
+safe refusals. Pixels after native reopen agree exactly away from a fitted
+image's two-pixel antialias fringe: SVG's larger frame permits filtering
+outside the actual pixel bounds; a placed object's frame is the pixel bounds.
+The acceptance thresholds in the production reader are unchanged. Three
+importer unit cases cover transformed/fitted geometry and escaped file names,
+a file disappearing after load, and a changed file requiring reload.
+
+Final checks: all thirteen focused unit suites and sixteen export smoke
+scripts pass. After the last format guards, the importer was rerun:
+146 cases, zero failures, two opt-in skips; linked-picture smoke **13/13**.
+The installed writer produces the Illustrator-qualified control's same
+records apart from its generated artboard UUID. The final format checks
+explicitly preserve a prior destination for PSB and BigTIFF refusals.

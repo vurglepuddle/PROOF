@@ -5715,7 +5715,6 @@ TEST_F(AiNativeImportTest, PicturesTheWriterCannotWriteAreRefusedByName)
     std::vector<std::uint8_t> const pixel{10, 20, 30, 255};
     struct Case { std::string image, reason; };
     std::vector<Case> const cases{
-        {R"(<image x="0" y="0" width="10" height="10" href="not-there.png"/>)", "linked pictures"},
         {R"(<image x="0" y="0" width="10" height="10" href="data:image/svg+xml;base64,PHN2Zy8+"/>)", "SVG pictures"},
         {R"(<image x="0" y="0" width="10" height="20" preserveAspectRatio="xMidYMid slice" href=")" + png_uri(1, 1, pixel) +
              R"("/>)", "pictures cropped to their box"},
@@ -5733,6 +5732,108 @@ TEST_F(AiNativeImportTest, PicturesTheWriterCannotWriteAreRefusedByName)
     EXPECT_TRUE(AN::write_records(embedded.get()).refused.empty());
     auto const legacy = AN::write_records(embedded.get(), AN::RecordsVersion::Illustrator7);
     EXPECT_EQ(legacy.refused, std::vector<std::string>{"pictures (Illustrator 7)"});
+}
+
+TEST_F(AiNativeImportTest, WrittenLinksKeepTheirFileAndTransformedPixelBounds)
+{
+    gchar *dir = g_dir_make_tmp("proof-written-links-XXXXXX", nullptr);
+    ASSERT_NE(dir, nullptr);
+    std::string const file = std::string(dir) + G_DIR_SEPARATOR_S + "sample (linked).png";
+    write_picture(file);
+    gchar *uri = g_filename_to_uri(file.c_str(), nullptr, nullptr);
+    ASSERT_NE(uri, nullptr);
+    auto doc = svg_document(
+        R"x(<g transform="translate(5 7) rotate(15)"><image id="linked" x="20" y="30" width="80" height="20"
+            preserveAspectRatio="none" href=")x" + std::string(uri) + R"x("/></g>
+        <image x="120" y="90" width="40" height="40" href=")x" + std::string(uri) + R"x("/>
+        <rect x="10" y="160" width="20" height="20" fill="#2060c0"/>)x");
+    g_free(uri);
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_EQ(written.records.find("%AI5_BeginRaster"), std::string::npos);
+    EXPECT_NE(written.records.find("%AI5_BeginPlace\n%%FileType: 1\n"), std::string::npos);
+    EXPECT_NE(written.records.find("sample \\(linked\\).png"), std::string::npos);
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->placed.size(), 2u);
+    EXPECT_TRUE(ai->images.empty());
+    for (auto const &link : ai->placed) {
+        EXPECT_EQ(link.path, file);
+        EXPECT_DOUBLE_EQ(link.box.width(), 4);
+        EXPECT_DOUBLE_EQ(link.box.height(), 2);
+    }
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const before = elements(doc->getReprRoot(), "svg:image");
+    auto const after = elements(again->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(after.size(), 2u);
+    expect_same_box(doc.get(), before[0], again->document.get(), after[0]);
+    auto const fitted = shape_box(again->document.get(), after[1]);
+    ASSERT_TRUE(fitted);
+    EXPECT_NEAR(fitted->left(), 120, 1e-3);
+    EXPECT_NEAR(fitted->top(), 100, 1e-3);
+    EXPECT_NEAR(fitted->width(), 40, 1e-3);
+    EXPECT_NEAR(fitted->height(), 20, 1e-3);
+    EXPECT_EQ(elements(again->document->getReprRoot(), "svg:path").size(), 1u);
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_EQ(legacy.refused, std::vector<std::string>{"pictures (Illustrator 7)"});
+    g_remove(file.c_str());
+    g_rmdir(dir);
+    g_free(dir);
+}
+
+TEST_F(AiNativeImportTest, WrittenLinksRefuseFilesThatDisappear)
+{
+    gchar *dir = g_dir_make_tmp("proof-written-missing-XXXXXX", nullptr);
+    ASSERT_NE(dir, nullptr);
+    std::string const file = std::string(dir) + G_DIR_SEPARATOR_S + "sample.png";
+    write_picture(file);
+    gchar *uri = g_filename_to_uri(file.c_str(), nullptr, nullptr);
+    ASSERT_NE(uri, nullptr);
+    auto doc = svg_document(R"x(<image x="10" y="20" width="40" height="20" href=")x" +
+                            std::string(uri) + R"x("/>)x");
+    g_free(uri);
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    ASSERT_TRUE(AN::write_records(doc.get()).refused.empty());
+    ASSERT_EQ(g_remove(file.c_str()), 0);
+    auto const written = AN::write_records(doc.get());
+    EXPECT_TRUE(written.records.empty());
+    EXPECT_EQ(written.refused, std::vector<std::string>{"missing or unreadable linked pictures"});
+    g_rmdir(dir);
+    g_free(dir);
+}
+
+TEST_F(AiNativeImportTest, WrittenLinksRefuseAChangedFileUntilItIsReloaded)
+{
+    gchar *dir = g_dir_make_tmp("proof-written-changed-XXXXXX", nullptr);
+    ASSERT_NE(dir, nullptr);
+    std::string const file = std::string(dir) + G_DIR_SEPARATOR_S + "sample.png";
+    write_picture(file);
+    gchar *uri = g_filename_to_uri(file.c_str(), nullptr, nullptr);
+    ASSERT_NE(uri, nullptr);
+    auto doc = svg_document(R"x(<image x="10" y="20" width="40" height="20" href=")x" +
+                            std::string(uri) + R"x("/>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const path = std::filesystem::path(std::u8string(file.begin(), file.end()));
+    auto const loaded = std::filesystem::last_write_time(path);
+    write_picture(file, 2, 4); // The file now has a different aspect ratio from the loaded pixels.
+    std::filesystem::last_write_time(path, loaded + std::chrono::seconds(10));
+    auto const written = AN::write_records(doc.get());
+    EXPECT_TRUE(written.records.empty());
+    EXPECT_EQ(written.refused, std::vector<std::string>{"linked pictures changed since they were loaded"});
+    auto reloaded = svg_document(R"x(<image width="40" height="20" href=")x" + std::string(uri) + R"x("/>)x");
+    ASSERT_TRUE(reloaded);
+    reloaded->ensureUpToDate();
+    EXPECT_TRUE(AN::write_records(reloaded.get()).refused.empty());
+    g_free(uri);
+    g_remove(file.c_str());
+    g_rmdir(dir);
+    g_free(dir);
 }
 
 // Records for checking in Illustrator: written to PROOF_AI_WRITER_OUT when it is set.
