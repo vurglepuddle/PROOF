@@ -17,7 +17,9 @@
  * Anything else in the document is named in `refused`, and then no records are written:
  * nothing goes to Illustrator that it would draw differently.
  * The optional Illustrator 7 form shares that subset, with a single artboard, ASCII layer
- * and ink names, and additional refusals where that old format has no supported encoding.
+ * and ink names, opaque embedded rasters, and additional refusals where that old format
+ * has no supported encoding. A colour-model comment advises newer Illustrator's legacy
+ * converter; version 7 ignores that later metadata.
  */
 
 #ifndef SEEN_AI_NATIVE_WRITER_H

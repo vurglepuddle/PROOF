@@ -7,7 +7,7 @@ with transparency over a grey box, a turned JPEG, a CMYK TIFF and a clipped pict
 after it. The file must reopen from its own records with its pictures where they were and the
 TIFF's CMYK numbers as they were; its PDF page is PROOF's own PDF export, compared with the
 canvas at the RGB pictures (the canvas shows CMYK through a profile, Poppler by a formula).
-Illustrator 7 and missing linked pictures are refused by name, keeping the previous file.
+Illustrator 7 picture transparency and missing links are refused by name, keeping the previous file.
 """
 import argparse
 import base64
@@ -172,7 +172,7 @@ def main():
     for label, body, option, reason in [
         ('linked', svg(rgba, rgb, cmyk, linked=True).replace('picture.png', 'missing.png'), native,
          b'missing or unreadable linked pictures'),
-        ('legacy', svg(rgba, rgb, cmyk), '--export-extension=org.inkscape.output.ai.legacy7', b'pictures (Illustrator 7)'),
+        ('legacy', svg(rgba, rgb, cmyk), '--export-extension=org.inkscape.output.ai.legacy7', b'picture transparency (Illustrator 7)'),
     ]:
         path = out / (label + '.svg')
         path.write_text(body)

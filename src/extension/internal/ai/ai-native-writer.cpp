@@ -484,13 +484,9 @@ void Writer::item(SPItem const *it)
     } else if (auto s = cast<SPShape>(it)) {
         shape(s);
     } else if (auto image = cast<SPImage>(it)) {
-        if (_legacy) {
-            refuse("pictures (Illustrator 7)");
-        } else {
-            auto const written = write_picture(image, image->i2doc_affine() * _to_art);
-            for (auto const &why : written.refused) refuse(why);
-            _body << written.records;
-        }
+        auto const written = write_picture(image, image->i2doc_affine() * _to_art, _legacy);
+        for (auto const &why : written.refused) refuse(why);
+        _body << written.records;
     } else {
         refuse("type");
     }
@@ -624,6 +620,7 @@ WrittenRecords Writer::write()
         return out;
     }
 
+    bool const cmyk = Colors::DocumentColors::mode(_doc) == Type::CMYK;
     if (_legacy) {
         double const w = boards.front().second.width() * PX_TO_PT;
         double const h = boards.front().second.height() * PX_TO_PT;
@@ -633,7 +630,10 @@ WrittenRecords Writer::write()
                             num(std::ceil(w)), num(std::ceil(h)), num(w), num(h))
              << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n";
         ink_comments(head, _spots);
-        head << "%AI5_FileFormat 3\n%AI3_ColorUsage: Color\n"
+        // Newer Illustrator converts legacy rasters into the document's colour model on
+        // open. Keep the source mode as an advisory comment; version 7 ignores this later
+        // comment (1998 specification, section 1.5), while the artwork remains version 7.
+        head << "%AI5_FileFormat 3\n%AI3_ColorUsage: Color\n%AI9_ColorModel: " << (cmyk ? 2 : 1) << '\n'
              << std::format("%AI3_Cropmarks: 0 0 {} {}\n%AI3_TileBox: 0 0 {} {}\n", num(w), num(h), num(w), num(h))
              // Legacy conversion places the artboard ceil(w/2) left and ceil(h/2) up
              // from this origin. Match the crop rectangle, including fractional sizes,
@@ -653,8 +653,6 @@ WrittenRecords Writer::write()
     }
 
     double const w = extent_w, h = extent_h, cx = template_x, cy = template_y;
-    bool const cmyk = Colors::DocumentColors::mode(_doc) == Type::CMYK;
-
     std::ostringstream head;
     head << "%!PS-Adobe-3.0 \n%%Creator: PROOF\n%%AI8_CreatorVersion: 29.2.1\n%%For: () ()\n"
          << "%%Title: " << ps_string(_doc->getDocumentName() ? _doc->getDocumentName() : "Untitled") << '\n'

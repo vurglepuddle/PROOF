@@ -180,7 +180,7 @@ Samples from_pixbuf(Inkscape::Pixbuf const &shown)
 
 } // namespace
 
-WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art)
+WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy)
 {
     if (!image) return refused("pictures that can't be read");
     auto const *href = Inkscape::getHrefAttribute(*image->getRepr()).second;
@@ -189,6 +189,7 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     if (type == Base64Data::SVG) return refused("SVG pictures");
     std::string link;
     if (!bytes) {
+        if (legacy) return refused("linked pictures (Illustrator 7)");
         try {
             auto const uri = image->getURI();
             if (!uri.hasScheme("file") || uri.getFragment() || uri.getQuery()) {
@@ -265,6 +266,30 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
         std::format("[ {} {} {} {} {} {} ]", fine(a[0]), fine(a[1]), fine(-a[2]), fine(-a[3]), fine(a[4]), fine(a[5]));
 
     bool const alpha = !samples->alpha.empty();
+    if (legacy) {
+        if (alpha) return refused("picture transparency (Illustrator 7)");
+        // Adobe's 1998 specification, section 8: the original twelve operands after the
+        // matrix, then XI and ASCII hex samples. DSC brackets let readers skip the data
+        // by length; the colour type identifies the space, with reserved fields kept zero.
+        std::string encoded;
+        auto const &colour = samples->colour;
+        encoded.reserve(colour.size() * 2 + ((colour.size() + 31) / 32) * 2);
+        constexpr char hex[] = "0123456789ABCDEF";
+        for (std::size_t i = 0; i < colour.size(); ++i) {
+            if (i % 32 == 0) encoded += '%';
+            auto const c = static_cast<unsigned char>(colour[i]);
+            encoded += hex[c >> 4];
+            encoded += hex[c & 15];
+            if (i % 32 == 31 || i + 1 == colour.size()) encoded += '\n';
+        }
+        WrittenPicture out;
+        out.records = std::format("%AI5_File:\n%AI5_BeginRaster\n{} 0 0 {} {} {} {} 8 {} 0 0 0 0\n"
+                                  "%%BeginData: {} ASCII Bytes\nXI\n",
+                                  matrix, w, h, w, h, samples->type, encoded.size() + 3);
+        out.records += encoded;
+        out.records += "%%EndData\n%AI5_EndRaster\nN\n";
+        return out;
+    }
     int const kind = (samples->type == 4 ? 2 : samples->type == 3 ? 1 : 0) + (alpha ? 16 : 0);
     char const *space = samples->type == 4 ? "/DeviceCMYK" : samples->type == 3 ? "/DeviceRGB" : "/DeviceGray";
     WrittenPicture out;

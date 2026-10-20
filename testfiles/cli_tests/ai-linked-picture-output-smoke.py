@@ -170,7 +170,7 @@ def main():
         ('psb', '<image width="40" height="20" href="assets/unsupported.psb"/>', native, b'linked Photoshop versions other than PSD'),
         ('bigtiff', '<image width="40" height="20" href="assets/unsupported-big.tif"/>', native, b'linked BigTIFF pictures'),
         ('slice', '<image width="40" height="80" preserveAspectRatio="xMidYMid slice" href="assets/sample.png"/>', native, b'pictures cropped to their box'),
-        ('legacy', body, '--export-extension=org.inkscape.output.ai.legacy7', b'pictures (Illustrator 7)'),
+        ('legacy', body, '--export-extension=org.inkscape.output.ai.legacy7', b'linked pictures (Illustrator 7)'),
     ]:
         path = out / (label + '.svg')
         path.write_text(head + content + '</svg>', encoding='utf-8')

@@ -60,7 +60,7 @@ void AiLegacyOutput::init()
                 "<extension>.ai</extension>\n"
                 "<mimetype>application/illustrator</mimetype>\n"
                 "<filetypename>" N_("Adobe Illustrator 7 (*.ai)") "</filetypename>\n"
-                "<filetypetooltip>" N_("Editable paths, layers and inks for one artboard; no PDF preview or artboard names") "</filetypetooltip>\n"
+                "<filetypetooltip>" N_("Editable paths, layers, opaque pictures and inks for one artboard; no PDF preview or artboard names") "</filetypetooltip>\n"
                 "<dataloss>true</dataloss>\n"
                 "<savecopyonly>true</savecopyonly>\n"
             "</output>\n"

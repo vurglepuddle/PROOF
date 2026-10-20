@@ -5375,8 +5375,12 @@ TEST_F(AiNativeImportTest, LegacyWrittenRecordsKeepTheSingleArtboardGeometryAndP
     EXPECT_NE(written.records.find("%AI3_Cropmarks: 0 0 150 75\n"), std::string::npos);
     EXPECT_NE(written.records.find("%AI3_TemplateBox: 75 37 75 37\n"), std::string::npos);
     EXPECT_NE(written.records.find("1 1 1 1 0 0 2 79 255 79 Lb\n"), std::string::npos);
+    auto artwork = written.records;
+    auto const advisory = artwork.find("%AI9_ColorModel: 1\n");
+    ASSERT_NE(advisory, std::string::npos);
+    artwork.erase(advisory, std::string_view("%AI9_ColorModel: 1\n").size());
     for (auto const marker : {"AI9_", "AI24_", " Xw", "annotatepage", "AIPrivateData"}) {
-        EXPECT_EQ(written.records.find(marker), std::string::npos) << marker;
+        EXPECT_EQ(artwork.find(marker), std::string::npos) << marker;
     }
     auto b = make(written.records);
     ASSERT_TRUE(b);
@@ -5731,7 +5735,113 @@ TEST_F(AiNativeImportTest, PicturesTheWriterCannotWriteAreRefusedByName)
     ASSERT_TRUE(embedded);
     EXPECT_TRUE(AN::write_records(embedded.get()).refused.empty());
     auto const legacy = AN::write_records(embedded.get(), AN::RecordsVersion::Illustrator7);
-    EXPECT_EQ(legacy.refused, std::vector<std::string>{"pictures (Illustrator 7)"});
+    EXPECT_TRUE(legacy.refused.empty());
+}
+
+TEST_F(AiNativeImportTest, LegacyPicturesKeepOpaquePixelsTransformsAndFitting)
+{
+    std::vector<std::uint8_t> const pixels{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
+                                          10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255};
+    auto const address = png_uri(3, 2, pixels);
+    auto doc = svg_document(R"x(<image x="10" y="20" width="30" height="20" preserveAspectRatio="none"
+        transform="rotate(15 25 30)" href=")x" + address + R"x("/>
+        <image x="100" y="20" width="30" height="30" href=")x" + address +
+        R"x("/><rect x="10" y="70" width="30" height="10" fill="#2060c0"/>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_TRUE(std::all_of(written.records.begin(), written.records.end(), [](unsigned char c) { return c < 128; }));
+    EXPECT_NE(written.records.find("%AI9_ColorModel: 1\n"), std::string::npos);
+    EXPECT_NE(written.records.find(" 0 0 3 2 3 2 8 3 0 0 0 0\n%%BeginData: 41 ASCII Bytes\nXI\n%"),
+              std::string::npos);
+    EXPECT_NE(written.records.find("%AI5_EndRaster\nN\n"), std::string::npos);
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(ai->cmyk);
+    ASSERT_EQ(ai->images.size(), 2u);
+    for (auto const &image : ai->images) {
+        EXPECT_EQ(image.width, 3);
+        EXPECT_EQ(image.height, 2);
+        EXPECT_EQ(image.channels, 3);
+        EXPECT_TRUE(image.alpha.empty());
+        for (unsigned i = 0; i < 6; ++i) for (unsigned c = 0; c < 3; ++c) {
+            EXPECT_EQ(static_cast<std::uint8_t>(image.samples[i * 3 + c]), pixels[i * 4 + c]);
+        }
+    }
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const first = elements(doc->getReprRoot(), "svg:image");
+    auto const second = elements(again->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(second.size(), 2u);
+    expect_same_box(doc.get(), first[0], again->document.get(), second[0]);
+    auto const fitted = shape_box(again->document.get(), second[1]);
+    ASSERT_TRUE(fitted);
+    EXPECT_NEAR(fitted->top(), 25, 1e-3);
+    EXPECT_NEAR(fitted->height(), 20, 1e-3);
+    EXPECT_EQ(elements(again->document->getReprRoot(), "svg:path").size(), 1u);
+    auto clear = pixels;
+    clear[3] = 128;
+    auto transparent = svg_document(R"x(<image width="30" height="20" href=")x" + png_uri(3, 2, clear) + R"x("/>)x");
+    ASSERT_TRUE(transparent);
+    transparent->ensureUpToDate();
+    auto const refused = AN::write_records(transparent.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(refused.records.empty());
+    EXPECT_EQ(refused.refused, std::vector<std::string>{"picture transparency (Illustrator 7)"});
+}
+
+TEST_F(AiNativeImportTest, LegacyPicturesKeepGrayAndCmykSamples)
+{
+    for (bool cmyk : {false, true}) {
+        SCOPED_TRACE(cmyk);
+        std::string const samples = cmyk ? std::string("\x10\x20\x30\x40\x50\x60\x70\x80", 8)
+                                         : std::string("\x30\xa0", 2);
+        auto const folder = temporary_folder();
+        ASSERT_FALSE(folder.empty());
+        auto const path = folder + G_DIR_SEPARATOR_S + "sample.tif";
+        auto *tiff = TIFFOpen(path.c_str(), "w");
+        ASSERT_NE(tiff, nullptr);
+        TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, 2);
+        TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, 1);
+        TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 8);
+        TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, cmyk ? 4 : 1);
+        TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, cmyk ? PHOTOMETRIC_SEPARATED : PHOTOMETRIC_MINISBLACK);
+        TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+        std::vector<unsigned char> row(samples.begin(), samples.end());
+        int const result = TIFFWriteScanline(tiff, row.data(), 0);
+        TIFFClose(tiff);
+        ASSERT_GE(result, 0);
+        gchar *data = nullptr;
+        gsize size = 0;
+        ASSERT_TRUE(g_file_get_contents(path.c_str(), &data, &size, nullptr));
+        gchar *base64 = g_base64_encode(reinterpret_cast<guchar const *>(data), size);
+        std::string const address = "data:image/tiff;base64," + std::string(base64);
+        g_free(base64);
+        g_free(data);
+        g_remove(path.c_str());
+        g_rmdir(folder.c_str());
+        auto before = svg_document(R"x(<image x="10" y="20" width="30" height="15" href=")x" + address + R"x("/>)x");
+        ASSERT_TRUE(before);
+        before->getReprRoot()->setAttribute("proof:color-mode", cmyk ? "CMYK" : "RGB");
+        before->ensureUpToDate();
+        auto const written = AN::write_records(before.get(), AN::RecordsVersion::Illustrator7);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        std::string error;
+        auto ai = AN::read(written.records, error);
+        ASSERT_TRUE(ai) << error;
+        EXPECT_EQ(ai->cmyk, cmyk);
+        ASSERT_EQ(ai->images.size(), 1u);
+        EXPECT_EQ(ai->images[0].channels, cmyk ? 4 : 1);
+        EXPECT_EQ(ai->images[0].samples, samples);
+        auto after = make(written.records);
+        ASSERT_TRUE(after);
+        auto const a = elements(before->getReprRoot(), "svg:image");
+        auto const b = elements(after->document->getReprRoot(), "svg:image");
+        ASSERT_EQ(a.size(), 1u);
+        ASSERT_EQ(b.size(), 1u);
+        expect_same_box(before.get(), a[0], after->document.get(), b[0]);
+    }
 }
 
 TEST_F(AiNativeImportTest, WrittenLinksKeepTheirFileAndTransformedPixelBounds)
@@ -5779,7 +5889,7 @@ TEST_F(AiNativeImportTest, WrittenLinksKeepTheirFileAndTransformedPixelBounds)
     EXPECT_NEAR(fitted->height(), 20, 1e-3);
     EXPECT_EQ(elements(again->document->getReprRoot(), "svg:path").size(), 1u);
     auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
-    EXPECT_EQ(legacy.refused, std::vector<std::string>{"pictures (Illustrator 7)"});
+    EXPECT_EQ(legacy.refused, std::vector<std::string>{"linked pictures (Illustrator 7)"});
     g_remove(file.c_str());
     g_rmdir(dir);
     g_free(dir);

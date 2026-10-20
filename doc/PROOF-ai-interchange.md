@@ -421,8 +421,10 @@ refuses multiple artboards, non-ASCII ink/layer names, individually hidden
 objects, nested layers and image dimming other than 50%. Hidden layers work.
 Artboard names and document ICC profiles are not retained. Corner/smooth flags
 use the shared writer described below.
-Illustrator opens the legacy control in CMYK and converts its RGB process
-colours; the control's original CMYK numbers and CMYK spot tints survive.
+The original legacy control opened in CMYK and converted RGB process colours;
+its CMYK numbers and CMYK spot tints survived. Since 2026-10-21, a later
+colour-model advisory comment preserves the source document mode in newer
+Illustrator; see "Opaque pictures in Illustrator 7" below.
 Keep SVG as the working document and use modern native output for named
 artboards and the broader metadata it supports.
 
@@ -777,10 +779,10 @@ when it has any. Where the pixels lie is where PROOF draws and prints them
 (`get_paintbox`), so a picture fitted into its box by `preserveAspectRatio` is
 written as drawn, inside the box.
 
-**Refused by name:** linked pictures (Illustrator writes a link as a placed
-file, its own kind of record; next), embedded SVG pictures, a picture cropped
-by `preserveAspectRatio`'s slice (it needs a clip), and pictures in the
-Illustrator 7 export.
+**Refused at this initial gate:** links, embedded SVG, slice cropping and all
+Illustrator 7 pictures. Links in modern output were added in the next section;
+opaque embedded Illustrator 7 pictures were added on 2026-10-21 below. Embedded
+SVG and slice cropping remain refused.
 
 **Checks.** Unit tests in the import suite: an Illustrator CMYK raster read,
 written and read again keeps its samples and place; an RGB PNG with
@@ -911,7 +913,7 @@ bytes using the ordinary PostScript string rules.
 
 **Refused by name:** missing or unreadable links, non-file addresses, unsafe
 or overlong address lines, file signatures outside the supported raster
-subset, slice cropping and all pictures in Illustrator 7. PSB and BigTIFF
+subset, slice cropping and linked pictures in Illustrator 7. PSB and BigTIFF
 remain outside this first writer slice. Adobe's
 [supported-format list](https://helpx.adobe.com/illustrator/kb/supported-file-formats-illustrator.html)
 names PSD/PDD for placing; PSB has not been qualified here. Reading a PSB in
@@ -1015,3 +1017,68 @@ importer 146 cases, zero failures, two opt-in skips). All **17 export smokes**
 pass, with the linear smoke's corrected **20/20** rerun superseding two stale
 refusal assertions; gradient paint **29/29**, dual gradients **13/13**,
 radial fills **22/22**, embedded pictures **11/11**, linked pictures **13/13**.
+
+### Opaque pictures in Illustrator 7 (2026-10-21)
+
+The standalone copy format now writes opaque embedded grayscale, RGB and CMYK
+pictures as 8-bit samples. CMYK and grayscale TIFF planes keep their numbers;
+CMYK also comes from retained Illustrator samples or embedded Photoshop data.
+Other supported containers use the RGB pixels PROOF draws. Existing sample
+conversion rounds 16-bit values to 8-bit; this is not a 16-bit legacy output.
+Rotation, reflection, fitting, affine placement and explicit path clips use
+the shared picture geometry. `N` follows every `%AI5_EndRaster`, retaining
+clipped pictures and the art after them.
+
+The encoding follows section 8 of Adobe Developer Support's
+[1998 Illustrator format specification](https://13thmonkey.org/documentation/fonts/AI7FileFormat.pdf):
+the original twelve scalar operands after the matrix, depth 8, image type
+1/3/4 for gray/RGB/CMYK, and zero alpha/reserved/encoding/mask fields. `XI`
+introduces uppercase hex samples on `%`-prefixed lines, 32 sample bytes per
+line. DSC `%%BeginData: n ASCII Bytes` / `%%EndData` brackets count `XI`, its
+newline, the prefixes and the encoded lines. No modern raster operands,
+`XN`, `Xh` or `XH` are written. Hex takes about twice the raw colour bytes,
+plus line prefixes and endings.
+
+**Document mode matters.** Without a mode hint, Illustrator 29's legacy
+converter opened the RGB control as CMYK and changed RGB probes by up to 49
+channel values. The header now carries `%AI9_ColorModel: 1` for RGB or `2`
+for CMYK. This is a later advisory comment; the artwork remains version 7.
+Section 1.5 describes older applications ignoring newer comments/operators.
+The hint is checked in current Illustrator, not an actual Illustrator 7
+executable. Document ICC assignment is still outside this format's scope.
+
+**Refused by name:** non-opaque picture alpha, external links, embedded SVG,
+slice cropping, object/group opacity and the shared unsupported appearances.
+An all-opaque alpha plane is removed; no picture is silently flattened to
+make transparency fit. Validation leaves an existing destination intact.
+
+**Reader safety:** uncounted legacy `XI`/hex data is not implemented. It now
+fails with "raster data without byte-count brackets" instead of silently
+skipping the picture when a standalone file has no PDF comparison. Counted
+hex rasters reopen from their native records. General uncounted legacy raster
+import remains a separate reader task; comparison thresholds are unchanged.
+
+**Qualification.** The generated seven-picture RGB control `2acfae7a45`
+opened in Illustrator 29.2.1 as RGB. At 96 dpi, RGB probes (including fitted,
+reflected, clipped and rotated placements) differ by at most 3, grayscale by
+5, CMYK preview by 11, and the following shape by 0 channel values. PROOF's
+own native reopen matches all sampled pixels exactly. Its PDF retains the
+CMYK plane byte for byte, with RGB probes within 4.
+
+The CMYK control `50470d94bc` opens as CMYK. Its Illustrator-saved modern
+copy `19c984a343` retains the exact 24 by 16, 8-bit CMYK sample plane in its
+private records. That copy opens in PROOF through its PDF because Illustrator
+writes the still-unsupported `XC` operator. This qualifies the CMYK sample
+preservation, not a native reopen of Illustrator's saved copy. No `XC`
+semantics or PDF acceptance thresholds were changed. Actual version 7
+application compatibility and wider real-artwork writer coverage remain
+unqualified.
+
+Final automated checks: **13 focused unit suites** pass, including reader
+**72 cases, zero failures, one opt-in skip**, importer **148 cases, zero
+failures, two opt-in skips**, and gradient writer **27/27**. All **18 export
+smokes** pass: legacy picture **13/13**, legacy output **44/44**, modern
+embedded pictures **11/11**, links **13/13**; mask, foreign PDF, print-sample,
+placed-page, path-text and Unicode-path regressions also pass. Both final
+legacy controls are byte-identical to the Illustrator-qualified controls.
+No wider artwork corpus was run in this writer round.

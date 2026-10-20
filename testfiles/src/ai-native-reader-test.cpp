@@ -783,6 +783,18 @@ TEST(AiNativeReader, GradientMatricesOfSeveralRamps)
 
 // ---- the reader: images, drawn looks, text -----------------------------------------------
 
+TEST(AiNativeReader, UncountedRasterIsRefusedInsteadOfSilentlyDropped)
+{
+    std::string const header = "%AI5_BeginRaster\n[1 0 0 1 10 20] 0 0 1 1 1 1 8 3 0 0 0 0";
+    auto const error = read_error(records(layer("L", header + " XI\n%FF0080\n%AI5_EndRaster\nN\n")));
+    EXPECT_NE(error.find("raster data without byte-count brackets"), std::string::npos);
+    auto const counted = header + "\n%%BeginData: 11 ASCII Bytes\nXI\n%FF0080\n%%EndData\n%AI5_EndRaster\nN\n";
+    auto doc = read_ok(records(layer("L", counted)));
+    ASSERT_EQ(doc.images.size(), 1u);
+    EXPECT_EQ(doc.images[0].channels, 3);
+    EXPECT_EQ(doc.images[0].samples, std::string("\xff\x00\x80", 3));
+}
+
 TEST(AiNativeReader, CmykImageKeepsItsSamples)
 {
     std::string art = "%AI5_BeginRaster\n() 1 XG\n/DeviceCMYK XN\n[ 1 0 0 1 10 20 ] 0 0 2 1 2 1 8 4 0 0 1 0 0\n"

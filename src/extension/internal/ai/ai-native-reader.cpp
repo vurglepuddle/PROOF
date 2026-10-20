@@ -1356,6 +1356,11 @@ void Reader::op(std::string_view w, bool hidden)
     // Images.
     else if (w == "XN") {
         if (_raster) _raster_space = last_text(vals).value_or("");
+    } else if (w == "XI" && _raster) {
+        // Counted XI data is one lexer Data token, never this operator. A legacy raster
+        // without byte-count brackets would otherwise be skipped as comments, losing the
+        // picture silently in a standalone file with no PDF to compare against.
+        unreadable("raster data without byte-count brackets");
     }
     // Type in the legacy format.
     else if (w == "To" || w == "TO" || w == "Tp" || w == "TP" || w == "Tx" || w == "TX" || w == "Tj" || w == "Tk") {

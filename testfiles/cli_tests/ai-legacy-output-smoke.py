@@ -88,7 +88,11 @@ def main():
     check("legacy conversion matches the crop artboard", b"%AI3_TemplateBox: 75 37 75 37\n" in records)
     check("legacy layer field count", all(len(line.split()) == 11 for line in records.splitlines() if line.endswith(b" Lb")))
     check("CMYK spot tint uses x and X", b"(PROOF Orange) 0.7 x\n" in records and b"(PROOF Orange) 0.7 X\n" in records)
-    check("no modern-only records", not any(x in records for x in (b"AI9_", b"AI24_", b" Xw", b"AIPrivateData")))
+    # A later advisory colour-model comment keeps newer Illustrator from converting an
+    # RGB legacy document to CMYK. Older readers ignore it; no modern artwork is written.
+    check("colour-model advisory only, no modern artwork", records.count(b"%AI9_ColorModel: 2\n") == 1
+          and not any(x in records.replace(b"%AI9_ColorModel: 2\n", b"")
+                      for x in (b"AI9_", b"AI24_", b" Xw", b"AIPrivateData")))
 
     reopened = out / "reopened.svg"
     export("reopen", ai, reopened)

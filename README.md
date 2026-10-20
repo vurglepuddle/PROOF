@@ -46,7 +46,9 @@ does not need to be installed to read or write these files.
 Native output contains fresh Illustrator records and compatible PDF 1.7 pages.
 It currently requires PROOF's bundled PDF backend. The optional Illustrator 7
 copy format uses standalone records instead, with stricter limits: one artboard,
-ASCII layer and ink names, and no retained document ICC profile or artboard name.
+ASCII layer and ink names, opaque 8-bit embedded pictures, and no retained
+document ICC profile or artboard name. Picture transparency and links remain
+refused in this format.
 Illustrator opening, editing and saving back into PROOF are checked with synthetic
 controls; broader writer qualification remains in progress.
 
@@ -56,7 +58,7 @@ controls; broader writer qualification remains in progress.
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
 | Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips, with CMYK/RGB/grey paint, CMYK spot inks and tints, opaque linear/radial gradient fills and strokes (including both on one path), supported spot/ICC stops, embedded pictures and local PNG/JPEG/classic TIFF/PSD links, overprint and stroke styles |
 | Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
-| Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers and CMYK inks, without a PDF preview or the bundled PDF backend |
+| Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers, CMYK inks and opaque 8-bit grayscale/RGB/CMYK pictures, without a PDF preview or the bundled PDF backend |
 | Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
 
 Recent reader work adds editable left-aligned paragraph tabs and ordinary text

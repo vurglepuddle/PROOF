@@ -23,6 +23,8 @@ namespace Inkscape::Extension::Internal::AiNative {
  * address and pixel bounds; its file bytes (including CMYK and alpha) remain external.
  * Missing/unreadable links, unsupported formats (including PSB and BigTIFF), and a changed
  * modification time are refused.
+ * Illustrator 7 instead writes opaque embedded samples as ASCII hex, without an alpha
+ * plane or the modern raster fields. Transparency and external links are refused there.
  */
 struct WrittenPicture
 {
@@ -30,7 +32,9 @@ struct WrittenPicture
     std::vector<std::string> refused;
 };
 
-WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art);
+/// Illustrator 7 uses opaque raster samples as comment-prefixed hexadecimal lines.
+/// Links and alpha channels remain refused in that form.
+WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy = false);
 
 } // namespace Inkscape::Extension::Internal::AiNative
 
