@@ -635,3 +635,9 @@ differ from PROOF's (median 23); placement does not. The Illustrator 7 file
 opens converted, as any version 7 file does, into a CMYK document: centres and
 focal points within 0.4 px of the canvas, and its saved copy reopens natively
 with them in place.
+
+**CMYK in an RGB document, 2026-10-20.** The canvas now shows DeviceCMYK paint in
+an RGB document through the working CMYK profile, as Illustrator does
+([document colours](PROOF-document-colors.md), "CMYK paint without a CMYK profile
+of its own"). The smoke's last control, an RGB document mostly cyan, reopens from
+its own records; before, it opened from its page.

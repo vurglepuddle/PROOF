@@ -11,6 +11,7 @@
 #include "document-cms.h"
 #include "manager.h"
 #include "spaces/cms.h"
+#include "spaces/cmyk.h"
 #include "utils.h"
 #include "document.h"
 #include "object/color-profile.h"
@@ -85,6 +86,19 @@ RenderingIntent workingIntent() {
     if (intent == RenderingIntent::RELATIVE_COLORIMETRIC && !prefs->getBool("/options/workingcolors/bpc", true))
         intent = RenderingIntent::RELATIVE_COLORIMETRIC_NOBPC;
     return intent;
+}
+
+bool showDeviceCMYK() {
+    auto space = std::dynamic_pointer_cast<Space::DeviceCMYK>(Manager::get().find(Space::Type::CMYK));
+    if (!space) return false;
+    auto profile = workingProfile(Space::Type::CMYK);
+    auto const intent = workingIntent();
+    auto const shown = space->getProfile();
+    bool const same = profile ? shown->getChecksum() == profile->getChecksum() && space->getIntent() == intent
+                              : shown->getColorSpace() != cmsSigCmykData;
+    if (same) return false;
+    space->setProfile(profile, intent);
+    return true;
 }
 
 Space::Type mode(SPDocument *document) {

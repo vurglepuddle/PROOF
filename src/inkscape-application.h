@@ -23,6 +23,7 @@
 #include "actions/actions-extra-data.h"
 #include "actions/actions-hint-data.h"
 #include "io/file-export-cmd.h"   // File export (non-verb)
+#include "preferences.h"
 #include "extension/internal/pdfinput/enums.h"
 #include "util/smart_ptr_keys.h"
 
@@ -195,6 +196,9 @@ private:
     bool _no_splash = false;
     void _finishStartupSplash();
     void _watchStartupSplash();
+
+    // DeviceCMYK paint is shown through the working CMYK profile; it follows the preference.
+    std::vector<Inkscape::PrefObserver> _working_colors;
 
     void init_extension_action_data();
     std::vector<Glib::RefPtr<Gio::SimpleAction>> _effect_actions;

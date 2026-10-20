@@ -8,6 +8,7 @@
  */
 
 #include "colors/spaces/cmyk.h"
+#include "colors/spaces/cms.h"
 #include "spaces-testbase.h"
 
 namespace {
@@ -83,6 +84,57 @@ TEST_F(ColorsSpacesCmykProtected, overInk)
 {
     ASSERT_TRUE(overInk({1.0, 1.0, 1.0, 0.21}));
     ASSERT_FALSE(overInk({0.0, 1.0, 1.0, 0.19}));
+}
+
+// PROOF: DeviceCMYK shown through a CMYK profile, as Illustrator shows CMYK paint in an RGB
+// document through its working CMYK space. The numbers and what is written stay; the colour is
+// that of the same numbers in an icc-color() of the profile; without a profile, the formula.
+TEST(ColorsSpacesCmyk, shownThroughProfile)
+{
+    auto profile = CMS::Profile::create_from_uri(INKSCAPE_TESTS_DIR "/data/colors/default_cmyk.icc");
+    ASSERT_TRUE(profile);
+    // The library's space: Manager::get() is inline, and a test program linked to the library
+    // as a DLL has a manager of its own.
+    auto device = std::dynamic_pointer_cast<Space::DeviceCMYK>(Color(CMYK, {0, 0, 0, 0}).getSpace());
+    ASSERT_TRUE(device);
+    auto const managed = std::make_shared<Space::CMS>(profile);
+    managed->setIntent(RenderingIntent::RELATIVE_COLORIMETRIC);
+    device->setProfile(profile, RenderingIntent::RELATIVE_COLORIMETRIC);
+    // The space is shared by every test in this program.
+    struct Formula
+    {
+        std::shared_ptr<Space::DeviceCMYK> device;
+        ~Formula() { device->setProfile({}, RenderingIntent::UNKNOWN); }
+    } formula{device};
+
+    for (auto const &values : std::vector<std::vector<double>>{
+             {1, 0, 0, 0}, {0, 1, 1, 0}, {0.3, 0.6, 0.6, 0.1}, {0, 0, 0, 1}, {0, 0, 0, 0}}) {
+        Color const shown(CMYK, values);
+        EXPECT_EQ(Hex(shown.toRGBA()), Hex(Color(managed, values).toRGBA())) << shown.toString();
+    }
+    Color const cyan(CMYK, {1, 0, 0, 0});
+    EXPECT_NE(Hex(cyan.toRGBA()), Hex(0x00ffffff));
+    EXPECT_EQ(cyan.toString(), "device-cmyk(1 0 0 0)");
+    EXPECT_EQ(cyan.getSpace(), device);
+    EXPECT_EQ(Hex(Color(CMYK, {1, 0, 0, 0, 0.5}).toRGBA()), Hex((cyan.toRGBA() & 0xffffff00) | 0x80));
+
+    // Into it, the profile's separation: the same colour, a step or two apart at most.
+    auto const rgb = Color(CMYK, {0.3, 0.6, 0.6, 0.1}).converted(RGB);
+    ASSERT_TRUE(rgb);
+    auto const back = rgb->converted(CMYK);
+    ASSERT_TRUE(back);
+    ASSERT_EQ(back->size(), 4u);
+    auto const again = back->converted(RGB);
+    ASSERT_TRUE(again);
+    for (unsigned i = 0; i < 3; ++i) {
+        EXPECT_NEAR((*again)[i], (*rgb)[i], 2.5 / 255) << i;
+    }
+
+    device->setProfile({}, RenderingIntent::UNKNOWN);
+    EXPECT_EQ(Hex(cyan.toRGBA()), Hex(0x00ffffff));
+    // An RGB profile isn't taken.
+    device->setProfile(CMS::Profile::create_srgb(), RenderingIntent::RELATIVE_COLORIMETRIC);
+    EXPECT_EQ(Hex(cyan.toRGBA()), Hex(0x00ffffff));
 }
 
 } // namespace

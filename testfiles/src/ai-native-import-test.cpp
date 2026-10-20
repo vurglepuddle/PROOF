@@ -37,6 +37,7 @@
 #include "display/drawing.h"
 #include "colors/document-colors.h"
 #include "colors/spaces/cms.h"
+#include "colors/spaces/cmyk.h"
 #include "desktop-style.h"
 #include "display/cairo-utils.h"
 #include "display/control/font-highlight.h"
@@ -4946,6 +4947,20 @@ TEST_F(AiNativeImportTest, Corpus)
     auto const *roots = g_getenv("PROOF_AI_CORPUS");
     auto const *file = g_getenv("PROOF_AI_FILE");
     if (!roots && !file) GTEST_SKIP() << "set PROOF_AI_CORPUS to approved folders, or PROOF_AI_FILE to an approved file";
+    // CMYK paint in an RGB document shows as the application shows it (inkscape-application.cpp),
+    // through the working CMYK profile; the formula again afterwards, for the other tests.
+    Colors::DocumentColors::showDeviceCMYK();
+    struct Formula
+    {
+        ~Formula()
+        {
+            // The library's space, not this program's copy of the inline Manager::get().
+            auto const space = Colors::Color(Type::CMYK, {0, 0, 0, 0}).getSpace();
+            if (auto device = std::dynamic_pointer_cast<Colors::Space::DeviceCMYK>(space)) {
+                device->setProfile({}, Colors::RenderingIntent::UNKNOWN);
+            }
+        }
+    } formula;
     auto from_utf8 = [](std::string const &s) { return std::filesystem::path(std::u8string(s.begin(), s.end())); };
     auto utf8 = [](std::filesystem::path const &p) { auto s = p.u8string(); return std::string(s.begin(), s.end()); };
     std::vector<std::filesystem::path> files;

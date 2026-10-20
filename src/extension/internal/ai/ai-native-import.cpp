@@ -43,6 +43,7 @@
 #include "colors/color.h"
 #include "colors/document-cms.h"
 #include "colors/document-colors.h"
+#include "colors/manager.h"
 #include "colors/spaces/base.h"
 #include "colors/spaces/cms.h"
 #include "colors/spaces/enum.h"
@@ -655,17 +656,26 @@ Builder::Builder(Document const &ai, SPDocument *doc, TextCheck text, Source con
     , _substituted_shown(std::move(text.substituted_shown))
     , _folder(source.folder)
 {
+    // CMYK pictures are shown through the document's CMYK profile; in an RGB document, through
+    // the one DeviceCMYK paint is shown through (DocumentColors::showDeviceCMYK), as Illustrator
+    // shows them through its working CMYK space.
     auto space = Colors::DocumentColors::assignedSpace(doc);
+    std::shared_ptr<Colors::CMS::Profile> shown_by;
     if (space && space->getComponentType() == Type::CMYK) {
         _cmyk_space = space;
-        if (auto profile = space->getProfile()) {
-            _srgb = Colors::CMS::Profile::create_srgb();
-            auto const intent = Colors::DocumentColors::workingIntent();
-            cmsUInt32Number const flags =
-                intent == Colors::RenderingIntent::RELATIVE_COLORIMETRIC ? cmsFLAGS_BLACKPOINTCOMPENSATION : 0;
-            _cmyk_to_rgb = cmsCreateTransform(profile->getHandle(), TYPE_CMYK_8, _srgb->getHandle(), TYPE_RGB_8,
-                                              lcms_intent(intent), flags);
+        shown_by = space->getProfile();
+    } else if (auto device = Colors::Manager::get().find(Type::CMYK)) {
+        if (auto profile = device->getProfile(); profile && profile->getColorSpace() == cmsSigCmykData) {
+            shown_by = profile;
         }
+    }
+    if (shown_by) {
+        _srgb = Colors::CMS::Profile::create_srgb();
+        auto const intent = Colors::DocumentColors::workingIntent();
+        cmsUInt32Number const flags =
+            intent == Colors::RenderingIntent::RELATIVE_COLORIMETRIC ? cmsFLAGS_BLACKPOINTCOMPENSATION : 0;
+        _cmyk_to_rgb = cmsCreateTransform(shown_by->getHandle(), TYPE_CMYK_8, _srgb->getHandle(), TYPE_RGB_8,
+                                          lcms_intent(intent), flags);
     }
 }
 

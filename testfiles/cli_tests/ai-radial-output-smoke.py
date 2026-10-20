@@ -6,12 +6,13 @@ Illustrator 7 form refuses them by name. Each file is reopened and drawn, and co
 the canvas. The modern file's PDF page must be PROOF's own PDF export of the same drawing, and
 is compared with the canvas too, more loosely (PDF_TOLERANCE).
 
-Without a profile the canvas and Poppler convert DeviceCMYK differently, whatever the paint:
-pure cyan is 0 255 255 on the canvas and 0 173 239 in Poppler, and these stops differ by a
-median of 23 inside a radial (2026-10-20). So the canvas is compared with the PDF page at the
-RGB shapes only; the CMYK ones are checked through their records and by the page being
-PROOF's own export. (With large cyan areas the difference alone sends a file written from an
-RGB document to its page on reopening: todo.md, 2026-10-20.)
+The canvas shows DeviceCMYK through the working CMYK profile, as Illustrator does; Poppler
+draws it with a formula fitted to SWOP. Flat, they differ by up to 17; inside a radial more,
+as Poppler blends the inks and the canvas the screen colours. So the canvas is compared with
+the PDF page at the RGB shapes only; the CMYK ones are checked through their records and by
+the page being PROOF's own export. A last control, mostly cyan, must reopen from its own
+records and match the page's flat colours. That needs a CMYK working profile: in a new
+profile, as here, PROOF takes Coated GRACoL 2006 when it is installed.
 """
 import argparse
 import hashlib
@@ -62,6 +63,20 @@ CIRCLE_POINTS = [(80, 80), (100, 80), (80, 120), (50, 55)] + CMYK_POINTS + [(80,
 # ellipse (2026-10-20). A misplaced axis or focal point differs by tens on one side.
 PDF_TOLERANCE = 12
 ELLIPSE_CMYK_POINTS = [(205, 210), (175, 195), (240, 230), (248, 232), (230, 215)]
+# Most of the page cyan, magenta and red, with a radial ending in cyan.
+CYAN = '''<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+  width="430" height="320" viewBox="0 0 430 320">
+  <defs><linearGradient id="s"><stop style="stop-color:device-cmyk(0 0 1 0)"/>
+  <stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/></linearGradient>
+  <radialGradient id="r" xlink:href="#s" gradientUnits="userSpaceOnUse" cx="320" cy="160" r="150"/></defs>
+  <rect x="0" y="0" width="215" height="320" style="fill:device-cmyk(1 0 0 0)"/>
+  <rect x="215" y="0" width="215" height="320" style="fill:url(#r)"/>
+  <rect x="20" y="20" width="80" height="80" style="fill:device-cmyk(0 1 1 0)"/>
+</svg>'''
+CYAN_FLAT = [(150, 160), (60, 60), (30, 300)]
+# Poppler's formula is fitted to SWOP: against GRACoL, FOGRA39 or SWOP itself, flat primaries
+# and their pairs differ by up to 17 (measured 2026-10-20); CSS's formula, by 82.
+CYAN_TOLERANCE = 24
 ELLIPSE_POINTS = [(360, 80), (385, 85), (330, 60), (400, 110)] + ELLIPSE_CMYK_POINTS + [(320, 240), (300, 220),
                                                                                      (340, 265), (300, 270)]
 
@@ -166,6 +181,28 @@ def main():
         check(name + ': focal radius refused safely', p.returncode == 1
               and b'radial gradients with a focal radius' in p.stderr and ai.read_bytes() == kept)
         check(name + ': working SVG unchanged', hashlib.sha256(source.read_bytes()).hexdigest() == before)
+
+    # Large DeviceCMYK areas in an RGB document. Shown through the working CMYK profile, as
+    # Illustrator shows them and close to Poppler's formula, the file reopens from its own
+    # records; with CSS's formula (cyan 0 255 255) it opened from its page (todo.md, 2026-10-20).
+    source = out / 'cyan-control.svg'
+    source.write_text(CYAN)
+    canvas = out / 'cyan-canvas.png'
+    run('cyan-canvas', exe, source, '--export-background=white', f'--export-filename={canvas}')
+    with Image.open(canvas) as image:
+        shown = image.convert('RGB').getpixel(CYAN_FLAT[0])
+    check('cyan: shown through a CMYK profile', shown != (0, 255, 255), shown)
+    ai = out / 'cyan.ai'
+    run('cyan-save', exe, source, '--export-extension=org.inkscape.output.ai.native', f'--export-filename={ai}')
+    reopened = out / 'cyan.svg'
+    p = run('cyan-reopen', exe, ai, f'--export-filename={reopened}')
+    tree = ET.parse(reopened).getroot()
+    check('cyan: reopens from its own records', b'opens from its PDF page' not in p.stdout + p.stderr
+          and not list(tree.iter(svg_ns + 'image')) and len(list(tree.iter(svg_ns + 'path'))) == 3)
+    prefix = out / 'cyan-pdf'
+    run('cyan-pdf', args.pdftoppm.resolve(), '-r', '96', '-singlefile', '-png', ai, prefix)
+    d = deltas(canvas, prefix.with_suffix('.png'), CYAN_FLAT)
+    check('cyan: flat CMYK paint as Poppler draws it', max(d) <= CYAN_TOLERANCE, d)
     (out / 'report.json').write_text(json.dumps(checks, indent=2))
     passed = sum(c['passed'] for c in checks)
     print(f'{passed}/{len(checks)} checks passed. {out / "report.json"}')

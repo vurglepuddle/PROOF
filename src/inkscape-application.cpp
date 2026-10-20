@@ -1024,6 +1024,18 @@ void InkscapeApplication::on_startup()
     // Deprecated...
     Inkscape::Application::create(_with_gui);
 
+    // PROOF: CMYK paint in an RGB document, or one without a profile, looks as it does in
+    // Illustrator: through the working CMYK profile (colors/document-colors.h).
+    // Each entry is watched: a group that doesn't exist yet in a new profile can't be.
+    Inkscape::Colors::DocumentColors::showDeviceCMYK();
+    for (auto entry : {"cmyk", "intent", "bpc"}) {
+        _working_colors.push_back(Inkscape::Preferences::get()->createObserver(
+            Glib::ustring("/options/workingcolors/") + entry, [this] {
+                if (!Inkscape::Colors::DocumentColors::showDeviceCMYK()) return;
+                for (auto document : get_documents()) Inkscape::Colors::DocumentColors::refresh(document);
+            }));
+    }
+
     // Extensions
     if (_startup_splash) _startup_splash->set_message(_("Loading tools and extensions\u2026"));
     if (_no_extensions) {

@@ -19,6 +19,11 @@ std::vector<std::shared_ptr<CMS::Profile>> profiles(Space::Type mode);
 std::shared_ptr<CMS::Profile> workingProfile(Space::Type mode);
 void setWorkingProfile(Space::Type mode, std::shared_ptr<CMS::Profile> const &profile);
 RenderingIntent workingIntent();
+// DeviceCMYK paint is shown through the working CMYK profile and intent, as Illustrator shows
+// CMYK in an RGB document or one without a profile; a document with a CMYK profile of its own
+// shows it through that one (interpret). Without a working CMYK profile, CSS's formula. PROOF
+// calls this at startup and when the working colours change; true if what is shown changed.
+bool showDeviceCMYK();
 Space::Type mode(SPDocument *document);
 std::shared_ptr<Space::CMS> assignedSpace(SPDocument *document);
 Color interpret(SPDocument *document, Color const &color);

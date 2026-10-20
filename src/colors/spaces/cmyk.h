@@ -85,6 +85,23 @@ public:
     std::string toString(std::vector<double> const &values, bool opacity = true) const override;
 
     bool overInk(std::vector<double> const &input) const override;
+
+    /**
+     * PROOF: show DeviceCMYK through a CMYK profile instead of the uncalibrated formula, as CSS
+     * Color 5's `@color-profile device-cmyk` does, and as Illustrator shows CMYK paint in a
+     * document without a CMYK profile of its own: through its working CMYK space. The numbers
+     * stay as they are; their colour on screen and in conversions follows the profile. A null
+     * profile goes back to the formula, the default. Set from the main thread
+     * (DocumentColors::showDeviceCMYK).
+     */
+    void setProfile(std::shared_ptr<Colors::CMS::Profile> profile, RenderingIntent intent);
+    std::shared_ptr<Colors::CMS::Profile> const getProfile() const override;
+    bool spaceToProfile(std::vector<double> &io) const override;
+    bool profileToSpace(std::vector<double> &io) const override;
+
+private:
+    mutable CacheMutex _profile_mutex;
+    std::shared_ptr<Colors::CMS::Profile> _profile;
 };
 
 } // namespace Inkscape::Colors::Space

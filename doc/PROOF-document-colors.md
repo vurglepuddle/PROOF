@@ -172,3 +172,56 @@ produced four successive pasted copies; all six saved rectangles retained
 exactly 5/100/45/22. Local evidence: `../../artifacts/cmyk-final-*.out` and
 `../../artifacts/cmyk-clipboard-live-result.json`. The user's original test SVG
 was not modified.
+
+## CMYK paint without a CMYK profile of its own (2026-10-20)
+
+`device-cmyk(...)` paint in an RGB document, in a document that isn't colour
+managed, or in a file exported from the command line without a mode is shown
+through the working CMYK profile and intent, as Illustrator shows CMYK in an RGB
+or untagged document through its working CMYK space. Until now CSS's
+uncalibrated formula drew it: cyan as 0 255 255, where Coated GRACoL 2006 makes
+it 0 159 227 and Poppler 0 173 239. A document with a CMYK profile of its own
+still shows its paint through that profile.
+
+- **The numbers stay.** The paint is still written `device-cmyk(c m y k)` and
+  keeps its colour space, so the picker, swatches and comparisons see the same
+  colour. What follows the profile is how it looks: on the canvas, in PNG
+  export, in the RGB preview written beside it in SVG, and in conversions.
+  Converting an RGB colour to CMYK (the picker's CMYK fields for an RGB colour;
+  the CMYK alternate the `.ai` writer gives an RGB gradient stop) gives the
+  profile's separation, as in Illustrator: red `#ff0000` is about 0/96/93/0 in
+  GRACoL 2006, no longer 0/100/100/0.
+- **It follows the setting.** Changing the working CMYK profile, the intent or
+  black point compensation (Document Properties > Color > Working Spaces)
+  redraws the open documents. Without a working CMYK profile (none chosen, and
+  Coated GRACoL 2006 not installed) the formula is used, as before.
+- **A document that isn't colour managed** shows its paint through the working
+  profile too, as Illustrator shows an untagged document. The installed build
+  draws the corporate 5/100/45/22 as (182, 19, 70) in such a CMYK document, in
+  an RGB document and in a file without a mode, the colour an assigned GRACoL
+  2006 gives; under Validation, the unmanaged and merely linked versions were
+  (189, 0, 109) before this. Numbers and the absence of an embedded profile are
+  unchanged.
+- **CMYK pictures** in an RGB `.ai` file are shown through the same profile when
+  the file is read.
+
+Why: a PROOF-written `.ai` from an RGB document with large CMYK areas reopened
+from its PDF page, because Poppler, which draws the page that the art is checked
+against, uses a formula fitted to SWOP. Over 625 CMYK values, the canvas through
+GRACoL 2006, FOGRA39 or SWOP is nowhere past the page check's limits from Poppler
+(at most 64 in a channel, at 75% cyan, and 26 in lightness); the old formula was
+past them for 21 to 29.
+
+How: `Space::DeviceCMYK::setProfile` (`src/colors/spaces/cmyk.*`), what CSS
+Color 5's `@color-profile device-cmyk` does; `DocumentColors::showDeviceCMYK()`
+sets it from the working preferences at startup and when they change
+(`inkscape-application.cpp`). The colour library's default stays the formula,
+so tests that don't start the application see it. Colour spaces now cache their
+transforms by both profiles, under a lock, as canvas tiles are drawn on several
+threads. The corpus check (`AiNativeImportTest.Corpus`) shows CMYK as the
+application does.
+
+Checks: `ColorsSpacesCmyk.shownThroughProfile`,
+`ColorDocumentCMSObjsTest.deviceCmykShownThroughWorkingProfile`, and the radial
+smoke's cyan control, which reopens from its own records with its flat colours
+within 17 of Poppler's (82 at `b83a8dcf39`, where it opened from its page).

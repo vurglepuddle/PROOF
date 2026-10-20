@@ -12,12 +12,16 @@
 #include <gtest/gtest.h>
 
 #include "colors/color.h"
+#include "colors/document-colors.h"
 #include "colors/manager.h"
 #include "colors/spaces/cms.h"
 #include "document.h"
 #include "inkscape.h"
 #include "object/color-profile.h"
+#include "object/sp-item.h"
 #include "object/sp-stop.h"
+#include "preferences.h"
+#include "style.h"
 
 static std::string icc_dir = INKSCAPE_TESTS_DIR "/data/colors/";
 static std::string svg_objs_file = INKSCAPE_TESTS_DIR "/data/colors/cms-in-objs.svg";
@@ -74,6 +78,54 @@ TEST_F(ColorDocumentCMSObjsTest, loadDocument)
     ASSERT_TRUE(cm.find(Space::Type::CMYK));
     ASSERT_EQ(cm.find(Space::Type::CMYK)->getName(), "DeviceCMYK");
     ASSERT_EQ(cm.find(Space::Type::RGB)->getName(), "RGB");
+}
+
+// PROOF: CMYK paint in an RGB document, or one without a profile, is shown through the working
+// CMYK profile, as in Illustrator; its numbers, its space and what is written stay. A document
+// with a CMYK profile of its own still shows it through that one.
+TEST_F(ColorDocumentCMSObjsTest, deviceCmykShownThroughWorkingProfile)
+{
+    auto prefs = Preferences::get();
+    auto const chosen = prefs->getString("/options/workingcolors/cmyk");
+    auto const cmyk_profiles = DocumentColors::profiles(Space::Type::CMYK);
+    ASSERT_FALSE(cmyk_profiles.empty());
+    auto const profile = cmyk_profiles.front();
+    prefs->setString("/options/workingcolors/cmyk", profile->getPath());
+    struct Restore
+    {
+        Preferences *prefs;
+        Glib::ustring chosen;
+        ~Restore()
+        {
+            prefs->setString("/options/workingcolors/cmyk", chosen);
+            DocumentColors::showDeviceCMYK();
+        }
+    } restore{prefs, chosen};
+    ASSERT_TRUE(DocumentColors::showDeviceCMYK());
+    EXPECT_FALSE(DocumentColors::showDeviceCMYK()) << "nothing changed";
+
+    auto const managed = std::make_shared<Space::CMS>(profile);
+    managed->setIntent(DocumentColors::workingIntent());
+    auto const expected = Color(managed, {1, 0, 0, 0}).toRGBA();
+    ASSERT_NE(expected, 0x00ffffffu);
+    for (auto mode : {"RGB", ""}) {
+        SCOPED_TRACE(mode);
+        auto document = SPDocument::createNewDocFromMem(
+            std::string("<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1'") +
+            (*mode ? std::string(" proof:color-mode='") + mode + "'" : std::string()) +
+            "><rect id='r' width='10' height='10' style='fill:device-cmyk(1 0 0 0)'/></svg>");
+        ASSERT_TRUE(document);
+        auto const &fill = document->getObjectById("r")->style->fill.getColor();
+        EXPECT_EQ(fill.getSpace(), Color(Space::Type::CMYK, {0, 0, 0, 0}).getSpace());
+        EXPECT_EQ(fill.toString(), "device-cmyk(1 0 0 0)");
+        EXPECT_EQ(fill.toRGBA(), expected);
+        EXPECT_TRUE(fill.isClose(Color(Space::Type::CMYK, {1, 0, 0, 0}), 1e-9));
+    }
+
+    // Changing the working profile back shows the formula again.
+    prefs->setString("/options/workingcolors/cmyk", "");
+    ASSERT_TRUE(DocumentColors::showDeviceCMYK());
+    EXPECT_EQ(Color(Space::Type::CMYK, {1, 0, 0, 0}).toRGBA(), 0x00ffffffu);
 }
 
 TEST_F(ColorDocumentCMSObjsTest, updateIntent)

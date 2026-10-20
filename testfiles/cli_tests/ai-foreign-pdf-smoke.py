@@ -20,6 +20,12 @@ CASES = {
     'foreign-2': [(11, 56, 'paint'), (16.5, 39, 'black'), (42, 34, 'white')],
     'foreign-gradients': [(20, 65, 'paint'), (80, 65, 'paint'), (120, 90, 'white')],
 }
+# Their paint is device-cmyk(0.2 0.4 0.6 0.1) in an RGB document. The canvas shows it through
+# the working CMYK profile, as Illustrator does; Poppler draws the page with its formula, fitted
+# to SWOP. With GRACoL 2006 they are 14 apart, (191, 146, 103) against (185, 135, 89); with SWOP
+# itself 15 (2026-10-20). Paint that missed its place is a hundred or more from white.
+CMYK_CASES = ('foreign-0', 'foreign-1', 'foreign-2')
+CMYK_TOLERANCE = 24
 
 
 def objects(obj, seen):
@@ -88,7 +94,8 @@ def main():
             # 100K is a dark ink simulation. Verify darkness and exact K below,
             # rather than demanding that a print black render as RGB zero.
             if kind != 'black':
-                check(f'{name}: canvas/PDF agree at {x},{y}', max(abs(a - b) for a, b in zip(*colors)) <= 10, str(colors))
+                tolerance = CMYK_TOLERANCE if kind == 'paint' and name in CMYK_CASES else 10
+                check(f'{name}: canvas/PDF agree at {x},{y}', max(abs(a - b) for a, b in zip(*colors)) <= tolerance, str(colors))
             for label, color in zip(('canvas', 'PDF'), colors):
                 valid = max(color) <= 48 if kind == 'black' else min(color) >= 247 if kind == 'white' else min(color) < 220
                 check(f'{name}: {label} {kind} at {x},{y}', valid, str(color))

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <iostream>
@@ -44,6 +45,15 @@ class Manager;
 namespace Space {
 
 class Components;
+
+/// PROOF: a lock for a space's caches; a copy of the space gets a lock of its own.
+struct CacheMutex
+{
+    CacheMutex() = default;
+    CacheMutex(CacheMutex const &) {}
+    CacheMutex &operator=(CacheMutex const &) { return *this; }
+    std::mutex mutex;
+};
 
 class AnySpace : public std::enable_shared_from_this<AnySpace>
 {
@@ -122,6 +132,7 @@ protected:
     int _intent_priority = 0;
     std::vector<std::string> _svgNames;
 private:
+    mutable CacheMutex _gamut_checkers_mutex;
     mutable std::map<std::string, std::shared_ptr<Colors::CMS::GamutChecker>> _gamut_checkers;
     Type _type;
     int _components;
@@ -149,7 +160,7 @@ public:
         auto to_size = to_profile->getSize();
         auto from_size = from_profile->getSize();
         bool has_alpha = io.size() == from_size + 1;
-        if (auto tr = makeTransform(to_profile, intent)) {
+        if (auto tr = makeTransform(from_profile, to_profile, intent)) {
             while (io.size() - has_alpha < to_size) io.insert(io.begin() + from_size, 0.0);
             auto ret = tr->do_transform(io, io);
             io.erase(io.begin() + to_size, io.end() - has_alpha);
@@ -161,17 +172,22 @@ private:
     /**
      * Construct an lcms2 transform and cache the results for later use.
      */
-    std::shared_ptr<Colors::CMS::TransformColor> makeTransform(std::shared_ptr<Colors::CMS::Profile> const &to_profile, RenderingIntent intent) const
+    std::shared_ptr<Colors::CMS::TransformColor> makeTransform(std::shared_ptr<Colors::CMS::Profile> const &from_profile,
+                                                               std::shared_ptr<Colors::CMS::Profile> const &to_profile,
+                                                               RenderingIntent intent) const
     {
-
-        auto &transform = _transforms[{to_profile->getChecksum(), intent}];
+        // PROOF: keyed by both profiles, as a space's own profile can change (DeviceCMYK shown
+        // through a working profile), and locked, as canvas tiles are drawn on several threads.
+        std::lock_guard lock(_transforms_mutex.mutex);
+        auto &transform = _transforms[{from_profile->getChecksum() + to_profile->getChecksum(), intent}];
         if (!transform) {
             // Create a new transform for this one way profile-pair
-            transform = std::make_shared<Colors::CMS::TransformColor>(getProfile(), to_profile, intent);
+            transform = std::make_shared<Colors::CMS::TransformColor>(from_profile, to_profile, intent);
         }
         return transform;
     }
 
+    mutable CacheMutex _transforms_mutex;
     mutable std::map<std::pair<std::string, RenderingIntent>, std::shared_ptr<Colors::CMS::TransformColor>> _transforms;
 };
 

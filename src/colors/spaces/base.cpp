@@ -118,15 +118,20 @@ bool AnySpace::outOfGamut(std::vector<double> const &input, std::shared_ptr<AnyS
     auto to_profile = to_space->getProfile();
     if (*to_profile == *from_profile)
         return false;
-    // 1. Look in the checker cache for the color profile
-    auto to_profile_id = to_profile->getId();
-    if (_gamut_checkers.find(to_profile_id) == _gamut_checkers.end()) {
-        // 2. Create a new transform for this one way profile-pair
-        _gamut_checkers.emplace(to_profile_id,
-                                std::make_shared<Colors::CMS::GamutChecker>(from_profile, to_profile));
+    // 1. Look in the checker cache for the color profile pair (PROOF: this space's own profile
+    // can change, see DeviceCMYK)
+    auto pair_id = from_profile->getChecksum() + to_profile->getChecksum();
+    std::shared_ptr<Colors::CMS::GamutChecker> checker;
+    {
+        std::lock_guard lock(_gamut_checkers_mutex.mutex);
+        auto &cached = _gamut_checkers[pair_id];
+        if (!cached) {
+            // 2. Create a new transform for this one way profile-pair
+            cached = std::make_shared<Colors::CMS::GamutChecker>(from_profile, to_profile);
+        }
+        checker = cached;
     }
-
-    return _gamut_checkers[to_profile_id]->check_gamut(input);
+    return checker->check_gamut(input);
 }
 
 bool AnySpace::isOutOfGamut(const Colors::Color& color, double eps) {
