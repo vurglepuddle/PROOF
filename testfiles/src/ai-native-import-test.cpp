@@ -78,6 +78,7 @@
 #include "object/sp-image.h"
 #include "psd-fixture.h"
 #include "object/sp-item.h"
+#include "object/sp-gradient.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
@@ -5088,6 +5089,47 @@ TEST_F(AiNativeImportTest, Corpus)
         // What both writers would make of the document as read (tools/ai-writer-census.py): what each
         // refuses, or the size of its records and whether the reader takes them back. Nothing is saved.
         if (result && g_getenv("PROOF_AI_WRITE")) {
+            // Optional in-memory inventory: SVG spelling alone cannot distinguish RGB
+            // stops from the same numbers assigned to the document's ICC RGB profile.
+            // Only the opted-in corpus diagnostic prints these; reports remain local.
+            if (g_getenv("PROOF_AI_GRADIENT_INVENTORY")) {
+                auto const assigned = Colors::DocumentColors::assignedSpace(result->document.get());
+                auto const document_profile = assigned ? assigned->getProfile() : nullptr;
+                std::set<SPGradient const *> seen;
+                auto inventory = [&](auto &&self, SPObject const *parent) -> void {
+                    for (auto const &object : parent->children) {
+                        if (!is<SPItem>(&object)) continue; // Only scene artwork, not patterns/masks in defs.
+                        if (auto shape = cast<SPShape>(&object)) {
+                            if (!shape->curve() || shape->curve()->empty()) continue;
+                            for (bool const stroke : {false, true}) {
+                                if (stroke && shape->style->stroke_width.computed <= 0) continue;
+                                auto const &paint = stroke ? static_cast<SPIPaint const &>(shape->style->stroke)
+                                                           : shape->style->fill;
+                                auto const *gradient = cast<SPGradient>(paint.isPaintserver() && paint.href
+                                                                           ? paint.href->getObject() : nullptr);
+                                if (!gradient || gradient->isSolid() || is<SPMeshGradient>(gradient) ||
+                                    !seen.insert(gradient).second) continue;
+                                auto const *vector = gradient->getGradientVector();
+                                for (std::size_t i = 0; i < vector->stops.size(); ++i) {
+                                    auto const &color = vector->stops[i].color;
+                                    auto const space = color ? color->getSpace() : nullptr;
+                                    auto const profile = space ? space->getProfile() : nullptr;
+                                    std::printf("AI_GRADIENT\t%zu\t%s\t%zu\t%d\t%d\t%s\t%d\t%d\t%s\n",
+                                                seen.size(), stroke ? "stroke" : "fill", i,
+                                                space ? static_cast<int>(space->getType()) : -1,
+                                                space ? static_cast<int>(space->getComponentType()) : -1,
+                                                profile ? profile->getChecksum().c_str() : "",
+                                                space && space->hasValidCmsProfile(),
+                                                profile && document_profile && *profile == *document_profile,
+                                                color ? color->toString().c_str() : "");
+                                }
+                            }
+                        }
+                        self(self, &object);
+                    }
+                };
+                inventory(inventory, result->document->getRoot());
+            }
             for (auto const version : {AN::RecordsVersion::Illustrator7, AN::RecordsVersion::Modern}) {
                 auto const written = AN::write_records(result->document.get(), version);
                 std::string refused, error;

@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <format>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -35,6 +36,7 @@
 #include <vector>
 
 #include "colors/color.h"
+#include "colors/cms/profile.h"
 #include "colors/spaces/base.h"
 #include "object/sp-gradient.h"
 #include "object/sp-gradient-reference.h"
@@ -53,6 +55,96 @@ namespace {
 using Type = Colors::Space::Type;
 constexpr std::size_t MAX_STOPS = 256; // The native reader's default limit, including endpoints.
 constexpr std::size_t MAX_REFS = 32;
+
+/// The classic IEC encoding: its quantized D50 matrix, D65 media white, zero
+/// black point and the exact sRGB transfer function in a 1024-entry 16-bit table.
+/// Generated from the colour definition; no installed profile or artwork is needed.
+std::shared_ptr<Colors::CMS::Profile> classic_srgb_profile()
+{
+    auto handle = cmsCreate_sRGBProfile();
+    if (!handle) return {};
+    cmsSetProfileVersion(handle, 2.1);
+    cmsCIEXYZ white{.9504547119140625, 1, 1.08905029296875}, black{0, 0, 0};
+    std::array<cmsCIEXYZ, 3> matrix{{
+        {.436065673828125, .2224884033203125, .013916015625},
+        {.3851470947265625, .7168731689453125, .097076416015625},
+        {.14306640625, .06060791015625, .7140960693359375}
+    }};
+    std::array<cmsUInt16Number, 1024> samples;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        double const x = double(i) / (samples.size() - 1);
+        double const linear = x <= .04045 ? x / 12.92 : std::pow((x + .055) / 1.055, 2.4);
+        samples[i] = static_cast<cmsUInt16Number>(std::round(linear * 65535));
+    }
+    auto curve = cmsBuildTabulatedToneCurve16(nullptr, samples.size(), samples.data());
+    bool const written = curve && cmsWriteTag(handle, cmsSigChromaticAdaptationTag, nullptr) &&
+        cmsWriteTag(handle, cmsSigChromaticityTag, nullptr) && cmsWriteTag(handle, cmsSigMediaWhitePointTag, &white) &&
+        cmsWriteTag(handle, cmsSigMediaBlackPointTag, &black) &&
+        cmsWriteTag(handle, cmsSigRedColorantTag, &matrix[0]) &&
+        cmsWriteTag(handle, cmsSigGreenColorantTag, &matrix[1]) &&
+        cmsWriteTag(handle, cmsSigBlueColorantTag, &matrix[2]) &&
+        cmsWriteTag(handle, cmsSigRedTRCTag, curve) && cmsWriteTag(handle, cmsSigGreenTRCTag, curve) &&
+        cmsWriteTag(handle, cmsSigBlueTRCTag, curve);
+    if (curve) cmsFreeToneCurve(curve);
+    if (!written) {
+        cmsCloseProfile(handle);
+        return {};
+    }
+    return Colors::CMS::Profile::create(handle);
+}
+
+/// Compare the two supported sRGB encodings by colour data, not name/profile ID.
+/// Creation dates and descriptions vary; extra colour/LUT tags fail closed.
+bool standard_rgb_profile(Colors::CMS::Profile const &profile)
+{
+    static std::array const references{Colors::CMS::Profile::create_srgb(), classic_srgb_profile()};
+    auto const descriptive = [](cmsTagSignature tag, bool classic) {
+        return tag == cmsSigProfileDescriptionTag || tag == cmsSigCopyrightTag ||
+               tag == cmsSigDeviceMfgDescTag || tag == cmsSigDeviceModelDescTag ||
+               (classic && (tag == cmsSigLuminanceTag || tag == cmsSigMeasurementTag || tag == cmsSigTechnologyTag ||
+                            tag == cmsSigViewingConditionsTag || tag == cmsSigViewingCondDescTag));
+    };
+    // Read the preserved profile bytes. lcms may re-encode a tag after a
+    // transform has parsed it; that representation is not the file's definition.
+    using Tags = std::map<cmsTagSignature, std::vector<unsigned char>>;
+    auto const colour_tags = [&](std::vector<unsigned char> const &data, bool classic) -> std::optional<Tags> {
+        if (data.size() < 132) return {};
+        auto const u32 = [&](std::size_t at) {
+            return (std::uint32_t(data[at]) << 24) | (std::uint32_t(data[at + 1]) << 16) |
+                   (std::uint32_t(data[at + 2]) << 8) | data[at + 3];
+        };
+        auto const size = u32(0), count = u32(128);
+        if (size < 132 || size > data.size() || count > (size - 132) / 12) return {};
+        Tags out;
+        std::set<cmsTagSignature> seen;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            auto const entry = 132 + 12 * i;
+            auto const tag = static_cast<cmsTagSignature>(u32(entry));
+            auto const offset = u32(entry + 4), length = u32(entry + 8);
+            if (!seen.insert(tag).second || offset < 132 + 12 * count || offset > size || length < 8 || length > size - offset) return {};
+            if (!descriptive(tag, classic)) out.emplace(tag, std::vector<unsigned char>(data.begin() + offset, data.begin() + offset + length));
+        }
+        return out;
+    };
+    static auto const reference_tags = [&] {
+        return std::array{references[0] ? colour_tags(references[0]->dumpData(), false) : std::nullopt,
+                          references[1] ? colour_tags(references[1]->dumpData(), true) : std::nullopt};
+    }();
+    auto const handle = profile.getHandle();
+    if (profile.getColorSpace() != cmsSigRgbData) return false;
+    auto const bytes = profile.dumpData(); // Includes the PCS illuminant in header bytes 68..79.
+    if (bytes.size() < 128) return false;
+    for (std::size_t n = 0; n < references.size(); ++n) {
+        auto const &reference = references[n];
+        if (!reference || !reference_tags[n] || profile.getProfileClass() != reference->getProfileClass() ||
+            cmsGetPCS(handle) != cmsGetPCS(reference->getHandle()) ||
+            cmsGetProfileVersion(handle) != cmsGetProfileVersion(reference->getHandle())) continue;
+        auto const reference_bytes = reference->dumpData();
+        if (!std::equal(bytes.begin() + 68, bytes.begin() + 80, reference_bytes.begin() + 68)) continue;
+        if (colour_tags(bytes, n == 1) == reference_tags[n]) return true;
+    }
+    return false;
+}
 
 std::string num(double v)
 {
@@ -453,6 +545,7 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     // with an ink defined in RGB or Lab, as all 26 of Illustrator's are. A gradient whose stops
     // are all opaque and process or CMYK inks keeps the older form; Illustrator 7 has no other.
     bool clear = false, newer = false;
+    std::map<Colors::CMS::Profile const *, bool> rgb_profiles;
     for (std::size_t index = 0; index < effective->stops.size(); ++index) {
         auto const &stop = effective->stops[index];
         if (!stop.color || !std::isfinite(stop.color->getOpacity())) return refused("invalid gradient stops");
@@ -472,14 +565,24 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         // CMYK file) is written as its numbers, as solid paint is; the profile goes with the PDF
         // half, where PROOF's export keeps the numbers too.
         bool const icc_cmyk = space && space->getType() == Type::CMS && space->getComponentType() == Type::CMYK;
-        if (!ink && !icc_cmyk && (!space || (space->getType() != Type::RGB && space->getType() != Type::CSSNAME &&
+        bool icc_rgb = false;
+        if (!ink && space && space->getType() == Type::CMS && space->getComponentType() == Type::RGB &&
+            space->hasValidCmsProfile()) {
+            auto const profile = space->getProfile();
+            if (profile) {
+                auto [known, added] = rgb_profiles.try_emplace(profile.get(), false);
+                if (added) known->second = standard_rgb_profile(*profile);
+                icc_rgb = known->second;
+            }
+        }
+        if (!ink && !icc_cmyk && !icc_rgb && (!space || (space->getType() != Type::RGB && space->getType() != Type::CSSNAME &&
                                              space->getType() != Type::CMYK))) {
             return refused("gradient colours other than standard RGB or CMYK");
         }
         // A CSS colour name is standard sRGB with different spelling, not a named ink. A spot
         // ink defined in CMYK goes with CMYK stops, as its tints blend in the canvas and PDF.
         auto const stop_model = ink || icc_cmyk ? Type::CMYK
-                                : space->getType() == Type::CSSNAME ? Type::RGB : space->getType();
+                                : icc_rgb || space->getType() == Type::CSSNAME ? Type::RGB : space->getType();
         if (model && *model != stop_model) return refused("mixed gradient colour spaces");
         model = stop_model;
         if (interpolation && interpolation->getType() != stop_model) {

@@ -1780,3 +1780,67 @@ clip geometry, and inherited/overridden canvas clip rules.
 Next: inspect the actual colour spaces behind the remaining gradient-colour
 refusals before implementation; then patterns and opacity masks. Type stays
 last. Multiple-object clip unions remain a separate feature.
+
+### Profile-tagged sRGB gradient stops written (2026-10-21)
+
+The gradient-colour inventory found standard RGB stops assigned to the
+document's ICC profile. These were refused because their in-memory space was
+CMS rather than plain RGB, including ordinary RGB gradients on a second save.
+Both writers now keep their original channel values as native RGB stops
+(style 2). Linear/radial fills, supported strokes, transforms, compound holes,
+clips and modern stop/object opacity retain the existing writing rules.
+
+The supported profiles are the lcms built-in sRGB encoding and the classic
+IEC sRGB v2.1 encoding with its 1024-entry transfer tables. Matching compares
+their original colour-tag bytes, profile class/version, PCS and illuminant,
+allowing different descriptions, creation dates and profile IDs. For the
+classic encoding, non-transform viewing/measurement metadata is also ignored.
+An altered curve or matrix, an extra colour/LUT tag, another RGB profile or
+an unavailable profile remains refused by name. This deliberately bounded
+recognition does not classify profiles by their name or an approximate colour
+comparison. Other sRGB encodings may remain refused; the ICC registry
+[lists several sRGB profile variants](https://registry.color.org/rgb-registry/srgbprofiles).
+
+The classic reference is generated from its colour definition; the application
+does not need an installed system ICC file. Matching uses the preserved input
+bytes because lcms can re-encode a parsed tag after conversion. The modern
+document's profile remains byte for byte as supplied; the Illustrator 7 copy
+still has no retained document ICC profile under its published contract.
+Mixed RGB/CMYK gradients, coincident stops and other unsupported semantics
+remain refused without replacing an existing file.
+
+#### Qualification
+
+The new synthetic `ai-srgb-gradient-output-smoke.py` checks both formats,
+original RGB channels, linear/radial geometry, strokes, compound holes/clips,
+native reopen, byte-identical modern profiles, second/third writes, canvas
+and PDF samples within three channel levels, and atomic refusal of a profile
+whose transfer curve changed. Description and date changes are positive
+controls. The read-only Windows IEC profile supplies an independent classic
+control when available; it is not copied into the repository. The smoke is
+**41/41** here (**25** checks without that optional system control).
+
+Illustrator **29.2.1** opened four controls: modern built-in sRGB, modern
+classic IEC sRGB, the classic Illustrator 7 copy, and a modern gradient stroke
+with stop/object opacity. All sampled colours and holes agree within two
+channel levels. Every Illustrator-saved copy reopens natively with all eight
+gradients (nine in the stroke control), keeps the three RGB colours and the
+stroke opacity, and writes/reopens natively again in PROOF. Actual Illustrator
+7 remains untested; no production artwork is part of these controls.
+
+The same **871 hash-verified staged copies** still import as **862 native,
+nine page fallbacks**. Modern writing rises from **764 to 775 of 862**;
+Illustrator 7 remains **100**. Every accepted record stream reads back, with
+no lost import or writer acceptance and no changed input copy. All 19 modern
+gradient-colour refusals are removed; 11 documents newly write. The other
+eight retain type/mesh restrictions or expose a mixed-space gradient or
+coincident stops. Record acceptance and Illustrator rendering are separate
+checks.
+
+All **13 unit suites pass; 25 export groups, 816 checks**. The gradient-writer
+suite has 35 cases, including renamed/dated sRGB, classic IEC and altered or
+missing-profile refusals. Remaining modern families: type 60 (50 alone),
+patterns 15 (14 alone), opacity masks seven (four alone), missing linked
+pictures six, noncanonical Registration definitions four, meshes three,
+coincident stops two, mixed gradient spaces one. Next: patterns, then opacity
+masks; type stays last by the owner's agreed order.

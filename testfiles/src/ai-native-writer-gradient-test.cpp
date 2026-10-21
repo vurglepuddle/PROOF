@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <format>
 #include <limits>
 #include <memory>
@@ -21,6 +23,7 @@
 #include "extension/internal/ai/ai-native-writer.h"
 #include "extension/internal/ai/ai-native-writer-gradient.h"
 #include "colors/color.h"
+#include "colors/cms/profile.h"
 #include "colors/document-colors.h"
 #include "colors/manager.h"
 #include "colors/spaces/base.h"
@@ -1241,6 +1244,139 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
             EXPECT_EQ(std::find(written.refused.begin(), written.refused.end(), test.reason) != written.refused.end(),
                       refused);
         }
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, IccSrgbStopsKeepTheirNumbersDespiteDifferentNamesAndDates)
+{
+    namespace C = Inkscape::Colors;
+    for (bool const renamed : {false, true}) {
+        auto profile = C::CMS::Profile::create_srgb();
+        ASSERT_TRUE(profile);
+        if (renamed) {
+            auto handle = cmsCreate_sRGBProfile();
+            auto label = cmsMLUalloc(nullptr, 1);
+            ASSERT_TRUE(label);
+            ASSERT_TRUE(cmsMLUsetASCII(label, "en", "US", "Generic RGB profile"));
+            ASSERT_TRUE(cmsWriteTag(handle, cmsSigProfileDescriptionTag, label));
+            cmsMLUfree(label);
+            auto bytes = C::CMS::Profile::dumpData(handle);
+            cmsCloseProfile(handle);
+            ASSERT_GT(bytes.size(), 128u);
+            bytes[24] = 0x07; bytes[25] = 0xd0; // year 2000, independent of today's creation date
+            std::fill(bytes.begin() + 84, bytes.begin() + 100, 0); // no stale profile ID
+            profile = C::CMS::Profile::create_from_data(std::string(bytes.begin(), bytes.end()));
+            ASSERT_TRUE(profile);
+        }
+        auto doc = document(geometry,
+            R"x(<stop offset="0" style="stop-color:rgb(20% 40% 60%)"/>)x"
+            R"x(<stop offset="1" style="stop-color:rgb(80% 10% 30%)"/>)x");
+        ASSERT_TRUE(doc);
+        ASSERT_TRUE(C::DocumentColors::assign(doc.get(), C::Space::Type::RGB, profile,
+                                             C::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+        doc->ensureUpToDate();
+        auto const *gradient = cast<SPGradient>(doc->getObjectById("g"));
+        ASSERT_TRUE(gradient);
+        auto const &stop = gradient->getGradientVector()->stops.front().color;
+        ASSERT_TRUE(stop && stop->getSpace());
+        ASSERT_EQ(stop->getSpace()->getType(), C::Space::Type::CMS);
+        ASSERT_EQ(stop->getSpace()->getComponentType(), C::Space::Type::RGB);
+        for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+            auto const result = AN::write_records(doc.get(), version);
+            ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+            EXPECT_NE(result.records.find("0.2 0.4 0.6 2 50 0 %_Bs\n"), std::string::npos);
+            EXPECT_NE(result.records.find("0.8 0.1 0.3 2 50 100 %_Bs\n"), std::string::npos);
+            std::string error;
+            auto read_back = AN::read(result.records, error);
+            ASSERT_TRUE(read_back) << error;
+            ASSERT_EQ(read_back->gradients.size(), 1u);
+            EXPECT_EQ(read_back->gradients[0].stops[0].color, AN::Color::rgb(.2, .4, .6));
+            EXPECT_EQ(read_back->gradients[0].stops[1].color, AN::Color::rgb(.8, .1, .3));
+        }
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, ClassicIecSrgbKeepsItsRgbButAChangedCurveIsRefused)
+{
+    namespace C = Inkscape::Colors;
+    auto const windows = std::getenv("SystemRoot");
+    if (!windows) GTEST_SKIP() << "the independently authored IEC sRGB control is supplied by Windows";
+    auto const path = std::filesystem::path(windows) / "System32/spool/drivers/color/sRGB Color Space Profile.icm";
+    if (!std::filesystem::is_regular_file(path)) GTEST_SKIP() << "the system IEC sRGB control is unavailable";
+    auto const original = C::CMS::Profile::create_from_uri(path.generic_string());
+    ASSERT_TRUE(original);
+    auto const bytes = original->dumpData();
+    for (bool const changed : {false, true}) {
+        auto handle = cmsOpenProfileFromMem(bytes.data(), bytes.size());
+        ASSERT_TRUE(handle);
+        if (changed) {
+            auto curve = cmsBuildGamma(nullptr, 1.8);
+            ASSERT_TRUE(curve);
+            ASSERT_TRUE(cmsWriteTag(handle, cmsSigRedTRCTag, curve));
+            cmsFreeToneCurve(curve);
+        }
+        auto const profile = C::CMS::Profile::create(handle);
+        auto doc = document();
+        ASSERT_TRUE(doc);
+        ASSERT_TRUE(C::DocumentColors::assign(doc.get(), C::Space::Type::RGB, profile,
+                                             C::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+        doc->ensureUpToDate();
+        for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+            auto const result = AN::write_records(doc.get(), version);
+            if (changed) {
+                EXPECT_TRUE(result.records.empty());
+                EXPECT_NE(std::find(result.refused.begin(), result.refused.end(),
+                                    "gradient colours other than standard RGB or CMYK"), result.refused.end());
+            } else {
+                ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+                std::string error;
+                auto read_back = AN::read(result.records, error);
+                ASSERT_TRUE(read_back) << error;
+                ASSERT_EQ(read_back->gradients.size(), 1u);
+                EXPECT_EQ(read_back->gradients[0].stops.front().color, AN::Color::rgb(1, 0, 0));
+                EXPECT_EQ(read_back->gradients[0].stops.back().color, AN::Color::rgb(0, 0, 1));
+            }
+        }
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, OtherOrMissingRgbProfilesDoNotMasqueradeAsStandardRgb)
+{
+    namespace C = Inkscape::Colors;
+    auto altered = cmsCreate_sRGBProfile();
+    auto curve = cmsBuildGamma(nullptr, 1.8);
+    ASSERT_TRUE(curve);
+    ASSERT_TRUE(cmsWriteTag(altered, cmsSigRedTRCTag, curve));
+    cmsFreeToneCurve(curve);
+    auto extra = cmsCreate_sRGBProfile();
+    cmsCIEXYZ luminance{.9642, 1, .8249};
+    ASSERT_TRUE(cmsWriteTag(extra, cmsSigLuminanceTag, &luminance));
+    auto const swapped = C::CMS::Profile::create_from_uri(INKSCAPE_TESTS_DIR "/data/colors/SwappedRedAndGreen.icc");
+    for (auto const &profile : {C::CMS::Profile::create(altered), C::CMS::Profile::create(extra),
+                                C::CMS::Profile::create_linearrgb(), swapped}) {
+        ASSERT_TRUE(profile);
+        auto doc = document();
+        ASSERT_TRUE(doc);
+        ASSERT_TRUE(C::DocumentColors::assign(doc.get(), C::Space::Type::RGB, profile,
+                                             C::RenderingIntent::RELATIVE_COLORIMETRIC).empty());
+        doc->ensureUpToDate();
+        for (bool const legacy : {false, true}) {
+            expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Other", legacy),
+                           "gradient colours other than standard RGB or CMYK");
+        }
+    }
+    // An unavailable ICC space carries sRGB fallback channels, but has no validated
+    // colour transform for the original profile values. It must remain refused.
+    auto doc = document();
+    ASSERT_TRUE(doc);
+    auto *gradient = cast<SPGradient>(doc->getObjectById("g"));
+    ASSERT_TRUE(gradient);
+    gradient->ensureVector();
+    auto missing = std::make_shared<C::Space::CMS>("Unavailable", 3, C::Space::Type::RGB);
+    gradient->vector.stops.front().color = C::Color(missing, {.2, .4, .6, .8, .1, .3});
+    for (bool const legacy : {false, true}) {
+        expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Missing", legacy),
+                       "gradient colours other than standard RGB or CMYK");
     }
 }
 

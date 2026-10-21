@@ -51,11 +51,12 @@ document ICC profile or artboard name. Picture transparency and links remain
 refused in this format.
 Illustrator opening, editing and saving back into PROOF are checked with synthetic
 controls, the whole Illustrator 7 subset together in one. Of the 862 of the
-owner's documents PROOF reads natively, the native writer can write 764 and the
-Illustrator 7 copy 100 (2026-10-21, after compound clipping paths). Both
-writers retain compound clip holes and winding rules; the canvas and PDF use
-the clip's own rule. Live type, some gradient colours, patterns and opacity
-masks remain among the main limits.
+owner's documents PROOF reads natively, the native writer can write 775 and the
+Illustrator 7 copy 100 (2026-10-21, after profile-tagged sRGB gradients). Both
+writers retain compound clip holes and winding rules, and standard sRGB stops
+assigned to a supported ICC profile keep their RGB numbers through repeated
+saves. Live type, patterns, opacity masks and other unsupported gradient forms
+remain among the main limits.
 
 | Capability | Current state |
 |---|---|
