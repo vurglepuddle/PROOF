@@ -1496,7 +1496,11 @@ object before is set again. A mask whose first shape is white, after a white
 object, sets no colour. The reader began every dictionary with a fresh state,
 whose fill is black, and a black mask hides what it masks: one panel of four
 was missing from a file. The state now carries on into a dictionary, and is
-put back when the dictionary ends.
+put back when the dictionary ends. So, since 2026-10-22, is where the object
+before it stood: the `9 () XW` that ends a mask's art no longer makes a
+group's `Xy` after its mask dictionary nobody's, and a name dictionary no
+longer loses a group's `0 0 Xd` after it (PROOF-ai-interchange.md, "Opacity
+masks written").
 
 **A clipping path in a group of its own.** The path that clips a clip group
 can be written after what it clips, in a group that holds nothing else: a

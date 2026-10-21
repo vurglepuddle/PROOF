@@ -3,6 +3,7 @@
 #define SEEN_AI_NATIVE_WRITER_GRADIENT_H
 
 #include <array>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,6 +30,7 @@ namespace Inkscape::Extension::Internal::AiNative {
  * affine geometry; a radial fill's focal point, and in the modern form its ellipse (Illustrator 7
  * takes circles) and gradients on strokes (Illustrator CS6 brought them; radial strokes must
  * have a centred focal point, and a turned ellipse must be centred on its path bounds).
+ * In an opacity mask's art, stops are greys (Gray in a CMYK document, neutral RGB in an RGB one).
  * Anything else is
  * refused by name, and both record strings are empty. Neither the document nor its XML is
  * edited.
@@ -48,9 +50,20 @@ struct WrittenGradient
 /// `stroke` writes the shape's stroke paint, opening with `1 Bb` as Illustrator does.
 /// `after_gradient_fill` keeps the preceding fill's highlight: Illustrator shares Bh between
 /// the two instances, so a centred radial stroke must not reset that fill's focal point.
+/// `coverage`: the shape is an opacity mask's art, where a colour is how much shows. Its stops
+/// must be greys (coverage_grey), and are written as Illustrator's Gray, colour style 0, in a CMYK
+/// document, and as neutral RGB in an RGB one, where Illustrator draws Gray stops through its Gray
+/// working space.
 WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to_art,
                                std::string const &unique_name, bool legacy = false,
-                               Geom::Point const &canvas = {}, bool stroke = false, bool after_gradient_fill = false);
+                               Geom::Point const &canvas = {}, bool stroke = false, bool after_gradient_fill = false,
+                               bool coverage = false);
+
+/// The grey a colour is as PROOF draws it in an opacity mask, from 0 (black) to 1 (white): its
+/// luminance, as the canvas takes a mask's coverage, or none for a colour that isn't neutral within
+/// two 8-bit levels. That grey is the coverage in Illustrator's mask too, whatever the document's
+/// colour mode: written as Gray, it means the same there.
+std::optional<double> coverage_grey(Colors::Color const &color);
 
 /// What closes an instance after the paint operator `op`, by whether that strokes the path:
 /// `0 BB` after f or F, `1 BB` after S or B, `2 BB` after s or b (Adobe's 1998 specification,

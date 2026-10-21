@@ -1400,6 +1400,32 @@ TEST(AiNativeReader, OpacityMaskFlagsAndAttachmentsRemainBounded)
     }
 }
 
+TEST(AiNativeReader, AGroupsOwnStateAfterItsDictionaryIsStillTheGroups)
+{
+    auto const shape = "0 g\n" + rect(0, 0, 40, 40) + "f\n";
+    // A mask's art ends with a style marker of its own (`9 () XW`), as Illustrator writes it: the
+    // transparency after the dictionary is still the group's, not lost to that marker.
+    auto const mask = "/ArtDictionary :\n/Mask :\n1 /Bool (Linked) ,\n0 /Bool (Inverted) ,\n1 /Bool (Clipping) ,\n"
+                      "0 /Bool (Disabled) ,\nX=\nu\n1 g\n" + rect(0, 0, 20, 40) + "f\nU\n9 () XW\nX+\n (Art) ,\n"
+                      "; (AI9_Mask) ,\n;\n";
+    auto doc = read_ok(records(layer("L", "u\n" + shape + "U\n" + hidden(mask) + "0 0.6 0 0 0 Xy\n0 0 Xd\n6 () XW\n" +
+                                          "0 1 0 0 0 Xy\n" + shape)));
+    ASSERT_EQ(doc.layers[0].children.size(), 2u);
+    auto const &group = doc.layers[0].children[0];
+    EXPECT_EQ(group.kind, Node::Kind::Group);
+    EXPECT_TRUE(group.opacity_mask);
+    EXPECT_DOUBLE_EQ(group.transparency.opacity, 0.6);
+    EXPECT_DOUBLE_EQ(doc.layers[0].children[1].transparency.opacity, 1.0);
+    // A group as transparent as its last member sets no Xy of its own: `0 0 Xd` after its name
+    // says it is the group's.
+    auto named = read_ok(records(layer("L", "u\n0 0.6 0 0 0 Xy\n" + shape + "U\n" +
+                                            hidden("/ArtDictionary :\n(G) /String (AIArtName) ,\n;\n") +
+                                            "0 0 Xd\n6 () XW\n0 1 0 0 0 Xy\n" + shape)));
+    ASSERT_EQ(named.layers[0].children.size(), 2u);
+    EXPECT_EQ(named.layers[0].children[0].name, "G");
+    EXPECT_DOUBLE_EQ(named.layers[0].children[0].transparency.opacity, 0.6);
+}
+
 namespace {
 // A square with independent, exact cubic sides; the four corners have different greys.
 std::string square_mesh(std::string const &first = "0.2", std::string const &space = {})

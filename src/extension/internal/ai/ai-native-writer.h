@@ -21,7 +21,15 @@
  * (`%AI3_BeginPattern`, the tile's art on hidden lines, `(name) 0 0 1 1 0 0 0 0 0 [matrix] p`):
  * tiles in the user space of what they paint, with any x, y, width, height and pattern
  * transform; patterns sized to their object, with a view box or inside other patterns, and
- * gradients and pictures in a tile, are refused. Pictures the document holds itself are embedded
+ * gradients and pictures in a tile, are refused. The modern form writes opacity masks as
+ * Illustrator does, after the object they mask (`/Mask :` in its ArtDictionary on hidden lines,
+ * linked, not inverted, the art between `X=` and `X+`): their art is what the body supports, in
+ * greys written as Gray (a gradient's stops in an RGB document as neutral RGB), with Normal or
+ * Multiply, nested masks too; Clip on, or off where the
+ * import's white backdrop covers what the object paints. The import's wrapper about a masked
+ * object is written as the object. Colours other than grey, spot inks, patterns and pictures in a
+ * mask, and masks sized to their object, on layers, clones or clipping paths, are refused.
+ * Pictures the document holds itself are embedded
  * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
  * linked. Missing links and linked formats outside that subset are refused.
  * Picture slice crops retain the complete raster or link behind an editable viewport clip.

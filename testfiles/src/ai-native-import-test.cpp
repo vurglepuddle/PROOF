@@ -48,6 +48,7 @@
 #include "document.h"
 #include "file.h"
 #include "helper/geom.h"
+#include "helper/pixbuf-ops.h"
 #include "io/link-policy.h"
 #include "extension/internal/ai/ai-native-fonts.h"
 #include "extension/internal/ai/ai-native-import.h"
@@ -5736,6 +5737,238 @@ TEST_F(AiNativeImportTest, PatternsOutsideTheWrittenSubsetAreRefusedByName)
     }
 }
 
+namespace {
+
+/// The document's page as PROOF draws it at 96 dpi: premultiplied ARGB pixels, row after row.
+std::vector<std::uint32_t> page_pixels(SPDocument *doc)
+{
+    doc->ensureUpToDate();
+    std::vector<std::uint32_t> out;
+    std::unique_ptr<Inkscape::Pixbuf> pixbuf(
+        sp_generate_internal_bitmap(doc, Geom::Rect(Geom::Point(0, 0), doc->getDimensions()), 96));
+    if (!pixbuf) return out;
+    auto *surface = pixbuf->getSurfaceRaw();
+    cairo_surface_flush(surface);
+    int const width = cairo_image_surface_get_width(surface), height = cairo_image_surface_get_height(surface);
+    auto const stride = cairo_image_surface_get_stride(surface);
+    for (int y = 0; y < height; ++y) {
+        auto const *row = reinterpret_cast<std::uint32_t const *>(cairo_image_surface_get_data(surface) + y * stride);
+        out.insert(out.end(), row, row + width);
+    }
+    return out;
+}
+
+/// The largest difference of any channel at any pixel between two drawings; 256 when their sizes differ.
+int largest_difference(std::vector<std::uint32_t> const &a, std::vector<std::uint32_t> const &b)
+{
+    if (a.size() != b.size() || a.empty()) return 256;
+    int most = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        for (int shift : {0, 8, 16, 24}) {
+            most = std::max(most, std::abs(int((a[i] >> shift) & 0xff) - int((b[i] >> shift) & 0xff)));
+        }
+    }
+    return most;
+}
+
+std::size_t occurrences(std::string const &text, std::string const &what)
+{
+    std::size_t n = 0;
+    for (auto at = text.find(what); at != std::string::npos; at = text.find(what, at + what.size())) ++n;
+    return n;
+}
+
+/// A closed square path in Illustrator's records, from its lower-left corner.
+std::string box(int x, int y, int w, int h)
+{
+    return std::format("{} {} m\n{} {} L\n{} {} L\n{} {} L\n{} {} L\n", x, y, x, y + h, x + w, y + h, x + w, y, x, y);
+}
+
+} // namespace
+
+TEST_F(AiNativeImportTest, WrittenOpacityMasksReadBackAndDrawAsTheyDid)
+{
+    // Masks as Illustrator writes them, in a CMYK document: Clip on and off, greys and a K-only
+    // gradient, a group with transparency of its own after its mask, a mask in a mask's art, a
+    // clipping group, a stroke in a mask, and a translucent multiplying object.
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 0 0 1 1 50 100 Bs\n0 0 0 0 1 50 0 Bs\nBD\n"
+                              "%AI5_EndGradient\n";
+    std::string const art =
+        "0 0 0 1 k\n" + box(10, 55, 30, 30) + "f\n" +
+        vector_mask("0.5 g\n" + box(10, 55, 15, 30) + "f\n1 g\n" + box(25, 55, 15, 30) + "f\n") +
+        "0 0 0 1 k\n" + box(50, 55, 30, 30) + "f\n" + vector_mask("0 g\n" + box(50, 55, 30, 15) + "f\n", 0) +
+        "u\n0 0 0 1 k\n" + box(90, 55, 30, 30) + "f\n1 0 0 0 k\n" + box(95, 60, 20, 20) + "f\nU\n" +
+        vector_mask(box(90, 55, 30, 30) + "Bb\n0 (G) 90 55 0 30 1 0 0 1 0 0 Bg\nf\n0 BB\n") +
+        "0 0.6 0 0 0 Xy\n0 0 Xd\n6 () XW\n" +
+        "0 1 0 0 0 Xy\n0 0 0 1 k\n" + box(130, 55, 30, 30) + "f\n" +
+        vector_mask("1 g\n" + box(130, 55, 30, 30) + "f\n" + vector_mask("0.5 g\n" + box(130, 55, 20, 30) + "f\n")) +
+        "q\n" + box(170, 55, 25, 30) + "h\nW\nn\n0 0 0 1 k\n" + box(165, 50, 35, 40) + "f\nQ\n" +
+        vector_mask("0.25 g\n" + box(165, 50, 35, 40) + "f\n") +
+        "0 1 0 0 0 Xy\n0 0 0 1 k\n" + box(90, 10, 30, 30) + "f\n" + vector_mask("1 G 6 w\n" + box(95, 15, 20, 20) + "S\n") +
+        "1 0.5 0 0 0 Xy\n0 0 1 0 k\n" + box(10, 10, 30, 30) + "f\n" + vector_mask("0.5 g\n" + box(10, 10, 30, 30) + "f\n");
+    auto const source = records(layer(art), setup);
+    std::string error;
+    auto const ai = AN::read(source, error);
+    ASSERT_TRUE(ai) << error;
+    auto made = make(source);
+    ASSERT_TRUE(made);
+    auto *before = made->document.get();
+    ASSERT_EQ(elements(before->getDefs()->getRepr(), "svg:mask").size(), 8u);
+
+    auto const written = AN::write_records(before);
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &r = written.records;
+    EXPECT_EQ(occurrences(r, "%_/Mask :\n"), 8u);
+    EXPECT_EQ(occurrences(r, "%_0 /Bool (Clipping) ,\n"), 1u);
+    EXPECT_EQ(occurrences(r, "%_1 /Bool (Clipping) ,\n"), 7u);
+    EXPECT_EQ(occurrences(r, "%_1 /Bool (Linked) ,\n"), 8u);
+    EXPECT_EQ(r.find("%_%_"), std::string::npos);
+    // A mask's greys are Gray, its gradient's stops too: not CMYK, though the document is.
+    EXPECT_NE(r.find("%_0.5 g\n"), std::string::npos) << r;
+    EXPECT_NE(r.find(" 0 50 0 %_Bs\n"), std::string::npos);
+    // The mask straight after the object it masks: the import's wrapper isn't written.
+    EXPECT_NE(r.find("f\n%_/ArtDictionary :\n%_/Mask :\n"), std::string::npos);
+
+    auto const again = AN::read(r, error);
+    ASSERT_TRUE(again) << error;
+    auto const &was = ai->layers.at(0).children, &now = again->layers.at(0).children;
+    ASSERT_EQ(now.size(), was.size());
+    for (std::size_t i = 0; i < was.size(); ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(now[i].kind, was[i].kind);
+        EXPECT_EQ(now[i].clipped, was[i].clipped);
+        ASSERT_EQ(bool(now[i].opacity_mask), bool(was[i].opacity_mask));
+        EXPECT_EQ(now[i].opacity_mask_clipped, was[i].opacity_mask_clipped);
+        EXPECT_NEAR(now[i].transparency.opacity, was[i].transparency.opacity, 1e-6);
+        EXPECT_EQ(now[i].transparency.blend, was[i].transparency.blend);
+    }
+    EXPECT_NEAR(was[2].transparency.opacity, 0.6, 1e-6);
+    // A mask's art is in a group of its own, as Illustrator writes it; in it, the mask in the mask.
+    ASSERT_EQ(now[3].opacity_mask->size(), 1u);
+    ASSERT_EQ(now[3].opacity_mask->front().children.size(), 1u);
+    EXPECT_TRUE(now[3].opacity_mask->front().children[0].opacity_mask);
+
+    auto reopened = make(r);
+    ASSERT_TRUE(reopened);
+    auto *after = reopened->document.get();
+    EXPECT_LE(largest_difference(page_pixels(before), page_pixels(after)), 2);
+    // Written again from what was read: the same records, but for the artboard's new identity.
+    auto const second = AN::write_records(after);
+    ASSERT_TRUE(second.refused.empty()) << second.refused.front();
+    EXPECT_EQ(occurrences(second.records, "%_/Mask :\n"), 8u);
+    EXPECT_EQ(std::count(second.records.begin(), second.records.end(), '\n'), std::count(r.begin(), r.end(), '\n'));
+
+    // Moved off the white the import put under it, the masked object shows only where that white
+    // is: that is what PROOF draws, and the mask is written with Clip on and the white as its art.
+    auto *unclipped = elements(before->getDefs()->getRepr(), "svg:mask")[1];
+    ASSERT_EQ(attr(unclipped, "proof:ai-mask-clipping"), "false");
+    XML::Node *wrapper = nullptr;
+    for (auto *g : elements(before->getReprRoot(), "svg:g")) {
+        if (attr(g, "mask") == "url(#" + attr(unclipped, "id") + ")") wrapper = g;
+    }
+    ASSERT_TRUE(wrapper && wrapper->firstChild());
+    wrapper->firstChild()->setAttribute("transform", "translate(30 20)");
+    auto const moved = AN::write_records(before);
+    ASSERT_TRUE(moved.refused.empty()) << moved.refused.front();
+    EXPECT_EQ(occurrences(moved.records, "%_0 /Bool (Clipping) ,\n"), 0u);
+    EXPECT_EQ(occurrences(moved.records, "%_1 /Bool (Clipping) ,\n"), 8u);
+    auto moved_back = make(moved.records);
+    ASSERT_TRUE(moved_back);
+    EXPECT_LE(largest_difference(page_pixels(before), page_pixels(moved_back->document.get())), 2);
+}
+
+TEST_F(AiNativeImportTest, MasksMadeInProofAreWrittenWithClipOn)
+{
+    // Masks as PROOF makes them: in the masked object's user space, turned with it, with no
+    // backdrop of their own; a grey, a gradient, and a mask on a group in a group.
+    auto doc = svg_document(
+        R"(<defs><mask id="grey" maskUnits="userSpaceOnUse"><rect x="10" y="10" width="20" height="30" fill="#808080"/></mask>)"
+        R"(<linearGradient id="fade" x1="50" y1="0" x2="90" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#000000"/>)"
+        R"(<stop offset="1" stop-color="#ffffff"/></linearGradient>)"
+        R"x(<mask id="ramp"><rect x="50" y="10" width="40" height="40" fill="url(#fade)"/></mask>)x"
+        R"(<mask id="round" maskUnits="userSpaceOnUse"><circle r="15" fill="#ffffff"/></mask></defs>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art">)"
+        R"x(<rect x="5" y="5" width="40" height="40" fill="#ff0000" mask="url(#grey)"/>)x"
+        R"x(<rect x="50" y="10" width="40" height="40" fill="#0000ff" mask="url(#ramp)"/>)x"
+        R"x(<g transform="translate(140 50) rotate(20)" mask="url(#round)"><rect x="-20" y="-20" width="40" height="40" fill="#00aa00"/>)x"
+        R"(<rect x="-5" y="-5" width="30" height="10" fill="#000000"/></g></g>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_EQ(occurrences(written.records, "%_/Mask :\n"), 3u);
+    EXPECT_EQ(occurrences(written.records, "%_1 /Bool (Clipping) ,\n"), 3u);
+    EXPECT_NE(written.records.find("%_0.502 g\n"), std::string::npos);
+    // In an RGB document the mask's gradient has neutral RGB stops: Illustrator draws Gray ones
+    // through its Gray working space there.
+    EXPECT_NE(written.records.find(" 0 0 0 2 50 0 %_Bs\n"), std::string::npos) << written.records;
+    EXPECT_NE(written.records.find(" 1 1 1 2 50 100 %_Bs\n"), std::string::npos);
+    auto reopened = make(written.records);
+    ASSERT_TRUE(reopened);
+    EXPECT_LE(largest_difference(page_pixels(doc.get()), page_pixels(reopened->document.get())), 3);
+
+    // A hidden object's mask isn't: its art is shown in the mask, once the object is.
+    auto hidden = svg_document(R"(<defs><mask id="m" maskUnits="userSpaceOnUse"><rect width="20" height="20" fill="#ffffff"/></mask></defs>)"
+                               R"x(<rect width="30" height="30" style="display:none" mask="url(#m)"/>)x");
+    ASSERT_TRUE(hidden);
+    auto const shown = AN::write_records(hidden.get());
+    ASSERT_TRUE(shown.refused.empty()) << shown.refused.front();
+    EXPECT_NE(shown.records.find("%_X=\n%_0 Xw\n%_u\n"), std::string::npos) << shown.records;
+    std::string error;
+    auto const read = AN::read(shown.records, error);
+    ASSERT_TRUE(read) << error;
+    auto const &object = read->layers.at(0).children.at(0);
+    EXPECT_FALSE(object.visible);
+    ASSERT_TRUE(object.opacity_mask && !object.opacity_mask->empty());
+    EXPECT_TRUE(object.opacity_mask->front().visible);
+    EXPECT_TRUE(object.opacity_mask->front().children.at(0).visible);
+}
+
+TEST_F(AiNativeImportTest, MasksOutsideTheWrittenSubsetAreRefusedByName)
+{
+    auto const masked = [](std::string const &art, std::string const &mask_attrs = R"(maskUnits="userSpaceOnUse")") {
+        return R"(<defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="20" y2="0"><stop stop-color="#ff0000"/>)"
+               R"(<stop offset="1" stop-color="#0000ff"/></linearGradient>)"
+               R"(<pattern id="p" patternUnits="userSpaceOnUse" width="4" height="4"><rect width="2" height="2"/></pattern>)"
+               R"(<mask id="m" )" + mask_attrs + ">" + art + R"x(</mask></defs><rect width="50" height="50" mask="url(#m)"/>)x";
+    };
+    std::vector<std::pair<std::string, std::string>> const cases{
+        {masked(R"(<rect width="20" height="20" fill="#ff0000"/>)"), "colours other than grey in opacity masks"},
+        {masked(R"x(<rect width="20" height="20" fill="url(#g)"/>)x"), "colours other than grey in opacity masks"},
+        {masked(R"x(<rect width="20" height="20" fill="url(#p)"/>)x"), "patterns in opacity masks"},
+        {masked(R"(<image width="5" height="5" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="/>)"),
+         "pictures in opacity masks"},
+        {masked(R"(<rect width="20" height="20" fill="#808080" style="mix-blend-mode:screen"/>)"),
+         "blend modes other than Multiply in opacity masks"},
+        {masked(R"(<text x="1" y="5">A</text>)"), "type"},
+        {masked(R"(<rect width="0.5" height="0.5" fill="#ffffff"/>)", R"(maskContentUnits="objectBoundingBox")"),
+         "opacity masks sized to their object"},
+        {R"(<defs><mask id="m"><rect width="20" height="20" fill="#ffffff"/></mask></defs>)"
+         R"x(<rect id="r" width="20" height="20"/><use href="#r" x="30" mask="url(#m)"/>)x", "opacity masks on clones"},
+        {R"(<defs><mask id="m"><rect width="20" height="20" fill="#ffffff"/></mask>)"
+         R"x(<clipPath id="c"><rect width="10" height="10" mask="url(#m)"/></clipPath></defs><rect width="20" height="20" clip-path="url(#c)"/>)x",
+         "opacity masks on clipping paths"},
+        {R"(<defs><mask id="m"><rect width="20" height="20" fill="#ffffff"/></mask>)"
+         R"x(<pattern id="p" patternUnits="userSpaceOnUse" width="10" height="10"><rect width="5" height="5" mask="url(#m)"/></pattern>)x"
+         R"x(</defs><rect width="50" height="50" fill="url(#p)"/>)x", "opacity masks in patterns"},
+    };
+    for (auto const &[body, reason] : cases) {
+        SCOPED_TRACE(reason);
+        auto doc = svg_document(body);
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
+            << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+    }
+    // Illustrator 7 has no masks.
+    auto doc = svg_document(masked(R"(<rect width="20" height="20" fill="#ffffff"/>)"));
+    ASSERT_TRUE(doc);
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "opacity masks (Illustrator 7)"), legacy.refused.end());
+    EXPECT_TRUE(AN::write_records(doc.get()).refused.empty());
+}
+
 TEST_F(AiNativeImportTest, WrittenRecordsKeepInksDefinedInLabAndRgb)
 {
     auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"
@@ -6276,15 +6509,17 @@ TEST_F(AiNativeImportTest, WrittenRecordsRefuseUnsupportedEffectsOnLayersAndTheR
     std::string const rect = R"(<rect x="10" y="10" width="20" height="20" fill="#ff0000"/>)";
     for (auto const &[attrs, base] : effects) {
         for (bool layer : {false, true}) {
-            bool const placed = base == "transparency" || base == "blend modes";
-            auto const reason = placed ? base + (layer ? " on layers" : " on the whole document") : base;
-            SCOPED_TRACE(reason);
             auto const body = layer ? defs + R"(<g inkscape:groupmode="layer" )" + attrs + ">" + rect + "</g>"
                                     : defs + rect;
             auto doc = svg_document(body, R"(width="200" height="100" viewBox="0 0 200 100" )" +
                                              (layer ? "" : attrs));
             ASSERT_TRUE(doc);
             for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+                // Illustrator 7 has no masks anywhere; the modern form writes an object's.
+                bool const placed = base != "filters" && !(base == "opacity masks" && version == AN::RecordsVersion::Illustrator7);
+                auto const reason = !placed ? (base == "opacity masks" ? base + " (Illustrator 7)" : base)
+                                            : base + (layer ? " on layers" : " on the whole document");
+                SCOPED_TRACE(reason);
                 auto const written = AN::write_records(doc.get(), version);
                 EXPECT_TRUE(written.records.empty());
                 EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end());

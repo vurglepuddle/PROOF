@@ -42,9 +42,11 @@
 #include "object/sp-gradient.h"
 #include "object/sp-image.h"
 #include "object/sp-item-group.h"
+#include "object/sp-mask.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-page.h"
 #include "object/sp-pattern.h"
+#include "object/sp-rect.h"
 #include "object/sp-root.h"
 #include "object/sp-shape.h"
 #include "object/sp-use.h"
@@ -166,6 +168,8 @@ private:
     std::string transparency(SPItem const *item, double alpha = 1.0);
     void end_group(std::string_view own);
     bool open_clip(SPItem const *item);
+    std::string opacity_mask(SPItem const *owner);
+    void clear_state();
     std::vector<std::string> path_types(SPShape const *shape, Geom::PathVector const &paths, Geom::Affine const &affine);
     void path_data(Geom::Path const &path, std::string_view types);
     void state(std::string &cache, std::string const &line);
@@ -198,11 +202,18 @@ private:
     std::vector<PatternDefinition> _patterns;
     /// Whether a pattern's tile is being written.
     bool _in_pattern = false;
+    /// The opacity masks whose art is being written, outermost first: in one, a colour is how
+    /// much of the object shows.
+    std::vector<SPMask const *> _masks;
+    /// The object whose mask goes with the next item written: the import's wrapper about it.
+    SPItem const *_mask_owner = nullptr;
     std::size_t _layers = 0;
     // What has been set already, so each operator is written only when it changes.
     std::string _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule;
     /// The transparency that holds, as for the paints; a file begins opaque.
     std::string _transparency{OPAQUE};
+    /// Whether `1 Xw` (hidden) and `1 A` (locked) hold where the body is.
+    bool _hiding = false, _locking = false;
     /// The alpha of the colour the last paint() set, which the modern form takes into the
     /// object's opacity.
     double _alpha = 1.0;
@@ -254,6 +265,16 @@ std::optional<std::string> Writer::colour(Colors::Color const &c, bool fill)
         return {};
     }
     _alpha = c.getOpacity();
+    if (!_masks.empty()) {
+        // In a mask a colour is how much shows: the grey PROOF draws, as Gray, which means the
+        // same in Illustrator whatever the document's colour mode.
+        auto const grey = coverage_grey(c);
+        if (!grey) {
+            refuse("colours other than grey in opacity masks");
+            return {};
+        }
+        return num(*grey) + (fill ? " g" : " G");
+    }
     if (c.getSpace() && c.getSpace()->getComponentType() == Type::CMYK) {
         return std::format("{} {} {} {} {}", num(c[0]), num(c[1]), num(c[2]), num(c[3]), fill ? "k" : "K");
     }
@@ -299,6 +320,10 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
                 return {};
             }
             return colour(const_cast<SPGradient *>(swatch)->getPreviewAverageColor(), fill);
+        }
+        if (!_masks.empty()) {
+            refuse("spot inks in opacity masks");
+            return {};
         }
         // All is the document's reserved PDF Registration ink. A literal
         // [Registration] spot has a different PDF meaning, so do not silently
@@ -380,6 +405,10 @@ std::optional<std::string> Writer::pattern_paint(SPPattern const *pattern, Geom:
         refuse("patterns inside patterns");
         return {};
     }
+    if (!_masks.empty()) {
+        refuse("patterns in opacity masks");
+        return {};
+    }
     if (pattern->patternUnits() != SPPattern::UNITS_USERSPACEONUSE ||
         pattern->patternContentUnits() != SPPattern::UNITS_USERSPACEONUSE) {
         refuse("patterns sized to their object");
@@ -434,18 +463,20 @@ std::optional<std::string> Writer::define_pattern(SPPattern const *root, double 
     // and what holds around it must hold again after it.
     std::ostringstream art;
     std::swap(_body, art);
-    auto saved = std::tuple(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency);
+    auto saved = std::tuple(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency,
+                            _hiding, _locking);
     _to_art = Geom::Affine(1, 0, 0, -1, 0, h);
-    _fill_over.clear(), _fill.clear(), _stroke_over.clear(), _stroke.clear(), _stroke_style.clear(), _rule.clear();
-    _transparency.clear();
+    clear_state();
     _in_pattern = true;
     _body << "0 A\n0 Xw\n";
+    _hiding = _locking = false;
     for (auto const &child : root->children) {
         if (auto it = cast<SPItem>(&child)) item(it);
     }
     _in_pattern = false;
     std::swap(_body, art);
-    std::tie(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency) = std::move(saved);
+    std::tie(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency, _hiding, _locking) =
+        std::move(saved);
     if (!_refused.empty()) return {};
 
     auto const quoted = ps_string(name);
@@ -588,6 +619,10 @@ bool Writer::open_clip(SPItem const *item)
         refuse("clipping on a clipping path's geometry");
         return false;
     }
+    if (shapes[0]->getMaskObject()) {
+        refuse("opacity masks on clipping paths");
+        return false;
+    }
     auto const types = path_types(shapes[0], pv, affine);
     _body << "q\n";
     // SVG clips use clip-rule, independently of the artwork's fill-rule. XR is shared
@@ -635,7 +670,7 @@ void Writer::shape(SPShape const *s, bool clipped)
     std::optional<std::string> fill, stroke;
     auto prepare_gradient = [&](bool on_stroke) {
         auto gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas,
-                                       on_stroke, on_stroke && fill_gradient);
+                                       on_stroke, on_stroke && fill_gradient, !_masks.empty());
         for (auto const &why : gradient.refused) refuse(why);
         for (auto const &[name, ink] : gradient.inks) declare_ink(name, ink);
         if (!gradient.definition.empty()) _gradients.push_back(gradient.definition);
@@ -751,7 +786,26 @@ void Writer::check_effects(SPItem const *it, std::string_view where)
         if (scale24(style->opacity.value) < 1.0 - 1e-6) refuse("transparency" + std::string(where));
         if (style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL) refuse("blend modes" + std::string(where));
     }
-    if (it->getMaskObject()) refuse("opacity masks");
+    if (it->getMaskObject()) {
+        // Illustrator 7 has no masks; Illustrator keeps a layer's transparency apart from its
+        // objects'. A clone's own x and y would move what it shows but not its mask.
+        if (_legacy) refuse("opacity masks (Illustrator 7)");
+        else if (!where.empty()) refuse("opacity masks" + std::string(where));
+        else if (is<SPUse>(it)) refuse("opacity masks on clones");
+        else if (_in_pattern) refuse("opacity masks in patterns");
+    }
+    if (!_masks.empty()) {
+        // What PROOF's reader takes in a mask's art (Reader::art_dictionary): Normal or Multiply,
+        // no knockout.
+        auto const blend = style->mix_blend_mode.value;
+        if (blend != SP_CSS_BLEND_NORMAL && blend != SP_CSS_BLEND_MULTIPLY) {
+            refuse("blend modes other than Multiply in opacity masks");
+        }
+        if (auto const knockout = it->getAttribute("proof:knockout"); knockout && std::string_view(knockout) == "on") {
+            refuse("knockout groups in opacity masks");
+        }
+        if (is<SPImage>(it)) refuse("pictures in opacity masks");
+    }
     if (const_cast<SPStyle *>(style)->getFilter()) refuse("filters");
 }
 
@@ -792,17 +846,187 @@ void Writer::end_group(std::string_view own)
     _body << own << "\n0 0 Xd\n6 () XW\n";
 }
 
+/// Forgets what holds, so that the next object sets all of its own state.
+void Writer::clear_state()
+{
+    _fill_over.clear(), _fill.clear(), _stroke_over.clear(), _stroke.clear(), _stroke_style.clear(), _rule.clear();
+    _transparency.clear();
+}
+
+/// The object in the import's wrapper about a masked one (Builder::masked): a group with the mask
+/// and nothing else of its own, about one object. Illustrator's mask is the object's own.
+SPItem const *mask_wrapped(SPItem const *it)
+{
+    auto const *group = cast<SPGroup>(it);
+    if (!group || group->isLayer() || !group->getMaskObject() || group->getClipObject() || group->isHidden() ||
+        group->getAttribute("sodipodi:insensitive") || group->getAttribute("proof:knockout") ||
+        group->getAttribute("proof:knockout-shape")) {
+        return nullptr;
+    }
+    auto const *style = group->style;
+    if (scale24(style->opacity.value) < 1.0 - 1e-6 || style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL ||
+        style->isolation.value == SP_CSS_ISOLATION_ISOLATE || const_cast<SPStyle *>(style)->getFilter()) {
+        return nullptr;
+    }
+    SPItem const *only = nullptr;
+    for (auto const &child : group->children) {
+        if (auto const *item = cast<SPItem>(&child)) {
+            if (only) return nullptr;
+            only = item;
+        }
+    }
+    auto const *inner = cast<SPGroup>(only);
+    if (!only || is<SPUse>(only) || only->getMaskObject() || (inner && inner->isLayer())) return nullptr;
+    return only;
+}
+
+/// Whether `first`, the first of a mask's art, is the white the import put under the art of a
+/// mask with Clip off (Builder::masked): a plain rectangle, covering all that `owner` paints.
+bool white_backdrop(SPMask const *mask, SPItem const *first, SPItem const *owner)
+{
+    auto const is_value = [](SPObject const *object, char const *name, std::string_view value) {
+        auto const v = object->getAttribute(name);
+        return v && value == v;
+    };
+    auto const *rect = cast<SPRect>(first);
+    if (!rect || !is_value(mask, "proof:ai-mask-clipping", "false") || !is_value(first, "proof:mask-backdrop", "white") ||
+        first->getClipObject() || first->getMaskObject() || first->isHidden()) {
+        return false;
+    }
+    auto const *style = first->style;
+    auto const &t = first->transform;
+    if (!style->fill.isColor() || !style->stroke.isNone() || scale24(style->fill_opacity.value) < 1.0 - 1e-6 ||
+        scale24(style->opacity.value) < 1.0 - 1e-6 || style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL ||
+        const_cast<SPStyle *>(style)->getFilter() || std::abs(t[1]) > 1e-12 || std::abs(t[2]) > 1e-12 ||
+        rect->rx.computed > 0 || rect->ry.computed > 0) {
+        return false;
+    }
+    auto const &white = style->fill.getColor();
+    auto const grey = coverage_grey(white);
+    if (!grey || *grey < 1.0 - 1e-6 || white.getOpacity() < 1.0 - 1e-6) return false;
+    auto const box = first->geometricBounds(t);
+    // Where the object paints nothing, its mask changes nothing.
+    auto const painted = owner->visualBounds(Geom::identity(), true, true, false);
+    if (!box) return false;
+    if (!painted) return true;
+    auto covering = *box;
+    covering.expandBy(1e-6 * std::max({1.0, box->width(), box->height()}));
+    return covering.contains(*painted);
+}
+
+/**
+ * The opacity mask of `owner`, as Illustrator writes one straight after the object it masks: an
+ * AI9_Mask in the object's ArtDictionary on hidden lines, linked and not inverted, its art in a
+ * group of its own between X= and X+ (the owner's files, 2026-10-22). The art is written in a
+ * state of its own, all of it set; whether what held before holds again after it is the reader's
+ * to say (Reader::end_obj puts it back), so the next object sets all of its own too.
+ *
+ * An SVG mask shows nothing where its art isn't, as Illustrator's does with Clip on. Clip off
+ * leaves the object as it is there, as an endless white backdrop would: what the import made of
+ * such a mask is a white rectangle under its art (Builder::masked), and the mask is written with
+ * Clip off without it where it covers all that the object paints. Otherwise the rectangle is art
+ * like any other, and Clip is on: what PROOF draws either way.
+ */
+std::string Writer::opacity_mask(SPItem const *owner)
+{
+    auto const *mask = owner->getMaskObject();
+    if (!mask) return {};
+    if (mask->mask_content_units() == SP_CONTENT_UNITS_OBJECTBOUNDINGBOX) {
+        refuse("opacity masks sized to their object");
+        return {};
+    }
+    if (std::find(_masks.begin(), _masks.end(), mask) != _masks.end()) {
+        refuse("opacity masks inside themselves");
+        return {};
+    }
+    std::vector<SPItem const *> art;
+    for (auto const &child : mask->children) {
+        if (auto const *it = cast<SPItem>(&child)) art.push_back(it);
+    }
+    bool const clip = art.empty() || !white_backdrop(mask, art.front(), owner);
+    if (!clip) art.erase(art.begin());
+    // Illustrator keeps a mask's art in a group, which comes back as one: art that is one group
+    // with nothing of its own is that group, and isn't put in another each time it is written.
+    if (art.size() == 1) {
+        auto const *group = cast<SPGroup>(art.front());
+        auto const *style = group ? group->style : nullptr;
+        if (group && !group->isLayer() && !group->getClipObject() && !group->getMaskObject() && !group->isHidden() &&
+            !group->getAttribute("sodipodi:insensitive") && !group->getAttribute("proof:knockout") &&
+            !group->getAttribute("proof:knockout-shape") && scale24(style->opacity.value) >= 1.0 - 1e-6 &&
+            style->mix_blend_mode.value == SP_CSS_BLEND_NORMAL && style->isolation.value != SP_CSS_ISOLATION_ISOLATE &&
+            !const_cast<SPStyle *>(style)->getFilter()) {
+            art.clear();
+            for (auto const &child : group->children) {
+                if (auto const *it = cast<SPItem>(&child)) art.push_back(it);
+            }
+        }
+    }
+
+    std::ostringstream records;
+    std::swap(_body, records);
+    auto saved = std::tuple(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency,
+                            _hiding, _locking);
+    // The art lies in the user space of the object, its own transform included.
+    _to_art = owner->i2doc_affine() * _to_art;
+    clear_state();
+    // The state carries on into the dictionary: art in a hidden or locked object's mask isn't.
+    if (_hiding) _body << "0 Xw\n";
+    if (_locking) _body << "0 A\n";
+    _hiding = _locking = false;
+    _masks.push_back(mask);
+    _body << "u\n";
+    for (auto const *it : art) item(it);
+    _body << "U\n";
+    end_group(OPAQUE);
+    _masks.pop_back();
+    std::swap(_body, records);
+    std::tie(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency, _hiding, _locking) =
+        std::move(saved);
+
+    auto out = std::format("%_/ArtDictionary :\n%_/Mask :\n%_1 /Bool (Linked) ,\n%_0 /Bool (Inverted) ,\n"
+                           "%_{} /Bool (Clipping) ,\n%_0 /Bool (Disabled) ,\n%_X=\n", clip ? 1 : 0);
+    // A mask in the art is on hidden lines already, and Illustrator hides a line only once.
+    std::istringstream lines(records.str());
+    for (std::string line; std::getline(lines, line);) out += (line.starts_with("%_") ? "" : "%_") + line + "\n";
+    out += "%_X+\n%_ (Art) ,\n%_; (AI9_Mask) ,\n%_;\n%_\n";
+    clear_state();
+    return out;
+}
+
 void Writer::item(SPItem const *it)
 {
+    // Whose mask goes after this object: its own, or that of the import's wrapper about it,
+    // which is written as the object alone, as Illustrator had it.
+    auto mask_owner = std::exchange(_mask_owner, nullptr);
+    if (!mask_owner && it->getMaskObject()) mask_owner = it;
+    if (mask_owner == it && !_legacy && !_in_pattern) {
+        if (auto const *only = mask_wrapped(it)) {
+            _mask_owner = it;
+            item(only);
+            return;
+        }
+    }
+    bool const masked = mask_owner && !_legacy && !_in_pattern && !is<SPUse>(it);
+    // The mask goes straight after the object, before a group's own state.
+    auto const attach = [&] {
+        if (masked) _body << opacity_mask(mask_owner);
+    };
     check_effects(it);
     // Only the object's own: a locked layer's objects aren't each locked.
     bool const hidden = it->isHidden();
     bool const locked = it->getAttribute("sodipodi:insensitive") != nullptr;
     if (hidden) {
-        if (_legacy) refuse("individually hidden objects (Illustrator 7)");
-        else _body << "1 Xw\n";
+        if (_legacy) {
+            refuse("individually hidden objects (Illustrator 7)");
+        } else {
+            _body << "1 Xw\n";
+            _hiding = true;
+        }
     }
-    if (locked) _body << "1 A\n";
+    if (locked) {
+        _body << "1 A\n";
+        _locking = true;
+    }
     bool const clipped = open_clip(it);
     // A clipped object's transparency is its clipping group's, written after it ends.
     auto const own = _legacy ? std::string(OPAQUE) : transparency(it);
@@ -821,27 +1045,49 @@ void Writer::item(SPItem const *it)
         contents(group);
         if (!clipped) {
             _body << "U\n";
+            attach();
             end_group(own);
         }
     } else if (auto s = cast<SPShape>(it)) {
+        auto const before = _body.tellp();
         shape(s, clipped);
+        // A shape without a path writes nothing, and has nothing to mask.
+        if (!clipped && _body.tellp() != before) attach();
     } else if (auto image = cast<SPImage>(it); image && _in_pattern) {
         refuse("pictures in patterns");
     } else if (image) {
         auto const written = write_picture(image, image->i2doc_affine() * _to_art, _legacy);
         for (auto const &why : written.refused) refuse(why);
         if (!_legacy && !written.records.empty()) state(_transparency, clipped ? std::string(OPAQUE) : own);
-        _body << written.records;
+        // A picture cropped to its viewport is in a clipping group, whose mask comes before its
+        // end as a group's does.
+        constexpr std::string_view crop_end = "9 () XW\n";
+        auto const &records = written.records;
+        if (!clipped && !records.empty() && records.ends_with(std::string("Q\n") + std::string(crop_end))) {
+            _body << std::string_view(records).substr(0, records.size() - crop_end.size());
+            attach();
+            _body << crop_end;
+        } else {
+            _body << records;
+            if (!clipped && !records.empty()) attach();
+        }
     } else {
         refuse("type");
     }
 
     if (clipped) {
         _body << "Q\n";
+        attach();
         end_group(own);
     }
-    if (locked) _body << "0 A\n";
-    if (hidden && !_legacy) _body << "0 Xw\n";
+    if (locked) {
+        _body << "0 A\n";
+        _locking = false;
+    }
+    if (hidden && !_legacy) {
+        _body << "0 Xw\n";
+        _hiding = false;
+    }
 }
 
 void Writer::contents(SPObject const *parent)
@@ -850,7 +1096,8 @@ void Writer::contents(SPObject const *parent)
         auto it = cast<SPItem>(&child);
         if (!it) continue;
         auto group = cast<SPGroup>(it);
-        if (group && group->isLayer()) {
+        // A layer in a mask's art or in a tile is a group there.
+        if (group && group->isLayer() && _masks.empty() && !_in_pattern) {
             layer(group);
         } else {
             item(it);
@@ -905,6 +1152,7 @@ void Writer::layer(SPGroup const *group)
     if (!_legacy) _body << " 0 " << (dim.empty() ? "50" : dim) << " 0";
     _body << " Lb\n" << encoded_name(label, "layer names") << " Ln\n0 A\n";
     if (!_legacy) _body << "0 Xw\n";
+    _hiding = _locking = false;
     // Illustrator keeps a layer's transparency apart from its objects'; PROOF doesn't write it yet.
     check_effects(group, " on layers");
     // Whether a layer begins with what held before it is the reader's to say: after anything
@@ -963,6 +1211,7 @@ WrittenRecords Writer::write()
         if (_transparency != OPAQUE) _transparency.clear();
         _body << (_legacy ? "%AI5_BeginLayer\n1 1 1 1 0 0 0 79 128 255 Lb\n(Layer) Ln\n0 A\n"
                          : "%AI5_BeginLayer\n1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb\n(Layer) Ln\n0 A\n0 Xw\n");
+        _hiding = _locking = false;
         for (auto const &child : root->children) {
             auto group = cast<SPGroup>(&child);
             if (auto it = cast<SPItem>(&child); it && !(group && group->isLayer())) item(it);

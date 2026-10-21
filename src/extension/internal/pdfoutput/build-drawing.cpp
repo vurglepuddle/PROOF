@@ -85,7 +85,8 @@ bool DrawContext::should_rasterize(SPObject const &object, bool recursive)
 /**
  * PROOF: whether what an item holds blends only inside the item.
  *
- * Every group is written as a transparency group of its own. Isolated, such a group starts
+ * A group with anything of its own to apply is written as a transparency group of its own
+ * (one without is drawn in place: paint_item_group). Isolated, such a group starts
  * from nothing, and a shape in it that is set to Multiply darkens only what else is in the
  * group: in a layer or a plain group it comes out as its own flat colour, and prints so.
  * A group is isolated on the canvas only when it has opacity, a blend mode, a mask or a
@@ -258,6 +259,19 @@ void DrawContext::paint_item_group(SPGroup const *group, SPStyle const *context_
                 // Paint the child-shape directly
                 paint_item(child_item, child_item->transform, context_style);
 
+            } else if (is<SPGroup>(child_item) && !is<SPAnchor>(child_item) && !is<SPSymbol>(child_item) &&
+                       !is<SPMarker>(child_item) && !mask_id && links.empty() && !is_isolated(child_item) &&
+                       !style_needs_group(child_item->style) &&
+                       !(cast<SPGroup>(child_item)->isLayer() && _open_ocgs > 0)) {
+                // PROOF: a group with nothing of its own to apply (a layer, a plain or clipped group)
+                // is drawn where it is, as Illustrator's pages draw one. A non-isolated transparency
+                // group of its own is the same in PDF, but Poppler's Cairo backend, which PROOF's
+                // check of an .ai against its page and its PDF import draw with, starts every group
+                // from nothing: a Multiply in it came out flat over the colours under it. A layer in
+                // a layer keeps a group of its own: its marked content may not nest in the other's.
+                if (!child_item->isHidden()) {
+                    paint_item(child_item, child_item->transform, context_style);
+                }
             } else if (auto item_id = _doc.item_to_transparency_group(child_item, context_style)) {
                 // Each reused transparency group has to re-specify it's transform and opacity settings
                 // since PDF applies properties from the outside of the group being drawn.
@@ -399,11 +413,13 @@ void DrawContext::set_clip_rectangle(Geom::OptRect const &rect)
 void DrawContext::start_ocg(CapyPDF_OptionalContentGroupId ocgid)
 {
     _ctx.cmd_BDC(ocgid);
+    ++_open_ocgs;
 }
 
 void DrawContext::end_ocg()
 {
     _ctx.cmd_EMC();
+    --_open_ocgs;
 }
 
 ItemContext::ItemContext(Document &doc, SPItem const *item)

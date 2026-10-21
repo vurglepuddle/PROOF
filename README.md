@@ -30,7 +30,8 @@ file exchange.
 - **Illustrator interchange.** Read supported native `.ai` artwork, checked
   against its PDF pages. **Save As** writes native layers, smooth paths, inks,
   transparency and blend modes, supported linear/radial gradient fills and
-  strokes, embedded pictures and local raster links; **Save a Copy** also
+  strokes, patterns, greyscale opacity masks, embedded pictures and local
+  raster links; **Save a Copy** also
   offers Illustrator 7 records and PDF-based RGB interchange.
   SVG keeps features the native writer cannot write yet.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
@@ -51,18 +52,19 @@ document ICC profile or artboard name. Picture transparency and links remain
 refused in this format.
 Illustrator opening, editing and saving back into PROOF are checked with synthetic
 controls, the whole Illustrator 7 subset together in one. Of the 862 of the
-owner's documents PROOF reads natively, the native writer can write 789 and the
-Illustrator 7 copy 100 (2026-10-21, after patterns). Both
+owner's documents PROOF reads natively, the native writer can write 794 and the
+Illustrator 7 copy 100 (2026-10-22, after opacity masks). Both
 writers retain compound clip holes and winding rules, and standard sRGB stops
 assigned to a supported ICC profile keep their RGB numbers through repeated
-saves; the native writer keeps patterns on fills and strokes. Live type, opacity
-masks and other unsupported gradient forms remain among the main limits.
+saves; the native writer keeps patterns on fills and strokes, and opacity masks
+of grey vector art with Clip on or off. Live type and other unsupported
+gradient forms remain among the main limits.
 
 | Capability | Current state |
 |---|---|
 | Native reading | Layers, paths, clips, compound paths, gradients, patterns, supported gradient meshes, greyscale opacity masks, embedded foreign PDF vectors, process/spot colours, document ICC profiles, pictures and supported editable type |
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
-| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips (including compound holes), with CMYK/RGB/grey paint, spot inks defined in CMYK, Lab or RGB with their tints, linear/radial gradient fills and strokes (including both on one path) with stop opacity, supported spot/ICC stops, patterns on fills and strokes ([details](doc/PROOF-ai-interchange.md#patterns-written-2026-10-21-after-srgb-gradients)), embedded pictures and local PNG/JPEG/classic TIFF/PSD links, overprint and stroke styles, and each object's and group's transparency: opacity, the sixteen blend modes, isolated blending and knockout ([details](doc/PROOF-ai-interchange.md#transparency-and-blend-modes-in-the-modern-form-2026-10-21)) |
+| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips (including compound holes), with CMYK/RGB/grey paint, spot inks defined in CMYK, Lab or RGB with their tints, linear/radial gradient fills and strokes (including both on one path) with stop opacity, supported spot/ICC stops, patterns on fills and strokes ([details](doc/PROOF-ai-interchange.md#patterns-written-2026-10-21-after-srgb-gradients)), opacity masks of grey vector art, gradients and nested masks with Clip on or off ([details](doc/PROOF-ai-interchange.md#opacity-masks-written-2026-10-22-after-patterns)), embedded pictures and local PNG/JPEG/classic TIFF/PSD links, overprint and stroke styles, and each object's and group's transparency: opacity, the sixteen blend modes, isolated blending and knockout ([details](doc/PROOF-ai-interchange.md#transparency-and-blend-modes-in-the-modern-form-2026-10-21)) |
 | Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
 | Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers, CMYK inks and opaque 8-bit grayscale/RGB/CMYK pictures, without a PDF preview or the bundled PDF backend. What it keeps and refuses: [the interchange document](doc/PROOF-ai-interchange.md#the-illustrator-7-copy-what-it-keeps-and-refuses-2026-10-21) |
 | Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
@@ -129,7 +131,8 @@ Illustrator. See the feature documents for the evidence and its limits.
 ## Still in progress
 
 **Full native `.ai` support is still in progress.** The native writer currently
-refuses live type, opacity masks, patterns sized to their object or holding
+refuses live type, opacity masks with colour, spot inks, patterns, pictures or
+type in their art or on layers, patterns sized to their object or holding
 gradients, pictures or other patterns, spot inks defined in grey,
 transparency on layers, separate fill and stroke opacities and other
 unsupported appearances. Embedded pictures and local PNG/JPEG/classic TIFF/PSD links are

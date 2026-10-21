@@ -430,6 +430,8 @@ struct Frame
     std::vector<Node> children;
     bool hidden = false;     ///< Opened on a %_ line.
     bool after = false;      ///< after_object when it opened.
+    bool marked = false;     ///< Whether a style marker had followed the last object then.
+    bool group_closed = false; ///< Whether a group had just closed then.
     GState gs;               ///< The state when it opened.
     std::size_t base = 0;    ///< The operand stack's height when it opened.
     std::vector<std::size_t> clips; ///< The clipping paths' indexes among the children.
@@ -868,6 +870,8 @@ void Reader::open(Frame f)
     if (_frames.size() >= _limits.max_depth) fail("its objects are nested too deeply");
     f.base = f.kind == FrameKind::Obj ? _stack.size() : (_frames.empty() ? 0 : _frames.back().base);
     f.after = _after_object;
+    f.marked = _marked;
+    f.group_closed = _group_closed;
     f.gs = _gs;
     _frames.push_back(std::move(f));
     _after_object = false;
@@ -1666,6 +1670,10 @@ void Reader::end_obj()
     // dictionary artwork remain metadata, not additional visible objects.
     _gs = f.gs;
     _after_object = f.after;
+    // So is where the object stood: a group's own transparency after its dictionary is still
+    // the group's, though a mask's art ended in a style marker of its own (`9 () XW`).
+    _marked = f.marked;
+    _group_closed = f.group_closed;
     auto const &type = f.obj->type;
     if (type == "Mask") {
         f.obj->art = std::move(f.children);

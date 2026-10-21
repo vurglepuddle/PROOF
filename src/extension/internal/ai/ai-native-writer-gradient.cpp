@@ -37,6 +37,7 @@
 
 #include "colors/color.h"
 #include "colors/cms/profile.h"
+#include "colors/document-colors.h"
 #include "colors/spaces/base.h"
 #include "object/sp-gradient.h"
 #include "object/sp-gradient-reference.h"
@@ -452,6 +453,45 @@ std::variant<std::string, WrittenGradient> radial_instance(SPRadialGradient cons
 
 } // namespace
 
+std::optional<double> coverage_grey(Colors::Color const &color)
+{
+    auto const space = color.getSpace();
+    if (!space) return {};
+    // Standard sRGB in a profile (as the import gives a mask's greys) is its own numbers: converted,
+    // white came out a few millionths over 1.
+    bool raw = space->getType() == Type::RGB || space->getType() == Type::CSSNAME;
+    if (!raw && space->getType() == Type::CMS && space->getComponentType() == Type::RGB && space->hasValidCmsProfile()) {
+        if (auto const profile = space->getProfile()) {
+            static std::map<std::string, bool> standard;
+            auto const &key = profile->getChecksum();
+            if (key.empty()) {
+                raw = standard_rgb_profile(*profile);
+            } else {
+                auto [known, added] = standard.try_emplace(key, false);
+                if (added) known->second = standard_rgb_profile(*profile);
+                raw = known->second;
+            }
+        }
+    }
+    std::array<double, 3> rgb{};
+    if (raw) {
+        rgb = {color[0], color[1], color[2]};
+    } else {
+        auto const shown = color.converted(Type::RGB);
+        if (!shown) return {};
+        rgb = {(*shown)[0], (*shown)[1], (*shown)[2]};
+    }
+    for (auto &v : rgb) {
+        if (!std::isfinite(v) || v < -1e-3 || v > 1 + 1e-3) return {};
+        v = std::clamp(v, 0.0, 1.0);
+    }
+    auto const [lo, hi] = std::minmax({rgb[0], rgb[1], rgb[2]});
+    if (hi - lo > 2.0 / 255) return {};
+    // Coverage as PROOF's canvas takes it from a mask (drawing-item.cpp, MaskLuminanceToAlpha): a
+    // grey's own value, and of a grey a CMYK profile tints a little, what PROOF draws.
+    return std::clamp(0.2125 * rgb[0] + 0.7154 * rgb[1] + 0.0721 * rgb[2], 0.0, 1.0);
+}
+
 std::string gradient_end(char op)
 {
     switch (op) {
@@ -463,7 +503,7 @@ std::string gradient_end(char op)
 
 WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to_art,
                                std::string const &unique_name, bool legacy, Geom::Point const &canvas, bool stroke,
-                               bool after_gradient_fill)
+                               bool after_gradient_fill, bool coverage)
 {
     if (!shape || !shape->style) return refused("gradients without a shape");
     auto const *style = shape->style;
@@ -560,6 +600,34 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         auto const &ink = inks[index];
         if (!stop.color || !std::isfinite(stop.offset)) return refused("invalid gradient stops");
         auto const &color = *stop.color;
+        if (coverage) {
+            // A mask's grey, whatever space it was given in: Gray, `grey 0`, as Illustrator
+            // writes the stops of its own masks' gradients.
+            if (ink) return refused("spot inks in opacity masks");
+            auto const grey = coverage_grey(color);
+            if (!grey) return refused("colours other than grey in opacity masks");
+            if (interpolation && interpolation->getType() != Type::RGB) {
+                return refused("gradient interpolation other than RGB in opacity masks");
+            }
+            auto const offset = std::round(stop.offset * 1000000.0) / 1000000.0;
+            if (offset <= previous) return refused("gradient hard stops or coincident offsets");
+            previous = offset;
+            auto const after = (newer ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +
+                               " 50 " + num(offset * 100) + " %_Bs\n";
+            if (Colors::DocumentColors::mode(shape->document) == Type::CMYK) {
+                // Illustrator makes a Gray stop a tint of black there, one less the grey: the same.
+                stops.push_back(num(*grey) + " 0" + after);
+                continue;
+            }
+            // In an RGB document Illustrator draws a Gray stop through its Gray working space, where
+            // black is 26 of 255 (Illustrator 29.2.1, 2026-10-22); a neutral RGB stop is as given.
+            auto const alternate = Colors::Color(Type::RGB, {*grey, *grey, *grey}).converted(Type::CMYK);
+            if (!alternate) return refused("RGB gradient colours without a CMYK alternate");
+            stops.push_back(std::format("{} {} {} {} {} {} {} 2", num((*alternate)[0]), num((*alternate)[1]),
+                                        num((*alternate)[2]), num((*alternate)[3]), num(*grey), num(*grey), num(*grey)) +
+                            after);
+            continue;
+        }
         auto const space = color.getSpace();
         // CMYK in a profile (the document's, as an import assigns it to every process paint of a
         // CMYK file) is written as its numbers, as solid paint is; the profile goes with the PDF

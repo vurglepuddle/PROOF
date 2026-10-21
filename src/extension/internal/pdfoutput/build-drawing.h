@@ -80,6 +80,8 @@ private:
     bool set_shape_rectangle(Geom::Rect const &rect);
 
     bool _soft_mask = false;
+    /// PROOF: the layers' marked content open in this content stream, which may not nest.
+    int _open_ocgs = 0;
 };
 
 bool is_isolated(SPItem const *item);

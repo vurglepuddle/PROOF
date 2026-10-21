@@ -1987,3 +1987,195 @@ Checks: all **13 unit suites, 0 failures** (reader 74 cases with one opt-in
 skip, importer 166 with two, gradient writer 35); **26 export groups, 836
 checks**, the pattern control **20/20**. Unit checks: `WrittenPatternsKeepTheirTileArtAndEveryPlacement`,
 `PatternsOutsideTheWrittenSubsetAreRefusedByName`, and the refusal lists.
+
+### Opacity masks written (2026-10-22, after patterns)
+
+The modern form writes an object's opacity mask as Illustrator writes one,
+straight after the object it masks, in the object's art dictionary on hidden
+lines:
+
+```text
+... the object: a path's paint operator, a group's U, a clipping group's Q ...
+%_/ArtDictionary :
+%_/Mask :
+%_1 /Bool (Linked) ,
+%_0 /Bool (Inverted) ,
+%_1 /Bool (Clipping) ,
+%_0 /Bool (Disabled) ,
+%_X=
+%_u
+%_... the mask's art, every line hidden, all of its state set ...
+%_U
+%_9 () XW
+%_X+
+%_ (Art) ,
+%_; (AI9_Mask) ,
+%_;
+%_
+... a group's own state: Xy, 0 0 Xd, 6 () XW (or 9 () XW) ...
+```
+
+That is the form of the owner's seven mask documents (one Illustrator group
+around the art, `9 () XW` after it, the flags in any order) and of
+Illustrator 29's own saved copies of the control. A mask in the mask's art is
+written the same way inside it, on lines hidden once. The art is written in a
+state of its own, all of it set; after the dictionary the next object sets
+all of its own too, whatever a reader puts back.
+
+**Clip.** An SVG mask shows nothing where its art isn't, as Illustrator's
+does with Clip on, so a mask is written with Clip on. With Clip off,
+Illustrator leaves the object as it is where the mask's art isn't, as an
+endless white backdrop would; the import makes such a mask a white rectangle
+under the art (`proof:mask-backdrop`, and `proof:ai-mask-clipping="false"` on
+the mask). It is written with Clip off, without the rectangle, where that
+rectangle covers all that the object paints. Once the object is moved or
+grown past it, PROOF draws the object only where the rectangle is, and the
+mask is written so: Clip on, the rectangle as art. PROOF ignores a mask's own
+region (`x`, `y`, `width`, `height`), in the canvas and in PDF.
+
+**Greys.** In a mask a colour is how much of the object shows: the luminance
+PROOF's canvas takes from it (`MaskLuminanceToAlpha`). Mask art is written
+in Gray (`g`, `G`), which Illustrator takes as that coverage whatever the
+document's colour mode; a colour more than two 8-bit levels from neutral is
+refused by name. In a CMYK document a K grey is drawn by PROOF through the
+CMYK profile, so 50% K comes out lighter on the canvas than Illustrator's
+half and is written as the grey PROOF draws (`0.593 g` in the control); see
+Still open. A gradient's stops are Gray in a CMYK document, where Illustrator
+makes them tints of black, exactly; **in an RGB document they are written as
+neutral RGB**, because Illustrator draws Gray gradient stops there through
+its Gray working space (Dot Gain 20%: black becomes 26 of 255, and the dark
+end of a mask's ramp lets a tenth through). Flat Gray in an RGB document's
+mask is drawn as given.
+
+**What is written:** masks on paths, compound paths, groups, clipping groups,
+pictures (after the crop group a picture with a viewport is), hidden and
+locked objects (their mask's art is shown and unlocked); art of paths,
+compound paths, groups and clipping groups, fills and strokes, linear and
+radial gradients with stop opacity, an object's opacity, Normal or Multiply,
+nested masks. The import keeps a mask on a group about the object it masks
+(`Builder::masked`); that group, when it has nothing else of its own, is not
+written, and the mask goes with the object, as Illustrator had it. A mask's
+art that is one plain group (as a reopened file's is) is that group, not put
+in another each time.
+
+**Refused by name:** colours other than grey, spot inks, patterns and
+pictures in a mask's art; blend modes other than Multiply and knockout groups
+in it (PROOF's reader takes Normal and Multiply); masks sized to their object
+(`maskContentUnits="objectBoundingBox"`), on layers, on the whole document,
+on clones, on clipping paths and in patterns; a mask inside itself. The
+Illustrator 7 copy says `opacity masks (Illustrator 7)`.
+
+**Isolation.** PROOF's canvas draws a masked group isolated, as SVG says;
+Illustrator doesn't unless Isolate Blending is set, so a blend mode inside a
+masked group reaches what lies under it there. The writer keeps the group's
+own isolation setting, as for opacity; the two draw the same unless a blend
+mode is inside (see Still open).
+
+#### The reader: a group's own state after its dictionary
+
+A dictionary puts back the drawing state it found (`Reader::end_obj`), but not
+where the object stood: the `9 () XW` that ends a mask's art left the reader
+thinking a style marker had followed, and a group's `Xy` after its mask
+dictionary was not taken as the group's. Likewise any dictionary (a name)
+cleared "a group just closed", so a group's `0 0 Xd` after its name, with no
+`Xy` of its own, was lost. Both are now put back with the state.
+
+#### The control in Illustrator
+
+`ai-mask-output-smoke.py` makes ten masked cells, in a CMYK document and an
+RGB one: halves of grey (a K grey in CMYK) with Clip on; the import's form of
+Clip off (a wrapper, a white backdrop, a black band and a dark grey); a
+linear gradient; a radial one whose middle stop has an opacity of its own; a
+turned group whose mask's art has a mask of its own; a clipping group; a
+picture; a group at 60% after its mask; a stroke for a mask; and an object at
+70% beside a hidden masked one.
+
+Illustrator **29.2.1** (one operation at a time, ten seconds after each open,
+export, save and close; closed without saving; idle after) read all ten
+cells as written: the masked paths as paths (the import's wrapper not
+written), the turned and clipping groups, the picture, the group at 60%, the
+object at 70% and the hidden one. Its scripting can't see masks; its drawing
+and its saved copy show them. At 96 dpi beside PROOF's canvas, **every cell
+lines up unshifted**; flat greys, Clip off, the nested mask, the picture, the
+stroke and the transparent ones agree but for edge pixels (at most 2.6% of a
+cell over 24, means about 1). The first RGB control's gradients didn't (the
+ramp a tenth light at its dark end): Illustrator's own page showed why, an RGB
+shading from 0.102 to 0.988 for Gray 0 to 1. Written as neutral RGB, they
+match within **1** (linear) and **2** (radial). In the CMYK control the
+gradients match as written (Gray became Black tints `1 0`); other differences
+there are the inks' colour conversion and the RGB picture, which Illustrator
+converts to CMYK, as in earlier rounds. Its saved copies keep all twelve
+masks, their Clip settings and the art (flat greys as `g`, the gradients'
+stops); they open natively in PROOF with all twelve, within **1** of the
+original (CMYK: but the picture, converted).
+
+#### Found on the way, and fixed: plain groups in PDF
+
+A real mask document saved as `.ai` reopened from its page: PROOF's page drew
+a blue silhouette that its canvas didn't. Not the masks: Illustrator's
+Multiply shapes, each in a group of its own inside plain groups. PDF output
+wrote every SVG group as a transparency group of its own; a plain one is
+non-isolated, which in PDF is the same as drawing it in place, but Poppler's
+Cairo backend, which PROOF's check of an `.ai` against its page and its PDF
+import draw with, starts every group from nothing. A Multiply in it came out
+flat over the colours under the group (Poppler's splash drew it right). A
+group with nothing of its own to apply (no opacity, blend mode, isolation,
+mask, filter, paint server or clone, and not an anchor, symbol or marker) is
+now drawn in place (`pdfoutput/build-drawing.cpp`, `paint_item_group`), as
+Illustrator's pages draw one. A layer inside a layer still gets a group of its
+own: a layer's marked content (its optional content group) may not nest in
+another's in one content stream, and CapyPDF refuses it ("Nesting marked
+content is forbidden"). The first form of the change drew those in place too,
+and a sampled document with sublayers failed to save; the sample caught it.
+Shared code; the collaborator should know. The smoke checks a Multiply in a
+layer, a plain group, a clipped group and two plain groups deep over a band
+(the previous build was 190 levels off in the three groups, this one exact),
+and a layer in a layer, saved as PDF and as `.ai`.
+
+#### Real documents
+
+Opacity masks held 7 of the owner's 862 native documents, 5 for nothing else
+(type holds the other two). In their records: some 50 masks at the top level,
+more inside them, all linked, none inverted, most with Clip off; their art
+mostly greyscale gradients, often set to Multiply, with empty masks of their
+own inside (Clip off: they change nothing), groups and clipping groups. All 5
+now write, and each copy saved as `.ai` reopens natively and draws as the
+original import within 24 channel levels, with no pixel more than 24 apart;
+the inputs are unchanged. One of them needed the plain-groups fix above.
+
+A sample of 30 other documents the writer accepts (every 26th by hash, up to
+10 MB) saved and reopened: all 30 natively, no pixel more than 24 apart; with
+the previous build 29, one falling back to its page for the plain groups. The
+14 documents patterns held last round: all 14 still reopen natively.
+
+The round's census (`tools/ai-writer-census.py`, the same 871 copies, 11
+minutes, nothing else running): import unchanged at 862 native and nine pages
+(no document's acceptance changed with the reader's change); the modern form writes **794 of
+862** (was 789), the 5 masks alone held, none lost, every accepted stream read
+back; Illustrator 7 stays 100 (it now names `opacity masks (Illustrator 7)`).
+What remains: type 60 (52 alone), missing linked pictures 6 (0), noncanonical
+Registration 4 (4), meshes 3 (1), coincident stops 2 (2), mixed gradient
+spaces 1 (1).
+
+#### Still open
+
+- Coloured mask art: written as its luminance it would draw the same, but
+  the colour would change; refused instead.
+- A K grey in a CMYK document's mask: PROOF's canvas draws it through the
+  CMYK profile (59% shows for 50% K), Illustrator as one less the K (50%).
+  The writer keeps what PROOF draws; whether the canvas should take K as
+  Illustrator does is a colour question (shared).
+- Illustrator's own RGB documents: Gray gradient stops there are drawn
+  through its Gray working space, which PROOF's import doesn't do (reader).
+- A blend mode inside a masked (or translucent) group: isolated on PROOF's
+  canvas, not in Illustrator.
+- Inverted masks, unlinked masks, pictures and type in a mask's art, masks
+  on layers.
+
+Checks: all **13 unit suites, 0 failures** (reader 75 cases with one opt-in
+skip, importer 169 with two, gradient writer 35, PDF output 5); **27 export
+groups, 859 checks**, the mask control **23/23**. Unit checks:
+`WrittenOpacityMasksReadBackAndDrawAsTheyDid`, `MasksMadeInProofAreWrittenWithClipOn`,
+`MasksOutsideTheWrittenSubsetAreRefusedByName`,
+`AGroupsOwnStateAfterItsDictionaryIsStillTheGroups` (reader), and the
+layer/root refusals, which now name where.
