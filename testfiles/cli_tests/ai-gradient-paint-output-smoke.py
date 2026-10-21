@@ -219,8 +219,11 @@ def main():
                  b'radial gradient strokes with an offset focal point'),
                 ('turned-offset', STROKES.replace('stroke="url(#rt)"', 'stroke="url(#rt_off)"'),
                  b'off-centre rotated radial gradient strokes'),
-                ('alpha', STROKES.replace('stroke-width="24"', 'stroke-width="24" stroke-opacity="0.5"'),
-                 b'gradient transparency'),
+                # A gradient stroke's own opacity is the object's when it paints alone (2026-10-21);
+                # under a fill it needs an appearance.
+                ('alpha', STROKES.replace('fill="none" stroke="url(#la)" stroke-width="24"',
+                                          'fill="#336699" stroke="url(#la)" stroke-width="24" stroke-opacity="0.5"'),
+                 b'separate fill and stroke transparency'),
             ]
         else:
             refusals = [('strokes', STROKES + FILLS, b'gradients on strokes (Illustrator 7)')]

@@ -287,9 +287,6 @@ TEST_F(AiNativeWriterGradientTest, UnsupportedPaintAndOpacityAreRefusedWithoutRe
         {geometry + R"( spreadMethod="repeat")", rgb_stops, "", "linearGradient", "repeating or reflected gradients"},
         {geometry + R"( spreadMethod="reflect")", rgb_stops, "", "linearGradient", "repeating or reflected gradients"},
         {geometry + R"( color-interpolation="linearRGB")", rgb_stops, "", "linearGradient", "gradient interpolation other than RGB or CMYK"},
-        {geometry, rgb_stops, R"(fill-opacity=".5")", "linearGradient", "gradient transparency"},
-        {geometry, rgb_stops, R"(opacity=".5")", "linearGradient", "gradient transparency"},
-        {geometry, R"(<stop offset="0" stop-color="red"/><stop offset=".5" stop-color="green" stop-opacity=".4"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "gradient transparency"},
         {geometry, R"x(<stop offset="0" stop-color="red"/><stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x", "", "linearGradient", "mixed gradient colour spaces"},
         {geometry, R"(<stop offset="0" stop-color="red" proof:ink="Ink"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "spot ink stops without a definition"},
         {geometry, "", "", "linearGradient", "gradients without stops"},
@@ -311,6 +308,78 @@ TEST_F(AiNativeWriterGradientTest, UnsupportedPaintAndOpacityAreRefusedWithoutRe
             EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), test.reason), written.refused.end());
         }
     }
+}
+
+TEST_F(AiNativeWriterGradientTest, GradientObjectsKeepTheirOpacityInTheModernFormOnly)
+{
+    // The object's opacity, and the fill's own when the fill paints alone, are the object's
+    // transparency in the modern form; Illustrator 7 has none.
+    for (auto const attributes : {R"(fill-opacity=".5")", R"(opacity=".5")"}) {
+        SCOPED_TRACE(attributes);
+        auto doc = document(geometry, rgb_stops, "", attributes);
+        ASSERT_TRUE(doc);
+        expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Refused", true), "gradient transparency");
+        auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+        EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "gradient transparency"), legacy.refused.end());
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        std::string error;
+        auto ai = AN::read(written.records, error);
+        ASSERT_TRUE(ai) << error;
+        std::vector<AN::Node const *> shapes;
+        gradient_shapes(ai->layers.at(0).children, shapes);
+        ASSERT_EQ(shapes.size(), 1u);
+        EXPECT_EQ(shapes[0]->fill->kind, AN::Paint::Kind::Gradient);
+        EXPECT_DOUBLE_EQ(shapes[0]->transparency.opacity, 0.5);
+        EXPECT_EQ(shapes[0]->transparency.blend, 0);
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, StopsKeepTheirOpacityInTheNewerFormOnly)
+{
+    // A stop's own opacity takes Illustrator's newer stop, `… style opacity 6 midpoint ramp`;
+    // every stop of that gradient is written so. Opaque gradients keep the older form, and
+    // Illustrator 7, which has no other, refuses it.
+    std::string const clear_stops = R"(<stop offset="0" stop-color="red"/><stop offset=".5" stop-color="green" )"
+                                    R"(stop-opacity=".4"/><stop offset="1" stop-color="blue"/>)";
+    std::string const spot_stops =
+        R"x(<stop offset="0" style="stop-color:device-cmyk(0 0.6 1 0)" proof:ink="Clear Ink" )x"
+        R"x(proof:ink-alternate="device-cmyk(0 0.6 1 0)"/><stop offset="1" style="stop-color:device-cmyk(0 0.3 0.5 0);stop-opacity:0.25" )x"
+        R"x(proof:ink="Clear Ink" proof:ink-alternate="device-cmyk(0 0.6 1 0)" proof:ink-tint="0.5"/>)x";
+    for (bool const spot : {false, true}) {
+        auto const &stops = spot ? spot_stops : clear_stops;
+        SCOPED_TRACE(spot ? "spot ink stops" : "RGB stops");
+        auto doc = document(geometry, stops);
+        ASSERT_TRUE(doc);
+        expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Clear", true), "gradient transparency");
+        auto const gradient = AN::write_gradient(shape(doc.get()), Geom::identity(), "Clear");
+        ASSERT_TRUE(gradient.refused.empty()) << gradient.refused.front();
+        if (spot) {
+            EXPECT_NE(gradient.definition.find("(Clear Ink) 0.5 3 0.25 6 50 100 %_Bs\n"), std::string::npos) << gradient.definition;
+            EXPECT_NE(gradient.definition.find("(Clear Ink) 0 3 1 6 50 0 %_Bs\n"), std::string::npos) << gradient.definition;
+        } else {
+            EXPECT_NE(gradient.definition.find(" 2 0.4 6 50 50 %_Bs\n"), std::string::npos) << gradient.definition;
+            EXPECT_NE(gradient.definition.find(" 2 1 6 50 100 %_Bs\n"), std::string::npos) << gradient.definition;
+        }
+        std::string error;
+        auto ai = read(gradient, error);
+        ASSERT_TRUE(ai) << error;
+        ASSERT_EQ(ai->gradients.size(), 1u);
+        auto const &read_stops = ai->gradients[0].stops;
+        ASSERT_EQ(read_stops.size(), spot ? 2u : 3u);
+        EXPECT_DOUBLE_EQ(read_stops.front().opacity, 1);
+        EXPECT_NEAR(read_stops[1].opacity, spot ? 0.25 : 0.4, 1e-6);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.refused.empty());
+        auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+        EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "gradient transparency"), legacy.refused.end());
+    }
+    // Opaque stops: the older form, as before.
+    auto doc = document();
+    ASSERT_TRUE(doc);
+    auto const opaque = AN::write_gradient(shape(doc.get()), Geom::identity(), "Opaque");
+    EXPECT_EQ(opaque.definition.find(" 6 50 "), std::string::npos) << opaque.definition;
+    EXPECT_NE(opaque.definition.find(" 2 50 100 %_Bs\n"), std::string::npos) << opaque.definition;
 }
 
 TEST_F(AiNativeWriterGradientTest, CoincidentDecreasingAndRoundedOffsetsFailClosed)
@@ -826,8 +895,8 @@ TEST_F(AiNativeWriterGradientTest, GradientStrokeLimitsAreRefusedByName)
 {
     struct Case { std::string shape, reason; };
     std::vector<Case> const cases{
-        {R"x(<path d="M10 10H90" fill="none" stroke="url(#l)" stroke-width="4" stroke-opacity=".5"/>)x",
-         "gradient transparency"},
+        {R"x(<rect x="10" y="10" width="80" height="40" fill="#ff0000" stroke="url(#l)" stroke-width="4"
+                  stroke-opacity=".5"/>)x", "separate fill and stroke transparency"},
         {R"x(<rect x="10" y="10" width="80" height="40" fill="url(#l)" stroke="url(#r)"
                   stroke-width="4" paint-order="stroke fill"/>)x", "strokes painted under their fill"},
         {R"x(<rect x="10" y="10" width="80" height="40" fill="#ff0000" stroke="url(#l)"

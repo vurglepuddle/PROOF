@@ -126,6 +126,15 @@ double scale24(unsigned value)
     return value / double(SP_SCALE24_MAX);
 }
 
+/// Illustrator's transparency for an object that has none of its own: `mode opacity isolate
+/// knockout shape Xy`, Normal at full opacity.
+constexpr std::string_view OPAQUE = "0 1 0 0 0 Xy";
+
+/// Illustrator's number for each of PROOF's blend modes, in SPBlendMode's order. Illustrator's
+/// own runs Normal, Multiply, Screen, Overlay, Soft Light, Hard Light, Color Dodge, Color Burn,
+/// Darken, Lighten, Difference, Exclusion, Hue, Saturation, Color, Luminosity.
+constexpr std::array<int, SP_CSS_BLEND_ENDMODE> BLEND_INDEX{0, 1, 2, 8, 9, 3, 6, 7, 5, 4, 10, 11, 12, 13, 14, 15};
+
 class Writer
 {
 public:
@@ -139,8 +148,10 @@ private:
     void layer(SPGroup const *group);
     void item(SPItem const *item);
     void contents(SPObject const *parent);
-    void shape(SPShape const *shape);
-    void check_effects(SPItem const *item);
+    void shape(SPShape const *shape, bool clipped);
+    void check_effects(SPItem const *item, std::string_view where = {});
+    std::string transparency(SPItem const *item, double alpha = 1.0);
+    void end_group(std::string_view own);
     bool open_clip(SPItem const *item);
     std::vector<std::string> path_types(SPShape const *shape, Geom::PathVector const &paths, Geom::Affine const &affine);
     void path_data(Geom::Path const &path, std::string_view types);
@@ -165,6 +176,11 @@ private:
     std::size_t _layers = 0;
     // What has been set already, so each operator is written only when it changes.
     std::string _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule;
+    /// The transparency that holds, as for the paints; a file begins opaque.
+    std::string _transparency{OPAQUE};
+    /// The alpha of the colour the last paint() set, which the modern form takes into the
+    /// object's opacity.
+    double _alpha = 1.0;
 };
 
 std::string Writer::encoded_name(std::string const &text, std::string_view what)
@@ -196,10 +212,11 @@ void Writer::ink_comments(std::ostream &head)
 
 std::optional<std::string> Writer::colour(Colors::Color const &c, bool fill)
 {
-    if (c.getOpacity() < 1.0 - 1e-6) {
+    if (c.getOpacity() < 1.0 - 1e-6 && _legacy) {
         refuse("transparency");
         return {};
     }
+    _alpha = c.getOpacity();
     if (c.getSpace() && c.getSpace()->getComponentType() == Type::CMYK) {
         return std::format("{} {} {} {} {}", num(c[0]), num(c[1]), num(c[2]), num(c[3]), fill ? "k" : "K");
     }
@@ -213,6 +230,7 @@ std::optional<std::string> Writer::colour(Colors::Color const &c, bool fill)
 /// The operator that sets this paint, or nothing for none (and for what is refused).
 std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style, bool fill)
 {
+    _alpha = 1.0;
     if (p.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_FILL || p.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_STROKE) {
         refuse("context paint");
         return {};
@@ -422,12 +440,16 @@ bool Writer::open_clip(SPItem const *item)
     }
     auto const types = path_types(shapes[0], pv, affine);
     _body << "q\n";
+    // The clipping path has none of the transparency that holds: released, it is an ordinary path.
+    if (!_legacy) state(_transparency, std::string(OPAQUE));
     path_data(pv[0], types[0]);
     _body << "h\nW\nn\n";
     return true;
 }
 
-void Writer::shape(SPShape const *s)
+/// `clipped`: the shape is the only content of its own clipping group, which carries the
+/// shape's transparency (Writer::item); the shape itself has only its paint's.
+void Writer::shape(SPShape const *s, bool clipped)
 {
     auto const *style = s->style;
     if (!s->curve() || s->curve()->empty()) return;
@@ -455,14 +477,29 @@ void Writer::shape(SPShape const *s)
     if (fill_gradient) fill_instance = prepare_gradient(false);
     if (stroke_gradient) stroke_instance = prepare_gradient(true);
     // A compound path's early contours need a plain paint before its final gradient.
+    double fill_alpha = 1.0, stroke_alpha = 1.0;
     fill = fill_gradient ? std::optional<std::string>("0 g") : paint(style->fill, style, true);
+    if (!fill_gradient) fill_alpha = _alpha;
     if (stroke_gradient) {
         stroke = "0 G";
     } else if (style->stroke_width.computed > 0) {
         stroke = paint(style->stroke, style, false);
+        stroke_alpha = _alpha;
     }
-    if (scale24(style->fill_opacity.value) < 1.0 - 1e-6 && fill) refuse("transparency");
-    if (scale24(style->stroke_opacity.value) < 1.0 - 1e-6 && stroke) refuse("transparency");
+    fill_alpha *= scale24(style->fill_opacity.value);
+    stroke_alpha *= scale24(style->stroke_opacity.value);
+    bool const clear_fill = fill && fill_alpha < 1.0 - 1e-6, clear_stroke = stroke && stroke_alpha < 1.0 - 1e-6;
+    // A paint's own opacity, when it is the object's only paint, is the object's: the same
+    // picture. A fill and a stroke each with an opacity of its own take an appearance.
+    double alpha = 1.0;
+    if (_legacy) {
+        if (clear_fill || clear_stroke) refuse("transparency");
+    } else if (fill && stroke) {
+        if (clear_fill || clear_stroke) refuse("separate fill and stroke transparency");
+    } else {
+        alpha = fill ? fill_alpha : stroke ? stroke_alpha : 1.0;
+    }
+    auto const own = transparency(clipped ? nullptr : s, alpha);
 
     if (stroke) {
         if (style->vector_effect.stroke) refuse("non-scaling strokes");
@@ -505,6 +542,9 @@ void Writer::shape(SPShape const *s)
                                          join, num(style->stroke_miterlimit.value), dash));
     }
     state(_rule, style->fill_rule.computed == SP_WIND_RULE_EVENODD ? "1 XR" : "0 XR");
+    // After the paints and before the path, as Illustrator writes it. A compound path's paths
+    // take it, and the compound path has its paths'.
+    if (!_legacy) state(_transparency, own);
 
     auto const pv = pathv_to_linear_and_cubic_beziers(*s->curve() * affine);
     auto const types = path_types(s, pv, affine);
@@ -535,13 +575,54 @@ void Writer::shape(SPShape const *s)
     _body << "*U\n";
 }
 
-void Writer::check_effects(SPItem const *it)
+/// `where` names what isn't an object (a layer, the document): the modern form writes an
+/// object's and a group's transparency, and refuses it there as Illustrator 7 does everywhere.
+void Writer::check_effects(SPItem const *it, std::string_view where)
 {
     auto const *style = it->style;
-    if (scale24(style->opacity.value) < 1.0 - 1e-6) refuse("transparency");
-    if (style->mix_blend_mode.set && style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL) refuse("blend modes");
+    if (_legacy || !where.empty()) {
+        if (scale24(style->opacity.value) < 1.0 - 1e-6) refuse("transparency" + std::string(where));
+        if (style->mix_blend_mode.value != SP_CSS_BLEND_NORMAL) refuse("blend modes" + std::string(where));
+    }
     if (it->getMaskObject()) refuse("opacity masks");
     if (const_cast<SPStyle *>(style)->getFilter()) refuse("filters");
+}
+
+/// The object's own transparency as Illustrator's operator: its blend mode, opacity (times
+/// `alpha`), isolated blending and knockout, as the import keeps them. With no object, `alpha`.
+std::string Writer::transparency(SPItem const *it, double alpha)
+{
+    int mode = 0, isolate = 0, knockout = 0, shape = 0;
+    double opacity = alpha;
+    if (it) {
+        auto const *style = it->style;
+        opacity *= scale24(style->opacity.value);
+        auto const blend = static_cast<std::size_t>(style->mix_blend_mode.value);
+        if (blend < BLEND_INDEX.size()) mode = BLEND_INDEX[blend];
+        isolate = style->isolation.value == SP_CSS_ISOLATION_ISOLATE;
+        auto const is = [&](char const *name, std::string_view value) {
+            auto const v = it->getAttribute(name);
+            return v && value == v;
+        };
+        knockout = is("proof:knockout", "on") ? 1 : is("proof:knockout", "neutral") ? 2 : 0;
+        shape = is("proof:knockout-shape", "true");
+    }
+    return std::format("{} {} {} {} {} Xy", mode, num(opacity), isolate, knockout, shape);
+}
+
+/// What Illustrator writes after a group or clipping group ends: the group's own transparency,
+/// then `0 0 Xd` and `6 () XW`; for one with none of its own, `9 () XW`. Without either, the
+/// next object's `Xy` would be the group's.
+void Writer::end_group(std::string_view own)
+{
+    if (_legacy) return;
+    if (own == OPAQUE) {
+        _body << "9 () XW\n";
+        return;
+    }
+    // Written even when it holds already: a group's own needs no inference from its contents.
+    _transparency = own;
+    _body << own << "\n0 0 Xd\n6 () XW\n";
 }
 
 void Writer::item(SPItem const *it)
@@ -556,25 +637,40 @@ void Writer::item(SPItem const *it)
     }
     if (locked) _body << "1 A\n";
     bool const clipped = open_clip(it);
+    // A clipped object's transparency is its clipping group's, written after it ends.
+    auto const own = _legacy ? std::string(OPAQUE) : transparency(it);
 
     if (auto use = cast<SPUse>(it)) {
-        // A clone is written as a copy of what it shows.
+        // A clone is written as a copy of what it shows, in a group for its own transparency.
+        bool const wrap = !clipped && own != OPAQUE;
+        if (wrap) _body << "u\n";
         if (use->child) item(use->child);
+        if (wrap) {
+            _body << "U\n";
+            end_group(own);
+        }
     } else if (auto group = cast<SPGroup>(it)) {
         if (!clipped) _body << "u\n";
         contents(group);
-        if (!clipped) _body << "U\n";
+        if (!clipped) {
+            _body << "U\n";
+            end_group(own);
+        }
     } else if (auto s = cast<SPShape>(it)) {
-        shape(s);
+        shape(s, clipped);
     } else if (auto image = cast<SPImage>(it)) {
         auto const written = write_picture(image, image->i2doc_affine() * _to_art, _legacy);
         for (auto const &why : written.refused) refuse(why);
+        if (!_legacy && !written.records.empty()) state(_transparency, clipped ? std::string(OPAQUE) : own);
         _body << written.records;
     } else {
         refuse("type");
     }
 
-    if (clipped) _body << "Q\n";
+    if (clipped) {
+        _body << "Q\n";
+        end_group(own);
+    }
     if (locked) _body << "0 A\n";
     if (hidden && !_legacy) _body << "0 Xw\n";
 }
@@ -640,10 +736,17 @@ void Writer::layer(SPGroup const *group)
     if (!_legacy) _body << " 0 " << (dim.empty() ? "50" : dim) << " 0";
     _body << " Lb\n" << encoded_name(label, "layer names") << " Ln\n0 A\n";
     if (!_legacy) _body << "0 Xw\n";
-    check_effects(group);
+    // Illustrator keeps a layer's transparency apart from its objects'; PROOF doesn't write it yet.
+    check_effects(group, " on layers");
+    // Whether a layer begins with what held before it is the reader's to say: after anything
+    // transparent, the layer's first object has its transparency written in full.
+    if (_transparency != OPAQUE) _transparency.clear();
     bool const clipped = open_clip(group);
     contents(group);
-    if (clipped) _body << "Q\n";
+    if (clipped) {
+        _body << "Q\n";
+        end_group(OPAQUE);
+    }
     _body << "LB\n%AI5_EndLayer--\n";
 }
 
@@ -675,7 +778,7 @@ WrittenRecords Writer::write()
 
     // Items outside any layer go to a layer of their own, as Illustrator keeps every object in one.
     auto const *root = _doc->getRoot();
-    check_effects(root);
+    check_effects(root, " on the whole document");
     if (root->getClipObject()) refuse("clipping on the SVG root");
     bool loose = false;
     for (auto const &child : root->children) {
@@ -688,6 +791,7 @@ WrittenRecords Writer::write()
     }
     if (loose) {
         ++_layers;
+        if (_transparency != OPAQUE) _transparency.clear();
         _body << (_legacy ? "%AI5_BeginLayer\n1 1 1 1 0 0 0 79 128 255 Lb\n(Layer) Ln\n0 A\n"
                          : "%AI5_BeginLayer\n1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb\n(Layer) Ln\n0 A\n0 Xw\n");
         for (auto const &child : root->children) {

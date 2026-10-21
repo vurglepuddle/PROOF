@@ -5705,6 +5705,11 @@ TEST_F(AiNativeImportTest, LegacyWriterRefusesFeaturesThatNeedTheModernFormat)
         {R"(<g inkscape:groupmode="layer" inkscape:label="&#20013;"><rect width="10" height="10"/></g>)", "layer names outside Windows-1252"},
         {R"(<g inkscape:groupmode="layer"><g inkscape:groupmode="layer"><rect width="10" height="10"/></g></g>)", "nested layers"},
         {R"(<g inkscape:groupmode="layer" proof:layer-dim="70"><rect width="10" height="10"/></g>)", "layer image dimming"},
+        {R"(<rect width="10" height="10" style="opacity:0.5"/>)", "transparency"},
+        {R"(<g style="mix-blend-mode:multiply"><rect width="10" height="10"/></g>)", "blend modes"},
+        {R"(<rect width="10" height="10" style="fill:#ff0000;fill-opacity:0.5"/>)", "transparency"},
+        {R"(<defs><linearGradient id="g"><stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/>)"
+         R"x(</linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x", "gradient transparency"},
     };
     for (auto const &[body, reason] : cases) {
         SCOPED_TRACE(reason);
@@ -5852,7 +5857,8 @@ TEST_F(AiNativeImportTest, LegacySaveCopyPreservesTheWorkingDocumentAndPreviousF
 TEST_F(AiNativeImportTest, WrittenRecordsRefuseUnsupportedEffectsOnLayersAndTheRoot)
 {
     // A layer is written by a different route from ordinary groups. Its effects and the
-    // SVG root's must be checked too, or the PDF and Illustrator artwork can disagree.
+    // SVG root's must be checked too, or the PDF and Illustrator artwork can disagree. The
+    // modern form writes an object's transparency, but not a layer's or the document's.
     std::vector<std::pair<std::string, std::string>> effects{
         {R"(style="opacity:0.5")", "transparency"},
         {R"(style="mix-blend-mode:multiply")", "blend modes"},
@@ -5863,9 +5869,11 @@ TEST_F(AiNativeImportTest, WrittenRecordsRefuseUnsupportedEffectsOnLayersAndTheR
         R"(<defs><mask id="mask"><rect width="200" height="100" fill="white"/></mask>)"
         R"(<filter id="blur"><feGaussianBlur stdDeviation="2"/></filter></defs>)";
     std::string const rect = R"(<rect x="10" y="10" width="20" height="20" fill="#ff0000"/>)";
-    for (auto const &[attrs, reason] : effects) {
+    for (auto const &[attrs, base] : effects) {
         for (bool layer : {false, true}) {
-            SCOPED_TRACE(reason + (layer ? " on a layer" : " on the SVG root"));
+            bool const placed = base == "transparency" || base == "blend modes";
+            auto const reason = placed ? base + (layer ? " on layers" : " on the whole document") : base;
+            SCOPED_TRACE(reason);
             auto const body = layer ? defs + R"(<g inkscape:groupmode="layer" )" + attrs + ">" + rect + "</g>"
                                     : defs + rect;
             auto doc = svg_document(body, R"(width="200" height="100" viewBox="0 0 200 100" )" +
@@ -5910,9 +5918,6 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
         {R"(<defs><linearGradient id="g" spreadMethod="reflect" x2="0.5"><stop stop-color="#ff0000"/>)"
          R"x(<stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x",
          "repeating or reflected gradients"},
-        {R"(<defs><linearGradient id="g"><stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/>)"
-         R"x(</linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x", "gradient transparency"},
-        {R"(<rect width="50" height="50" style="fill:#ff0000;opacity:0.5"/>)", "transparency"},
         {R"(<text x="10" y="20">Hi</text>)", "type"},
     };
     for (auto const &[body, reason] : cases) {
@@ -5926,17 +5931,29 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
                 << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
         }
     }
+    // Transparency: Illustrator 7 has none, and the modern form refuses only a fill and a
+    // stroke each with an opacity of its own, which takes an appearance.
+    auto both = svg_document(R"(<rect width="50" height="50" style="fill:#ff0000;fill-opacity:0.5;stroke:#000000"/>)");
+    ASSERT_TRUE(both);
+    for (auto const &[version, reason] : {std::pair{AN::RecordsVersion::Modern, "separate fill and stroke transparency"},
+                                          std::pair{AN::RecordsVersion::Illustrator7, "transparency"}}) {
+        SCOPED_TRACE(reason);
+        auto const written = AN::write_records(both.get(), version);
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end());
+    }
 }
 
 TEST_F(AiNativeImportTest, TheWriterRefusesWhatItCannotWriteByName)
 {
     auto doc = svg_document(R"(<g inkscape:groupmode="layer"><text x="10" y="20">Hi</text>)"
-                            R"(<rect x="10" y="30" width="10" height="10" style="fill:#ff0000;opacity:0.5"/></g>)");
+                            R"(<rect x="10" y="30" width="10" height="10" style="fill:#ff0000;stroke:#000000;stroke-opacity:0.5"/></g>)");
     ASSERT_TRUE(doc);
     auto const written = AN::write_records(doc.get());
     EXPECT_TRUE(written.records.empty());
     EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "type"), written.refused.end());
-    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "transparency"), written.refused.end());
+    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "separate fill and stroke transparency"),
+              written.refused.end());
 
     // A document in millimetres: its artboard in points.
     auto a4 = svg_document(R"(<rect x="10" y="10" width="20" height="20" style="fill:#000000"/>)",
@@ -6091,6 +6108,153 @@ TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirRgbAndTransparency)
     EXPECT_NEAR(fitted->height(), 20, 1e-3);
     EXPECT_NEAR(fitted->left(), 100, 1e-3);
     EXPECT_NEAR(fitted->width(), 30, 1e-3);
+}
+
+TEST_F(AiNativeImportTest, WrittenTransparencyReadsBackOnEachObjectAndGroup)
+{
+    std::vector<std::uint8_t> const pixels{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 255};
+    auto doc = svg_document(
+        R"(<defs><clipPath id="c"><rect x="50" y="50" width="15" height="15"/></clipPath></defs>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art">)"
+        // 0: an object's own blend mode and opacity.
+        R"(<rect x="10" y="10" width="20" height="20" style="fill:#ff0000;opacity:0.5;mix-blend-mode:multiply"/>)"
+        // 1: a group's, with isolated blending and knockout, and its members' own.
+        R"(<g style="opacity:0.6;mix-blend-mode:screen;isolation:isolate" proof:knockout="on">)"
+        R"(<rect x="40" y="10" width="20" height="20" style="fill:#00ff00;opacity:0.3"/>)"
+        R"(<rect x="50" y="20" width="20" height="20" style="fill:#0000ff"/></g>)"
+        // 2: after a group, an object as transparent as the group's first member.
+        R"(<rect x="80" y="10" width="20" height="20" style="fill:#000000;opacity:0.3"/>)"
+        // 3, 4: a plain group whose last member is transparent, then an object straight after it.
+        R"(<g><rect x="110" y="10" width="20" height="20" style="fill:#ff00ff;opacity:0.4"/></g>)"
+        R"(<rect x="140" y="10" width="20" height="20" style="fill:#ffff00;opacity:0.7"/>)"
+        // 5: a compound path.
+        R"(<path d="M 10 50 H 40 V 80 H 10 Z M 20 60 V 70 H 30 V 60 Z" style="fill:#00ffff;opacity:0.7;mix-blend-mode:overlay"/>)"
+        // 6: a clipped object: its clipping group has its transparency.
+        R"x(<rect x="50" y="50" width="30" height="30" clip-path="url(#c)" style="fill:#ff0000;opacity:0.5;mix-blend-mode:darken"/>)x"
+        // 7, 8: a paint's own opacity, when it is the only paint, with the object's.
+        R"(<rect x="90" y="50" width="20" height="20" style="fill:#ff0000;fill-opacity:0.25"/>)"
+        R"(<path d="M 120 50 L 150 80" style="fill:none;stroke:#000000;stroke-width:2;stroke-opacity:0.4;opacity:0.5"/>)"
+        // 9: knockout neither on nor off, and the knockout shape.
+        R"(<rect x="10" y="90" width="20" height="20" style="fill:#000000" proof:knockout="neutral" proof:knockout-shape="true"/>)"
+        // 10, 11: a clone with transparency of its own, of an opaque object.
+        R"(<rect id="source" x="40" y="90" width="20" height="20" style="fill:#00ff00"/>)"
+        R"x(<use href="#source" transform="translate(30 0)" style="opacity:0.5;mix-blend-mode:luminosity"/>)x"
+        // 12: nested groups, each with its own.
+        R"(<g style="opacity:0.8"><g style="opacity:0.5"><rect x="100" y="90" width="20" height="20" style="fill:#0000ff"/></g></g>)"
+        // 13: a picture; 14, 15: a cropped one, then an object straight after its clipping group.
+        R"(<image x="130" y="90" width="20" height="20" preserveAspectRatio="none" style="opacity:0.5;mix-blend-mode:hue" href=")" +
+        png_uri(2, 2, pixels) + R"("/>)"
+        R"(<image x="10" y="120" width="30" height="10" preserveAspectRatio="xMidYMid slice" style="opacity:0.4" href=")" +
+        png_uri(2, 2, pixels) + R"("/>)"
+        R"(<rect x="50" y="120" width="10" height="10" style="fill:#000000;opacity:0.9"/>)"
+        R"(</g>)",
+        R"(width="200" height="150" viewBox="0 0 200 150" )");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &r = written.records;
+    // As Illustrator writes them: an object's before it, a group's after its end with Xd and
+    // a style marker, and a group with none of its own ended by `9 () XW`.
+    EXPECT_NE(r.find("1 0.5 0 0 0 Xy\n"), std::string::npos);
+    EXPECT_NE(r.find("U\n2 0.6 1 1 0 Xy\n0 0 Xd\n6 () XW\n"), std::string::npos);
+    EXPECT_NE(r.find("U\n9 () XW\n"), std::string::npos);
+    EXPECT_NE(r.find("Q\n8 0.5 0 0 0 Xy\n0 0 Xd\n6 () XW\n"), std::string::npos);
+    EXPECT_NE(r.find("Q\n9 () XW\n"), std::string::npos);
+    EXPECT_EQ(AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7).records, "");
+
+    std::string error;
+    auto ai = AN::read(r, error);
+    ASSERT_TRUE(ai) << error;
+    auto const &art = ai->layers.at(0).children;
+    ASSERT_EQ(art.size(), 16u) << r.substr(r.find("%%EndSetup"));
+    auto expect = [](AN::Node const &n, int blend, double opacity, bool isolate = false, int knockout = 0,
+                     bool shape = false) {
+        EXPECT_EQ(n.transparency.blend, blend);
+        EXPECT_NEAR(n.transparency.opacity, opacity, 1e-4);
+        EXPECT_EQ(n.transparency.isolate, isolate);
+        EXPECT_EQ(n.transparency.knockout, knockout);
+        EXPECT_EQ(n.transparency.knockout_shape, shape);
+    };
+    using K = AN::Node::Kind;
+    {
+        SCOPED_TRACE("object");
+        EXPECT_EQ(art[0].kind, K::Path);
+        expect(art[0], 1, 0.5);
+    }
+    {
+        SCOPED_TRACE("group");
+        ASSERT_EQ(art[1].kind, K::Group);
+        expect(art[1], 2, 0.6, true, 1);
+        ASSERT_EQ(art[1].children.size(), 2u);
+        expect(art[1].children[0], 0, 0.3);
+        expect(art[1].children[1], 0, 1);
+        expect(art[2], 0, 0.3);
+    }
+    {
+        SCOPED_TRACE("plain group, then an object");
+        ASSERT_EQ(art[3].kind, K::Group);
+        expect(art[3], 0, 1);
+        expect(art[3].children.at(0), 0, 0.4);
+        expect(art[4], 0, 0.7);
+    }
+    {
+        SCOPED_TRACE("compound path");
+        EXPECT_EQ(art[5].kind, K::Compound);
+        expect(art[5], 3, 0.7);
+    }
+    {
+        SCOPED_TRACE("clipped object");
+        ASSERT_EQ(art[6].kind, K::Group);
+        EXPECT_TRUE(art[6].clipped);
+        expect(art[6], 8, 0.5);
+        expect(art[6].children.back(), 0, 1);
+    }
+    {
+        SCOPED_TRACE("paint opacity");
+        expect(art[7], 0, 0.25);
+        expect(art[8], 0, 0.2);
+        expect(art[9], 0, 1, false, 2, true);
+    }
+    {
+        SCOPED_TRACE("clone");
+        expect(art[10], 0, 1);
+        ASSERT_EQ(art[11].kind, K::Group);
+        expect(art[11], 15, 0.5);
+        expect(art[11].children.at(0), 0, 1);
+    }
+    {
+        SCOPED_TRACE("nested groups");
+        ASSERT_EQ(art[12].kind, K::Group);
+        expect(art[12], 0, 0.8);
+        ASSERT_EQ(art[12].children.at(0).kind, K::Group);
+        expect(art[12].children.at(0), 0, 0.5);
+        expect(art[12].children.at(0).children.at(0), 0, 1);
+    }
+    {
+        SCOPED_TRACE("pictures");
+        EXPECT_EQ(art[13].kind, K::Image);
+        expect(art[13], 12, 0.5);
+        ASSERT_EQ(art[14].kind, K::Group);
+        EXPECT_TRUE(art[14].clipped);
+        expect(art[14], 0, 1);
+        EXPECT_EQ(art[14].children.back().kind, K::Image);
+        expect(art[14].children.back(), 0, 0.4);
+        expect(art[15], 0, 0.9);
+    }
+
+    // And in the document the import makes: CSS as the import writes it.
+    auto again = make(r);
+    ASSERT_TRUE(again);
+    bool group = false, knockout = false;
+    for (auto *g : elements(again->document->getReprRoot(), "svg:g")) {
+        auto const style = attr(g, "style");
+        if (style.find("mix-blend-mode:screen") == std::string::npos) continue;
+        group = style.find("opacity:0.6") != std::string::npos && style.find("isolation:isolate") != std::string::npos;
+        knockout = attr(g, "proof:knockout") == "on";
+    }
+    EXPECT_TRUE(group);
+    EXPECT_TRUE(knockout);
 }
 
 TEST_F(AiNativeImportTest, PicturesTheWriterCannotWriteAreRefusedByName)

@@ -10,7 +10,13 @@
  * opaque pad linear and radial process fills and strokes, overprint and stroke style. A
  * gradient-filled shape may have a plain stroke; the modern form also supports gradient
  * strokes with a plain or gradient fill. Gradient stops may be tints of spot inks defined in
- * CMYK; transparent and mixed RGB/CMYK gradients are refused. Pictures the document holds itself are embedded
+ * CMYK, and in the modern form have opacities of their own; mixed RGB/CMYK gradients are
+ * refused. The modern form writes an object's and a group's transparency as Illustrator does
+ * (`mode opacity isolate knockout shape Xy`; a group's after its end, with `0 0 Xd` and
+ * `6 () XW`, or `9 () XW` when it has none): opacity, the sixteen blend modes, isolated
+ * blending and knockout, and a fill's or stroke's own opacity when it is the only paint.
+ * Transparency on layers and the document, and separate fill and stroke opacities, are
+ * refused. Pictures the document holds itself are embedded
  * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
  * linked. Missing links and linked formats outside that subset are refused.
  * Picture slice crops retain the complete raster or link behind an editable viewport clip.

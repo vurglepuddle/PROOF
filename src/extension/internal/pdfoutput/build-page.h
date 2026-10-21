@@ -25,6 +25,7 @@ public:
     PageContext(Document &doc, SPPage const *page);
 
     void set_pagebox(CapyPDF_Page_Box type, Geom::Rect const &size);
+    void set_blending_space(CapyPDF_Device_Colorspace space);
     void paint_drawing(CapyPDF_TransparencyGroupId drawing_id, Geom::Affine const &affine);
 
     void add_anchors_for_page(SPPage const *page);

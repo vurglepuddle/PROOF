@@ -53,6 +53,21 @@ void PageContext::set_pagebox(CapyPDF_Page_Box type, Geom::Rect const &size)
 };
 
 /**
+ * PROOF: the colour space the page's transparency is composited in: the page group's /CS,
+ * which groups without one of their own inherit. Without it the reader chooses, most often
+ * RGB, and opacity and blend modes over CMYK inks come out differently from Illustrator, whose
+ * pages of a CMYK document name DeviceCMYK (not isolated, not knockout).
+ */
+void PageContext::set_blending_space(CapyPDF_Device_Colorspace space)
+{
+    capypdf::TransparencyGroupProperties group;
+    group.set_CS(space);
+    group.set_I(false);
+    group.set_K(false);
+    page_props.set_transparency_group_properties(group);
+}
+
+/**
  * Paint the entire canvas as a transparency group.
  */
 void PageContext::paint_drawing(CapyPDF_TransparencyGroupId drawing_id, Geom::Affine const &affine)

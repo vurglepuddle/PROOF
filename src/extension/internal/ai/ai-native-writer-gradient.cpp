@@ -378,8 +378,12 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     if (stroke && legacy) return refused("gradients on strokes (Illustrator 7)");
     if (stroke && (!shape->curve() || shape->curve()->empty())) return refused("gradient strokes without a path");
     SPIPaint const &paint = stroke ? static_cast<SPIPaint const &>(style->stroke) : style->fill;
+    // The modern form writes the object's opacity as its transparency, and the paint's own with
+    // it when the paint is the object's only one (ai-native-writer.cpp); its stops keep theirs.
     auto const paint_opacity = stroke ? style->stroke_opacity.as_double() : style->fill_opacity.as_double();
-    if (style->opacity.as_double() < 1.0 - 1e-6 || paint_opacity < 1.0 - 1e-6) return refused("gradient transparency");
+    if (legacy && (style->opacity.as_double() < 1.0 - 1e-6 || paint_opacity < 1.0 - 1e-6)) {
+        return refused("gradient transparency");
+    }
     auto const *server = paint.isPaintserver() && paint.href ? paint.href->getObject() : nullptr;
     if (is<SPMeshGradient>(server)) return refused("mesh gradients");
     auto const *linear = cast<SPLinearGradient>(server);
@@ -443,12 +447,20 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     std::optional<Type> model;
     std::vector<std::string> stops;
     double previous = -1;
+    // Stops with an opacity of their own are written as Illustrator writes every stop since
+    // CS4: the opacity and the marker 6 before the midpoint. A gradient whose stops are all
+    // opaque keeps the older form; Illustrator 7 has no other.
+    bool clear = false;
+    for (auto const &stop : effective->stops) {
+        if (!stop.color || !std::isfinite(stop.color->getOpacity())) return refused("invalid gradient stops");
+        clear = clear || stop.color->getOpacity() < 1.0 - 1e-6;
+    }
+    if (clear && legacy) return refused("gradient transparency");
     for (std::size_t index = 0; index < effective->stops.size(); ++index) {
         auto const &stop = effective->stops[index];
         auto const &ink = inks[index];
         if (!stop.color || !std::isfinite(stop.offset)) return refused("invalid gradient stops");
         auto const &color = *stop.color;
-        if (!std::isfinite(color.getOpacity()) || color.getOpacity() < 1.0 - 1e-6) return refused("gradient transparency");
         auto const space = color.getSpace();
         // CMYK in a profile (the document's, as an import assigns it to every process paint of a
         // CMYK file) is written as its numbers, as solid paint is; the profile goes with the PDF
@@ -470,6 +482,9 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         auto const offset = std::round(stop.offset * 1000000.0) / 1000000.0;
         if (offset <= previous) return refused("gradient hard stops or coincident offsets");
         previous = offset;
+        // After the colour and its style: [opacity 6] midpoint ramp.
+        auto const tail = (clear ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +
+                          " 50 " + num(offset * 100) + " %_Bs\n";
         if (ink) {
             // A tint of a spot ink: its full-strength CMYK, its name, the tint taken from 1 as
             // x writes it, colour style 3 (Adobe's 1998 specification, Bs; Illustrator writes
@@ -486,8 +501,8 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
                 if (!std::isfinite(v) || v < 0 || v > 1) return refused("out-of-range gradient colours");
             }
             if (!std::isfinite(ink->tint)) return refused("out-of-range gradient colours");
-            stops.push_back(std::format("{} {} {} {} {} {} 3 50 {} %_Bs\n", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]),
-                                        num(cmyk[3]), ps_string(*ink_bytes), num(1.0 - ink->tint), num(offset * 100)));
+            stops.push_back(std::format("{} {} {} {} {} {} 3", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]), num(cmyk[3]),
+                                        ps_string(*ink_bytes), num(1.0 - ink->tint)) + tail);
             out.inks.emplace_back(ink->name, cmyk);
             continue;
         }
@@ -502,7 +517,7 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
             for (unsigned i = 0; i < 4; ++i) line << num((*alternate)[i]) << ' ';
         }
         for (unsigned i = 0; i < count; ++i) line << num(color[i]) << ' ';
-        line << (*model == Type::CMYK ? 1 : 2) << " 50 " << num(offset * 100) << " %_Bs\n";
+        line << (*model == Type::CMYK ? 1 : 2) << tail;
         stops.push_back(line.str());
     }
 

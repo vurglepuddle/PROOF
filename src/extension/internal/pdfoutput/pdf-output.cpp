@@ -20,6 +20,8 @@
 
 #include "build-document.h"
 #include "build-page.h"
+#include "colors/document-colors.h"
+#include "colors/spaces/enum.h"
 #include "document.h"
 #include "extension/db.h"
 #include "extension/internal/latex-text-renderer.h"
@@ -132,6 +134,11 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     // Step 3. Tell the PDF where to draw that whole plate on the PDF pages
     for (auto const &svg_page : pm.getPages()) {
         auto pdf_page = PdfBuilder::PageContext(pdf, svg_page);
+        // A CMYK document's transparency is composited in CMYK, as it prints and as
+        // Illustrator's pages say.
+        if (Colors::DocumentColors::mode(doc) == Colors::Space::Type::CMYK) {
+            pdf_page.set_blending_space(CAPY_DEVICE_CS_CMYK);
+        }
 
         if (!svg_page->isBarePage()) {
             pdf_page.set_pagebox(CAPY_BOX_BLEED, svg_page->getDocumentBleed());

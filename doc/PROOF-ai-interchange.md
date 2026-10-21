@@ -1286,13 +1286,16 @@ Illustrator 29.2.1. An actual Illustrator 7 executable remains untested.
 - Only in Illustrator 7: more than one artboard; individually hidden objects;
   nested layers; image dimming other than 50%; names outside Windows-1252;
   gradients on strokes; elliptical radial gradients; transparent pictures;
-  linked pictures; Registration ink.
-- In both forms: type; transparency; blend modes; opacity masks; filters;
-  patterns; meshes; markers; non-scaling strokes; strokes painted under their
-  fill; strokes on stretched or skewed objects; clips of more than one path;
-  clipping on the SVG root; repeating or reflected gradients; gradient
-  transparency and hard stops; spot inks defined in RGB or Lab; context paint;
-  numbers that overflow.
+  linked pictures; Registration ink; and, since the modern form writes them
+  (evening of 2026-10-21, below), transparency, blend modes and gradient
+  stops' own opacity.
+- In both forms: type; transparency and blend modes on layers or the whole
+  document; a fill and a stroke each with an opacity of its own; opacity
+  masks; filters; patterns; meshes; markers; non-scaling strokes; strokes
+  painted under their fill; strokes on stretched or skewed objects; clips of
+  more than one path; clipping on the SVG root; repeating or reflected
+  gradients; gradient hard stops; spot inks defined in RGB or Lab; context
+  paint; numbers that overflow.
 
 Unit checks: `BothWritersNameEveryFormOutsideTheirSubset` (new) and
 `LegacyWriterRefusesFeaturesThatNeedTheModernFormat`, with the export smokes.
@@ -1400,3 +1403,157 @@ skip, importer 159 with two, spot inks 19); **21 export groups, 721 checks**,
 the representative control **24/24**. The writer census was the round's
 corpus run, before the fixes; the 8 of the owner's copies holding a grey
 raster or `XC` were rerun after them, unchanged.
+
+### Transparency and blend modes in the modern form (2026-10-21)
+
+The modern records now keep what Illustrator's Transparency panel holds for an
+object or a group: its opacity, its blend mode (all sixteen), isolated
+blending, and knockout (on, off or neither) with the knockout shape. A
+gradient's stops keep their own opacity. Illustrator 7 has none of this, and
+its copy still refuses all of it.
+
+**How it is written**, as Illustrator 29 writes its own (300 to 400 of the
+owner's cached record sets surveyed, then the same content saved by
+Illustrator itself, below):
+
+- `mode opacity isolate knockout shape Xy`, five numbers, the modes in
+  Illustrator's order (Normal, Multiply, Screen, Overlay, Soft Light, Hard
+  Light, Color Dodge, Color Burn, Darken, Lighten, Difference, Exclusion, Hue,
+  Saturation, Color, Luminosity; PROOF's CSS modes come in another order and
+  are mapped by table). It holds until changed, so it is written only where it
+  changes: after an object's paints and before its path; before a compound
+  path, whose paths take it; before a picture.
+- A group's own comes after its end: `U` (`Q` for a clipping group), its `Xy`
+  (written even when it holds already), `0 0 Xd`, `6 () XW`. A group with none
+  of its own ends `9 () XW`, as Illustrator ends one. Without either, the next
+  object's `Xy` straight after a group's end would be the group's: the state
+  after a group belongs to it, in Illustrator and in PROOF's reader. A
+  picture's crop group ends `9 () XW` too.
+- A clipped object's transparency is its clipping group's; the object in it is
+  opaque, and so is the clipping path, as an ordinary path once released.
+- A clone with transparency of its own is written in a group that has it.
+- A fill's or a stroke's own opacity (`fill-opacity`, `stroke-opacity`, a
+  colour's alpha), when it is the object's only paint, is the object's
+  opacity: the same picture. A fill and a stroke each with an opacity of its
+  own needs an appearance, and is refused by name ("separate fill and stroke
+  transparency"). A gradient-filled object's opacity was refused as "gradient
+  transparency"; it is the object's now.
+- Stops with an opacity take Illustrator's newer stop, `colour style opacity
+  6 midpoint ramp`, and every stop of that gradient is written so. Gradients
+  whose stops are all opaque keep the older form, byte for byte.
+- Where the transparency in force is not opaque when a layer begins, its first
+  object's is written in full: whether a layer starts with what held before it
+  is the reader's to say.
+- Still refused, by name: transparency or blend modes on layers ("transparency
+  on layers"; Illustrator keeps a layer's apart from its objects', in a form
+  not yet studied) and on the whole document; separate fill and stroke
+  transparency; opacity masks.
+
+#### The PDF page composites in CMYK
+
+PROOF's PDF export (the page an .ai file carries, and Save as PDF) already drew
+opacity, blend modes and isolated blending, but its pages named no blending
+colour space, so whatever displays or prints the page chose one, most often
+RGB. Illustrator's pages of a CMYK document say `/Group << /S /Transparency
+/CS /DeviceCMYK /I false /K false >>`, and a RIP composites them in CMYK, as
+the inks print. A CMYK document's pages now say the same
+(`PageContext::set_blending_space`); groups without a space of their own
+inherit it. RGB documents are unchanged. Poppler composites in RGB whatever the
+page says (Illustrator's own page draws as PROOF's under it), so this is
+checked in the page dictionary, not in pixels. Under poppler, PROOF's page and
+Illustrator's page of the same control agree within 3 at every probe but the
+RGB picture, which Illustrator converted to CMYK (16), and a stroke's edge
+(8).
+
+#### The control in Illustrator
+
+`ai-transparency-output-smoke.py` (new, in the focused suites): one CMYK
+document with the sixteen modes over a band and over paper, an object at half
+opacity, an isolated screen group with a multiplying member, a knockout group,
+a compound path at 70% Overlay, Darken at half, a clipped object, a fill at a
+quarter and a stroke at 40% each painting alone, a clone at half in
+Luminosity, nested groups at 80% and 50%, a picture, a spot ink and a gradient
+each at part opacity, knockout neither on nor off with the knockout shape, a
+plain group whose last member is transparent followed by an object, and a
+gradient whose stops fade. PROOF: written in Illustrator's form, reopened
+from its own records with each of the 47 objects' and groups' transparency in
+order, drawn as the source at every probe, the fifteen blend modes in the PDF
+page and the page composited in CMYK, the same records written again from the
+reopen and again from that; layer transparency and separate fill and stroke
+opacity refused by name, and Illustrator 7 refusing it all. 18/18.
+
+Illustrator 29.2.1 (one MCP operation at a time, ten idle seconds after each
+open, export, save and close):
+
+- **Read:** every object's and group's opacity and blend mode as written,
+  through its scripting interface: the sixteen modes in order, the groups
+  (screen at 60%, luminosity at 50% for the clone, 80% and 50% nested, the
+  clipping group at 50% Multiply with its path and its member opaque), the
+  compound path, the quarter fill, the 40% stroke, the picture, the spot ink,
+  the gradient, and the plain group at 100% with its 60% member and the object
+  after it at 30%.
+- **Drawn:** the knockout group knocks out (its two half-black squares don't
+  darken where they overlap), and the gradient fades to show the bar behind.
+  Over paper every mode is within 5 of PROOF's canvas. Over coloured inks the
+  two differ (up to 191 for Color Burn, 75 for half black over yellow):
+  Illustrator composites a CMYK document in CMYK, PROOF's canvas in RGB. That
+  is the display, not the file: Illustrator's own PDF page under poppler draws
+  as PROOF's.
+- **Saved** as a modern copy, whose records hold every object's transparency in
+  the form PROOF wrote (`2 0.6 1 0 0 Xy`, `0 0 Xd`, `6 () XW` after the
+  isolated group; `0 1 0 1 0` after the knockout group; `9 () XW` after the
+  plain one; `0 1 0 2 1` before the knockout-shape object; stops `… 1 0.2 6 50
+  100 Bs`), and which **reopens in PROOF natively** with all 47 the same, in
+  order, isolation and knockout included.
+
+Local evidence: `artifacts\transparency-20261021\` (`in\`, `out\`,
+`records-copy\`, `reopen\`, `compare.py`, `smoke-*`).
+
+#### Real documents
+
+The writer census (`tools\ai-writer-census.py`, the round's corpus run) over
+the owner's 871 staged copies, 862 read natively: the modern form writes
+**642**, every one read back (129 before), with the object transparency
+alone; the 14 still refused for gradient transparency were rerun after stops
+kept their opacity, and 4 more write (the other 10 are held by type, spot inks
+in Lab or RGB, clips and gradient colours). **646 of 862 (75%).** What holds
+the rest, with those 14 as rerun:
+
+| Modern form, 2026-10-21 evening | Files | Only reason |
+|---|---|---|
+| Spot inks defined in RGB or Lab | 138 | 102 |
+| Type | 60 | 28 |
+| Clipping paths other than one path | 19 | 12 |
+| Gradient colours other than standard RGB or CMYK | 19 | 8 |
+| Patterns | 15 | 11 |
+| Opacity masks | 7 | 3 |
+| Linked pictures missing or unreadable | 6 | 0 |
+| Noncanonical Registration ink definitions | 4 | 4 |
+| Mesh gradients | 3 | 1 |
+| Gradient hard stops or coincident offsets | 1 | 1 |
+
+Spot inks defined in Lab or RGB alone would add 102 (to 748, 87%), type alone
+28 more.
+
+The Illustrator 7 copy is unchanged at 99. No document met "separate fill and
+stroke transparency" or layer transparency: an import never makes them.
+
+#### Still open
+
+- PROOF's canvas composites transparency in RGB; Illustrator shows a CMYK
+  document composited in CMYK, as it prints. With the canvas's CMYK
+  gradients, a display item for the colour work.
+- The canvas, and so the PDF page, draw a knockout group as an ordinary group
+  (the import says so); the records keep it, and Illustrator draws it.
+- Transparency on layers, in Illustrator's own form, once studied.
+- An appearance with separate fill and stroke opacities.
+
+Checks: all **13 unit suites, 0 failures** (reader 74 cases with one opt-in
+skip, importer 160 with two, gradient writer 30); **22 export groups, 739
+checks**, the transparency control **18/18**. Three gradient smokes asserted
+refusals the modern form no longer makes (a stop's opacity, a gradient
+stroke's opacity under a fill, now named as separate fill and stroke
+transparency); their expectations were changed and they pass, 20/20, 29/29,
+13/13. Unit checks: `WrittenTransparencyReadsBackOnEachObjectAndGroup`,
+`GradientObjectsKeepTheirOpacityInTheModernFormOnly`,
+`StopsKeepTheirOpacityInTheNewerFormOnly`, and the refusal lists.

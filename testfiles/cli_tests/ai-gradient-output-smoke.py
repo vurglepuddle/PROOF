@@ -97,22 +97,28 @@ def main():
         else:
             check('legacy: editable gradient definitions', b'4 Bn\n' in ai.read_bytes()
                   and ai.read_bytes().count(b' Bg\n') == 4)
+        # The modern form writes a stop's own opacity (2026-10-21); Illustrator 7 has none.
         for label, replacement, reason in [
-            ('alpha', 'stop-color="#ff0000" stop-opacity="0.5"', b'gradient transparency'),
+            ('alpha', 'stop-color="#ff0000" stop-opacity="0.5"', None if name == 'modern' else b'gradient transparency'),
             ('repeat', 'stop-color="#ff0000"', b'repeating or reflected gradients'),
-            ('stroke', 'stop-color="#ff0000"', b'gradient transparency' if name == 'modern'
+            ('stroke', 'stop-color="#ff0000"', b'separate fill and stroke transparency' if name == 'modern'
              else b'gradients on strokes (Illustrator 7)'),
         ]:
             unsupported = svg.replace('stop-color="#ff0000"', replacement)
             if label == 'repeat':
                 unsupported = unsupported.replace('id="g"', 'id="g" spreadMethod="repeat"')
             if label == 'stroke':
-                # Opaque dual gradients are supported in modern AI; transparent strokes
-                # remain refused, and Illustrator 7 refuses all gradient strokes.
+                # Dual gradients are supported in modern AI; a fill and a stroke each with an
+                # opacity of its own remain refused, and Illustrator 7 refuses all gradient strokes.
                 unsupported = unsupported.replace('fill="url(#g)"',
                                                   'fill="url(#g)" stroke="url(#g)" stroke-opacity="0.5"')
             path = out / (name + '-' + label + '.svg')
             path.write_text(unsupported)
+            if reason is None:
+                written = out / (name + '-' + label + '.ai')
+                p = run(name + '-' + label, exe, path, option, f'--export-filename={written}', success=False)
+                check(name + ': ' + label + ' written', p.returncode == 0 and written.is_file())
+                continue
             kept = ai.read_bytes()
             p = run(name + '-' + label, exe, path, option, f'--export-filename={ai}', success=False)
             check(name + ': ' + label + ' refused safely', p.returncode == 1 and reason in p.stderr

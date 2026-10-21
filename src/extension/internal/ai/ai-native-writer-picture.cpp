@@ -256,8 +256,10 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
         }
         viewport_clip += "h\nW\nn\n";
     }
+    // The modern form ends the clipping group as Illustrator ends one with no transparency of
+    // its own, so that the next object's cannot be taken for the group's.
     auto with_crop = [&](WrittenPicture out) {
-        if (!viewport_clip.empty()) out.records = viewport_clip + std::move(out.records) + "Q\n";
+        if (!viewport_clip.empty()) out.records = viewport_clip + std::move(out.records) + (legacy ? "Q\n" : "Q\n9 () XW\n");
         return out;
     };
     if (!link.empty()) {
