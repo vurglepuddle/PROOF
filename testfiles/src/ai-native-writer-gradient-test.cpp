@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -19,9 +20,14 @@
 #include "extension/internal/ai/ai-native-reader.h"
 #include "extension/internal/ai/ai-native-writer.h"
 #include "extension/internal/ai/ai-native-writer-gradient.h"
+#include "colors/color.h"
+#include "colors/document-colors.h"
+#include "colors/manager.h"
 #include "colors/spaces/base.h"
+#include "colors/spaces/cms.h"
 #include "object/sp-gradient.h"
 #include "object/sp-shape.h"
+#include "spot-ink.h"
 
 namespace AN = Inkscape::Extension::Internal::AiNative;
 
@@ -1024,6 +1030,150 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsAreWrittenAsTintsOfTheirInk)
     }
 }
 
+namespace {
+
+std::string fixed4(double v)
+{
+    auto s = std::format("{:.4f}", v);
+    s.erase(s.find_last_not_of('0') + 1);
+    if (s.back() == '.') s.pop_back();
+    return s == "-0" ? "0" : s;
+}
+
+/// A colour's CMYK in `space`, by the working rendering intent, as the writer converts an ink's.
+std::string cmyk_text(Inkscape::Colors::Color const &c, std::shared_ptr<Inkscape::Colors::Space::AnySpace> const &space)
+{
+    auto values = c.getValues();
+    if (!c.getSpace()->convert(values, space, Inkscape::Colors::DocumentColors::workingIntent())) return "none";
+    std::string out;
+    for (unsigned i = 0; i < 4; ++i) out += (i ? " " : "") + fixed4(std::clamp(values[i], 0.0, 1.0));
+    return out;
+}
+
+} // namespace
+
+TEST_F(AiNativeWriterGradientTest, InkStopsDefinedInLabOrRgbAreWrittenAsIllustratorWritesThem)
+{
+    using Type = Inkscape::Colors::Space::Type;
+    std::string const lab = R"x(proof:ink="Book Red" proof:ink-alternate="lab(50 60 30)")x";
+    std::string const rgb = R"x(proof:ink="Screen Orange" proof:ink-alternate="#ff8000")x";
+    auto doc = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" xmlns:proof="urn:x-proof:document:1" )x"
+        R"x(xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="320" height="180" viewBox="0 0 320 180"><defs>)x"
+        R"x(<linearGradient id="a" gradientUnits="userSpaceOnUse" x1="10" y1="0" x2="150" y2="0">)x"
+        R"x(<stop offset="0" style="stop-color:lab(50 60 30)" )x" + lab + "/>" +
+        R"x(<stop offset="0.5" style="stop-color:lab(80 24 12)" proof:ink-tint="0.4" )x" + lab + "/>" +
+        R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/></linearGradient>)x"
+        R"x(<linearGradient id="b" gradientUnits="userSpaceOnUse" x1="170" y1="0" x2="310" y2="0">)x"
+        R"x(<stop offset="0" style="stop-color:#ff8000" )x" + rgb + "/>" +
+        R"x(<stop offset="1" style="stop-color:#ffffff" proof:ink-tint="0" )x" + rgb + "/></linearGradient>" +
+        R"x(<linearGradient id="sa" inkscape:swatch="solid" )x" + lab + R"x(><stop style="stop-color:lab(50 60 30)"/></linearGradient>)x" +
+        R"x(<linearGradient id="sb" inkscape:swatch="solid" )x" + rgb + R"x(><stop style="stop-color:#ff8000"/></linearGradient>)x" +
+        R"x(</defs><rect x="10" y="10" width="140" height="60" fill="url(#a)"/>)x"
+        R"x(<rect x="170" y="10" width="140" height="60" fill="url(#b)"/>)x"
+        R"x(<rect x="10" y="100" width="60" height="60" fill="url(#sa)"/>)x"
+        R"x(<rect x="170" y="100" width="60" height="60" fill="url(#sb)"/></svg>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const result = AN::write_records(doc.get());
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    auto const &records = result.records;
+    // Declared once for the swatch and the stops alike, by their RGB.
+    EXPECT_EQ(occurrences(records, "%%DocumentCustomColors: (Book Red)\n%%+ (Screen Orange)\n"), 1u);
+    EXPECT_EQ(records.find("%%CMYKCustomColor:"), std::string::npos);
+    EXPECT_EQ(occurrences(records, "%%+ 1 0.502 0 (Screen Orange)\n"), 1u);
+
+    auto const definition = Inkscape::Colors::Color(Type::LAB, {0.5, (60.0 + 128) / 255, (30.0 + 128) / 255});
+    auto const device = Inkscape::Colors::Manager::get().find(Type::CMYK);
+    auto const full = cmyk_text(definition, device);
+    auto const tinted = cmyk_text(Inkscape::SpotInk::display_color(definition, 0.4), device);
+    ASSERT_NE(full, tinted);
+    // Each named stop twice: the stand-in, the full-strength CMYK in colour style 3, then the
+    // exact stop, the CMYK at its tint and the Lab, type 2 and style 4; every stop in the newer form.
+    EXPECT_EQ(occurrences(records, full + " (Book Red) 0 3 1 6 50 0 %_BS\n%_" + full +
+                                       " 50 60 30 (Book Red) 0 2 4 1 6 50 0 Bs\n"), 1u);
+    EXPECT_EQ(occurrences(records, full + " (Book Red) 0.6 3 1 6 50 50 %_BS\n%_" + tinted +
+                                       " 50 60 30 (Book Red) 0.6 2 4 1 6 50 50 Bs\n"), 1u);
+    EXPECT_EQ(occurrences(records, "\n1 0 0 0 1 1 6 50 100 %_Bs\n"), 1u);
+    // RGB: type 1, and style 4 as Illustrator 29 writes it.
+    EXPECT_EQ(occurrences(records, " 1 0.502 0 (Screen Orange) 0 1 4 1 6 50 0 Bs\n"), 1u);
+    EXPECT_EQ(occurrences(records, " 1 0.502 0 (Screen Orange) 1 1 4 1 6 50 100 Bs\n"), 1u);
+    EXPECT_EQ(occurrences(records, " 50 60 30 (Book Red) 0 2 Xx\n"), 1u);
+    EXPECT_EQ(occurrences(records, " 1 0.502 0 (Screen Orange) 0 1 Xx\n"), 1u);
+
+    std::string error;
+    auto ai = AN::read(records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->inks.size(), 2u);
+    ASSERT_EQ(ai->gradients.size(), 2u);
+    auto const ink_named = [&](std::string const &name) {
+        for (std::size_t i = 0; i < ai->inks.size(); ++i) {
+            if (ai->inks[i].name == name) return static_cast<int>(i);
+        }
+        return -1;
+    };
+    auto const book = ink_named("Book Red"), orange = ink_named("Screen Orange");
+    ASSERT_GE(book, 0);
+    ASSERT_GE(orange, 0);
+    EXPECT_EQ(ai->inks[book].color, AN::Color::lab(50, 60, 30));
+    EXPECT_EQ(ai->inks[orange].color, AN::Color::rgb(1, 0.502, 0));
+    for (auto const &gradient : ai->gradients) {
+        auto const &stops = gradient.stops;
+        if (stops.size() == 3) {
+            EXPECT_EQ(stops[0].ink, book);
+            EXPECT_EQ(stops[1].ink, book);
+            EXPECT_NEAR(stops[0].tint, 1, 1e-6);
+            EXPECT_NEAR(stops[1].tint, 0.4, 1e-6);
+            EXPECT_EQ(stops[1].color, AN::Color::lab(50, 60, 30));
+            EXPECT_EQ(stops[2].ink, -1);
+        } else {
+            ASSERT_EQ(stops.size(), 2u);
+            EXPECT_EQ(stops[0].ink, orange);
+            EXPECT_EQ(stops[1].ink, orange);
+            EXPECT_NEAR(stops[1].tint, 0, 1e-6);
+        }
+    }
+
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "spot inks defined in RGB or Lab (Illustrator 7)"),
+              legacy.refused.end());
+
+    // One name, one definition: a Lab stop of an ink whose swatch is CMYK.
+    auto clash = spotted(R"x(<stop offset="0" style="stop-color:lab(50 60 30)" proof:ink="Brand Red" )x"
+                         R"x(proof:ink-alternate="lab(50 60 30)"/><stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x");
+    ASSERT_TRUE(clash);
+    auto const twice = AN::write_records(clash.get());
+    EXPECT_TRUE(twice.records.empty());
+    EXPECT_NE(std::find(twice.refused.begin(), twice.refused.end(), "one ink name with two definitions"),
+              twice.refused.end());
+}
+
+TEST_F(AiNativeWriterGradientTest, TheCmykBesideALabInkComesThroughTheDocumentsProfile)
+{
+    using Type = Inkscape::Colors::Space::Type;
+    auto const path = std::string(INKSCAPE_TESTS_DIR "/data/colors/default_cmyk.icc");
+    std::string const lab = R"x(proof:ink="Book Red" proof:ink-alternate="lab(50 60 30)")x";
+    auto doc = SPDocument::createNewDocFromMem(
+        R"x(<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" )x"
+        R"x(xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" )x"
+        R"x(xmlns:proof="urn:x-proof:document:1" proof:color-mode="CMYK" proof:color-profile="Press" )x"
+        R"x(width="320" height="180" viewBox="0 0 320 180"><defs>)x"
+        R"x(<color-profile id="p" name="Press" xlink:href="file:///)x" + path + R"x("/>)x"
+        R"x(<linearGradient id="sa" inkscape:swatch="solid" )x" + lab + R"x(><stop style="stop-color:lab(50 60 30)"/></linearGradient>)x"
+        R"x(</defs><rect x="10" y="10" width="60" height="60" fill="url(#sa)"/></svg>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const space = Inkscape::Colors::DocumentColors::assignedSpace(doc.get());
+    ASSERT_TRUE(space);
+    auto const definition = Inkscape::Colors::Color(Type::LAB, {0.5, (60.0 + 128) / 255, (30.0 + 128) / 255});
+    auto const press = cmyk_text(definition, space);
+    ASSERT_NE(press, cmyk_text(definition, Inkscape::Colors::Manager::get().find(Type::CMYK)));
+    auto const result = AN::write_records(doc.get());
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    EXPECT_EQ(occurrences(result.records, "\n" + press + " 50 60 30 (Book Red) 0 2 Xx\n"), 1u);
+}
+
 TEST_F(AiNativeWriterGradientTest, LegacyGradientAndStopNamesUseStrictWindows1252)
 {
     std::string const name = "Ramp \xc3\x83\xc2\xa9 \xe2\x82\xac (A) \\ B";
@@ -1070,8 +1220,10 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
     std::string const cmyk_swatch = "device-cmyk(0 1 0.8 0.1)";
     std::vector<Case> const cases{
         {ink(brand, "0") + R"(<stop offset="1" stop-color="#00ff00"/>)", cmyk_swatch, "mixed gradient colour spaces"},
-        {ink(R"(proof:ink="Brand Red" proof:ink-alternate="#ff0000")", "0") + process_end, cmyk_swatch,
-         "spot inks defined in RGB or Lab"},
+        {ink(R"(proof:ink="Web Red" proof:ink-alternate="#ff0000")", "0") + process_end, cmyk_swatch,
+         "spot inks defined in RGB or Lab (Illustrator 7)", true},
+        {ink(R"x(proof:ink="Deep Ink" proof:ink-alternate="xyz(0.2 0.1 0.3)")x", "0") + process_end, cmyk_swatch,
+         "spot inks defined in other colour spaces"},
         {ink(R"x(proof:ink="All" proof:ink-alternate="device-cmyk(1 1 1 1)")x", "0") + process_end, cmyk_swatch,
          "Registration in gradients"},
         {ink(brand, "0") + process_end, "device-cmyk(0 1 1 0)", "one ink name with two definitions"},

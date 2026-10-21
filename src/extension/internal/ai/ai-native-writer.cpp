@@ -12,6 +12,7 @@
 
 #include "ai-native-writer.h"
 #include "ai-native-writer-gradient.h"
+#include "ai-native-writer-ink.h"
 #include "ai-native-writer-picture.h"
 #include "ai-native-writer-string.h"
 
@@ -24,6 +25,7 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <variant>
 
 #include <glib.h>
 #include <2geom/bezier-curve.h>
@@ -158,7 +160,7 @@ private:
     void state(std::string &cache, std::string const &line);
     std::optional<std::string> paint(SPIPaint const &p, SPStyle const *style, bool fill);
     std::optional<std::string> colour(Colors::Color const &c, bool fill);
-    bool declare_ink(std::string const &name, std::array<double, 4> const &cmyk);
+    bool declare_ink(std::string const &name, InkDefinition const &ink);
     std::string encoded_name(std::string const &text, std::string_view what);
     void ink_comments(std::ostream &head);
     void refuse(std::string what) { _refused.insert(std::move(what)); }
@@ -170,7 +172,7 @@ private:
     Geom::Point _canvas;
     std::ostringstream _body;
     std::set<std::string> _refused;
-    std::map<std::string, std::array<double, 4>> _spots;
+    std::map<std::string, InkDefinition> _spots;
     bool _registration = false;
     std::vector<std::string> _gradients;
     std::size_t _layers = 0;
@@ -202,10 +204,22 @@ void Writer::ink_comments(std::ostream &head)
         head << (first ? "%%DocumentCustomColors: " : "%%+ ") << encoded_name(name, "ink names") << '\n';
         first = false;
     }
+    // CMYK inks by their CMYK, then RGB and Lab inks by their RGB, as Illustrator lists them
+    // (ai-native-writer-ink.h).
     first = true;
-    for (auto const &[name, c] : _spots) {
+    for (auto const &[name, ink] : _spots) {
+        if (ink.model != InkDefinition::Model::CMYK) continue;
+        auto const &c = ink.cmyk;
         head << (first ? "%%CMYKCustomColor: " : "%%+ ")
              << std::format("{} {} {} {} {}\n", num(c[0]), num(c[1]), num(c[2]), num(c[3]), encoded_name(name, "ink names"));
+        first = false;
+    }
+    first = true;
+    for (auto const &[name, ink] : _spots) {
+        if (ink.model == InkDefinition::Model::CMYK) continue;
+        auto const &c = ink.rgb;
+        head << (first ? "%%RGBCustomColor: " : "%%+ ")
+             << std::format("{} {} {} {}\n", num(c[0]), num(c[1]), num(c[2]), encoded_name(name, "ink names"));
         first = false;
     }
 }
@@ -293,33 +307,45 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
             // never an ordinary custom ink named All. Its operand is 1 - tint.
             return "1 1 1 1 ([Registration]) " + num(1.0 - ink->tint) + (fill ? " Xs" : " XS");
         }
-        if (!a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK) {
-            refuse("spot inks defined in RGB or Lab");
+        auto const definition = ink_definition(a, _doc);
+        if (auto const *why = std::get_if<std::string>(&definition)) {
+            refuse(*why);
             return {};
         }
-        std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
-        if (!declare_ink(ink->name, cmyk)) return {};
-        auto const head = std::format("{} {} {} {} {}", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]), num(cmyk[3]),
-                                      encoded_name(ink->name, "ink names"));
+        auto const &defined = std::get<InkDefinition>(definition);
+        bool const process = defined.model == InkDefinition::Model::CMYK;
+        if (_legacy && !process) {
+            refuse("spot inks defined in RGB or Lab (Illustrator 7)");
+            return {};
+        }
+        auto const operands = ink_operands(defined, a, ink->tint, _doc);
+        if (operands.empty()) {
+            refuse("spot inks without a CMYK equivalent");
+            return {};
+        }
+        if (!declare_ink(ink->name, defined)) return {};
+        auto const head = operands + " " + encoded_name(ink->name, "ink names");
         // The operand is the tint taken from 1: 0 is the ink at full strength.
         // Illustrator 7 uses x/X for CMYK spots at every tint. Its Xx/XX form is RGB only.
         if (_legacy) return head + " " + num(1.0 - ink->tint) + " " + (fill ? "x" : "X");
-        if (ink->tint >= 1.0 - 1e-6) return head + " 0 " + (fill ? "x" : "X");
-        return head + " " + num(1.0 - ink->tint) + " 0 " + (fill ? "Xx" : "XX");
+        // x knows only CMYK: an RGB or Lab ink is Xx with its type at full strength too.
+        if (process && ink->tint >= 1.0 - 1e-6) return head + " 0 " + (fill ? "x" : "X");
+        return head + " " + num(1.0 - ink->tint) + " " + std::to_string(static_cast<int>(defined.model)) +
+               (fill ? " Xx" : " XX");
     }
     refuse(is<SPMeshGradient>(server) ? "mesh gradients" : is<SPPattern>(server) ? "patterns" : "gradients");
     return {};
 }
 
 /// Adds a spot ink to those the file declares; false, refused, when the name has another definition.
-bool Writer::declare_ink(std::string const &name, std::array<double, 4> const &cmyk)
+bool Writer::declare_ink(std::string const &name, InkDefinition const &ink)
 {
     if (_legacy && !legacy_name_bytes(name)) {
         refuse("ink names outside Windows-1252 (Illustrator 7)");
         return false;
     }
-    auto [known, added] = _spots.emplace(name, cmyk);
-    if (!added && known->second != cmyk) {
+    auto [known, added] = _spots.emplace(name, ink);
+    if (!added && known->second != ink) {
         refuse("one ink name with two definitions");
         return false;
     }
@@ -470,7 +496,7 @@ void Writer::shape(SPShape const *s, bool clipped)
         auto gradient = write_gradient(s, affine, "PROOF_G" + std::to_string(_gradients.size() + 1), _legacy, _canvas,
                                        on_stroke, on_stroke && fill_gradient);
         for (auto const &why : gradient.refused) refuse(why);
-        for (auto const &[name, cmyk] : gradient.inks) declare_ink(name, cmyk);
+        for (auto const &[name, ink] : gradient.inks) declare_ink(name, ink);
         if (!gradient.definition.empty()) _gradients.push_back(gradient.definition);
         return gradient;
     };

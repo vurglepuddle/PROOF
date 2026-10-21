@@ -1288,14 +1288,15 @@ Illustrator 29.2.1. An actual Illustrator 7 executable remains untested.
   gradients on strokes; elliptical radial gradients; transparent pictures;
   linked pictures; Registration ink; and, since the modern form writes them
   (evening of 2026-10-21, below), transparency, blend modes and gradient
-  stops' own opacity.
+  stops' own opacity, and (night of 2026-10-21) spot inks defined in RGB or
+  Lab.
 - In both forms: type; transparency and blend modes on layers or the whole
   document; a fill and a stroke each with an opacity of its own; opacity
   masks; filters; patterns; meshes; markers; non-scaling strokes; strokes
   painted under their fill; strokes on stretched or skewed objects; clips of
   more than one path; clipping on the SVG root; repeating or reflected
-  gradients; gradient hard stops; spot inks defined in RGB or Lab; context
-  paint; numbers that overflow.
+  gradients; gradient hard stops; spot inks defined in other colour spaces;
+  context paint; numbers that overflow.
 
 Unit checks: `BothWritersNameEveryFormOutsideTheirSubset` (new) and
 `LegacyWriterRefusesFeaturesThatNeedTheModernFormat`, with the export smokes.
@@ -1557,3 +1558,148 @@ transparency); their expectations were changed and they pass, 20/20, 29/29,
 13/13. Unit checks: `WrittenTransparencyReadsBackOnEachObjectAndGroup`,
 `GradientObjectsKeepTheirOpacityInTheModernFormOnly`,
 `StopsKeepTheirOpacityInTheNewerFormOnly`, and the refusal lists.
+
+### Spot inks defined in Lab or RGB in the modern form (2026-10-21)
+
+Illustrator defines an ink in CMYK, RGB or Lab, and its Pantone books define
+theirs in Lab. The import keeps the definition (`proof:ink-alternate`, in the
+space the file used); until now both writers refused any ink not defined in
+CMYK. The modern records now write all three as Illustrator does. Illustrator 7
+had no Lab inks, and its copy refuses Lab and RGB inks by name ("spot inks
+defined in RGB or Lab (Illustrator 7)").
+
+**How Illustrator writes them**, counted in the owner's cached records (228
+files with a Lab ink; 382 CMYK, 62 RGB and 741 Lab ink definitions):
+
+- An ink's colour carries its CMYK first, then for RGB and Lab the definition,
+  the name, the tint taken from 1 and its type: `c m y k L a b (name) tint 2
+  Xx` for Lab (L from 0 to 100, then a and b), `c m y k r g b (name) tint 1 Xx`
+  for RGB, `XX` on a stroke. `x` knows only CMYK, so an RGB or Lab ink is `Xx`
+  at full strength too.
+- **The CMYK beside an RGB or Lab ink is that of the colour at the tint used**:
+  55 Lab inks used at more than one tint, every one so (Lab 84 12 70 is
+  `0 0.2238 0.8364 0` at full strength and `0 0.1034 0.3588 0` at 45%); a CMYK
+  ink's numbers are its definition at every tint (38 of 38). Paper, at tint 0,
+  is `0 0 0 0`.
+- The header names every ink in `%%DocumentCustomColors`, lists CMYK inks by
+  their CMYK in `%%CMYKCustomColor` and RGB and Lab inks by their RGB in
+  `%%RGBCustomColor`, that list after the other (98 files with only the RGB
+  list, 95 with only the CMYK one, 53 with both in that order; every ink in
+  its list).
+- A gradient stop of an RGB or Lab ink is written twice: a stand-in in colour
+  style 3, the ink's full-strength CMYK with its name and tint (`… %_BS`), then
+  the exact stop, `%_c m y k L a b (name) tint 2 4 opacity 6 midpoint ramp
+  Bs`, the CMYK at its tint (22 stops, all so). Every stop of such a gradient is
+  in the newer form, as all of Illustrator's are.
+
+**What PROOF writes** is that, through one helper both writers share
+(`ai-native-writer-ink.{h,cpp}`), so one ink name keeps one definition across
+paints and stops ("one ink name with two definitions" otherwise). The CMYK
+beside an RGB or Lab ink is converted through the document's CMYK profile, or
+without one the working CMYK space, by the working rendering intent (relative
+colorimetric with black point compensation unless changed), as Illustrator
+converts with its colour settings; a tint's is the tinted colour's
+(`SpotInk::display_color`, toward paper white). An RGB definition keeps its
+numbers; other RGB-like spaces are written as their sRGB. Refused by name: an
+ink defined in another space ("spot inks defined in other colour spaces"), or
+whose definition is out of range.
+
+**The reader** took a Lab ink's gradient stop for RGB: colour style 4 is the
+1998 specification's named RGB, and the type operand Illustrator writes after
+the tint (2) was overridden by the style. A type after the tint now decides.
+Where the ink is also in the Swatches panel or paints an object, those
+replaced the stop's reading, so the import was right; an ink used only in
+gradient stops came in as an RGB colour made of its L, a and b.
+
+#### The control in Illustrator
+
+`ai-spot-ink-output-smoke.py` (new, in the focused suites as
+`ai-spot-ink-output`): a CMYK document in a press profile with two Lab inks,
+one RGB ink and one CMYK ink at full strength and at tints, as fills, strokes,
+a filled path with a stroke of another ink, and three gradients (Lab to 30% to
+process cyan, RGB to 0%, Lab to the CMYK ink). PROOF: the records in
+Illustrator's form, reopened from its own records with each ink's definition
+and tints and the document's profile byte for byte, drawn as the source at
+every probe, written the same twice more, and Illustrator 7 refusing the
+inks. 17/17.
+
+Illustrator 29.2.1 (one MCP operation at a time, ten idle seconds after each
+open, export, save and close):
+
+- **Read** every ink as a spot with its tints as written: Lab red at 100%, 35%
+  and 30% (a stop), Lab blue at 100% and 60% (a stroke), RGB green at 100%,
+  50% and 0% (a stop), the CMYK ink at 100% and 40%.
+- **It takes the definitions, not the CMYK beside them**: the CMYK it reports
+  for the Lab and RGB inks is its own conversion (Lab red 7.7/98.9/72.9/1.7
+  where PROOF wrote 8.4/99.8/81.3/1.0).
+- **Saved** as a modern copy that keeps them: Lab inks as type 2 with the same
+  Lab, the RGB ink as type 1 with the same RGB, the same header lists, the same
+  tints. It writes an RGB ink's gradient stops in colour style 4 with type 1
+  (`1 1 4`), not the 5 four older stops in the owner's files have; PROOF now
+  writes 4 for both, and Illustrator read the control both ways. The copy
+  **reopens in PROOF natively** with every ink, definition and tint the same.
+- **Drawn**: the same shapes, tints and ramps. Colours differ by up to 23 per
+  channel between Illustrator's picture and PROOF's canvas, the plain CMYK ink
+  as much as the Lab ones (22): Illustrator draws a CMYK document's spot inks
+  as their CMYK through its own colour settings, PROOF's canvas shows Lab
+  directly and CMYK through the document's profile. No single profile
+  reproduces Illustrator's export.
+
+Local evidence: `artifacts\spot-inks-20261021\` (`in\`, `out\`, `reopen\`,
+`records.py`, `smoke-*`).
+
+#### Found on the way, and fixed: a profile changed when it was saved
+
+The control's third write differed from its second in the CMYK beside the
+Lab inks. A document's profile was written into SVG and PDF through lcms,
+which writes back the tables a conversion has parsed in its own encoding:
+the press profile's 8-bit tables (`mft1`) came back 16-bit (`mft2`), 654 KB
+became 945 KB under the same name, and it converted differently (Lab 48 68 36
+to 7.8% cyan instead of 7.1%). So a document's profile changed on its first
+save after any conversion. A profile now leaves as it came: the bytes it was
+read from, or its file while that still holds it (the same checksum); only
+profiles made in memory are encoded by lcms (`CMS::Profile::dumpData`, in the
+shared colour code; `ColorCmsProfile.dumpDataKeepsTheBytesItCameFrom`). See
+`PROOF-document-colors.md`. A profile taken from a PDF through Poppler
+(`create_from_copy`) is still re-encoded.
+
+#### Real documents
+
+The writer census (`tools\ai-writer-census.py`, the round's corpus run, 13
+minutes) over the owner's 871 staged copies, 862 read natively: the modern
+form writes **748**, every one read back (646 before), the 102 files these
+inks alone held. No file is refused for an ink's definition now. **748 of 862
+(87%).** What holds the rest:
+
+| Modern form, 2026-10-21 night | Files | Only reason |
+|---|---|---|
+| Type | 60 | 46 |
+| Clipping paths other than one path | 19 | 16 |
+| Gradient colours other than standard RGB or CMYK | 19 | 12 |
+| Patterns | 15 | 14 |
+| Opacity masks | 7 | 4 |
+| Linked pictures missing or unreadable | 6 | 0 |
+| Noncanonical Registration ink definitions | 4 | 4 |
+| Mesh gradients | 3 | 1 |
+| Gradient hard stops or coincident offsets | 1 | 1 |
+
+Type alone would add 46 (to 794, 92%). The Illustrator 7 copy is unchanged at
+99; it refuses an RGB or Lab ink in 138 files, 25 for that alone.
+
+#### Still open
+
+- Lab or RGB inks in Illustrator 7: the ink's CMYK could stand in for its
+  definition, the plate unchanged (the owner's call).
+- Inks defined in grey, which a PDF import can make: Illustrator has no grey
+  definition; refused by name.
+- The canvas shows an RGB ink in a CMYK document with a profile through that
+  profile, a Lab ink as its Lab; Illustrator draws both as their CMYK.
+- PDF output still writes spot inks as their screen colour.
+
+Checks: all **13 unit suites, 0 failures** (reader 74 cases with one opt-in
+skip, importer 161 with two, gradient writer 32); **23 export groups, 756
+checks**, the spot-ink control **17/17**; the colour profile suite 9/9. Unit
+checks: `WrittenRecordsKeepInksDefinedInLabAndRgb`,
+`InkStopsDefinedInLabOrRgbAreWrittenAsIllustratorWritesThem`,
+`TheCmykBesideALabInkComesThroughTheDocumentsProfile`,
+`ColorCmsProfile.dumpDataKeepsTheBytesItCameFrom`, and the refusal lists.

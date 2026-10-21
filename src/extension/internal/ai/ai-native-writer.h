@@ -5,12 +5,13 @@
  * Writes editable records for the subset in doc/PROOF-ai-interchange.md ("Native writer");
  * that document records each feature's Illustrator qualification. Supports document artboards,
  * layers with their options, groups, paths and compound paths with corner/smooth flags,
- * clipping groups, process colour in CMYK, RGB or grey, spot inks with their tints,
- * and canonical CMYK Registration in the modern form (reserved document ink All),
+ * clipping groups, process colour in CMYK, RGB or grey, spot inks with their tints (defined
+ * in CMYK; in the modern form in Lab or RGB too, ai-native-writer-ink.h), and canonical CMYK
+ * Registration in the modern form (reserved document ink All),
  * opaque pad linear and radial process fills and strokes, overprint and stroke style. A
  * gradient-filled shape may have a plain stroke; the modern form also supports gradient
- * strokes with a plain or gradient fill. Gradient stops may be tints of spot inks defined in
- * CMYK, and in the modern form have opacities of their own; mixed RGB/CMYK gradients are
+ * strokes with a plain or gradient fill. Gradient stops may be tints of those spot inks, and
+ * in the modern form have opacities of their own; mixed RGB/CMYK gradients are
  * refused. The modern form writes an object's and a group's transparency as Illustrator does
  * (`mode opacity isolate knockout shape Xy`; a group's after its end, with `0 0 Xd` and
  * `6 () XW`, or `9 () XW` when it has none): opacity, the sixteen blend modes, isolated

@@ -8,6 +8,8 @@
 #include <vector>
 #include <2geom/affine.h>
 
+#include "ai-native-writer-ink.h"
+
 class SPShape;
 
 namespace Inkscape::Extension::Internal::AiNative {
@@ -22,7 +24,8 @@ namespace Inkscape::Extension::Internal::AiNative {
  * the shape's complete local-to-art transform.
  *
  * Requires an up-to-date document. Supports pad, standard RGB or DeviceCMYK stops, tints of
- * spot inks defined in CMYK (with each other and CMYK stops), stop-only hrefs and nonsingular
+ * spot inks (with each other and CMYK stops; in the modern form defined in RGB or Lab too, as
+ * Illustrator writes them), stop-only hrefs and nonsingular
  * affine geometry; a radial fill's focal point, and in the modern form its ellipse (Illustrator 7
  * takes circles) and gradients on strokes (Illustrator CS6 brought them; radial strokes must
  * have a centred focal point, and a turned ellipse must be centred on its path bounds).
@@ -35,9 +38,9 @@ struct WrittenGradient
     std::string definition;
     std::string begin;
     std::vector<std::string> refused;
-    /// The spot inks its stops name, with their full-strength CMYK: the caller declares them
-    /// with the document's other inks (%%DocumentCustomColors, %%CMYKCustomColor).
-    std::vector<std::pair<std::string, std::array<double, 4>>> inks;
+    /// The spot inks its stops name, with their definitions: the caller declares them with the
+    /// document's other inks (%%DocumentCustomColors, %%CMYKCustomColor, %%RGBCustomColor).
+    std::vector<std::pair<std::string, InkDefinition>> inks;
 };
 
 /// `canvas` is the art origin on the y-down canvas where Illustrator applies a gradient's own

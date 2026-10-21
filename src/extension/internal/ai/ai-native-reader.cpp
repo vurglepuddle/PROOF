@@ -243,11 +243,15 @@ std::optional<Named> parse_named(Values const &vals, Ink::Kind kind, std::option
     std::size_t const from = extra ? count - 7 : (count >= 4 ? count - 4 : SIZE_MAX);
     if (from == SIZE_MAX) return {};
     n.cmyk = {unit(before[from]), unit(before[from + 1]), unit(before[from + 2]), unit(before[from + 3])};
+    // A type after the tint says which; without one, the operator or colour style does. Lab
+    // inks' gradient stops are style 4, the 1998 specification's named RGB, with type 2: all
+    // 22 of them in the owner's files, and Illustrator 29's (2026-10-21), which also writes
+    // RGB inks' as style 4 with type 1.
     int type = 0;
-    if (force_rgb) {
-        type = *force_rgb ? 1 : 0;
-    } else if (after.size() >= 2) {
+    if (after.size() >= 2) {
         type = static_cast<int>(after[1]);
+    } else if (force_rgb) {
+        type = *force_rgb ? 1 : 0;
     }
     if (type == 1 && extra) {
         n.color = Color::rgb(unit(before[from + 4]), unit(before[from + 5]), unit(before[from + 6]));

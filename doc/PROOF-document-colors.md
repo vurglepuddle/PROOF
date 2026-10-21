@@ -177,6 +177,44 @@ exactly 5/100/45/22. Local evidence: `../../artifacts/cmyk-final-*.out` and
 `../../artifacts/cmyk-clipboard-live-result.json`. The user's original test SVG
 was not modified.
 
+## A profile is saved as it came (2026-10-21)
+
+A document's profile is written into its SVG (`color-profile`), its PDF pages
+and its `.ai` copies as the bytes it was read from: the embedded data, or its
+file while that file still holds the same profile (the same checksum). Before,
+lcms wrote it back, and lcms writes the tables a conversion has parsed in its
+own encoding: Coated GRACoL 2006's 8-bit tables came back 16-bit, the profile
+grew from 654 KB to 945 KB under the same name, and it converted differently
+(Lab 48 68 36 became 7.8% cyan instead of 7.1%). A document therefore changed
+profile on its first save after any colour conversion, and the converted
+colours with it. Only profiles made in memory are still encoded by lcms.
+
+How: `CMS::Profile::dumpData()` (`src/colors/cms/profile.*`); the static
+`dumpData(handle)` is lcms's encoding, still used for checksums. Found by the
+`.ai` writer's spot-ink control, which converts Lab inks through the document's
+profile and writes the result three times. A profile taken from a PDF through
+Poppler (`Profile::create_from_copy`, the PDF import) is still re-encoded.
+
+Check: `ColorCmsProfile.dumpDataKeepsTheBytesItCameFrom` (a transform parses
+the profile, then its dump must be the file's bytes, from a file and from
+data).
+
+### Why three colour tests fail by one level
+
+`ColorsSpacesCms.realColor`, `ColorsSpacesCms.renderingIntent` and
+`ColorDocumentCMSDefsTest.loadDocument` expect 100% black in the test CMYK
+profile (`testfiles/data/colors/default_cmyk.icc`, which converts as US Web
+Coated SWOP does) to show as `#2c292a`, and this toolchain gives `#2b292a`.
+They failed so before this change too (built and run without it,
+2026-10-21), and in every note of them since the first, 2026-10-03; they are
+not in the focused suites.
+The cause is lcms, not PROOF: the toolchain's lcms 2.19 converts that black,
+perceptual, to red 42.87 (doubles and 16 bits alike), which rounds to 43
+(`2b`); lcms 2.16 gives 44 (`2c`). Upstream recorded the expectation in
+January 2024 (`1f6e0b4c0b`), when 2.16 was current. Which lcms release
+changed it is not established. The values are correct for the lcms in use;
+the expectations could follow it once that change is known.
+
 ## CMYK paint without a CMYK profile of its own (2026-10-20)
 
 `device-cmyk(...)` paint in an RGB document, in a document that isn't colour

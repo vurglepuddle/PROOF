@@ -9,9 +9,11 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <iomanip>
 #include <iterator>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -36,6 +38,7 @@
 #include "display/drawing-item.h"
 #include "display/drawing.h"
 #include "colors/document-colors.h"
+#include "colors/manager.h"
 #include "colors/spaces/cms.h"
 #include "colors/spaces/cmyk.h"
 #include "desktop-style.h"
@@ -5446,6 +5449,121 @@ TEST_F(AiNativeImportTest, WrittenRecordsKeepSpotInksClipsAndArtboards)
     bool clipped = false;
     for (auto *g : elements(imported->getReprRoot(), "svg:g")) clipped = clipped || !attr(g, "clip-path").empty();
     EXPECT_TRUE(clipped);
+}
+
+TEST_F(AiNativeImportTest, WrittenRecordsKeepInksDefinedInLabAndRgb)
+{
+    auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"
+                            R"(<rect id="lab" x="10" y="10" width="40" height="40"/>)"
+                            R"(<rect id="tint" x="60" y="10" width="40" height="40"/>)"
+                            R"(<rect id="rgb" x="110" y="10" width="40" height="40"/>)"
+                            R"(<rect id="cmyk" x="160" y="10" width="30" height="40"/></g>)");
+    ASSERT_TRUE(doc);
+    // Lab 50 60 30, kept as Inkscape keeps Lab: L/100, a and b scaled from [-128, 127].
+    auto const lab = Colors::Color(Type::LAB, {0.5, (60.0 + 128) / 255, (30.0 + 128) / 255});
+    auto const full = SpotInk::ensure(doc.get(), {"Book Red", lab, 1.0});
+    auto const quarter = SpotInk::ensure(doc.get(), {"Book Red", lab, 0.25});
+    auto const rgb = SpotInk::ensure(doc.get(), {"Screen Green", Colors::Color(Type::RGB, {0, 0.6, 0.2}), 0.5});
+    auto const cmyk = SpotInk::ensure(doc.get(), {"Press Orange", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 1.0});
+    doc->getObjectById("lab")->setAttribute("style", "fill:url(#" + full + ")");
+    doc->getObjectById("tint")->setAttribute("style", "fill:none;stroke:url(#" + quarter + ");stroke-width:4");
+    doc->getObjectById("rgb")->setAttribute("style", "fill:url(#" + rgb + ")");
+    doc->getObjectById("cmyk")->setAttribute("style", "fill:url(#" + cmyk + ")");
+    doc->ensureUpToDate();
+
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &records = written.records;
+    // Every name, then CMYK inks by their CMYK and RGB and Lab inks by their RGB, that list last.
+    EXPECT_NE(records.find("%%DocumentCustomColors: (Book Red)\n%%+ (Press Orange)\n%%+ (Screen Green)\n"),
+              std::string::npos);
+    auto const cmyk_list = records.find("%%CMYKCustomColor: 0 0.6 1 0 (Press Orange)\n%%RGBCustomColor: ");
+    ASSERT_NE(cmyk_list, std::string::npos);
+    auto const rgb_list = records.find("%%RGBCustomColor: ");
+    auto const book = records.find(" (Book Red)\n%%+ 0 0.6 0.2 (Screen Green)\n", rgb_list);
+    ASSERT_NE(book, std::string::npos);
+    EXPECT_EQ(records.find('\n', rgb_list), book + std::string(" (Book Red)").size());
+    // x knows only CMYK: a Lab or RGB ink is Xx with its type even at full strength.
+    auto const line_of = [&](std::string const &end) {
+        auto const at = records.find(end);
+        if (at == std::string::npos) return std::string();
+        auto const start = records.rfind('\n', at) + 1;
+        return records.substr(start, at + end.size() - start);
+    };
+    auto const lab_full = line_of(" 50 60 30 (Book Red) 0 2 Xx\n");
+    auto const lab_quarter = line_of(" 50 60 30 (Book Red) 0.75 2 XX\n");
+    ASSERT_FALSE(lab_full.empty());
+    ASSERT_FALSE(lab_quarter.empty());
+    EXPECT_NE(records.find(" 0 0.6 0.2 (Screen Green) 0.5 1 Xx\n"), std::string::npos);
+    EXPECT_NE(records.find("\n0 0.6 1 0 (Press Orange) 0 x\n"), std::string::npos);
+    // Beside the Lab, the CMYK of the colour at that tint, as Illustrator writes it.
+    auto const cmyk_of = [](std::string const &line) { return line.substr(0, line.find(" 50 60 30")); };
+    EXPECT_NE(cmyk_of(lab_full), cmyk_of(lab_quarter));
+    // By the working rendering intent, as the writer converts it.
+    auto const tinted = SpotInk::display_color(lab, 0.25);
+    auto shown = tinted.getValues();
+    ASSERT_TRUE(tinted.getSpace()->convert(shown, Colors::Manager::get().find(Type::CMYK),
+                                           Colors::DocumentColors::workingIntent()));
+    auto const four = [](double v) {
+        auto s = std::format("{:.4f}", v);
+        s.erase(s.find_last_not_of('0') + 1);
+        if (s.back() == '.') s.pop_back();
+        return s == "-0" ? std::string("0") : s;
+    };
+    EXPECT_EQ(cmyk_of(lab_quarter), four(std::clamp(shown[0], 0.0, 1.0)) + " " + four(std::clamp(shown[1], 0.0, 1.0)) +
+                                        " " + four(std::clamp(shown[2], 0.0, 1.0)) + " " +
+                                        four(std::clamp(shown[3], 0.0, 1.0)));
+
+    std::string error;
+    auto ai = AN::read(records, error);
+    ASSERT_TRUE(ai) << error;
+    std::map<std::string, AN::Ink> inks;
+    for (auto const &ink : ai->inks) inks.emplace(ink.name, ink);
+    ASSERT_EQ(inks.size(), 3u);
+    EXPECT_EQ(inks.at("Book Red").color, AN::Color::lab(50, 60, 30));
+    EXPECT_EQ(inks.at("Screen Green").color, AN::Color::rgb(0, 0.6, 0.2));
+    EXPECT_EQ(inks.at("Press Orange").color, AN::Color::cmyk(0, 0.6, 1, 0));
+
+    auto b = make(records);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    imported->ensureUpToDate();
+    std::map<std::string, std::vector<SpotInk::Ink>> swatches;
+    for (auto *g : elements(imported->getReprRoot(), "svg:linearGradient")) {
+        if (auto read = SpotInk::read(g)) swatches[read->name].push_back(*read);
+    }
+    ASSERT_EQ(swatches["Book Red"].size(), 2u);
+    for (auto const &ink : swatches["Book Red"]) {
+        ASSERT_TRUE(ink.alternate.getSpace());
+        EXPECT_EQ(ink.alternate.getSpace()->getType(), Type::LAB);
+        EXPECT_NEAR(ink.alternate[0], lab[0], 1e-4);
+        EXPECT_NEAR(ink.alternate[1], lab[1], 1e-4);
+        EXPECT_NEAR(ink.alternate[2], lab[2], 1e-4);
+    }
+    std::set<double> tints;
+    for (auto const &ink : swatches["Book Red"]) tints.insert(std::round(ink.tint * 1e4) / 1e4);
+    EXPECT_EQ(tints, (std::set<double>{0.25, 1.0}));
+    // The import gives each ink its full-strength swatch beside the tints used.
+    tints.clear();
+    for (auto const &ink : swatches["Screen Green"]) {
+        EXPECT_EQ(ink.alternate.getSpace()->getType(), Type::RGB);
+        EXPECT_NEAR(ink.alternate[1], 0.6, 1e-4);
+        tints.insert(std::round(ink.tint * 1e4) / 1e4);
+    }
+    EXPECT_EQ(tints, (std::set<double>{0.5, 1.0}));
+
+    // Illustrator 7 had no Lab inks; its RGB form is not qualified.
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_EQ(legacy.refused, std::vector<std::string>{"spot inks defined in RGB or Lab (Illustrator 7)"});
+
+    // One name, one definition: the same name in CMYK too is refused.
+    auto const clash = SpotInk::ensure(doc.get(), {"Book Red", Colors::Color(Type::CMYK, {0, 1, 0.6, 0}), 1.0});
+    doc->getObjectById("cmyk")->setAttribute("style", "fill:url(#" + clash + ")");
+    doc->ensureUpToDate();
+    auto const twice = AN::write_records(doc.get());
+    EXPECT_TRUE(twice.records.empty());
+    EXPECT_EQ(twice.refused, std::vector<std::string>{"one ink name with two definitions"});
 }
 
 TEST_F(AiNativeImportTest, WrittenRegistrationKeepsItsPlateMeaningTintsAndOverprint)

@@ -78,8 +78,11 @@ std::shared_ptr<Profile> Profile::create_from_uri(std::string path, bool in_home
  */
 std::shared_ptr<Profile> Profile::create_from_data(std::string const &contents)
 {
-    if (cmsHPROFILE profile = cmsOpenProfileFromMem(contents.data(), contents.size()))
-        return Profile::create(profile, "", false);
+    if (cmsHPROFILE profile = cmsOpenProfileFromMem(contents.data(), contents.size())) {
+        auto out = Profile::create(profile, "", false);
+        out->_data.assign(contents.begin(), contents.end());
+        return out;
+    }
     return nullptr;
 }
 
@@ -347,7 +350,11 @@ std::string Profile::generate_checksum() const
     // 2. If the id is empty, for some reason, we're going to generate it
     // from the data using the same method that should have been used originally
     // See ICC.1-2022-05 7.2.18 Profile ID field.
-    auto data = dumpData();
+    return checksum_of(dumpData(_handle));
+}
+
+std::string Profile::checksum_of(std::vector<unsigned char> data)
+{
     if (data.size() < 100) {
         g_warning("Bad icc profile data when generating profile id.");
         return "~";
@@ -372,7 +379,37 @@ std::string Profile::dumpBase64() const
 }
 
 /**
- * Dump the entire profile as raw data. Used in dumpBase64 and generateId
+ * PROOF: the profile as it came. lcms writes back the tags a transform has parsed in its own
+ * encoding: a GRACoL profile's 8-bit B2A tables came back 16-bit and turned Lab 48 68 36 into
+ * 7.8% cyan where the original gives 7.1%, so a document's profile changed on its first save
+ * after a conversion. The file is used only while it still holds this profile: it must open to
+ * the same checksum as the profile had when it was read.
+ */
+std::vector<unsigned char> Profile::dumpData() const
+{
+    if (!_data.empty()) {
+        return _data;
+    }
+    if (!_path.empty()) {
+        gchar *contents = nullptr;
+        gsize length = 0;
+        if (g_file_get_contents(_path.c_str(), &contents, &length, nullptr)) {
+            std::vector<unsigned char> bytes(contents, contents + length);
+            g_free(contents);
+            if (cmsHPROFILE copy = cmsOpenProfileFromMem(bytes.data(), bytes.size())) {
+                bool const same = checksum_of(dumpData(copy)) == _checksum;
+                cmsCloseProfile(copy);
+                if (same) {
+                    return bytes;
+                }
+            }
+        }
+    }
+    return dumpData(_handle);
+}
+
+/**
+ * Dump the entire profile as lcms encodes it. Used in dumpData and generate_checksum.
  */
 std::vector<unsigned char> Profile::dumpData(cmsHPROFILE profile)
 {

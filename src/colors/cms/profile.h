@@ -62,7 +62,11 @@ public:
 
     static bool isIccFile(std::string const &filepath);
     std::string dumpBase64() const;
-    std::vector<unsigned char> dumpData() const { return dumpData(_handle); }
+    /// PROOF: the profile as it came, byte for byte, when it came from data or a file that still
+    /// holds it; else lcms's encoding of it.
+    std::vector<unsigned char> dumpData() const;
+    /// lcms's encoding of a profile. It writes the tags it has parsed in its own encoding (a
+    /// press profile's 8-bit tables as 16-bit), which can convert differently from the original.
     static std::vector<unsigned char> dumpData(cmsHPROFILE profile);
 
 private:
@@ -71,6 +75,9 @@ private:
     std::string _id;
     std::string _checksum;
     bool _in_home = false;
+    /// The bytes it was read from, when it came from data.
+    std::vector<unsigned char> _data;
+    static std::string checksum_of(std::vector<unsigned char> data);
 
 public:
     std::string get_id() const;

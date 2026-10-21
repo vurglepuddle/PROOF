@@ -37,8 +37,11 @@ PROOF document, not flattened colours. First slice: 2026-10-02.
   and colour space you are editing.
 
 Not yet:
-- **Exporting spot inks.** PDF output still writes them as their screen colour.
-  The native `.ai` writer is not built.
+- **Exporting spot inks to PDF.** PDF output still writes them as their screen
+  colour. The native `.ai` writer keeps them: inks defined in CMYK in both its
+  forms, and in the modern form inks defined in Lab or RGB too, with their tints,
+  as Illustrator writes them (`PROOF-ai-interchange.md`, "Spot inks defined in
+  Lab or RGB in the modern form").
 - **Choosing a new tint of a spot ink from a slider.**
 
 ## How a spot ink is stored
@@ -132,8 +135,9 @@ swatch files that Illustrator opens is future writer work.
    Swatches panel's right-click "Edit…" still opens Fill & Stroke or the
    Gradient tool rather than a dedicated ink dialog.
 2. **Export.** CapyPDF PDF output should write Separation colour spaces from
-   these swatches. The native `.ai` writer should emit `x`/`Xx` with the inverted
-   AI tint (operand = 1 − tint). Cairo output can only use the display colour.
+   these swatches. The native `.ai` writer does write them (`x`/`Xx`, the tint
+   taken from 1; Lab and RGB definitions in its modern form since 2026-10-21).
+   Cairo output can only use the display colour.
 3. **DeviceN** (several inks mixed in one colour, e.g. in Giant File) still
    falls back to CMYK, with the importer warning. The registration ink `/All` is
    currently just a spot named "All".

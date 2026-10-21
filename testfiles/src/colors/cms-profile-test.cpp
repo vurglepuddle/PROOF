@@ -7,6 +7,7 @@
  * Released under GNU GPL v2+, read the file 'COPYING' for more information.
  */
 
+#include <glib.h>
 #include <gtest/gtest.h>
 
 #include "colors/cms/profile.h"
@@ -101,6 +102,31 @@ TEST(ColorCmsProfile, cmsDumpBase64)
     // First 100 bytes taken from the base64 of the icc profile file on the command line
     ASSERT_EQ(profile->dumpBase64().substr(0, 100),
               "AAA9aGxjbXMEMAAAbW50clJHQiBYWVogB+YAAgAWAA0AGQAuYWNzcEFQUEwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPbWAAEA");
+}
+
+TEST(ColorCmsProfile, dumpDataKeepsTheBytesItCameFrom)
+{
+    // PROOF: lcms writes back the tables a transform has parsed in its own encoding (this
+    // profile's 8-bit B2A tables as 16-bit), which can convert differently. A document's profile
+    // must leave as it came, from data or from its file.
+    gchar *contents = nullptr;
+    gsize length = 0;
+    ASSERT_TRUE(g_file_get_contents(cmyk_profile.c_str(), &contents, &length, nullptr));
+    std::string const bytes(contents, length);
+    g_free(contents);
+    auto lab = cmsCreateLab4Profile(nullptr);
+    for (auto const &profile : {CMS::Profile::create_from_uri(cmyk_profile), CMS::Profile::create_from_data(bytes)}) {
+        ASSERT_TRUE(profile);
+        auto checksum = profile->getChecksum();
+        auto transform = cmsCreateTransform(lab, TYPE_Lab_DBL, profile->getHandle(), TYPE_CMYK_DBL,
+                                            INTENT_RELATIVE_COLORIMETRIC, 0);
+        ASSERT_TRUE(transform);
+        cmsDeleteTransform(transform);
+        auto const dumped = profile->dumpData();
+        EXPECT_EQ(std::string(dumped.begin(), dumped.end()), bytes);
+        EXPECT_EQ(profile->getChecksum(), checksum);
+    }
+    cmsCloseProfile(lab);
 }
 
 } // namespace

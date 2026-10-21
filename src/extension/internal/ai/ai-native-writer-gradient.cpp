@@ -14,7 +14,8 @@
  * matrix on its canvas (see radial_instance). Illustrator 7 records get circles only.
  *
  * A stop that is a tint of a spot ink (proof:ink on the <stop>, as the .ai import writes it) is
- * written as one, colour style 3, and the ink handed back for the file to declare.
+ * written as one, colour style 3, and the ink handed back for the file to declare. An ink defined
+ * in RGB or Lab is written twice, as Illustrator writes it: that stand-in, then the exact stop.
  *
  * A stroke's gradient is the same instance opened with `1 Bb` about the stroke operator, the
  * gradient spread over the stroke's area as SVG spreads it: Illustrator's default, "within
@@ -448,12 +449,17 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     std::vector<std::string> stops;
     double previous = -1;
     // Stops with an opacity of their own are written as Illustrator writes every stop since
-    // CS4: the opacity and the marker 6 before the midpoint. A gradient whose stops are all
-    // opaque keeps the older form; Illustrator 7 has no other.
-    bool clear = false;
-    for (auto const &stop : effective->stops) {
+    // CS4: the opacity and the marker 6 before the midpoint. So are the stops of a gradient
+    // with an ink defined in RGB or Lab, as all 26 of Illustrator's are. A gradient whose stops
+    // are all opaque and process or CMYK inks keeps the older form; Illustrator 7 has no other.
+    bool clear = false, newer = false;
+    for (std::size_t index = 0; index < effective->stops.size(); ++index) {
+        auto const &stop = effective->stops[index];
         if (!stop.color || !std::isfinite(stop.color->getOpacity())) return refused("invalid gradient stops");
         clear = clear || stop.color->getOpacity() < 1.0 - 1e-6;
+        auto const &ink = inks[index];
+        auto const ink_space = ink ? ink->alternate.getSpace() : nullptr;
+        newer = newer || clear || (ink_space && ink_space->getComponentType() != Type::CMYK);
     }
     if (clear && legacy) return refused("gradient transparency");
     for (std::size_t index = 0; index < effective->stops.size(); ++index) {
@@ -483,27 +489,43 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         if (offset <= previous) return refused("gradient hard stops or coincident offsets");
         previous = offset;
         // After the colour and its style: [opacity 6] midpoint ramp.
-        auto const tail = (clear ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +
-                          " 50 " + num(offset * 100) + " %_Bs\n";
+        auto const after = (newer ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +
+                           " 50 " + num(offset * 100);
+        auto const tail = after + " %_Bs\n";
         if (ink) {
             // A tint of a spot ink: its full-strength CMYK, its name, the tint taken from 1 as
             // x writes it, colour style 3 (Adobe's 1998 specification, Bs; Illustrator writes
             // the same as the stand-in of its own named stops, `%_BS`).
             auto const &a = ink->alternate;
             if (ink->name == "All" || ink->name == "[Registration]") return refused("Registration in gradients");
-            if (!a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK) {
-                return refused("spot inks defined in RGB or Lab");
+            auto const definition = ink_definition(a, shape->document);
+            if (auto const *why = std::get_if<std::string>(&definition)) {
+                return refused(*why == "out-of-range ink definitions" ? "out-of-range gradient colours" : *why);
             }
+            auto const &defined = std::get<InkDefinition>(definition);
+            bool const process = defined.model == InkDefinition::Model::CMYK;
+            if (legacy && !process) return refused("spot inks defined in RGB or Lab (Illustrator 7)");
             auto const ink_bytes = legacy ? legacy_name_bytes(ink->name) : std::optional(ink->name);
             if (!ink_bytes) return refused("ink names outside Windows-1252 (Illustrator 7)");
-            std::array<double, 4> cmyk{a[0], a[1], a[2], a[3]};
-            for (auto const v : cmyk) {
-                if (!std::isfinite(v) || v < 0 || v > 1) return refused("out-of-range gradient colours");
-            }
             if (!std::isfinite(ink->tint)) return refused("out-of-range gradient colours");
-            stops.push_back(std::format("{} {} {} {} {} {} 3", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]), num(cmyk[3]),
-                                        ps_string(*ink_bytes), num(1.0 - ink->tint)) + tail);
-            out.inks.emplace_back(ink->name, cmyk);
+            auto const &cmyk = defined.cmyk;
+            auto const stand_in = std::format("{} {} {} {} {} {} 3", num(cmyk[0]), num(cmyk[1]), num(cmyk[2]),
+                                              num(cmyk[3]), ps_string(*ink_bytes), num(1.0 - ink->tint));
+            if (process) {
+                stops.push_back(stand_in + tail);
+            } else {
+                // Illustrator's exact stop for an ink defined in RGB or Lab, after the stand-in:
+                // the CMYK at this tint and the definition, the tint, its type (1 RGB, 2 Lab),
+                // then colour style 4. Illustrator 29 writes 4 for both (its copy of the control,
+                // 2026-10-21), as all 22 Lab stops in the owner's files; 4 RGB ones there, from
+                // an older version, have 5, which Illustrator 29 reads too.
+                auto const operands = ink_operands(defined, a, ink->tint, shape->document);
+                if (operands.empty()) return refused("spot inks without a CMYK equivalent");
+                stops.push_back(stand_in + after + " %_BS\n%_" + operands + " " + ps_string(*ink_bytes) + " " +
+                                num(1.0 - ink->tint) + " " + std::to_string(static_cast<int>(defined.model)) + " 4" +
+                                after + " Bs\n");
+            }
+            out.inks.emplace_back(ink->name, defined);
             continue;
         }
         auto const count = *model == Type::CMYK ? 4u : 3u;
