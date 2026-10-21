@@ -1252,3 +1252,151 @@ VectorCraft's `2b0d71db`, read as a delta only.
 The writer refuses a linked picture on another computer by name ("linked
 pictures on another computer"), as it is not looked up there (owner's choice,
 2026-10-21): `PROOF-links.md`, "Links on other computers".
+
+### The Illustrator 7 copy: what it keeps and refuses (2026-10-21)
+
+The bounded Illustrator 7 export is closed for the subset below: each form was
+checked alone in its own round, and now all of them together, in one control
+(`testfiles/cli_tests/ai-legacy-representative-smoke.py`), in PROOF and in
+Illustrator 29.2.1. An actual Illustrator 7 executable remains untested.
+
+**Kept:**
+
+- One artboard: the document's, or the page Save a Copy or `--export-page`
+  names; its size exact, its origin where Illustrator's converter puts it.
+- Layers in order, with Windows-1252 names, their highlight colour (as
+  Illustrator's nearest preset), hidden, locked, non-printing, outline, and
+  image dimming at 50%. Objects outside any layer go to a layer named `Layer`,
+  above the others.
+- Groups, nested and transformed; clones, as copies of what they show; clip
+  groups whose clip is one path (compound paths included); locked objects.
+- Paths, open and closed, compound under either fill rule, with their smooth
+  and corner points. Every closed path ends on its first point.
+- Strokes: width, caps, joins, miter limit and dashes, on objects scaled the
+  same both ways.
+- Paint: CMYK; RGB (Illustrator converts it in a CMYK document); spot inks
+  defined in CMYK, with Windows-1252 names, at any tint; overprint of fill and
+  stroke.
+- Gradient fills: linear and circular radial, with CMYK, RGB or spot-ink stops.
+- Opaque embedded pictures at 8 bits, grey, RGB or CMYK: fitted, cropped by
+  `slice`, turned, reflected and clipped.
+
+**Refused by name** (nothing is saved and an earlier file stays as it was):
+
+- Only in Illustrator 7: more than one artboard; individually hidden objects;
+  nested layers; image dimming other than 50%; names outside Windows-1252;
+  gradients on strokes; elliptical radial gradients; transparent pictures;
+  linked pictures; Registration ink.
+- In both forms: type; transparency; blend modes; opacity masks; filters;
+  patterns; meshes; markers; non-scaling strokes; strokes painted under their
+  fill; strokes on stretched or skewed objects; clips of more than one path;
+  clipping on the SVG root; repeating or reflected gradients; gradient
+  transparency and hard stops; spot inks defined in RGB or Lab; context paint;
+  numbers that overflow.
+
+Unit checks: `BothWritersNameEveryFormOutsideTheirSubset` (new) and
+`LegacyWriterRefusesFeaturesThatNeedTheModernFormat`, with the export smokes.
+
+#### The control in Illustrator
+
+The control (`459dccc7a4`, 600 by 520 px, CMYK) has eleven layers with
+accented names, every layer option, the forms above and an object outside the
+layers. In PROOF its copy is one ASCII file whose closed paths all end on their
+first point; it reopens from its own records with every layer option, both
+inks and their tints, overprint and the pictures' samples, and draws as the
+source at every probe (0 channel values apart). Written again from that
+reopen, its records differ only where the RGB paints became CMYK (the reopened
+document has the working profile, which the writer converts through), and from
+then on not at all.
+
+Illustrator 29.2.1 (one MCP operation at a time, ten idle seconds after each
+open, export, save and close) opens it as CMYK with all twelve layers in
+order, their names, colours, hidden and locked; six plates (process and the
+two spot inks, named, their CMYK definitions exact); overprint on exactly the
+two objects, at their tints. Its drawing at 96 dpi is within 5 channel values
+of PROOF's at the flat paints, compound holes, clips, crops, the clone, the
+groups, the layer probes and the RGB, turned, reflected and clipped pictures
+(the non-printing layer is drawn by both), and within 8 at the CMYK picture and
+the spot-ink gradient. Four places differ by how the two programs show colour,
+not by what the file holds:
+
+- **CMYK gradients** (up to 42 between stops; the ends and stops agree):
+  Illustrator blends a CMYK gradient in CMYK, as it prints; PROOF's canvas
+  blends the stops' screen colours.
+- **The grey picture** (up to 31): Illustrator shows it as black ink on paper,
+  never darker than K alone; PROOF's canvas shows the grey as it is.
+- **A deep green spot** (20, in red only): the two clip a colour outside the
+  screen's range differently.
+- **The RGB circle** (24): Illustrator converts it into the CMYK document.
+
+Edited in Illustrator (a compound path's fill to 40/30/20/10) and saved as a
+modern copy, it reopens in PROOF natively: twelve layers with every option as
+written, the edit, both inks and their tints, overprint, the locked object and
+six pictures with their print samples (Illustrator converted the RGB ones to
+CMYK). It draws as PROOF's own canvas everywhere but the edited shape and the
+RGB circle.
+
+#### Found on the way, and fixed
+
+- **Grey pictures went to print in RGB.** The import shows every picture
+  through an RGB PNG and kept print samples only for CMYK, so a grey picture
+  came back RGB from any save, and Illustrator then put it on all four plates.
+  Grey samples are now kept beside the PNG as well (`proof:samples`, a grey
+  TIFF); both writers write them as a grey raster, and PDF export as
+  `/DeviceGray` with the same bytes. Unit check
+  `WrittenPicturesKeepTheirGreySamples`; the smoke checks the PDF.
+- **`XC`, the operator that kept Illustrator's copies on their PDF page**, is
+  how Illustrator 29 saves a grey picture it opened from a version 7 file:
+  coloured with black, `0 /DeviceGray XC` in place of `/DeviceGray XN`. That
+  prints as the grey picture itself, and is read as one now. A picture coloured
+  with any other paint is refused by name, "pictures coloured with a paint":
+  two of the owner's record sets colour a grey picture with a Pantone ink.
+  Illustrator's copies of the opaque-picture controls of the same day open
+  natively now, as does this control's. Reader check
+  `GreyPictureColouredBlackIsTheGreyPicture`.
+- **An accented spot ink name made the SVG unreadable** in the user's own
+  locale. Its id was lowercased byte by byte with the C library, which in a
+  Windows-1252 locale takes UTF-8 bytes for letters (`Orange spécial` gave an
+  id holding byte 0xE3). Ids are ASCII now (`spot-ink.cpp`, check
+  `StemsStayAsciiUnderAWindows1252Locale`); the smoke reopens in the
+  machine's own locale. Illustrator's copy of the names control of the same
+  day opened from its PDF page for this reason; it opens natively now.
+
+#### Real documents: what the two writers would make of them
+
+`tools/ai-writer-census.py` (workspace) reads copies in the importer's test
+program and hands each document as read to both writers in memory
+(`PROOF_AI_WRITE`): what each refuses, or whether the reader takes its records
+back. The owner's 871 staged copies, 2026-10-21, before the fixes above:
+
+| | Illustrator 7 | modern |
+|---|---|---|
+| Opened natively | 862 | 862 |
+| Written (all read back) | **99** (11%) | **129** (15%) |
+| Refused by transparency | 660 | 660 |
+| Refused by blend modes | 674 | 674 |
+| Refused by spot inks defined in RGB or Lab | 138 | 138 |
+| Refused by more than one artboard | 64 | — |
+| Refused by type | 60 | 60 |
+
+Blend modes and transparency come together (multiply, overlay and soft light
+at part opacity, in the owner's sampled files). Writing them would let the
+modern form write **636** of the 862 (74%); with Lab or RGB spot inks too,
+**736** (85%); with type, **780** (90%). Illustrator 7 has no transparency,
+so its copy stays the bounded option it is: 99 files, and 27 more blocked only
+by their extra artboards, which a one-page copy avoids.
+
+#### Still open
+
+- PROOF's colour text keeps three decimals (`colors/printer.h`). Of 160,188
+  CMYK paint operators in the cached records, 118,819 (in 254 of 1,976 record
+  sets) have four, so the import rounds them: by at most 0.05% ink, below a
+  plate's step, but Illustrator's panel then reads 74.5% where it read 74.51%.
+- The canvas's CMYK gradients and grey pictures, above.
+- An actual Illustrator 7 executable; Lab spot inks in either form.
+
+Checks: all **13 unit suites, 0 failures** (reader 74 cases with one opt-in
+skip, importer 159 with two, spot inks 19); **21 export groups, 721 checks**,
+the representative control **24/24**. The writer census was the round's
+corpus run, before the fixes; the 8 of the owner's copies holding a grey
+raster or `XC` were rerun after them, unchanged.

@@ -809,6 +809,32 @@ TEST(AiNativeReader, CmykImageKeepsItsSamples)
     EXPECT_EQ(img.matrix, Geom::Affine(1, 0, 0, 1, 10, 20));
 }
 
+TEST(AiNativeReader, GreyPictureColouredBlackIsTheGreyPicture)
+{
+    // Illustrator 29's save of a grey picture from a version 7 file (2026-10-21): coloured with
+    // black, `0 /DeviceGray XC`, its fields as Illustrator writes them.
+    auto art = [](std::string const &colour, int type, int count, std::string const &data) {
+        return "%AI5_BeginRaster\n() 1 XG\n" + colour + " XC\n[ 1.5 0 0 1.5 105 165 ] 20 30 2 Xh\n"
+               "[ 1.5 0 0 1.5 105 165 ] 0 0 3 1 3 1 8 " + std::to_string(type) + " 0 0 1 2 4 4 0 0\n"
+               "%%BeginData: " + std::to_string(count) + "\nXI\n" + data + "\n%%EndData\nXH\n%AI5_EndRaster\nF\n";
+    };
+    auto doc = read_ok(records(layer("L", art("0 /DeviceGray", 1, 7, "\x10\x80\xf0"))));
+    ASSERT_EQ(doc.images.size(), 1u);
+    EXPECT_EQ(doc.images[0].channels, 1);
+    EXPECT_EQ(doc.images[0].samples, "\x10\x80\xf0"s);
+    // Another paint changes what it prints: named, not drawn as grey.
+    for (auto const &colour : {std::string("1 /DeviceGray"), std::string("0 0 0 1 /DeviceCMYK"),
+                               std::string("1 [/Separation (PROOF Spot) /DeviceCMYK]")}) {
+        SCOPED_TRACE(colour);
+        EXPECT_NE(read_error(records(layer("L", art(colour, 1, 7, "\x10\x80\xf0")))).find("pictures coloured with a paint"),
+                  std::string::npos);
+    }
+    // Black on a picture that isn't grey.
+    EXPECT_NE(read_error(records(layer("L", art("0 /DeviceGray", 3, 13, "\x10\x80\xf0\x10\x80\xf0\x10\x80\xf0")))).find(
+                  "pictures coloured with a paint"),
+              std::string::npos);
+}
+
 TEST(AiNativeReader, ImageOnHiddenLinesIsTheObjectBehindItsLook)
 {
     // A picture with an effect: what it draws, then the picture itself on %_ lines. Its

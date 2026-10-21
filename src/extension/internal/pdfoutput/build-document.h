@@ -155,9 +155,11 @@ public:
 
     std::optional<CapyPDF_ImageId> get_image(std::string const &filename, capypdf::ImagePdfProperties &props);
     /// PROOF: the picture in `data` as a PDF image when CapyPDF's own reader would get it wrong
-    /// (a Photoshop file; a TIFF of CMYK or with transparency); nothing otherwise. See
-    /// build-document.cpp.
-    std::optional<CapyPDF_ImageId> add_own_pixels(std::string_view data, capypdf::ImagePdfProperties &props);
+    /// (a Photoshop file; a TIFF of CMYK or with transparency); nothing otherwise. `samples`:
+    /// a TIFF the .ai import kept for print (proof:samples), with no profile, read here whatever
+    /// its colours. See build-document.cpp.
+    std::optional<CapyPDF_ImageId> add_own_pixels(std::string_view data, capypdf::ImagePdfProperties &props,
+                                                  bool samples = false);
     /// PROOF: when `filename` is a PDF (a linked .pdf or .ai), the stand-in for its first page,
     /// drawn where it is placed and replaced by the page itself once the file is written
     /// (placed-pages.h), and that page's crop box (PDF units). Nothing otherwise.

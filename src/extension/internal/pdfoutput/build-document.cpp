@@ -312,15 +312,17 @@ std::vector<CapyPDF_AnnotationId> Document::get_anchors_for_page(SPPage const *p
  * pixel's alpha (separate_tif_alpha in imagefileops.cpp; PROOF-cmyk-pictures.md), so a cut-out
  * picture vanished from the PDF.
  */
-std::optional<CapyPDF_ImageId> Document::add_own_pixels(std::string_view data, capypdf::ImagePdfProperties &props)
+std::optional<CapyPDF_ImageId> Document::add_own_pixels(std::string_view data, capypdf::ImagePdfProperties &props,
+                                                        bool samples)
 {
     std::optional<RasterPixels> tiff;
     if (looks_like_psd(data)) {
         tiff = read_psd(data);
     } else if (looks_like_tiff(data)) {
         tiff = read_tiff(data);
-        // Others keep CapyPDF's own reading, and with it their profile.
-        if (tiff && tiff->model != RasterPixels::Model::CMYK && tiff->alpha.empty()) return {};
+        // Others keep CapyPDF's own reading, and with it their profile. The import's grey
+        // samples have none, and would otherwise go to print as the RGB the screen sees.
+        if (!samples && tiff && tiff->model != RasterPixels::Model::CMYK && tiff->alpha.empty()) return {};
     }
     if (!tiff) return {};
     // PDF's samples of 16 bits are big-endian.

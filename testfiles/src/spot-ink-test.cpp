@@ -2,6 +2,7 @@
 /** @file
  * PROOF spot inks: swatch storage, tint display and palette spot flags.
  */
+#include <clocale>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -95,6 +96,18 @@ TEST(SpotInkIdTest, ReadableStems)
     EXPECT_EQ(SpotInk::id_stem("CutContour"), "ink-cutcontour");
     EXPECT_EQ(SpotInk::id_stem("  RAL 3020 / Verkehrsrot "), "ink-ral-3020-verkehrsrot");
     EXPECT_EQ(SpotInk::id_stem("***"), "ink-unnamed");
+}
+
+TEST(SpotInkIdTest, StemsStayAsciiUnderAWindows1252Locale)
+{
+    // The editor runs in the user's locale. In a Windows-1252 one, an accented name once gave
+    // an id holding a byte no XML reader takes (the Illustrator 7 closeout, 2026-10-21).
+    std::string const was = std::setlocale(LC_ALL, nullptr);
+    bool const latin = std::setlocale(LC_ALL, ".1252") || std::setlocale(LC_ALL, "en_US.ISO-8859-1");
+    EXPECT_EQ(SpotInk::id_stem("Orange sp\xc3\xa9" "cial"), "ink-orange-sp-cial");
+    EXPECT_EQ(SpotInk::id_stem("Vert \xc3\x9c"), "ink-vert");
+    std::setlocale(LC_ALL, was.c_str());
+    if (!latin) GTEST_SKIP() << "no Windows-1252 or Latin-1 locale here; the stems were checked in this one";
 }
 
 TEST(SpotInkDisplayTest, CmykTintScalesInk)

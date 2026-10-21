@@ -102,8 +102,8 @@ void DrawContext::paint_raster(SPImage const *image)
         decoded = (char *)g_base64_decode(base64, &decoded_len);
     }
 
-    // PROOF: an Illustrator picture of CMYK keeps its samples apart from the RGB it shows
-    // with (proof:samples, a CMYK TIFF); they go to print, while the picture is still theirs.
+    // PROOF: an Illustrator picture of CMYK or grey keeps its samples apart from the RGB it
+    // shows with (proof:samples, a TIFF); they go to print, while the picture is still theirs.
     if (auto const *samples = image->getRepr()->attribute("proof:samples")) {
         auto [samples_base64, samples_type] = extract_uri_data(samples);
         if (samples_type == Base64Data::RASTER) {
@@ -113,7 +113,7 @@ void DrawContext::paint_raster(SPImage const *image)
             if (auto pixels = read_tiff(tiff); pixels && int(pixels->width) == img_width &&
                                                int(pixels->height) == img_height) {
                 try {
-                    raster_id = _doc.add_own_pixels(tiff, props);
+                    raster_id = _doc.add_own_pixels(tiff, props, true);
                 } catch (std::exception const &e) {
                     g_warning("Could not add image samples to PDF: %s", e.what());
                 }

@@ -19,8 +19,8 @@
  *                                  midpoints become stops along Illustrator's blend curve
  *   pattern                        pattern holding its tile's art, and one per object that
  *                                  places it
- *   embedded image                 image (PNG for the screen); CMYK samples kept in
- *                                  proof:samples as a CMYK TIFF
+ *   embedded image                 image (PNG for the screen); CMYK and grey samples kept
+ *                                  in proof:samples as a TIFF
  *   placed (linked) picture        image linked to the same file, found where the document
  *                                  says it is or beside the document; one that can't be found
  *                                  keeps its link and shows as the document's own preview of it

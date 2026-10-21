@@ -400,22 +400,24 @@ std::optional<std::string> png(std::vector<std::uint8_t> const &pixels, int w, i
     return out;
 }
 
-/// A CMYK TIFF (Deflate) of 8-bit samples, with unassociated alpha when given.
-std::optional<std::string> cmyk_tiff(std::uint32_t w, std::uint32_t h, std::string_view cmyk, std::string_view alpha)
+/// A grey (`channels` 1, black at 0) or CMYK (4) TIFF (Deflate) of 8-bit samples, with
+/// unassociated alpha when given.
+std::optional<std::string> samples_tiff(std::uint32_t w, std::uint32_t h, std::string_view colour, int channels,
+                                        std::string_view alpha)
 {
     std::uint64_t const pixels = std::uint64_t(w) * h;
-    if (cmyk.size() < pixels * 4) return {};
+    if ((channels != 1 && channels != 4) || colour.size() < pixels * channels) return {};
     bool const with_alpha = alpha.size() >= pixels;
-    std::uint16_t const spp = with_alpha ? 5 : 4;
+    std::uint16_t const spp = channels + (with_alpha ? 1 : 0);
     std::string raw;
     if (with_alpha) {
-        raw.resize(pixels * 5);
+        raw.resize(pixels * spp);
         for (std::uint64_t i = 0; i < pixels; ++i) {
-            std::copy_n(cmyk.data() + i * 4, 4, raw.data() + i * 5);
-            raw[i * 5 + 4] = alpha[i];
+            std::copy_n(colour.data() + i * channels, channels, raw.data() + i * spp);
+            raw[i * spp + channels] = alpha[i];
         }
     } else {
-        raw.assign(cmyk.substr(0, pixels * 4));
+        raw.assign(colour.substr(0, pixels * channels));
     }
     uLongf len = compressBound(raw.size());
     std::string z(len, '\0');
@@ -431,17 +433,19 @@ std::optional<std::string> cmyk_tiff(std::uint32_t w, std::uint32_t h, std::stri
         std::uint32_t count, value;
     };
     constexpr std::uint16_t SHORT = 3, LONG = 4;
+    bool const cmyk = channels == 4;
     std::vector<Entry> e = {{256, LONG, 1, w},        {257, LONG, 1, h},
                             {258, SHORT, spp, 0},     {259, SHORT, 1, 8}, // Adobe Deflate
-                            {262, SHORT, 1, 5},       {273, LONG, 1, 0},  // separated (CMYK)
+                            {262, SHORT, 1, cmyk ? 5u : 1u}, {273, LONG, 1, 0}, // separated, or black at 0
                             {277, SHORT, 1, spp},     {278, LONG, 1, h},
-                            {279, LONG, 1, std::uint32_t(z.size())}, {284, SHORT, 1, 1},
-                            {332, SHORT, 1, 1}};                          // InkSet: CMYK
+                            {279, LONG, 1, std::uint32_t(z.size())}, {284, SHORT, 1, 1}};
+    if (cmyk) e.push_back({332, SHORT, 1, 1});                            // InkSet: CMYK
     if (with_alpha) e.push_back({338, SHORT, 1, 2});                      // unassociated alpha
     std::uint32_t const ifd = 8;
     std::uint32_t const bits = ifd + 2 + 12 * std::uint32_t(e.size()) + 4;
-    std::uint32_t const strip = bits + 2 * spp;
-    e[2].value = bits;
+    std::uint32_t const strip = bits + (spp > 2 ? 2 * spp : 0);
+    // Up to two shorts fit in the entry itself (TIFF 6.0, section 2).
+    e[2].value = spp > 2 ? bits : spp == 1 ? 8u : 8u | (8u << 16);
     e[5].value = strip;
 
     std::string out = "II";
@@ -467,7 +471,7 @@ std::optional<std::string> cmyk_tiff(std::uint32_t w, std::uint32_t h, std::stri
         }
     }
     put32(0);
-    for (int i = 0; i < spp; ++i) put16(8);
+    if (spp > 2) for (int i = 0; i < spp; ++i) put16(8);
     out += z;
     return out;
 }
@@ -1812,9 +1816,10 @@ XML::Node *Builder::image(Node const &n)
         Encoded made;
         made.image = n.image;
         made.screen = "data:image/png;base64," + base64(*data);
-        if (img.channels == 4) {
-            // The screen sees RGB; the CMYK samples stay for print.
-            if (auto tiff = cmyk_tiff(img.width, img.height, eight, img.alpha)) {
+        if (img.channels == 4 || img.channels == 1) {
+            // The screen sees RGB; the CMYK or grey samples stay for print, a grey picture on
+            // the black plate alone, and Illustrator keeps it grey.
+            if (auto tiff = samples_tiff(img.width, img.height, eight, img.channels, img.alpha)) {
                 made.samples = "data:image/tiff;base64," + base64(*tiff);
             }
         }

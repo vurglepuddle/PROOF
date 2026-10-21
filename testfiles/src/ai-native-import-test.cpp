@@ -5082,6 +5082,19 @@ TEST_F(AiNativeImportTest, Corpus)
         std::printf("AI_CACHE\t%u\t%u\n", cache.records_reused, cache.references_reused);
         if (result) for (auto const &note : result->notes) std::printf("AI_NOTE\t%s\n", note.c_str());
         if (result) for (auto const &[part, seconds] : result->timings) std::printf("AI_TIME\t%s\t%.3f\n", part.c_str(), seconds);
+        // What both writers would make of the document as read (tools/ai-writer-census.py): what each
+        // refuses, or the size of its records and whether the reader takes them back. Nothing is saved.
+        if (result && g_getenv("PROOF_AI_WRITE")) {
+            for (auto const version : {AN::RecordsVersion::Illustrator7, AN::RecordsVersion::Modern}) {
+                auto const written = AN::write_records(result->document.get(), version);
+                std::string refused, error;
+                for (auto const &why : written.refused) refused += (refused.empty() ? "" : "|") + why;
+                bool const reads = written.refused.empty() && AN::read(written.records, error).has_value();
+                std::printf("AI_WRITE\t%s\t%zu\t%s\t%s\n", version == AN::RecordsVersion::Modern ? "modern" : "legacy7",
+                            written.records.size(), written.refused.empty() ? (reads ? "reads" : "unread") : "refused",
+                            written.refused.empty() ? error.c_str() : refused.c_str());
+            }
+        }
         std::fflush(stdout);
     }
 }
@@ -5875,6 +5888,46 @@ TEST_F(AiNativeImportTest, WrittenRecordsRefuseUnsupportedEffectsOnLayersAndTheR
     }
 }
 
+TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
+{
+    // The refusals no other test reaches, in both forms: the list the interchange document
+    // publishes ("What the Illustrator 7 copy keeps and refuses").
+    std::vector<std::pair<std::string, std::string>> const cases{
+        {R"(<defs><marker id="m"><path d="M0 0 L5 5"/></marker></defs>)"
+         R"x(<path d="M10 10 L50 50" style="stroke:#000000;marker-end:url(#m)"/>)x", "markers"},
+        {R"(<path d="M10 10 L50 50" style="stroke:#000000" vector-effect="non-scaling-stroke"/>)", "non-scaling strokes"},
+        {R"(<path d="M10 10 L50 50 L10 50 Z" style="fill:#ff0000;stroke:#000000;paint-order:stroke"/>)",
+         "strokes painted under their fill"},
+        {R"x(<path d="M10 10 L50 50" style="stroke:#000000" transform="skewX(20)"/>)x", "strokes on stretched or skewed objects"},
+        {R"(<defs><clipPath id="c"><rect width="10" height="10"/><rect x="20" width="10" height="10"/></clipPath></defs>)"
+         R"x(<g clip-path="url(#c)"><rect width="50" height="50"/></g>)x", "clipping paths other than one path"},
+        {R"(<defs><pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="5" height="5"/></pattern></defs>)"
+         R"x(<rect width="50" height="50" fill="url(#p)"/>)x", "patterns"},
+        {R"(<defs><meshgradient id="g" x="0" y="0" gradientUnits="userSpaceOnUse"><meshrow><meshpatch>)"
+         R"(<stop path="c 10,0 20,0 30,0" style="stop-color:#ff0000"/><stop path="c 0,10 0,20 0,30" style="stop-color:#00ff00"/>)"
+         R"(<stop path="c -10,0 -20,0 -30,0" style="stop-color:#0000ff"/><stop path="c 0,-10 0,-20 0,-30" style="stop-color:#ffff00"/>)"
+         R"x(</meshpatch></meshrow></meshgradient></defs><rect width="30" height="30" fill="url(#g)"/>)x", "mesh gradients"},
+        {R"(<defs><linearGradient id="g" spreadMethod="reflect" x2="0.5"><stop stop-color="#ff0000"/>)"
+         R"x(<stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x",
+         "repeating or reflected gradients"},
+        {R"(<defs><linearGradient id="g"><stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/>)"
+         R"x(</linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x", "gradient transparency"},
+        {R"(<rect width="50" height="50" style="fill:#ff0000;opacity:0.5"/>)", "transparency"},
+        {R"(<text x="10" y="20">Hi</text>)", "type"},
+    };
+    for (auto const &[body, reason] : cases) {
+        SCOPED_TRACE(reason);
+        auto doc = svg_document(body);
+        ASSERT_TRUE(doc);
+        for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+            auto const written = AN::write_records(doc.get(), version);
+            EXPECT_TRUE(written.records.empty());
+            EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
+                << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+        }
+    }
+}
+
 TEST_F(AiNativeImportTest, TheWriterRefusesWhatItCannotWriteByName)
 {
     auto doc = svg_document(R"(<g inkscape:groupmode="layer"><text x="10" y="20">Hi</text>)"
@@ -5955,6 +6008,38 @@ TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirCmykSamples)
     ASSERT_EQ(second.size(), 1u);
     expect_same_box(b->document.get(), first[0], again->document.get(), second[0]);
     EXPECT_EQ(attr(second[0], "proof:samples"), attr(first[0], "proof:samples"));
+}
+
+TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirGreySamples)
+{
+    // A grey picture prints on the black plate alone. Shown as RGB, it once came back RGB from
+    // every save, and went to all four plates (the Illustrator 7 closeout, 2026-10-21).
+    std::string const art = "%AI5_BeginRaster\n() 1 XG\n/DeviceGray XN\n[2 0 0 -2 50 40] 0 0 3 1 3 1 8 1 0 0 1 0 0\n"
+                            "%%BeginData: 7\nXI\n\x10\x80\xf0\n%%EndData\nXH\n%AI5_EndRaster\n";
+    auto b = make(records(layer(art)));
+    ASSERT_TRUE(b);
+    auto const first = elements(b->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(first.size(), 1u);
+    EXPECT_FALSE(attr(first[0], "proof:samples").empty());
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        SCOPED_TRACE(static_cast<int>(version));
+        auto const written = AN::write_records(b->document.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        EXPECT_NE(written.records.find(version == AN::RecordsVersion::Modern ? "/DeviceGray XN\n" : "] 0 0 3 1 3 1 8 1 0 0 0 0\n"),
+                  std::string::npos);
+        std::string error;
+        auto ai = AN::read(written.records, error);
+        ASSERT_TRUE(ai) << error;
+        ASSERT_EQ(ai->images.size(), 1u);
+        EXPECT_EQ(ai->images[0].channels, 1);
+        EXPECT_EQ(ai->images[0].samples, std::string("\x10\x80\xf0", 3));
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        auto const second = elements(again->document->getReprRoot(), "svg:image");
+        ASSERT_EQ(second.size(), 1u);
+        expect_same_box(b->document.get(), first[0], again->document.get(), second[0]);
+        EXPECT_EQ(attr(second[0], "proof:samples"), attr(first[0], "proof:samples"));
+    }
 }
 
 TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirRgbAndTransparency)

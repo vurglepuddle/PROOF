@@ -61,9 +61,11 @@ std::string id_stem(std::string const &name)
 {
     std::string stem = "ink-";
     bool dash = false;
-    for (unsigned char ch : name) {
-        if (std::isalnum(ch)) {
-            stem += static_cast<char>(std::tolower(ch));
+    // ASCII only: under a Windows-1252 locale std::isalnum takes a UTF-8 byte for a letter,
+    // and std::tolower turned an ink named "Orange spécial" into an id no XML reader accepts.
+    for (char ch : name) {
+        if (g_ascii_isalnum(ch)) {
+            stem += g_ascii_tolower(ch);
             dash = false;
         } else if (!dash && stem.size() > 4) {
             stem += '-';

@@ -650,6 +650,7 @@ private:
     std::optional<Paint> _pending_fill, _pending_stroke;
     bool _raster = false;
     std::string _raster_space;
+    bool _raster_coloured = false; ///< `0 /DeviceGray XC`: a grey picture coloured black.
     std::optional<Placing> _place;
     std::map<std::string, int> _pattern_index;
     /// While a pattern's tile is read: what it holds that isn't.
@@ -723,6 +724,7 @@ void Reader::comment(std::string_view c, bool hidden, std::string_view data)
     if (m == "BeginRaster") {
         _raster = true;
         _raster_space.clear();
+        _raster_coloured = false;
         return;
     }
     if (m == "EndRaster") {
@@ -1361,6 +1363,19 @@ void Reader::op(std::string_view w, bool hidden)
     // Images.
     else if (w == "XN") {
         if (_raster) _raster_space = last_text(vals).value_or("");
+    } else if (w == "XC" && _raster) {
+        // A grey picture coloured with a paint, the paint's numbers and then its space, as
+        // Illustrator 29 saves a grey picture it opened from a version 7 file:
+        // `0 /DeviceGray XC`. In black it prints as the grey picture it is; another paint,
+        // a spot ink in two of the owner's files, isn't drawn yet.
+        bool const black = vals.size() == 2 && vals[0].as_num() == 0.0 && vals[1].kind == Value::Kind::Name &&
+                           vals[1].str == "DeviceGray";
+        if (black) {
+            _raster_space = "DeviceGray";
+            _raster_coloured = true;
+        } else {
+            unreadable("pictures coloured with a paint");
+        }
     } else if (w == "XI" && _raster) {
         // Counted XI data is one lexer Data token, never this operator. A legacy raster
         // without byte-count brackets would otherwise be skipped as comments, losing the
@@ -2626,6 +2641,10 @@ void Reader::image(std::string_view data, bool hidden)
     double const bits = n[6], kind = n[7], alpha = n[8], binary = n[10];
     if (w == 0 || h == 0 || w * h > _limits.max_pixels || (bits != 1.0 && bits != 8.0)) {
         warn("an image that can't be read was left out");
+        return;
+    }
+    if (_raster_coloured && kind != 1.0) {
+        unreadable("pictures coloured with a paint");
         return;
     }
     int channels = 3;
