@@ -17,7 +17,11 @@
  * `6 () XW`, or `9 () XW` when it has none): opacity, the sixteen blend modes, isolated
  * blending and knockout, and a fill's or stroke's own opacity when it is the only paint.
  * Transparency on layers and the document, and separate fill and stroke opacities, are
- * refused. Pictures the document holds itself are embedded
+ * refused. The modern form writes patterns on fills and strokes as Illustrator 9 and later do
+ * (`%AI3_BeginPattern`, the tile's art on hidden lines, `(name) 0 0 1 1 0 0 0 0 0 [matrix] p`):
+ * tiles in the user space of what they paint, with any x, y, width, height and pattern
+ * transform; patterns sized to their object, with a view box or inside other patterns, and
+ * gradients and pictures in a tile, are refused. Pictures the document holds itself are embedded
  * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
  * linked. Missing links and linked formats outside that subset are refused.
  * Picture slice crops retain the complete raster or link behind an editable viewport clip.

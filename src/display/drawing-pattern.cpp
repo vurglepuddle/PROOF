@@ -290,7 +290,11 @@ unsigned DrawingPattern::_updateItem(Geom::IntRect const &area, UpdateContext co
     // More precisely it fails when setting pattern matrix in DrawingPattern::renderPattern.
     // Correct solution should make use of visible area and change pattern tile rect accordingly.
     auto const c = _tile_rect->dimensions() * scale;
-    _pattern_resolution = c.ceil();
+    // Rounded up, but not for what is a whole number of pixels up to the last digits: a tile of
+    // 36.00000002 pixels (a pattern read back from a file's decimals) would be drawn at 37 and
+    // resampled, softer than the same tile at 36.
+    auto const whole = [](double v) { return v > 1 ? std::ceil(v - 1e-4) : std::ceil(v); };
+    _pattern_resolution = Geom::IntPoint(whole(c.x()), whole(c.y()));
 
     // Map tile rect to the origin and stretch it to the desired resolution.
     auto const dt = Geom::Translate(-_tile_rect->min()) * Geom::Scale(_pattern_resolution / _tile_rect->dimensions());

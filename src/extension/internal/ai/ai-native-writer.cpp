@@ -25,6 +25,7 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <tuple>
 #include <variant>
 
 #include <glib.h>
@@ -106,6 +107,16 @@ std::string num(double v)
     return s == "-0" ? "0" : s;
 }
 
+/// A number to eight decimals, for what a repeat multiplies: a pattern's tile and matrix. At four,
+/// a tile some thousand repeats out from its origin would lie a point off.
+std::string precise(double v)
+{
+    auto s = std::format("{:.8f}", v);
+    s.erase(s.find_last_not_of('0') + 1);
+    if (s.back() == '.') s.pop_back();
+    return s == "-0" ? "0" : s;
+}
+
 /// A PostScript string: parentheses and backslashes escaped, other bytes outside ASCII in octal.
 std::string ps_string(std::string const &s)
 {
@@ -158,7 +169,9 @@ private:
     std::vector<std::string> path_types(SPShape const *shape, Geom::PathVector const &paths, Geom::Affine const &affine);
     void path_data(Geom::Path const &path, std::string_view types);
     void state(std::string &cache, std::string const &line);
-    std::optional<std::string> paint(SPIPaint const &p, SPStyle const *style, bool fill);
+    std::optional<std::string> paint(SPIPaint const &p, SPStyle const *style, bool fill, Geom::Affine const &affine);
+    std::optional<std::string> pattern_paint(SPPattern const *pattern, Geom::Affine const &affine, bool fill);
+    std::optional<std::string> define_pattern(SPPattern const *root, double width, double height);
     std::optional<std::string> colour(Colors::Color const &c, bool fill);
     bool declare_ink(std::string const &name, InkDefinition const &ink);
     std::string encoded_name(std::string const &text, std::string_view what);
@@ -175,6 +188,16 @@ private:
     std::map<std::string, InkDefinition> _spots;
     bool _registration = false;
     std::vector<std::string> _gradients;
+    /// Each pattern definition written: the tile it is for, its name, and its records.
+    struct PatternDefinition
+    {
+        SPPattern const *root;
+        double width, height;
+        std::string name, records;
+    };
+    std::vector<PatternDefinition> _patterns;
+    /// Whether a pattern's tile is being written.
+    bool _in_pattern = false;
     std::size_t _layers = 0;
     // What has been set already, so each operator is written only when it changes.
     std::string _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule;
@@ -241,8 +264,9 @@ std::optional<std::string> Writer::colour(Colors::Color const &c, bool fill)
     return {};
 }
 
-/// The operator that sets this paint, or nothing for none (and for what is refused).
-std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style, bool fill)
+/// The operator that sets this paint, or nothing for none (and for what is refused). `affine`
+/// places the painted object in art space, as a pattern needs.
+std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style, bool fill, Geom::Affine const &affine)
 {
     _alpha = 1.0;
     if (p.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_FILL || p.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_STROKE) {
@@ -333,8 +357,104 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
         return head + " " + num(1.0 - ink->tint) + " " + std::to_string(static_cast<int>(defined.model)) +
                (fill ? " Xx" : " XX");
     }
-    refuse(is<SPMeshGradient>(server) ? "mesh gradients" : is<SPPattern>(server) ? "patterns" : "gradients");
+    if (auto pattern = cast<SPPattern>(server)) return pattern_paint(pattern, affine, fill);
+    refuse(is<SPMeshGradient>(server) ? "mesh gradients" : "gradients");
     return {};
+}
+
+/**
+ * `(name) 0 0 1 1 0 0 0 0 0 [a b c d tx ty] p` (`P` for a stroke): a pattern as Illustrator 9 and
+ * later place one, all of it in the matrix from the pattern's own space to art space; the numbers
+ * before it are at rest (ai-native-reader.cpp, Reader::pattern_paint).
+ *
+ * The subset is the one the import makes and PROOF's own pattern library has: tiles and content in
+ * the user space of what they paint, with any x, y, width, height and pattern transform.
+ */
+std::optional<std::string> Writer::pattern_paint(SPPattern const *pattern, Geom::Affine const &affine, bool fill)
+{
+    if (_legacy) {
+        refuse("patterns (Illustrator 7)");
+        return {};
+    }
+    if (_in_pattern) {
+        refuse("patterns inside patterns");
+        return {};
+    }
+    if (pattern->patternUnits() != SPPattern::UNITS_USERSPACEONUSE ||
+        pattern->patternContentUnits() != SPPattern::UNITS_USERSPACEONUSE) {
+        refuse("patterns sized to their object");
+        return {};
+    }
+    if (pattern->viewbox()) {
+        refuse("patterns with a view box");
+        return {};
+    }
+    auto const *root = pattern->rootPattern();
+    double const w = pattern->width(), h = pattern->height();
+    if (!root->hasItemChildren() || !std::isfinite(w) || !std::isfinite(h) || w <= 1e-9 || h <= 1e-9) {
+        refuse("empty patterns");
+        return {};
+    }
+    // Illustrator's pattern space is the tile's with y up, its box from 0,0. SVG puts the
+    // content's origin at the tile's top-left corner, which is 0,h there; x, y and the pattern
+    // transform then place the tile in the painted object's space.
+    auto const m = Geom::Affine(1, 0, 0, -1, 0, h) * Geom::Translate(pattern->x(), pattern->y()) *
+                   pattern->getTransform() * affine;
+    bool numbers = true;
+    for (int i = 0; i < 6; ++i) numbers = numbers && std::isfinite(m[i]);
+    if (!numbers || std::abs(m.det()) < 1e-12) {
+        refuse("patterns that can't be placed");
+        return {};
+    }
+    auto const name = define_pattern(root, w, h);
+    if (!name) return {};
+    _alpha = 1.0;
+    return std::format("{} 0 0 1 1 0 0 0 0 0 [{} {} {} {} {} {}] {}", ps_string(*name), precise(m[0]), precise(m[1]),
+                       precise(m[2]), precise(m[3]), precise(m[4]), precise(m[5]), fill ? 'p' : 'P');
+}
+
+/**
+ * The pattern's definition, once for each tile: `(name) 0 0 width height`, its art on hidden lines
+ * as the document's is written, `E`. Its name is the pattern's label (the import keeps
+ * Illustrator's swatch name there), else its id, numbered when two tiles would share one.
+ */
+std::optional<std::string> Writer::define_pattern(SPPattern const *root, double w, double h)
+{
+    for (auto const &d : _patterns) {
+        if (d.root == root && d.width == w && d.height == h) return d.name;
+    }
+    std::string const base = root->label() ? root->label() : root->getId() ? root->getId() : "Pattern";
+    auto taken = [&](std::string const &name) {
+        return std::any_of(_patterns.begin(), _patterns.end(), [&](auto const &d) { return d.name == name; });
+    };
+    auto name = base;
+    for (int i = 2; taken(name); ++i) name = base + " " + std::to_string(i);
+
+    // The tile's art in a state of its own: Illustrator reads it so (Reader::pattern_section),
+    // and what holds around it must hold again after it.
+    std::ostringstream art;
+    std::swap(_body, art);
+    auto saved = std::tuple(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency);
+    _to_art = Geom::Affine(1, 0, 0, -1, 0, h);
+    _fill_over.clear(), _fill.clear(), _stroke_over.clear(), _stroke.clear(), _stroke_style.clear(), _rule.clear();
+    _transparency.clear();
+    _in_pattern = true;
+    _body << "0 A\n0 Xw\n";
+    for (auto const &child : root->children) {
+        if (auto it = cast<SPItem>(&child)) item(it);
+    }
+    _in_pattern = false;
+    std::swap(_body, art);
+    std::tie(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency) = std::move(saved);
+    if (!_refused.empty()) return {};
+
+    auto const quoted = ps_string(name);
+    std::string records = "%AI3_BeginPattern: " + quoted + "\n" + quoted + " 0 0 " + precise(w) + " " + precise(h) + "\n";
+    std::istringstream lines(art.str());
+    for (std::string line; std::getline(lines, line);) records += "%_" + line + "\n";
+    records += "E\n%AI3_EndPattern\n";
+    _patterns.push_back({root, w, h, name, std::move(records)});
+    return name;
 }
 
 /// Adds a spot ink to those the file declares; false, refused, when the name has another definition.
@@ -503,6 +623,11 @@ void Writer::shape(SPShape const *s, bool clipped)
     };
     bool const fill_gradient = is_gradient(style->fill);
     bool const stroke_gradient = style->stroke_width.computed > 0 && is_gradient(style->stroke);
+    // Where Illustrator places a gradient in a pattern's space isn't qualified.
+    if (_in_pattern && (fill_gradient || stroke_gradient)) {
+        refuse("gradients in patterns");
+        return;
+    }
     // The fill and stroke have independent instances. Illustrator's filled-stroke control
     // closes the fill instance before opening the stroke's, with one final b/B operator on
     // the same path (doc/PROOF-ai-interchange.md, "Filled and dual-gradient strokes").
@@ -520,12 +645,12 @@ void Writer::shape(SPShape const *s, bool clipped)
     if (stroke_gradient) stroke_instance = prepare_gradient(true);
     // A compound path's early contours need a plain paint before its final gradient.
     double fill_alpha = 1.0, stroke_alpha = 1.0;
-    fill = fill_gradient ? std::optional<std::string>("0 g") : paint(style->fill, style, true);
+    fill = fill_gradient ? std::optional<std::string>("0 g") : paint(style->fill, style, true, affine);
     if (!fill_gradient) fill_alpha = _alpha;
     if (stroke_gradient) {
         stroke = "0 G";
     } else if (style->stroke_width.computed > 0) {
-        stroke = paint(style->stroke, style, false);
+        stroke = paint(style->stroke, style, false, affine);
         stroke_alpha = _alpha;
     }
     fill_alpha *= scale24(style->fill_opacity.value);
@@ -700,7 +825,9 @@ void Writer::item(SPItem const *it)
         }
     } else if (auto s = cast<SPShape>(it)) {
         shape(s, clipped);
-    } else if (auto image = cast<SPImage>(it)) {
+    } else if (auto image = cast<SPImage>(it); image && _in_pattern) {
+        refuse("pictures in patterns");
+    } else if (image) {
         auto const written = write_picture(image, image->i2doc_affine() * _to_art, _legacy);
         for (auto const &why : written.refused) refuse(why);
         if (!_legacy && !written.records.empty()) state(_transparency, clipped ? std::string(OPAQUE) : own);
@@ -937,6 +1064,8 @@ WrittenRecords Writer::write()
         head << _gradients.size() << " Bn\n";
         for (auto const &definition : _gradients) head << definition;
     }
+    // After the gradients, as Illustrator writes them.
+    for (auto const &pattern : _patterns) head << pattern.records;
     head << "%%EndSetup\n";
 
     out.records = head.str() + _body.str() +

@@ -82,6 +82,7 @@
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
+#include "object/sp-pattern.h"
 #include "object/sp-root.h"
 #include "object/sp-shape.h"
 #include "object/sp-text.h"
@@ -5584,6 +5585,157 @@ TEST_F(AiNativeImportTest, WriterRefusesClippingOnTheClipGeometryInsteadOfDroppi
     }
 }
 
+TEST_F(AiNativeImportTest, WrittenPatternsKeepTheirTileArtAndEveryPlacement)
+{
+    // One tile in three placements (two wrappers, a fill and a stroke), offset by x and y as PROOF's
+    // pattern library offsets some, its art transformed, compound, clipped, stroked and transparent.
+    auto doc = svg_document(
+        R"(<defs><clipPath id="c"><rect width="12" height="10"/></clipPath>)"
+        R"(<pattern id="tile" inkscape:label="Dots" patternUnits="userSpaceOnUse" x="3" y="4" width="20" height="10">)"
+        R"x(<rect width="20" height="10" style="fill:device-cmyk(0 0.2 0 0)"/>)x"
+        R"x(<g transform="translate(2 1)" style="opacity:0.5"><path d="M0 0 H8 V8 H0 Z M2 2 V6 H6 V2 Z" style="fill:#0000ff"/></g>)x"
+        R"x(<g clip-path="url(#c)"><circle cx="14" cy="5" r="4" style="fill:none;stroke:#ff0000;stroke-width:1.5"/></g>)x"
+        R"(</pattern>)"
+        R"x(<pattern id="turned" href="#tile" patternTransform="rotate(30) scale(2)"/>)x"
+        R"x(<pattern id="moved" href="#tile" patternTransform="translate(5 6)"/></defs>)x"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art">)"
+        R"x(<rect id="a" x="10" y="10" width="80" height="60" transform="translate(10 20)" style="fill:url(#turned)"/>)x"
+        R"x(<ellipse id="b" cx="150" cy="50" rx="30" ry="20" style="fill:none;stroke:url(#moved);stroke-width:8"/>)x"
+        R"x(<rect id="c2" x="100" y="80" width="40" height="15" style="fill:url(#moved);stroke:#000000"/></g>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &r = written.records;
+    // One definition for the one tile, in the setup, its art hidden.
+    auto const begin = r.find("%AI3_BeginPattern: (Dots)\n(Dots) 0 0 20 10\n%_0 A\n");
+    ASSERT_NE(begin, std::string::npos) << r.substr(0, 4000);
+    EXPECT_EQ(r.find("%AI3_BeginPattern:", begin + 1), std::string::npos);
+    EXPECT_LT(begin, r.find("%%EndSetup"));
+    auto const end = r.find("E\n%AI3_EndPattern\n", begin);
+    ASSERT_NE(end, std::string::npos);
+    std::istringstream definition(r.substr(begin, end - begin));
+    std::string line;
+    std::getline(definition, line);
+    std::getline(definition, line);
+    for (std::size_t n = 0; std::getline(definition, line); ++n) EXPECT_EQ(line.rfind("%_", 0), 0u) << n << ": " << line;
+
+    std::string error;
+    auto ai = AN::read(r, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->patterns.size(), 1u);
+    EXPECT_EQ(ai->patterns[0].name, "Dots");
+    EXPECT_TRUE(ai->patterns[0].unread.empty()) << ai->patterns[0].unread;
+    EXPECT_EQ(ai->patterns[0].tile, Geom::Rect(0, 0, 20, 10));
+    ASSERT_EQ(ai->patterns[0].art.size(), 3u);
+
+    // Each placement maps the tile onto the page as the document does: the tile's top-left corner
+    // and its two sides, in the document's pixels.
+    auto b = make(r);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    imported->ensureUpToDate();
+    auto placement = [](SPItem *item, bool fill) {
+        auto const &paint = fill ? static_cast<SPIPaint const &>(item->style->fill) : item->style->stroke;
+        auto const *p = cast<SPPattern>(paint.isPaintserver() && paint.href ? paint.href->getObject() : nullptr);
+        EXPECT_TRUE(p);
+        if (!p) return Geom::Affine();
+        return Geom::Affine(Geom::Translate(p->x(), p->y())) * p->getTransform() * item->i2doc_affine();
+    };
+    std::vector<std::pair<SPItem *, bool>> before{{cast<SPItem>(doc->getObjectById("a")), true},
+                                                  {cast<SPItem>(doc->getObjectById("b")), false},
+                                                  {cast<SPItem>(doc->getObjectById("c2")), true}};
+    std::vector<std::pair<SPItem *, bool>> after;
+    for (auto *g : elements(imported->getReprRoot(), "svg:g")) {
+        if (attr(g, "inkscape:groupmode") != "layer") continue;
+        for (auto *n : elements(g, "svg:path")) {
+            auto *item = cast<SPItem>(imported->getObjectByRepr(n));
+            after.emplace_back(item, item->style->fill.isPaintserver());
+        }
+    }
+    ASSERT_EQ(after.size(), 3u) << sp_repr_save_buf(imported->getReprDoc()).raw();
+    for (std::size_t i = 0; i < 3; ++i) {
+        SCOPED_TRACE(i);
+        auto const was = placement(before[i].first, before[i].second), now = placement(after[i].first, after[i].second);
+        for (auto const &q : {Geom::Point(0, 0), Geom::Point(20, 0), Geom::Point(0, 10)}) {
+            EXPECT_NEAR((q * now).x(), (q * was).x(), 1e-4);
+            EXPECT_NEAR((q * now).y(), (q * was).y(), 1e-4);
+        }
+    }
+    // The tile itself: as large, its art where it was in it.
+    auto tiles = elements(imported->getReprRoot(), "svg:pattern");
+    auto const tile = std::find_if(tiles.begin(), tiles.end(), [](auto *n) { return !attr(n, "width").empty(); });
+    ASSERT_NE(tile, tiles.end());
+    auto *imported_tile = cast<SPPattern>(imported->getObjectByRepr(*tile));
+    EXPECT_NEAR(imported_tile->width(), 20, 1e-6);
+    EXPECT_NEAR(imported_tile->height(), 10, 1e-6);
+    auto const art = elements(*tile, "svg:path");
+    ASSERT_EQ(art.size(), 3u);
+    auto bounds = [](SPDocument *d, XML::Node *n) {
+        auto *item = cast<SPItem>(d->getObjectByRepr(n));
+        return item->documentGeometricBounds();
+    };
+    auto const compound = bounds(imported, art[1]);
+    ASSERT_TRUE(compound);
+    EXPECT_NEAR(compound->left(), 2, 1e-4);
+    EXPECT_NEAR(compound->top(), 1, 1e-4);
+    EXPECT_NEAR(compound->right(), 10, 1e-4);
+    EXPECT_EQ(sp_svg_read_pathv(attr(art[1], "d").c_str()).size(), 2u);
+    bool clipped = false, transparent = false;
+    for (auto *g : elements(*tile, "svg:g")) {
+        clipped = clipped || !attr(g, "clip-path").empty();
+        transparent = transparent || attr(g, "style").find("opacity:0.5") != std::string::npos;
+    }
+    EXPECT_TRUE(clipped);
+    EXPECT_TRUE(transparent);
+
+    // Written again from what was read: the same one definition, no larger.
+    auto const again = AN::write_records(imported);
+    ASSERT_TRUE(again.refused.empty()) << again.refused.front();
+    auto const second = again.records.find("%AI3_BeginPattern:");
+    ASSERT_NE(second, std::string::npos);
+    EXPECT_EQ(again.records.find("%AI3_BeginPattern:", second + 1), std::string::npos);
+    auto const definition_lines = [](std::string const &s, std::size_t from) {
+        auto const to = s.find("%AI3_EndPattern", from);
+        return std::count(s.begin() + from, s.begin() + to, '\n');
+    };
+    EXPECT_EQ(definition_lines(again.records, second), definition_lines(r, begin));
+}
+
+TEST_F(AiNativeImportTest, PatternsOutsideTheWrittenSubsetAreRefusedByName)
+{
+    auto const tile = [](std::string const &attrs, std::string const &art) {
+        return R"(<defs><linearGradient id="g"><stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>)"
+               R"(<pattern id="inner" patternUnits="userSpaceOnUse" width="4" height="4"><rect width="2" height="2"/></pattern>)"
+               R"(<pattern id="p" )" + attrs + ">" + art + R"x(</pattern></defs><rect width="50" height="50" fill="url(#p)"/>)x";
+    };
+    auto const square = std::string(R"(<rect width="5" height="5"/>)");
+    std::vector<std::pair<std::string, std::string>> const cases{
+        {tile(R"(width="0.2" height="0.2")", square), "patterns sized to their object"},
+        {tile(R"(patternUnits="userSpaceOnUse" patternContentUnits="objectBoundingBox" width="10" height="10")", square),
+         "patterns sized to their object"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10" viewBox="0 0 5 5")", square), "patterns with a view box"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", R"x(<rect width="5" height="5" fill="url(#inner)"/>)x"),
+         "patterns inside patterns"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", R"x(<rect width="5" height="5" fill="url(#g)"/>)x"),
+         "gradients in patterns"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")",
+              R"(<image width="5" height="5" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="/>)"),
+         "pictures in patterns"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", R"(<text x="1" y="5">A</text>)"), "type"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", ""), "empty patterns"},
+    };
+    for (auto const &[body, reason] : cases) {
+        SCOPED_TRACE(reason);
+        auto doc = svg_document(body);
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
+            << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+    }
+}
+
 TEST_F(AiNativeImportTest, WrittenRecordsKeepInksDefinedInLabAndRgb)
 {
     auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"
@@ -5961,6 +6113,8 @@ TEST_F(AiNativeImportTest, LegacyWriterRefusesFeaturesThatNeedTheModernFormat)
         {R"(<rect width="10" height="10" style="fill:#ff0000;fill-opacity:0.5"/>)", "transparency"},
         {R"(<defs><linearGradient id="g"><stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/>)"
          R"x(</linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x", "gradient transparency"},
+        {R"(<defs><pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="5" height="5"/></pattern></defs>)"
+         R"x(<rect width="50" height="50" fill="url(#p)"/>)x", "patterns (Illustrator 7)"},
     };
     for (auto const &[body, reason] : cases) {
         SCOPED_TRACE(reason);
@@ -6160,8 +6314,6 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
         {R"x(<path d="M10 10 L50 50" style="stroke:#000000" transform="skewX(20)"/>)x", "strokes on stretched or skewed objects"},
         {R"(<defs><clipPath id="c"><rect width="10" height="10"/><rect x="20" width="10" height="10"/></clipPath></defs>)"
          R"x(<g clip-path="url(#c)"><rect width="50" height="50"/></g>)x", "clipping paths other than one path"},
-        {R"(<defs><pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="5" height="5"/></pattern></defs>)"
-         R"x(<rect width="50" height="50" fill="url(#p)"/>)x", "patterns"},
         {R"(<defs><meshgradient id="g" x="0" y="0" gradientUnits="userSpaceOnUse"><meshrow><meshpatch>)"
          R"(<stop path="c 10,0 20,0 30,0" style="stop-color:#ff0000"/><stop path="c 0,10 0,20 0,30" style="stop-color:#00ff00"/>)"
          R"(<stop path="c -10,0 -20,0 -30,0" style="stop-color:#0000ff"/><stop path="c 0,-10 0,-20 0,-30" style="stop-color:#ffff00"/>)"

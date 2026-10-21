@@ -51,6 +51,16 @@ static std::optional<bool> repeat_is_reflection(SPGradientSpread spread)
 }
 
 /**
+ * Whether the pattern's tile or its art is sized by the painted object's box, so that each object
+ * needs a tiling pattern of its own.
+ */
+static bool sized_to_object(SPPattern const *pat)
+{
+    return pat->patternUnits() == SPPattern::UNITS_OBJECTBOUNDINGBOX ||
+           (!pat->viewbox() && pat->patternContentUnits() == SPPattern::UNITS_OBJECTBOUNDINGBOX);
+}
+
+/**
  * Returns true if the gradient has transparency.
  */
 bool gradient_has_transparency(SPPaintServer const *paint)
@@ -100,7 +110,8 @@ std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *pain
 
     // Patterns are cached so they can be reused
     std::string cache_key = get_id(paint);
-    if (bbox && (is<SPLinearGradient>(paint) || is<SPRadialGradient>(paint))) {
+    auto const *tiled = cast<SPPattern>(paint);
+    if (bbox && (is<SPLinearGradient>(paint) || is<SPRadialGradient>(paint) || (tiled && sized_to_object(tiled)))) {
         // Different instances can share stops, but not an object-bounding-box
         // placement (or the paintable area used for repeat/reflect).
         std::ostringstream placement;
@@ -127,12 +138,12 @@ std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *pain
         pattern_id = get_radial_pattern(radial, opacity, bbox);
     } else if (auto mesh = cast<SPMeshGradient>(paint)) {
         pattern_id = get_mesh_pattern(mesh, opacity);
-    } else if (auto pattern = cast<SPPattern>(paint)) {
-        // WARNING: We don't know why this is needed, it was not documented
-        for (SPPattern const *child_pattern = pattern; child_pattern; child_pattern = child_pattern->ref.getObject()) {
-            // find the first one with item children
-            if (child_pattern && child_pattern->hasItemChildren()) {
-                pattern_id = get_tiling_pattern(child_pattern, pattern->get_this_transform());
+    } else if (tiled) {
+        // The art is the first pattern's along the href chain that has any; the tile and its
+        // placement can come from any pattern along it.
+        for (SPPattern const *root = tiled; root; root = root->ref.getObject()) {
+            if (root->hasItemChildren()) {
+                pattern_id = get_tiling_pattern(tiled, root, bbox);
                 break;
             }
         }
@@ -349,20 +360,49 @@ std::optional<CapyPDF_PatternId> Document::get_mesh_pattern(SPMeshGradient const
 }
 
 /**
- * Render a pattern out to a transparency group context.
+ * Render a pattern out to a transparency group context, as the canvas draws it
+ * (SPPattern::update_view): the tile from 0,0 in pattern space, placed at x, y by the pattern
+ * transform; the art of `root` fitted to it by a view box, or in the units of the painted object's
+ * box. Every value is looked up along the href chain from `pat`, the pattern painted with.
+ *
+ * The matrix maps pattern space into the space of the content stream the pattern paints in, which
+ * is the painted object's own (item_to_transparency_group).
  */
-std::optional<CapyPDF_PatternId> Document::get_tiling_pattern(SPPattern const *pat, Geom::Affine const &transform)
+std::optional<CapyPDF_PatternId> Document::get_tiling_pattern(SPPattern const *pat, SPPattern const *root,
+                                                              Geom::OptRect const &bbox)
 {
     // This means we don't want to inherit changes from calling group.
-    auto style_map = _paint_memory.get_ifset(pat->style);
+    auto style_map = _paint_memory.get_ifset(root->style);
     auto style_scope = _paint_memory.remember(style_map);
 
-    auto bbox = pat->getBox();
-    auto pattern = PdfBuilder::PatternContext(*this, bbox);
-    pattern.set_matrix(pat->c2p * transform);
-    pattern.set_paint_style(style_map, pat->style, nullptr);
+    double x = pat->x(), y = pat->y(), width = pat->width(), height = pat->height();
+    if (bbox && pat->patternUnits() == SPPattern::UNITS_OBJECTBOUNDINGBOX) {
+        x *= bbox->width();
+        y *= bbox->height();
+        width *= bbox->width();
+        height *= bbox->height();
+    }
+    if (!(width > 0) || !(height > 0)) {
+        return {};
+    }
+    auto const tile = Geom::Rect::from_xywh(0, 0, width, height);
+    Geom::Affine content;
+    if (auto const view = pat->viewbox()) {
+        // The chain's view box, fitted by the painted pattern's own preserveAspectRatio.
+        SPViewBox fit = *pat;
+        fit.viewBox = *view;
+        fit.c2p.setIdentity();
+        fit.apply_viewbox(tile);
+        content = fit.c2p;
+    } else if (bbox && pat->patternContentUnits() == SPPattern::UNITS_OBJECTBOUNDINGBOX) {
+        content = Geom::Scale(bbox->width(), bbox->height());
+    }
+    auto pattern = PdfBuilder::PatternContext(*this, tile);
+    pattern.set_matrix(Geom::Translate(x, y) * pat->getTransform());
+    pattern.set_paint_style(style_map, root->style, nullptr);
+    pattern.transform(content);
 
-    for (auto &obj : pat->children) {
+    for (auto &obj : root->children) {
         if (auto child_item = cast<SPItem>(&obj)) {
             if (auto item_id = item_to_transparency_group(child_item)) {
                 pattern.paint_group(*item_id, child_item->style);

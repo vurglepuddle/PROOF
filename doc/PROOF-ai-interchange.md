@@ -1844,3 +1844,146 @@ patterns 15 (14 alone), opacity masks seven (four alone), missing linked
 pictures six, noncanonical Registration definitions four, meshes three,
 coincident stops two, mixed gradient spaces one. Next: patterns, then opacity
 masks; type stays last by the owner's agreed order.
+
+### Patterns written (2026-10-21, after sRGB gradients)
+
+The modern form writes a pattern on a fill or a stroke as Illustrator 9 and
+later write one. Each tile is defined once in the setup, after the gradients:
+
+```text
+%AI3_BeginPattern: (name)
+(name) 0 0 width height
+%_0 A
+%_0 Xw
+%_... the tile's art, every line hidden, in a state of its own ...
+E
+%AI3_EndPattern
+```
+
+and each object painted with it says where its tiles lie:
+
+```text
+(name) 0 0 1 1 0 0 0 0 0 [a b c d tx ty] p      (P on a stroke)
+```
+
+The nine numbers are the placement of Illustrator 8 and older, at rest; the
+matrix carries the pattern's own space onto the art. PROOF's pattern space is
+the tile's with y up, its box from 0,0, so the matrix is the tile flipped
+about its height, then SVG's own placement (`translate(x, y)` and the pattern
+transform, inherited along the `href` chain), then the object's placement in
+art space. Its numbers and the tile's size are written to eight decimals: a
+tile repeats, and at four a tile a thousand repeats from its origin would lie
+a point off.
+
+**What is written.** Patterns whose tile and content are in the user space of
+what they paint: what the import makes of Illustrator's patterns, and what
+PROOF's own pattern library holds (259 patterns, all of this form; some
+offset by `x` and `y`, most placed through a wrapper with its own transform).
+One definition is written for each tile and size, however many objects and
+wrappers use it. It takes the tile's label (the import keeps Illustrator's
+swatch name there), else its id, numbered when two tiles would share a name.
+The tile's art is written as the document's is: paths and compound paths,
+groups, clipping groups, process and spot paint with tints, strokes and
+transparency. A pattern no object paints with is not written (as for
+gradients), so swatch-only patterns are not kept.
+
+**Refused by name:** patterns sized to their object (`objectBoundingBox`
+tiles or content), patterns with a view box, patterns inside patterns,
+gradients and pictures in a tile (where Illustrator places a gradient in a
+pattern's space is not qualified), and empty patterns. The Illustrator 7 copy
+refuses `patterns (Illustrator 7)`: its patterns are PostScript procedures.
+
+#### The control in Illustrator
+
+`ai-pattern-output-smoke.py` makes an asymmetric tile (a red quarter and a
+ring), so that a tile placed anywhere else shows, and a second one offset by
+`x` and `y` with a compound path, a half-transparent group, a clipped group
+and a spot ink at 50%. They paint eight objects: directly, turned and scaled
+through a wrapper, moved through a wrapper, on an ellipse, on a compound path
+with a stroke, as a stroke, inside a turned and scaled group, and with a fill
+opacity of its own.
+
+Illustrator **29.2.1** read all eight as written: seven pattern fills and one
+pattern stroke under PROOF's names, the fill's own opacity as 60%. Drawn at
+96 dpi beside PROOF's canvas, **every tile lies where PROOF puts it** (the
+best match is unshifted in all eight areas). Pattern matrices, unlike a
+gradient's `Bg`, are not applied on the old 8,640-point canvas. Flat
+features inside the tiles agree within **three** channel levels (the red
+quarter, the ring, the transparent green over ground and over the CMYK ring,
+the clipped circle, the spot ink at 50%), and the turned tile and the stroke
+exactly. Its saved copy keeps every matrix and both names exactly, and wraps
+each tile's art in a group of its own, adding no box rectangle. That copy
+opens natively in PROOF with all eight objects and both tiles, within one
+channel level of the original. Saved again by PROOF, it reopens natively
+within one again.
+
+#### Found on the way, and fixed: PDF patterns and soft tiles
+
+The native Save As carries PROOF's own PDF page, and the reader opens a file
+natively only when its records draw as that page. The first control fell
+back to the page: **PDF output placed patterns as SVG does not** (shared PDF
+code, `pdfoutput/build-patterns.cpp`). It took the tile's box only from the
+pattern holding the art, though a wrapper may set it; drew the art from the
+pattern's origin while its box began at `x`, `y`, so offset tiles were cut in
+the wrong place; used the wrapper's own transform instead of the one
+inherited along the chain; fitted a view box with whatever the tile's last
+canvas fit had left; and ignored sizes in the object's units. It now builds
+each tiling pattern as the canvas does (`SPPattern::update_view`): the box
+from 0,0, the placement `translate(x, y)` and the inherited transform, the
+art fitted by the chain's view box or scaled to the object's box. Its matrix
+is relative to the painted object's own space, which is where each object is
+drawn (its own transparency group). The canvas, unlike SVG, doesn't move a
+tile sized to its object to the object's corner; PDF now matches the canvas.
+
+Checking the page needed care: Poppler's splash renderer rounds a turned
+tile's cell to whole pixels, so its tiles drift a pixel or two from the
+origin, and its Cairo renderer darkens transparency inside a tile. The smoke
+reads the tiling patterns' matrices and boxes from the PDF itself, then asks
+each renderer only what it draws right: Cairo matches the canvas within 2 on
+every opaque tile (14 on the CMYK cyan, as in earlier rounds), splash the
+transparent one.
+
+**The canvas drew a tile read back from a file softer.** It sizes its tile
+cache in whole pixels, rounding up, and a tile of 36 pixels read back from
+eight decimals came out at 36.00000002, was drawn at 37 and resampled. It now
+rounds up only past 0.0001 of a pixel (`display/drawing-pattern.cpp`), so the
+turned tile reopens identical. Patterns imported from Illustrator, whose
+numbers carry the same noise, are drawn sharper too. Both are shared
+rendering changes; the collaborator should know.
+
+#### Real documents
+
+Patterns held 15 of the owner's 862 native documents, 14 for nothing else.
+In their records: 92 pattern definitions, 43 of them painted with. The other
+49 are only swatches, among them Illustrator's default patterns, some holding
+gradients and transparency. What their art paints with, as the import makes
+it: fills on paths only (no pattern on a stroke), tiles of
+groups, paths and compound paths in CMYK, RGB or grey, spot inks with tints,
+strokes and one clipping group.
+
+All 14 now write. Each copy saved as `.ai` reopens natively, and draws as
+the original import within 22 channel levels, with no pixel more than 24
+apart; the inputs are unchanged. The 15th is held by an opacity mask. The round's census (`tools/ai-writer-census.py`, the same 871
+copies, 11 minutes): import unchanged at 862 native and nine pages; the modern
+form writes **789 of 862** (was 775), the 14 patterns alone held, none lost,
+every accepted stream read back; Illustrator 7 stays 100. What remains: type
+60 (50 alone), opacity masks 7 (5), missing linked pictures 6 (0),
+noncanonical Registration 4 (4), meshes 3 (1), coincident stops 2 (2), mixed
+gradient spaces 1 (1).
+
+#### Still open
+
+- Gradients and pictures inside a tile, and patterns inside patterns:
+  Illustrator writes all three; their placement in a pattern's space needs
+  its own control.
+- Pattern swatches no object paints with are not written.
+- Patterns sized to their object and with a view box could be written by
+  converting them to the user-space form.
+- The Illustrator 7 copy's patterns (PostScript procedures).
+- Pattern names outside ASCII are written as UTF-8 bytes, as layer names are;
+  Illustrator's reading of them is unchecked (the owner's are all ASCII).
+
+Checks: all **13 unit suites, 0 failures** (reader 74 cases with one opt-in
+skip, importer 166 with two, gradient writer 35); **26 export groups, 836
+checks**, the pattern control **20/20**. Unit checks: `WrittenPatternsKeepTheirTileArtAndEveryPlacement`,
+`PatternsOutsideTheWrittenSubsetAreRefusedByName`, and the refusal lists.
