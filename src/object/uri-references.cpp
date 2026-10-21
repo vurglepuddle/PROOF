@@ -22,6 +22,7 @@
 #include "live_effects/lpeobject.h"
 #include "bad-uri-exception.h"
 #include "document.h"
+#include "io/link-policy.h"
 #include "sp-object.h"
 #include "uri.h"
 #include "util/uri.h"
@@ -148,7 +149,8 @@ void URIReference::attach(const URI &uri)
             g_warning("%s", e.what());
         }
 
-        if (!path.empty()) {
+        // PROOF: a document on another computer isn't looked up (io/link-policy.h).
+        if (!path.empty() && Inkscape::IO::may_follow_link(path, base)) {
             document = document->createChildDoc(path);
         } else {
             document = nullptr;

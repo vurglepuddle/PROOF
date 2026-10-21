@@ -18,6 +18,7 @@
 #include "display/tiff-pixels.h"
 #include "document.h"
 #include "helper/pixbuf-ops.h"
+#include "io/link-policy.h"
 #include "object/sp-image.h"
 #include "object/sp-root.h"
 #include "object/uri.h"
@@ -81,7 +82,9 @@ void DrawContext::paint_raster(SPImage const *image)
         // We don't use Inkscape::URI for base64 because if it's memory limits
         try {
             auto uri = image->getURI();
-            if (uri.getMimeType() == "image/svg+xml") {
+            if (!Inkscape::IO::may_follow_link(uri.toNativeFilename(), image->document->getDocumentBase())) {
+                // PROOF: a file on another computer isn't looked up (io/link-policy.h).
+            } else if (uri.getMimeType() == "image/svg+xml") {
                 svg = SPDocument::createNewDoc(uri.toNativeFilename().c_str());
             } else if ((placed = _doc.placed_page(uri.toNativeFilename()))) {
                 // PROOF: a placed PDF page (a linked .pdf or .ai), the page itself.

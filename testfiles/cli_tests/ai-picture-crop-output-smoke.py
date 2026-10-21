@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import runpy
 import subprocess
 import xml.etree.ElementTree as ET
@@ -25,6 +26,35 @@ from pypdf import PdfReader
 
 SVG = '{http://www.w3.org/2000/svg}'
 XLINK = '{http://www.w3.org/1999/xlink}'
+GEOMETRY = re.compile(rb'^((?:-?[\d.]+ )+)([mlLcCvVyY])$')
+
+
+def unclosed_paths(records):
+    """Closed paths whose last point isn't their first. Illustrator takes a closed path's
+    last point for its first, as its own files always end there: a clip closed short of
+    its start lost its fourth corner to a handle (Illustrator 29.2.1, 2026-10-21)."""
+    found, start, last, data = [], None, None, False
+    for line in re.split(rb'\r\n|\r|\n', records):
+        if line.startswith(b'%%BeginData'):
+            data = True
+        if data:
+            data = b'%%EndData' not in line
+            continue
+        if line.startswith(b'%'):
+            continue
+        match = GEOMETRY.match(line)
+        if match:
+            point = tuple(float(v) for v in match.group(1).split()[-2:])
+            if match.group(2) == b'm':
+                start = point
+            last = point
+        elif line in (b'h', b'n', b'f', b's', b'b') and start is not None:
+            if math.dist(start, last) > 1e-3:
+                found.append((start, last))
+            start = None
+        elif line in (b'N', b'F', b'S', b'B'):
+            start = None
+    return found
 
 
 def controls(addresses, alpha):
@@ -160,6 +190,18 @@ def main():
             raise RuntimeError(f'{name}: exit {p.returncode}; see log')
         return p
 
+    def records(ai, legacy):
+        """The written records: an Illustrator 7 file is its records; a modern file keeps
+        them Zstandard-packed in its private data, decoded with the toolchain's zstd."""
+        if legacy:
+            return ai.read_bytes()
+        private = PdfReader(ai).pages[0]['/PieceInfo']['/Illustrator']['/Private']
+        packed = b''.join(private[f'/AIPrivateData{i}'].get_data() for i in range(1, private['/NumBlock'] + 1))
+        zstd = (args.dll_dir.resolve() if args.dll_dir else Path()) / 'zstd.exe'
+        p = subprocess.run([str(zstd), '-d', '-c'], input=packed[len(b'%AI24_ZStandard_Data'):],
+                           capture_output=True, timeout=60)
+        return p.stdout if not p.returncode else b''
+
     exe = args.inkscape.resolve()
     for label, legacy, linked in (('modern', False, False), ('legacy', True, False), ('linked', False, True)):
         folder = out / label
@@ -172,6 +214,11 @@ def main():
         option = '--export-extension=org.inkscape.output.ai.' + ('legacy7' if legacy else 'native')
         run(label + '-canvas', exe, source, '--export-background=white', f'--export-filename={canvas}')
         run(label + '-save', exe, source, option, f'--export-filename={ai}')
+        written = records(ai, legacy)
+        (folder / 'records.ps').write_bytes(written)
+        unclosed = unclosed_paths(written)
+        check(label + ': closed paths end on their first point', written.startswith(b'%!PS') and not unclosed,
+              unclosed[:3])
         p = run(label + '-reopen', exe, ai, f'--export-filename={reopened}')
         root = ET.parse(reopened).getroot()
         pictures = list(root.iter(SVG + 'image'))

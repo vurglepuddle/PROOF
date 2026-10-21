@@ -1144,11 +1144,11 @@ The existing legacy-picture smoke remains **13/13**; its records differ from
 the previous Illustrator-qualified picture control only by the added title.
 No broader artwork regression or new reader-corpus acceptance is claimed.
 
-### Registration and picture slice crops (2026-10-21, candidate)
+### Registration and picture slice crops (2026-10-21)
 
-This candidate remains on `ai-interchange`, separately from the installed and
-shared qualified build. Headless results are recorded below; opening these
-new PROOF exports in Illustrator remains pending.
+Qualified in Illustrator 29.2.1 the same day, after one correction to the crop
+clip (below, "Illustrator gate"). The first part of this section describes the
+candidate `d004d655ef` as it was written.
 
 Modern native output writes canonical Registration fills and strokes with
 `Xs`/`XS`, the inverted tint, and a `CMYKProcessColor` declaration for
@@ -1194,3 +1194,61 @@ exactly, including behind clips. The initial new tests incorrectly expected
 a gradient-reference form to be supported and absolute link spelling in saved
 SVG; corrected importer/crop reruns supersede those expectations. No production
 thresholds were changed. Original reports and reruns remain separate.
+
+#### Illustrator gate, and a closing side for the crop clip
+
+Illustrator opened the candidate's five controls one at a time, each read
+through its scripting interface with ten idle seconds after every open, export,
+save and close; nothing was driven by a script that waits inside Illustrator.
+(The earlier batch slept ten seconds inside one ExtendScript call, which holds
+Illustrator's main thread: a likely cause of its `AppHangTransient`.)
+
+**Registration passes as written.** The modern control opens with Illustrator's
+own `[Registration]` swatch on three objects: fills at 25% and 100%, strokes at
+60% and 100%, overprint on the fill and stroke of the tinted box and on the
+stroke of the open frame, as in the source. Inks named `all`, `All ` and a
+swatch labelled `[Registration]` whose ink is `PROOF Orange` stay ordinary
+spots. Illustrator's saved copy reopens in PROOF natively with the same seven
+paints, tints and overprint sides. The Illustrator 7 control, where Registration
+is refused and an ordinary spot stands in, opens with every tint exact.
+
+**The crops did not, at first.** Every slice-cropped picture showed its clip's
+lower left as a quarter round. Illustrator read each clip with three anchors:
+the fourth corner had become the first anchor's incoming handle. Its own copy
+writes the same clip as `m`, `L`, `L`, then a closing segment that ends on the
+first point (`… V`), then `h W n`. **Illustrator takes a closed path's last
+point for its first**: it always writes the closing side back to the start,
+and on reading folds the last point into the first. Counted in its own files:
+1,235,531 closed paths in the owner's 871 copies and 647,616 in 139 of the
+collaborator's pack (files over 100 MB left out), and not one ends away from
+its first point. PROOF's paths already ended there (`path_data` writes the
+closing segment); the crop clip was the one path written by hand, with four
+corners and no closing side. PROOF read it back square, so the smoke passed:
+writer and reader agreed with each other, not with Illustrator.
+
+The viewport clip now writes the first corner again before `h`. The crop smoke
+checks that every closed path in the written records, modern and version 7,
+ends on its first point (30/30); a sweep of every `.ai` the export checks write
+found no other path that closed short. Regenerated controls in Illustrator:
+the modern, version 7 and linked controls all draw as PROOF's canvas, every
+sampled point inside a crop within 3 (the CMYK picture within 4), every point
+outside exactly white, the art after them identical. The linked control keeps
+all 25 links to their files, none broken, each picture at full size behind its
+clip. Illustrator's saved copy of the modern control reopens in PROOF natively
+with 25 pictures and 24 clips; every probe matches PROOF's canvas exactly but
+the CMYK picture's, within 3.
+
+#### Numbers that aren't numbers
+
+A path whose coordinates overflow (a 10 pt path under `scale(1e308)`) was
+written `inf -inf L`, with `inf w` and `-nan d` for its stroke: a file no reader
+takes. Native Save As and the Illustrator 7 copy now refuse it by name:
+"nonfinite path coordinates", or "nonfinite stroke widths or dashes" when only
+the stroke overflows (native output smoke, two new checks, 34/34). Suggested by
+VectorCraft's `2b0d71db`, read as a delta only.
+
+#### Linked pictures on another computer
+
+The writer refuses a linked picture on another computer by name ("linked
+pictures on another computer"), as it is not looked up there (owner's choice,
+2026-10-21): `PROOF-links.md`, "Links on other computers".

@@ -25,6 +25,7 @@
 #include "generic/spin-button.h"
 #include "generic/text-entry.h"
 #include "inkscape.h"
+#include "io/link-policy.h"
 #include "object/sp-image.h"
 #include "ui/builder-utils.h"
 #include "ui/dialog/choose-file.h"
@@ -308,6 +309,8 @@ void ImageProperties::link_image()
     };
     auto file = choose_file_open(_("Change Image"), window, mime_types, current_folder);
     if (file) {
+        // PROOF: the user chose this file, so its share is followed (io/link-policy.h).
+        Inkscape::IO::trust_link_share(file->get_path());
         set_href(file->get_uri());
     }
 }

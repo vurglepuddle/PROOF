@@ -45,6 +45,7 @@
 #include "document.h"
 #include "file.h"
 #include "helper/geom.h"
+#include "io/link-policy.h"
 #include "extension/internal/ai/ai-native-fonts.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-text.h"
@@ -3949,6 +3950,82 @@ TEST_F(AiNativeImportTest, LinkedPictureIsLookedForBesideTheDocument)
         g_free(named);
     }
 }
+
+TEST(LinkPolicy, PathsNameTheirNetworkShare)
+{
+    using Inkscape::IO::network_share;
+    EXPECT_EQ(network_share("C:\\Jobs\\logo.png"), "");
+    EXPECT_EQ(network_share("Links\\logo.png"), "");
+    EXPECT_EQ(network_share("\\\\?\\C:\\Jobs\\logo.png"), "");
+    EXPECT_EQ(network_share("\\\\NAS\\Jobs\\2026\\logo.png"), "\\\\nas\\jobs");
+    EXPECT_EQ(network_share("//nas/Jobs/logo.png"), "\\\\nas\\jobs");
+    EXPECT_EQ(network_share("\\\\?\\UNC\\Nas\\JOBS\\logo.png"), "\\\\nas\\jobs");
+    EXPECT_EQ(network_share("\\\\НАС\\Работы\\logo.png"), "\\\\нас\\работы");
+    // A computer without a share, and devices, match no share.
+    EXPECT_EQ(network_share("\\\\nas"), "\\\\");
+    EXPECT_EQ(network_share("\\\\nas\\"), "\\\\");
+    EXPECT_EQ(network_share("\\\\.\\pipe\\logo"), "\\\\");
+    EXPECT_EQ(network_share("\\\\?\\GLOBALROOT\\Device\\logo"), "\\\\");
+}
+
+#ifdef _WIN32
+TEST(LinkPolicy, OnlyTheDocumentsOwnShareOrAChosenOneIsFollowed)
+{
+    using Inkscape::IO::may_follow_link;
+    // Nothing here touches a network: the rule reads the paths alone (C: isn't a mapped drive).
+    EXPECT_TRUE(may_follow_link("C:\\Jobs\\logo.png", nullptr));
+    EXPECT_TRUE(may_follow_link("Links\\logo.png", "\\\\elsewhere\\share"));
+    EXPECT_FALSE(may_follow_link("\\\\proof-test-a\\jobs\\logo.png", nullptr));
+    EXPECT_FALSE(may_follow_link("\\\\proof-test-a\\jobs\\logo.png", "C:\\Work"));
+    EXPECT_FALSE(may_follow_link("\\\\proof-test-a\\jobs\\logo.png", "\\\\proof-test-a\\other"));
+    EXPECT_FALSE(may_follow_link("\\\\proof-test-a\\jobs\\logo.png", "\\\\proof-test-b\\jobs"));
+    EXPECT_TRUE(may_follow_link("\\\\proof-test-a\\jobs\\logo.png", "\\\\PROOF-TEST-A\\Jobs\\2026"));
+    EXPECT_TRUE(may_follow_link("//proof-test-a/jobs/logo.png", "\\\\?\\UNC\\proof-test-a\\jobs"));
+    EXPECT_FALSE(may_follow_link("\\\\.\\pipe\\logo", "\\\\proof-test-a\\jobs"));
+    // A share the user chose a file from is followed from then on; only that share.
+    EXPECT_FALSE(may_follow_link("\\\\proof-test-c\\assets\\a.png", nullptr));
+    Inkscape::IO::trust_link_share("\\\\proof-test-c\\Assets\\chosen.png");
+    EXPECT_TRUE(may_follow_link("\\\\proof-test-c\\assets\\a.png", nullptr));
+    EXPECT_FALSE(may_follow_link("\\\\proof-test-c\\other\\a.png", nullptr));
+}
+
+TEST_F(AiNativeImportTest, ALinkedPictureOnAnotherComputerIsNotLookedUpAndIsNamed)
+{
+    // Looked up, it would have Windows offer the user's sign-in to that computer.
+    auto joined = [](auto const &notes) {
+        std::string all;
+        for (auto const &note : notes) all += note + "\n";
+        return all;
+    };
+    auto const folder = temporary_folder();
+    ASSERT_FALSE(folder.empty());
+    AN::Source source;
+    source.folder = folder;
+    std::string error;
+    auto ai = AN::read(records(layer(linked("\\\\proof-test-nowhere\\share\\logo.png"))), error);
+    ASSERT_TRUE(ai) << error;
+    auto b = AN::build(*ai, error, source);
+    ASSERT_TRUE(b) << error;
+    ASSERT_EQ(b->missing_links.size(), 1u);
+    EXPECT_EQ(b->missing_links[0].name, "logo.png");
+    auto const notes = joined(b->notes);
+    EXPECT_NE(notes.find("on another computer weren't looked up (\\\\proof-test-nowhere\\share)"), std::string::npos)
+        << notes;
+    // The link is kept as the document has it, and isn't loaded when the picture is drawn either.
+    auto images = elements(b->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u);
+    b->document->ensureUpToDate();
+    auto *image = dynamic_cast<SPImage *>(b->document->getObjectByRepr(images[0]));
+    ASSERT_TRUE(image);
+    EXPECT_TRUE(image->linkMissing());
+    // One found beside the document is used, and needs no word.
+    write_picture(folder + G_DIR_SEPARATOR_S + "logo.png");
+    auto beside = AN::build(*ai, error, source);
+    ASSERT_TRUE(beside) << error;
+    EXPECT_TRUE(beside->missing_links.empty());
+    EXPECT_EQ(joined(beside->notes).find("another computer"), std::string::npos) << joined(beside->notes);
+}
+#endif
 
 TEST_F(AiNativeImportTest, ALinkedPictureThatIsGoneKeepsItsLinkAndShowsWhatTheDocumentKeepsOfIt)
 {

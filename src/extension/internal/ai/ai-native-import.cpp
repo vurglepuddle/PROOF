@@ -52,6 +52,7 @@
 #include "display/tiff-pixels.h"
 #include "document-undo.h"
 #include "document.h"
+#include "io/link-policy.h"
 #include "libnrtype/font-factory.h"
 #include "libnrtype/font-instance.h"
 #include "object/color-profile.h"
@@ -575,6 +576,9 @@ public:
     /// Linked CMYK TIFFs that carry a profile other than the document's: their file names, and
     /// the profiles' names. Their numbers are kept (Illustrator's "Preserve Numbers").
     std::map<std::string, std::string> other_profiles;
+    /// The shares of linked files that weren't looked up, being on another computer
+    /// (io/link-policy.h).
+    std::set<std::string> elsewhere;
 
 private:
     XML::Node *create(char const *name) { return _xml->createElement(name); }
@@ -595,7 +599,7 @@ private:
     XML::Node *foreign(Node const &n);
     XML::Node *image(Node const &n);
     XML::Node *placed(Node const &n);
-    std::optional<std::string> linked_file(Placed const &p) const;
+    std::optional<std::string> linked_file(Placed const &p);
     XML::Node *text(Node const &n);
     void children(XML::Node *parent, std::vector<Node> const &kids, bool clipped);
     std::string clip_path(Node const &clip);
@@ -1833,7 +1837,8 @@ XML::Node *Builder::image(Node const &n)
 
 /// The file a placed picture links to: where the document says it is, else in the folder
 /// the document gives from its own, else beside the document. Nothing when it isn't there.
-std::optional<std::string> Builder::linked_file(Placed const &p) const
+/// A place on another computer isn't looked up (io/link-policy.h): its share is noted.
+std::optional<std::string> Builder::linked_file(Placed const &p)
 {
     std::vector<std::string> tries;
     auto const folders = decodings(p.folder);
@@ -1858,9 +1863,17 @@ std::optional<std::string> Builder::linked_file(Placed const &p) const
         }
         if (!_folder.empty()) join({_folder, base});
     }
+    std::set<std::string> passed;
     for (auto const &file : tries) {
+        if (!Inkscape::IO::may_follow_link(file, _folder.c_str())) {
+            auto const share = Inkscape::IO::network_share(file);
+            passed.insert(share == "\\\\" ? std::string("a device") : share);
+            continue;
+        }
         if (g_file_test(file.c_str(), G_FILE_TEST_IS_REGULAR)) return file;
     }
+    // Only a link that is found nowhere is named: one found beside the document needs no word.
+    elsewhere.insert(passed.begin(), passed.end());
     return {};
 }
 
@@ -2071,6 +2084,9 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         error = "a document couldn't be made";
         return {};
     }
+    // Its pictures are loaded as they are built: the folder they are linked from decides which
+    // may be looked up (io/link-policy.h). The file's own name is given it after the import.
+    if (!source.folder.empty()) doc->setDocumentBase(source.folder.c_str());
     auto const undo = DocumentUndo::getUndoSensitive(doc.get());
     DocumentUndo::setUndoSensitive(doc.get(), false);
 
@@ -2247,6 +2263,12 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
         notes.push_back(count(links.size(), "linked picture can't", "linked pictures can't") + " be found (" + names +
                         "): " + shows + " until it is linked again");
         built.missing_links = links;
+    }
+    if (!b.elsewhere.empty()) {
+        std::string where;
+        for (auto const &share : b.elsewhere) where += (where.empty() ? "" : ", ") + share;
+        notes.push_back("linked files on another computer weren't looked up (" + where +
+                        "): Windows would offer it your sign-in. Relink them, or open the document from that share");
     }
     built.found_links = std::move(b.found_links);
     if (!b.other_profiles.empty()) {

@@ -43,6 +43,8 @@
 #include "display/psd-pixels.h"
 #include "display/raster-pixels.h"
 #include "display/tiff-pixels.h"
+#include "document.h"
+#include "io/link-policy.h"
 #include "object/sp-image.h"
 #include "object/uri.h"
 #include "util/uri.h"
@@ -201,6 +203,10 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
         }
         if (!g_path_is_absolute(link.c_str()) || link.size() > 4096 ||
             link.find_first_of("\r\n") != std::string::npos) return refused("unsupported linked picture paths");
+        // Not looked up on another computer (io/link-policy.h), so not checked or written either.
+        if (!Inkscape::IO::may_follow_link(link, image->document->getDocumentBase())) {
+            return refused("linked pictures on another computer");
+        }
         if (!g_file_test(link.c_str(), G_FILE_TEST_IS_REGULAR)) {
             return refused("missing or unreadable linked pictures");
         }
@@ -231,10 +237,15 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     // link) and crop with an editable clipping group, nested inside any explicit clip the
     // caller opened. Transform the four corners, not the rectangle's axis-aligned bounds:
     // the viewport can be turned, reflected or skewed together with its picture.
+    // The closing side is written back to the first corner, as Illustrator writes every
+    // closed path: it takes a closed path's last point for its first, so without that
+    // side the fourth corner became the first anchor's handle and the clip's lower
+    // left a curve (Illustrator 29.2.1, 2026-10-21).
     std::string viewport_clip;
     if (cropped) {
-        std::array<Geom::Point, 4> const corners{{{box->left(), box->top()}, {box->right(), box->top()},
-                                                {box->right(), box->bottom()}, {box->left(), box->bottom()}}};
+        std::array<Geom::Point, 5> const corners{{{box->left(), box->top()}, {box->right(), box->top()},
+                                                {box->right(), box->bottom()}, {box->left(), box->bottom()},
+                                                {box->left(), box->top()}}};
         viewport_clip = "q\n";
         for (std::size_t i = 0; i < corners.size(); ++i) {
             auto const point = corners[i] * item_to_art;

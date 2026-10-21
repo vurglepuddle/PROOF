@@ -188,6 +188,18 @@ def main():
     result = run("refusal-page", [exe, unsupported, f"--export-filename={per_page}", native,
                                   "--export-page=1"], success=False)
     check("selected-page refusal returns failure", result.returncode == 1 and not per_page.exists())
+    # Numbers that overflow are refused by name. Before, they were written "inf" and "nan".
+    for name, art, why in (
+            ("coordinates", '<path d="M0 0 L10 10 L0 10 Z" fill="#000" transform="scale(1e308)"/>',
+             b"nonfinite path coordinates"),
+            ("stroke", '<path d="M0 0 L10 10" stroke="#000" stroke-width="1e308" transform="scale(10)"/>',
+             b"nonfinite stroke widths or dashes")):
+        overflow = out / f"overflow-{name}.svg"
+        overflow.write_text(svg.replace("</svg>", art + "</svg>"), encoding="utf-8")
+        absent = out / f"overflow-{name}.ai"
+        result = run(f"refusal-overflow-{name}", [exe, overflow, f"--export-filename={absent}", native], success=False)
+        check(f"overflowing {name} refused by name", result.returncode == 1 and why in result.stderr and
+              not absent.exists())
     directory = out / "directory.ai"
     directory.mkdir()
     result = run("failed-replace", [exe, source, f"--export-filename={directory}", native], success=False)

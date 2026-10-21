@@ -363,6 +363,19 @@ std::vector<std::string> Writer::path_types(SPShape const *shape, Geom::PathVect
 
 void Writer::path_data(Geom::Path const &path, std::string_view types)
 {
+    // A coordinate that isn't a number would be written "nan" or "inf", which no reader takes.
+    auto const finite = [](Geom::Point const &p) { return std::isfinite(p.x()) && std::isfinite(p.y()); };
+    bool numbers = finite(path.initialPoint());
+    for (auto const &c : path) {
+        if (auto cubic = dynamic_cast<Geom::CubicBezier const *>(&c)) {
+            numbers = numbers && finite((*cubic)[1]) && finite((*cubic)[2]);
+        }
+        numbers = numbers && finite(c.finalPoint());
+    }
+    if (!numbers) {
+        refuse("nonfinite path coordinates");
+        return;
+    }
     auto const start = path.initialPoint();
     _body << num(start.x()) << ' ' << num(start.y()) << " m\n";
     auto segment = [&](Geom::Curve const &c, std::size_t node) {
@@ -471,6 +484,14 @@ void Writer::shape(SPShape const *s)
     if (stroke) {
         state(_stroke, *stroke);
         double const scale = std::sqrt(std::abs(affine.det()));
+        // As for coordinates: a width or dash that isn't a number would be written "inf"/"nan".
+        bool numbers = std::isfinite(style->stroke_width.computed * scale) &&
+                       std::isfinite(style->stroke_dashoffset.computed * scale);
+        for (auto const &d : style->stroke_dasharray.values) numbers = numbers && std::isfinite(d.computed * scale);
+        if (!numbers) {
+            refuse("nonfinite stroke widths or dashes");
+            return;
+        }
         std::string dash = "[";
         for (auto const &d : style->stroke_dasharray.values) {
             dash += (dash.size() > 1 ? " " : "") + num(d.computed * scale);

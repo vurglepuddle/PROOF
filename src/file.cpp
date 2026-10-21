@@ -50,6 +50,7 @@
 #include "inkscape.h"
 #include "io/file.h"
 #include "io/fix-broken-links.h"
+#include "io/link-policy.h"
 #include "io/resource.h"
 #include "io/sys.h"
 #include "layer-manager.h"
@@ -664,6 +665,8 @@ SPObject *file_import(SPDocument *in_doc, std::string const &path, Inkscape::Ext
     SPDesktop *desktop = SP_ACTIVE_DESKTOP;
     bool cancelled = false;
     auto prefs = Inkscape::Preferences::get();
+    // PROOF: the user chose this file, so a picture linked from its share is followed (io/link-policy.h).
+    Inkscape::IO::trust_link_share(path);
 
     // Store mouse pointer location before opening any dialogs, so we can drop the item where initially intended.
     auto pointer_location = drop_pos.value_or(desktop->point());

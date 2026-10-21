@@ -32,6 +32,7 @@
 #include "display/nr-filter-image.h"             // for FilterImage
 #include "display/nr-filter-primitive.h"         // for FilterPrimitive
 #include "display/nr-filter.h"                   // for Filter
+#include "io/link-policy.h"                      // for may_follow_link
 
 #include "object/filters/sp-filter-primitive.h"  // for SPFilterPrimitive
 #include "object/sp-item.h"                      // for SPItem, SP_ITEM_SHOW...
@@ -147,6 +148,10 @@ void SPFeImage::try_load_image()
      * (See http://www.w3.org/TR/xmlbase/#resolution .) */
 
     auto try_assign = [this] (char const *name) {
+        // PROOF: a picture on another computer isn't looked up (io/link-policy.h).
+        if (!Inkscape::IO::may_follow_link(name, document->getDocumentBase())) {
+            return false;
+        }
         if (!g_file_test(name, G_FILE_TEST_IS_REGULAR)) {
             return false;
         }

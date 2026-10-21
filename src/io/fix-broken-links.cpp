@@ -20,6 +20,7 @@
 
 #include "document-undo.h"
 #include "document.h"
+#include "io/link-policy.h"
 #include "io/split-path.h"
 #include "object/sp-image.h"
 #include "object/sp-object.h"
@@ -183,7 +184,10 @@ static std::vector<Glib::ustring> findBrokenLinks( SPDocument *doc )
                 std::string filename;
                 if (extractFilepath(href, filename)) {
                     if (Glib::path_is_absolute(filename)) {
-                        if (!Glib::file_test(filename, Glib::FileTest::EXISTS)) {
+                        // PROOF: one on another computer isn't looked up: it is broken here
+                        // (io/link-policy.h), and may be found beside the document.
+                        if (!Inkscape::IO::may_follow_link(filename, doc->getDocumentBase()) ||
+                            !Glib::file_test(filename, Glib::FileTest::EXISTS)) {
                             result.emplace_back(href);
                             uniques.insert(href);
                         }
@@ -248,7 +252,8 @@ static std::map<Glib::ustring, Glib::ustring> locateLinks(Glib::ustring const & 
                 filename = Glib::build_filename(docbase_native, filename);
             }
 
-            bool exists = Glib::file_test(filename, Glib::FileTest::EXISTS);
+            bool exists = Inkscape::IO::may_follow_link(filename, docbase_native.c_str()) &&
+                          Glib::file_test(filename, Glib::FileTest::EXISTS);
 
             // search in parent folders
             if (!exists) {

@@ -4,6 +4,7 @@ target_sources(inkscape_base PRIVATE
   dir-util.cpp
   file.cpp
   file-export-cmd.cpp
+  link-policy.cpp
   recent-files.cpp
   resource.cpp
   sandbox.cpp
@@ -24,6 +25,7 @@ target_sources(inkscape_base PRIVATE
   file.h
   file-export-cmd.h
   file-export-status.h
+  link-policy.h
   recent-files.h
   resource.h
   sandbox.h

@@ -17,6 +17,7 @@
 #include "streq.h"
 
 #include "io/dir-util.h"
+#include "io/link-policy.h"
 #include "io/sys.h"
 
 #include "object/sp-object.h"
@@ -153,10 +154,21 @@ static void rebase_image_href(Inkscape::XML::Node *ir, std::string const &old_ba
         return;
     }
 
+    // PROOF: a file on another computer isn't looked up (io/link-policy.h); its link is
+    // rebased as it is written.
+    std::string old_base;
+    if (gchar *folder = g_filename_from_uri(old_base_url_str.c_str(), nullptr, nullptr)) {
+        old_base = folder;
+        g_free(folder);
+    }
+    auto const follow = [&](char const *file) {
+        return Inkscape::IO::may_follow_link(file, old_base.c_str()) && g_file_test(file, G_FILE_TEST_EXISTS);
+    };
+
     // if path doesn't exist, use sodipodi:absref
-    if (!g_file_test(filename.c_str(), G_FILE_TEST_EXISTS)) {
+    if (!follow(filename.c_str())) {
         auto spabsref = ir->attribute("sodipodi:absref");
-        if (spabsref && g_file_test(spabsref, G_FILE_TEST_EXISTS)) {
+        if (spabsref && follow(spabsref)) {
             url = URI::from_native_filename(spabsref);
         }
     } else if (spns) {

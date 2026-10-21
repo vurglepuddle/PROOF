@@ -35,6 +35,7 @@
 #include "display/cairo-utils.h"
 #include "display/drawing-image.h"
 #include "document.h"
+#include "io/link-policy.h"
 #include "object/sp-root.h"
 #include "object/uri.h"
 #include "path/path-curve.h"
@@ -598,6 +599,8 @@ unsigned sp_images_relink(SPImage *image, std::string const &file)
         return 0;
     }
     auto *document = image->document;
+    // The user chose this file: its share is followed now, if it is on one (io/link-policy.h).
+    Inkscape::IO::trust_link_share(file);
     // Listed before anything changes: what is linked below is no longer missing.
     auto const others = sp_images_missing(document);
     image->relink(file);
@@ -654,18 +657,25 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
             if (url.hasScheme("file")) {
                 try {
                     auto native = url.toNativeFilename();
-                    inkpb = Inkscape::Pixbuf::create_from_file(native.c_str(), svgdpi, cmyk);
+                    // PROOF: a picture on another computer isn't looked up (io/link-policy.h).
+                    if (Inkscape::IO::may_follow_link(native, base)) {
+                        inkpb = Inkscape::Pixbuf::create_from_file(native.c_str(), svgdpi, cmyk);
+                    }
                 } catch (Glib::ConvertError const &e) {
                     g_warning("readImage: %s", e.what());
                     inkpb = nullptr;
                 }
             } else {
+                // PROOF: on Windows, nor one at a web or network address (http:, smb:…), which
+                // is on another computer too. Elsewhere these are fetched as before.
+#ifndef _WIN32
                 try {
                     auto contents = url.getContents();
                     inkpb = Inkscape::Pixbuf::create_from_buffer(contents, svgdpi, "", cmyk);
                 } catch (const Gio::Error &e) {
                     g_warning("URI::getContents failed for '%.100s'", href);
                 }
+#endif
             }
         }
 
@@ -684,7 +694,9 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
             g_warning ("xlink:href did not resolve to a valid image file, now trying sodipodi:absref=\"%s\"", absref);
         }
 
-        inkpb = Inkscape::Pixbuf::create_from_file(filename, svgdpi, cmyk);
+        if (Inkscape::IO::may_follow_link(filename, base)) {
+            inkpb = Inkscape::Pixbuf::create_from_file(filename, svgdpi, cmyk);
+        }
         if (inkpb != nullptr) {
             return inkpb;
         }

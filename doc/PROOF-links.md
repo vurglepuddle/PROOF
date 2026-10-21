@@ -56,6 +56,46 @@ Not yet:
 - **Taking the picture from an `.ai` file's own PDF page**, which holds it at
   full size.
 
+## Links on other computers (2026-10-21)
+
+A document can name a linked file on another computer: `\\server\share\logo.tif`,
+`file://server/share/logo.tif`, or a web or network address. On Windows, looking
+one up makes Windows contact that computer and offer the user's sign-in to it, so
+a received file whose links name a server could collect it. VectorCraft stopped
+following such links the same week (their `6e4fb6e4`, read as a delta only).
+
+The owner's choice, 2026-10-21: follow links on this computer and on the share
+the document itself is on. So PROOF looks up a linked file when it is:
+
+- on a drive of this computer, **mapped network drives included** (the user
+  mapped them, and Windows is already signed in to their servers);
+- relative to the document;
+- on the same `\\server\share` as the document (a job folder on a NAS keeps
+  working when the document is opened from it), read through a mapped drive
+  too: `Z:\Jobs\doc.ai` linking `\\nas\jobs\logo.tif` when `Z:` is `\\nas\jobs`;
+- on a share the user chose a file from in this session: File > Place or
+  Import, drag and drop, Relink, Properties > Change.
+
+Any other share, a device path (`\\.\…`) and a web or network address
+(`http:`, `smb:`) is not looked up. The picture shows as missing, with what the
+document keeps of it, and Relink picks it up. An `.ai` import names the shares
+it passed over in its notes: "linked files on another computer weren't looked
+up (\\nas\other): …". A server spelt two ways (`\\nas` and `\\192.168.1.5`)
+counts as two. The `.ai` writer refuses a link on another computer by name;
+PDF export leaves it out, as it does a missing file. Elsewhere than Windows,
+links are followed as before. None of the 480 placed-file links in the two
+`.ai` sets checked here names a network share (all are drive letters), so no
+file of ours opens differently.
+
+The rule is `Inkscape::IO::may_follow_link` in `src/io/link-policy.*`, called
+wherever a document's own words lead to a file: the picture loader
+(`SPImage::readImage`, `sodipodi:absref` included), the search for moved files
+that runs on opening (`io/fix-broken-links.cpp`), Save As rebasing
+(`xml/rebase-hrefs.cpp`), filter pictures (`object/filters/image.cpp`), other
+documents used by reference (`object/uri-references.cpp`), PDF export
+(`pdfoutput/build-images.cpp`), the `.ai` importer's link search
+(`Builder::linked_file`) and the `.ai` writer's link check.
+
 ## How it is stored
 
 ```xml
@@ -84,6 +124,7 @@ picture held in the document.
 | The highlight | `src/display/control/font-highlight.h` (`link_highlight_shape`) |
 | The menu entry | `win.document-missing-links` in `src/actions/actions-file-window.cpp` |
 | The preview from an `.ai` file | `src/extension/internal/ai/ai-native-reader.cpp` (`preview_of`), `ai-native-import.cpp` (`Builder::placed`) |
+| Which linked files may be looked up | `src/io/link-policy.*` (`may_follow_link`, `network_share`, `trust_link_share`) |
 
 ## Checks
 
@@ -103,3 +144,7 @@ Unit tests:
   `LinkedPictureThatDoesNotShowOrCannotBeRead`, and
   `ALinkedPictureThatIsGoneIsLeftOutOfTheComparison` against an independently
   written PDF page.
+- Links on other computers, in the same suite: `LinkPolicy.PathsNameTheirNetworkShare`,
+  `LinkPolicy.OnlyTheDocumentsOwnShareOrAChosenOneIsFollowed` (the rule from
+  the paths alone; no network is touched) and
+  `ALinkedPictureOnAnotherComputerIsNotLookedUpAndIsNamed`.
