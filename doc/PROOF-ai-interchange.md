@@ -1143,3 +1143,54 @@ corrected legacy **59/59** rerun superseding its initial assertion failure.
 The existing legacy-picture smoke remains **13/13**; its records differ from
 the previous Illustrator-qualified picture control only by the added title.
 No broader artwork regression or new reader-corpus acceptance is claimed.
+
+### Registration and picture slice crops (2026-10-21, candidate)
+
+This candidate remains on `ai-interchange`, separately from the installed and
+shared qualified build. Headless results are recorded below; opening these
+new PROOF exports in Illustrator remains pending.
+
+Modern native output writes canonical Registration fills and strokes with
+`Xs`/`XS`, the inverted tint, and a `CMYKProcessColor` declaration for
+`[Registration]`. It does not declare an ordinary custom ink named `All`.
+The document's reserved identity is `proof:ink="All"`, with an opaque CMYK
+alternate of `1 1 1 1`; this is the representation produced by native and
+PDF imports. Display labels alone do not identify Registration. Ordinary
+case-sensitive ink names such as `all` and `All ` remain ordinary inks.
+
+The PDF half and direct CapyPDF output use a cached
+`[/Separation /All /DeviceCMYK ...]` colour space. The Type 4 tint transform
+`{ dup dup dup }` maps the tint to all four alternate channels. Mask rendering
+keeps its existing luminosity preview. This is Registration support only;
+ordinary spot separations, DeviceN and PDF/X remain separate work.
+
+Native output refuses malformed Registration metadata, invalid tints,
+noncanonical alternates and the ambiguous literal ink name `[Registration]`.
+Registration in gradients remains refused. Illustrator 7 now also refuses
+solid Registration explicitly: its version-specific encoding has not been
+qualified, so it can no longer silently write it as a custom spot.
+
+Picture slice crops now retain the complete raster or original link inside
+an editable clipping group. The four viewport corners pass through the same
+affine as the picture, preserving rotation, reflection and skew. Existing
+explicit clips remain outside that viewport clip. Both native versions use
+this geometry; the legacy restrictions on alpha and links still apply.
+PDF raster output clips to the image viewport before painting its fitted
+pixels. Meet and stretched placements retain their prior geometry.
+
+An Illustrator-created synthetic control, `4c180201da`, was saved before
+live automation stopped. Its records confirm `Xs`/`XS`, the process-colour
+declaration and full/40%/0% fill and 60% stroke tints. The subsequent legacy
+reference-save attempt ended with a failed COM RPC and Windows
+`AppHangTransient`; the owner reported Illustrator had crashed. The cause
+is unproven. No further Illustrator automation ran, and this is not
+Illustrator acceptance of PROOF-generated candidate exports.
+
+Combined final verification passes **13 unit suites and 20 export groups
+(692 checks)**: importer **154 cases, zero failures, two opt-in skips**;
+Registration **80/80**, crop **27/27**. All sampled native crop pixels match
+the canvas exactly; PDF probes differ by at most 5. CMYK samples are retained
+exactly, including behind clips. The initial new tests incorrectly expected
+a gradient-reference form to be supported and absolute link spelling in saved
+SVG; corrected importer/crop reruns supersede those expectations. No production
+thresholds were changed. Original reports and reruns remain separate.

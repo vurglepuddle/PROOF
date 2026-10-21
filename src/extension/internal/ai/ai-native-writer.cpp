@@ -160,6 +160,7 @@ private:
     std::ostringstream _body;
     std::set<std::string> _refused;
     std::map<std::string, std::array<double, 4>> _spots;
+    bool _registration = false;
     std::vector<std::string> _gradients;
     std::size_t _layers = 0;
     // What has been set already, so each operator is written only when it changes.
@@ -179,6 +180,7 @@ std::string Writer::encoded_name(std::string const &text, std::string_view what)
 
 void Writer::ink_comments(std::ostream &head)
 {
+    if (_registration) head << "%%CMYKProcessColor: 1 1 1 1 ([Registration])\n";
     bool first = true;
     for (auto const &[name, c] : _spots) {
         head << (first ? "%%DocumentCustomColors: " : "%%+ ") << encoded_name(name, "ink names") << '\n';
@@ -221,10 +223,58 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
     auto server = p.isPaintserver() && p.href ? p.href->getObject() : nullptr;
     auto swatch = cast<SPGradient>(server);
     if (swatch && swatch->isSolid()) {
-        auto ink = SpotInk::read(swatch->getRepr());
-        if (!ink && swatch->getVector()) ink = SpotInk::read(swatch->getVector()->getRepr());
-        if (!ink) return colour(const_cast<SPGradient *>(swatch)->getPreviewAverageColor(), fill);
+        auto reserved = [](auto const *node) {
+            auto const name = node->attribute("proof:ink");
+            return name && (std::string_view(name) == "All" || std::string_view(name) == "[Registration]");
+        };
+        auto *ink_node = swatch->getRepr();
+        auto ink = SpotInk::read(ink_node);
+        if (!ink && swatch->getVector()) {
+            if (reserved(ink_node)) {
+                refuse("malformed Registration ink definitions");
+                return {};
+            }
+            ink_node = swatch->getVector()->getRepr();
+            ink = SpotInk::read(ink_node);
+        }
+        if (!ink) {
+            if (reserved(ink_node)) {
+                refuse("malformed Registration ink definitions");
+                return {};
+            }
+            return colour(const_cast<SPGradient *>(swatch)->getPreviewAverageColor(), fill);
+        }
+        // All is the document's reserved PDF Registration ink. A literal
+        // [Registration] spot has a different PDF meaning, so do not silently
+        // promote it to Registration in the private artwork.
+        if (ink->name == "[Registration]") {
+            refuse("ambiguous Registration ink names");
+            return {};
+        }
         auto const &a = ink->alternate;
+        if (ink->name == "All") {
+            if (_legacy) {
+                refuse("Registration ink (Illustrator 7)");
+                return {};
+            }
+            bool valid_tint = true;
+            if (auto const text = ink_node->attribute("proof:ink-tint")) {
+                char *end = nullptr;
+                auto const tint = g_ascii_strtod(text, &end);
+                valid_tint = end != text && std::isfinite(tint) && tint >= 0 && tint <= 1;
+                while (end && g_ascii_isspace(*end)) ++end;
+                valid_tint = valid_tint && end && !*end;
+            }
+            if (!valid_tint || !a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK ||
+                a.getOpacity() != 1.0 || a[0] != 1.0 || a[1] != 1.0 || a[2] != 1.0 || a[3] != 1.0) {
+                refuse("noncanonical Registration ink definitions");
+                return {};
+            }
+            _registration = true;
+            // Illustrator writes a process Registration declaration and Xs/XS,
+            // never an ordinary custom ink named All. Its operand is 1 - tint.
+            return "1 1 1 1 ([Registration]) " + num(1.0 - ink->tint) + (fill ? " Xs" : " XS");
+        }
         if (!a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK) {
             refuse("spot inks defined in RGB or Lab");
             return {};

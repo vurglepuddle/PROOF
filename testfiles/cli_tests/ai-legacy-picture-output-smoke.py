@@ -143,7 +143,6 @@ def main():
     for label, body, reason in [
         ('alpha', f'<image width="80" height="60" href="{uri(rgba, "PNG")}"/>', b'picture transparency (Illustrator 7)'),
         ('linked', '<image width="80" height="60" href="sample.png"/>', b'linked pictures (Illustrator 7)'),
-        ('slice', f'<image width="40" height="80" preserveAspectRatio="xMidYMid slice" href="{uri(opaque, "PNG")}"/>', b'pictures cropped to their box'),
         ('opacity', f'<image width="80" height="60" opacity=".5" href="{uri(opaque, "PNG")}"/>', b'transparency'),
     ]:
         path = out / (label + '.svg')

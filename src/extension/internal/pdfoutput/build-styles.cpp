@@ -11,6 +11,9 @@
  */
 
 #include "build-drawing.h"
+
+#include <cmath>
+
 #include "colors/cms/profile.h"
 #include "colors/color.h"
 #include "colors/spaces/cms.h"
@@ -18,9 +21,34 @@
 #include "object/sp-gradient.h"
 #include "libnrtype/font-instance.h"
 #include "object/sp-paint-server.h"
+#include "spot-ink.h"
 #include "style.h"
 
 namespace Inkscape::Extension::Internal::PdfBuilder {
+
+namespace {
+
+/// The bundled C++ Color wrapper omits Separation, while the C API supports it.
+class RegistrationColor : public capypdf::Color
+{
+public:
+    RegistrationColor(CapyPDF_SeparationId ink, double tint)
+    {
+        auto const error = capy_color_set_separation(*this, ink, tint);
+        if (error) throw capypdf::PdfException(capy_error_message(error));
+    }
+};
+
+} // namespace
+
+CapyPDF_SeparationId DocumentGenerator::add_registration_ink(CapyPDF_FunctionId tint_transform)
+{
+    CapyPDF_SeparationId separation;
+    auto const error = capy_generator_add_separation(
+        *this, "All", 3, CAPY_DEVICE_CS_CMYK, tint_transform, &separation);
+    if (error) throw capypdf::PdfException(capy_error_message(error));
+    return separation;
+}
 
 /**
  * Get the blend mode for capyPDF output.
@@ -344,6 +372,32 @@ std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle
     if (paint.isPaintserver()) {
         auto swatch = cast<SPGradient>(paint.href ? paint.href->getObject() : nullptr);
         if (swatch && swatch->isSolid()) {
+            // PROOF: the imported Registration swatch is the reserved ink All. Its
+            // canonical CMYK definition prints on every plate, rather than becoming
+            // four process inks or an ordinary spot. A mask still needs its preview
+            // luminosity; do not introduce an ink into that rendering pass.
+            auto ink = SpotInk::read(swatch->getRepr());
+            if (!ink && swatch->getVector()) ink = SpotInk::read(swatch->getVector()->getRepr());
+            if (!opacity && ink && ink->name == "All") {
+                auto const &alternate = ink->alternate;
+                auto const space = alternate.getSpace();
+                bool const canonical = space && space->getComponentType() == Colors::Space::Type::CMYK &&
+                    alternate.getOpacity() == 1.0 && alternate[0] == 1.0 && alternate[1] == 1.0 &&
+                    alternate[2] == 1.0 && alternate[3] == 1.0 && std::isfinite(ink->tint) &&
+                    ink->tint >= 0.0 && ink->tint <= 1.0;
+                if (canonical) {
+                    if (!_registration_ink) {
+                        // CapyPDF accepts only calculator functions for Separation
+                        // tint transforms. This maps t to the CMYK alternate t,t,t,t.
+                        double domain[]{0, 1};
+                        double range[]{0, 1, 0, 1, 0, 1, 0, 1};
+                        capypdf::Type4Function tint_transform(domain, 2, range, 8, "{ dup dup dup }", -1);
+                        auto const function = _gen.add_function(tint_transform);
+                        _registration_ink = _gen.add_registration_ink(function);
+                    }
+                    return capypdf::Color{RegistrationColor(*_registration_ink, ink->tint)};
+                }
+            }
             return get_color(swatch->getPreviewAverageColor(), opacity);
         } else if (auto pattern_id = get_pattern(paint.href ? paint.href->getObject() : nullptr, opacity, bbox)) {
             out.set_pattern(*pattern_id);

@@ -179,12 +179,15 @@ void DrawContext::paint_raster(SPImage const *image)
         _ctx.cmd_Q();
     } else if (raster_id) {
         // Format the width and height into a transformation matrix, the image is a unit square painted
-        // from the bottom upwards so must be scaled out and flipped. No cropping is needed.
+        // from the bottom upwards so must be scaled out and flipped. A slice's paint box
+        // can be larger than its viewport: clip before applying the pixel transform, as
+        // the canvas does, keeping any existing explicit clip as well.
         auto paint_box = image->get_paintbox(img_width, img_height, image_box);
         auto outside =
             Geom::Affine(paint_box->width(), 0, 0, -paint_box->height(), paint_box->left(), paint_box->bottom());
 
         _ctx.cmd_q();
+        set_clip_rectangle(image_box);
         transform(outside);
         _ctx.cmd_Do(*raster_id);
         _ctx.cmd_Q();

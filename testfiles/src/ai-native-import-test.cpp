@@ -5358,6 +5358,139 @@ TEST_F(AiNativeImportTest, WrittenRecordsKeepSpotInksClipsAndArtboards)
     EXPECT_TRUE(clipped);
 }
 
+TEST_F(AiNativeImportTest, WrittenRegistrationKeepsItsPlateMeaningTintsAndOverprint)
+{
+    auto doc = svg_document(R"(<rect id="zero" x="10" y="10" width="20" height="20"/>)"
+                            R"(<rect id="tint" x="40" y="10" width="20" height="20"/>)"
+                            R"(<rect id="full" x="70" y="10" width="20" height="20"/>)");
+    ASSERT_TRUE(doc);
+    std::array<double, 3> const tints{0.0, 0.35, 1.0};
+    std::array<char const *, 3> const names{"zero", "tint", "full"};
+    for (unsigned i = 0; i < tints.size(); ++i) {
+        auto const id = SpotInk::ensure(doc.get(), {"All", Colors::Color(Type::CMYK, {1, 1, 1, 1}), tints[i]});
+        auto *item = doc->getObjectById(names[i]);
+        ASSERT_TRUE(item);
+        item->setAttribute("style", "fill:url(#" + id + ");stroke:url(#" + id + ");stroke-width:2");
+        item->setAttribute("proof:overprint", "fill stroke");
+    }
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find("%%CMYKProcessColor: 1 1 1 1 ([Registration])\n"), std::string::npos);
+    EXPECT_EQ(written.records.find("%%DocumentCustomColors:"), std::string::npos);
+    EXPECT_EQ(written.records.find("%%CMYKCustomColor:"), std::string::npos);
+    std::string error;
+    auto ai = AN::read(written.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->layers.size(), 1u);
+    auto const &children = ai->layers[0].children;
+    ASSERT_EQ(children.size(), tints.size());
+    for (unsigned i = 0; i < children.size(); ++i) {
+        SCOPED_TRACE(i);
+        auto const &node = children[i];
+        ASSERT_TRUE(node.fill);
+        ASSERT_TRUE(node.stroke);
+        for (auto const *paint : {&*node.fill, &*node.stroke}) {
+            ASSERT_GE(paint->ink, 0);
+            ASSERT_LT(static_cast<unsigned>(paint->ink), ai->inks.size());
+            EXPECT_EQ(ai->inks[paint->ink].kind, AN::Ink::Kind::Registration);
+            EXPECT_EQ(ai->inks[paint->ink].name, "[Registration]");
+            EXPECT_NEAR(paint->tint, tints[i], 1e-6);
+        }
+        EXPECT_TRUE(node.overprint_fill);
+        EXPECT_TRUE(node.overprint_stroke);
+    }
+    // Actual Illustrator 7 Registration encoding remains unqualified.
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_EQ(legacy.refused, std::vector<std::string>{"Registration ink (Illustrator 7)"});
+}
+
+TEST_F(AiNativeImportTest, RegistrationGradientReferencesRemainRefused)
+{
+    auto doc = svg_document(
+        R"(<defs xmlns:xlink="http://www.w3.org/1999/xlink"><linearGradient id="base" inkscape:swatch="solid" proof:ink="All" )"
+        R"x(proof:ink-alternate="device-cmyk(1 1 1 1)" proof:ink-tint="0.35">)x"
+        R"x(<stop offset="0" style="stop-color:device-cmyk(0.35 0.35 0.35 0.35)"/></linearGradient>)x"
+        R"(<linearGradient id="reference" inkscape:swatch="solid" xlink:href="#base"/></defs>)"
+        R"x(<rect width="20" height="20" fill="url(#reference)"/>)x");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    // This is a gradient reference, rather than a self-contained single-stop
+    // swatch. Keep the existing refusal until that form is qualified as paint.
+    EXPECT_TRUE(written.records.empty());
+    EXPECT_EQ(written.refused, std::vector<std::string>{"spot ink swatches used as gradients"});
+    // Partial local metadata must not turn the reference into process paint.
+    doc->getObjectById("reference")->setAttribute("proof:ink", "All");
+    auto const refused = AN::write_records(doc.get());
+    EXPECT_TRUE(refused.records.empty());
+    EXPECT_EQ(refused.refused, std::vector<std::string>{"spot ink swatches used as gradients"});
+}
+
+TEST_F(AiNativeImportTest, TheWriterRefusesAmbiguousAndMalformedRegistration)
+{
+    struct Case { std::string attributes, reason; };
+    std::vector<Case> const cases{
+        {R"x(proof:ink="[Registration]" proof:ink-alternate="device-cmyk(1 1 1 1)")x", "ambiguous Registration ink names"},
+        {R"x(proof:ink="All" proof:ink-alternate="device-cmyk(0.75 0.68 0.67 0.9)")x", "noncanonical Registration ink definitions"},
+        {R"(proof:ink="All" proof:ink-alternate="#000000")", "noncanonical Registration ink definitions"},
+        {R"x(proof:ink="All" proof:ink-alternate="lab(0% 0 0)")x", "noncanonical Registration ink definitions"},
+        {R"(proof:ink="All" proof:ink-alternate="not-a-colour")", "malformed Registration ink definitions"},
+        {R"(proof:ink="All")", "malformed Registration ink definitions"},
+    };
+    for (auto const &test : cases) {
+        SCOPED_TRACE(test.attributes);
+        auto doc = svg_document("<defs><linearGradient id='ink' inkscape:swatch='solid' " + test.attributes +
+            R"(><stop offset="0" stop-color="#000000"/></linearGradient></defs>)"
+            R"x(<rect width="20" height="20" fill="url(#ink)"/>)x");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_EQ(written.refused, std::vector<std::string>{test.reason});
+    }
+    for (auto const tint : {"", "nonsense", "0.35 trailing", "-0.1", "1.1", "nan", "inf"}) {
+        SCOPED_TRACE(tint);
+        auto doc = svg_document(
+            R"(<defs><linearGradient id="ink" inkscape:swatch="solid" proof:ink="All" )"
+            R"x(proof:ink-alternate="device-cmyk(1 1 1 1)" proof:ink-tint=")x" + std::string(tint) +
+            R"("><stop offset="0" stop-color="#000000"/></linearGradient></defs>)"
+            R"x(<rect width="20" height="20" fill="url(#ink)"/>)x");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_EQ(written.refused, std::vector<std::string>{"noncanonical Registration ink definitions"});
+    }
+}
+
+TEST_F(AiNativeImportTest, OrdinaryInkNamesNearRegistrationStayOrdinarySpots)
+{
+    for (auto const name : {"all", "ALL", "All ", "Ordinary"}) {
+        SCOPED_TRACE(name);
+        auto doc = svg_document(R"(<rect id="art" width="20" height="20"/>)");
+        ASSERT_TRUE(doc);
+        auto const id = SpotInk::ensure(doc.get(), {name, Colors::Color(Type::CMYK, {1, 1, 1, 1}), 0.35});
+        doc->getObjectById(id)->setAttribute("inkscape:label", "[Registration]");
+        doc->getObjectById("art")->setAttribute("style", "fill:url(#" + id + ")");
+        for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+            auto const written = AN::write_records(doc.get(), version);
+            ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+            EXPECT_EQ(written.records.find("%%CMYKProcessColor:"), std::string::npos);
+            std::string error;
+            auto ai = AN::read(written.records, error);
+            ASSERT_TRUE(ai) << error;
+            ASSERT_EQ(ai->layers.size(), 1u);
+            ASSERT_EQ(ai->layers[0].children.size(), 1u);
+            auto const &fill = ai->layers[0].children[0].fill;
+            ASSERT_TRUE(fill);
+            ASSERT_GE(fill->ink, 0);
+            ASSERT_LT(static_cast<unsigned>(fill->ink), ai->inks.size());
+            EXPECT_EQ(ai->inks[fill->ink].kind, AN::Ink::Kind::Spot);
+            EXPECT_EQ(ai->inks[fill->ink].name, name);
+            EXPECT_NEAR(fill->tint, 0.35, 1e-6);
+        }
+    }
+}
+
 TEST_F(AiNativeImportTest, LegacyWrittenRecordsKeepTheSingleArtboardGeometryAndPaint)
 {
     auto doc = svg_document(
@@ -5804,8 +5937,6 @@ TEST_F(AiNativeImportTest, PicturesTheWriterCannotWriteAreRefusedByName)
     struct Case { std::string image, reason; };
     std::vector<Case> const cases{
         {R"(<image x="0" y="0" width="10" height="10" href="data:image/svg+xml;base64,PHN2Zy8+"/>)", "SVG pictures"},
-        {R"(<image x="0" y="0" width="10" height="20" preserveAspectRatio="xMidYMid slice" href=")" + png_uri(1, 1, pixel) +
-             R"("/>)", "pictures cropped to their box"},
     };
     for (auto const &test : cases) {
         SCOPED_TRACE(test.reason);

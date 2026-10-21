@@ -220,16 +220,35 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     auto const box = image->bbox(Geom::identity(), SPItem::GEOMETRIC_BBOX);
     auto const paint = box ? image->get_paintbox(w, h, box) : Geom::OptRect();
     if (!box || !paint || paint->width() <= 0 || paint->height() <= 0) return refused("pictures without a size");
-    auto const grown = *box;
-    if (paint->left() < grown.left() - 1e-6 || paint->top() < grown.top() - 1e-6 ||
-        paint->right() > grown.right() + 1e-6 || paint->bottom() > grown.bottom() + 1e-6) {
-        return refused("pictures cropped to their box");
-    }
+    bool const cropped = paint->left() < box->left() - 1e-6 || paint->top() < box->top() - 1e-6 ||
+                         paint->right() > box->right() + 1e-6 || paint->bottom() > box->bottom() + 1e-6;
     auto const a = Geom::Affine(paint->width() / w, 0, 0, paint->height() / h, paint->left(), paint->top()) * item_to_art;
     for (int i = 0; i < 6; ++i) {
         if (!std::isfinite(a[i])) return refused("singular or nonfinite picture transforms");
     }
     if (std::abs(a.det()) < 1e-12) return refused("singular or nonfinite picture transforms");
+    // A slice fills the viewport with a larger picture. Keep all pixels (or the original
+    // link) and crop with an editable clipping group, nested inside any explicit clip the
+    // caller opened. Transform the four corners, not the rectangle's axis-aligned bounds:
+    // the viewport can be turned, reflected or skewed together with its picture.
+    std::string viewport_clip;
+    if (cropped) {
+        std::array<Geom::Point, 4> const corners{{{box->left(), box->top()}, {box->right(), box->top()},
+                                                {box->right(), box->bottom()}, {box->left(), box->bottom()}}};
+        viewport_clip = "q\n";
+        for (std::size_t i = 0; i < corners.size(); ++i) {
+            auto const point = corners[i] * item_to_art;
+            if (!std::isfinite(point.x()) || !std::isfinite(point.y())) {
+                return refused("singular or nonfinite picture transforms");
+            }
+            viewport_clip += std::format("{} {} {}\n", fine(point.x()), fine(point.y()), i ? 'L' : 'm');
+        }
+        viewport_clip += "h\nW\nn\n";
+    }
+    auto with_crop = [&](WrittenPicture out) {
+        if (!viewport_clip.empty()) out.records = viewport_clip + std::move(out.records) + "Q\n";
+        return out;
+    };
     if (!link.empty()) {
         // A placed file uses the stored box directly (unlike a raster's upside-down rows).
         // Pixel-sized boxes work for TIFF too, independently of its resolution; verified by
@@ -240,7 +259,7 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
                                   "{}`\n%%IncludeFile:{}\n~\n%AI5_EndPlace\n",
                                   fine(a[0]), fine(a[1]), fine(a[2]), fine(a[3]), fine(a[4]), fine(a[5]),
                                   w, h, ps_string(link), link);
-        return out;
+        return with_crop(std::move(out));
     }
 
     // CMYK numbers as they are: what an Illustrator picture brought for print, else the
@@ -288,7 +307,7 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
                                   matrix, w, h, w, h, samples->type, encoded.size() + 3);
         out.records += encoded;
         out.records += "%%EndData\n%AI5_EndRaster\nN\n";
-        return out;
+        return with_crop(std::move(out));
     }
     int const kind = (samples->type == 4 ? 2 : samples->type == 3 ? 1 : 0) + (alpha ? 16 : 0);
     char const *space = samples->type == 4 ? "/DeviceCMYK" : samples->type == 3 ? "/DeviceRGB" : "/DeviceGray";
@@ -300,7 +319,7 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     out.records += samples->colour;
     out.records += samples->alpha;
     out.records += "\n%%EndData\nXH\n%AI5_EndRaster\nN\n";
-    return out;
+    return with_crop(std::move(out));
 }
 
 } // namespace Inkscape::Extension::Internal::AiNative

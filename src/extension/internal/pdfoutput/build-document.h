@@ -90,6 +90,16 @@ struct PlacedPagesFailed : std::runtime_error
     using std::runtime_error::runtime_error;
 };
 
+/// The bundled C++ wrapper does not check add_separation's result. Keep the
+/// checked Registration operation here, with access to its protected C handle.
+class DocumentGenerator : public capypdf::Generator
+{
+public:
+    using capypdf::Generator::Generator;
+
+    CapyPDF_SeparationId add_registration_ink(CapyPDF_FunctionId tint_transform);
+};
+
 class Document
 {
 public:
@@ -185,11 +195,12 @@ protected:
     std::vector<CapyPDF_AnnotationId> get_anchors_for_page(SPPage const *page);
 
 private:
-    capypdf::Generator _gen;
+    DocumentGenerator _gen;
 
     StyleMemory _paint_memory;
 
     std::map<std::string, CapyPDF_IccColorSpaceId> _icc_cache;
+    std::optional<CapyPDF_SeparationId> _registration_ink;
     std::map<ItemCacheKey, CapyPDF_TransparencyGroupId> _item_cache;
     std::map<std::string, CapyPDF_TransparencyGroupId> _mask_cache;
     std::map<std::string, CapyPDF_PatternId> _pattern_cache;

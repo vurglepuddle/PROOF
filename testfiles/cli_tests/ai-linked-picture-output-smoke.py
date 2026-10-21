@@ -2,7 +2,8 @@
 
 Links remain external, with the source bytes unchanged. Exercise resolution, alpha, CMYK,
 rotation, reflection, fitting, clipping, a Unicode path and Save As into another folder.
-Missing/unsupported links, slice cropping and Illustrator 7 must preserve a prior destination.
+Missing/unsupported links and Illustrator 7 must preserve a prior destination.
+Slice cropping is checked by ai-picture-crop-output-smoke.py.
 Actual Illustrator open/save qualification is separate from this headless check.
 """
 import argparse
@@ -169,7 +170,6 @@ def main():
         ('unsupported', '<image width="40" height="20" href="assets/unsupported.gif"/>', native, b'linked pictures other than PNG, JPEG, TIFF or Photoshop'),
         ('psb', '<image width="40" height="20" href="assets/unsupported.psb"/>', native, b'linked Photoshop versions other than PSD'),
         ('bigtiff', '<image width="40" height="20" href="assets/unsupported-big.tif"/>', native, b'linked BigTIFF pictures'),
-        ('slice', '<image width="40" height="80" preserveAspectRatio="xMidYMid slice" href="assets/sample.png"/>', native, b'pictures cropped to their box'),
         ('legacy', body, '--export-extension=org.inkscape.output.ai.legacy7', b'linked pictures (Illustrator 7)'),
     ]:
         path = out / (label + '.svg')

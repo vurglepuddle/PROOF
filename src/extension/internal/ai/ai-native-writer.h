@@ -2,16 +2,18 @@
 /** @file
  * Illustrator's own records for a PROOF document: the native half of an .ai file.
  *
- * Writes the subset Illustrator 29.2.1 has been seen to open as editable art
- * (doc/PROOF-ai-interchange.md, "Native writer"): artboards from the document's pages,
+ * Writes editable records for the subset in doc/PROOF-ai-interchange.md ("Native writer");
+ * that document records each feature's Illustrator qualification. Supports document artboards,
  * layers with their options, groups, paths and compound paths with corner/smooth flags,
  * clipping groups, process colour in CMYK, RGB or grey, spot inks with their tints,
+ * and canonical CMYK Registration in the modern form (reserved document ink All),
  * opaque pad linear and radial process fills and strokes, overprint and stroke style. A
  * gradient-filled shape may have a plain stroke; the modern form also supports gradient
  * strokes with a plain or gradient fill. Gradient stops may be tints of spot inks defined in
  * CMYK; transparent and mixed RGB/CMYK gradients are refused. Pictures the document holds itself are embedded
  * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
  * linked. Missing links and linked formats outside that subset are refused.
+ * Picture slice crops retain the complete raster or link behind an editable viewport clip.
  * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point
  * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:
@@ -20,6 +22,7 @@
  * Windows-1252 names, opaque embedded rasters, and additional refusals where that old format
  * has no supported encoding. A colour-model comment advises newer Illustrator's legacy
  * converter; version 7 ignores that later metadata.
+ * Registration is refused in Illustrator 7 until its encoding is qualified.
  */
 
 #ifndef SEEN_AI_NATIVE_WRITER_H
