@@ -459,17 +459,33 @@ bool Writer::open_clip(SPItem const *item)
         return false;
     }
     auto const affine = shapes[0]->transform * item->i2doc_affine() * _to_art;
-    auto const pv = pathv_to_linear_and_cubic_beziers(*shapes[0]->curve() * affine);
-    if (pv.size() != 1) {
-        refuse("clipping paths other than one path");
+    auto pv = pathv_to_linear_and_cubic_beziers(*shapes[0]->curve() * affine);
+    if (pv.empty()) {
+        refuse("empty clipping paths");
+        return false;
+    }
+    if (shapes[0]->getClipObject()) {
+        refuse("clipping on a clipping path's geometry");
         return false;
     }
     auto const types = path_types(shapes[0], pv, affine);
     _body << "q\n";
+    // SVG clips use clip-rule, independently of the artwork's fill-rule. XR is shared
+    // state: update its cache so the next painted object restores its own fill rule.
+    state(_rule, shapes[0]->style->clip_rule.computed == SP_WIND_RULE_EVENODD ? "1 XR" : "0 XR");
     // The clipping path has none of the transparency that holds: released, it is an ordinary path.
     if (!_legacy) state(_transparency, std::string(OPAQUE));
-    path_data(pv[0], types[0]);
-    _body << "h\nW\nn\n";
+    // Several contours of ONE path are a compound clip, including its holes. Separate
+    // SVG clip children are a union, so they cannot be concatenated this way.
+    if (pv.size() > 1) _body << "*u\n";
+    for (std::size_t i = 0; i < pv.size(); ++i) {
+        // Clipping implicitly closes an open contour. Illustrator also needs the actual
+        // closing side, or it folds the last anchor into the first (as with crop clips).
+        pv[i].close(true);
+        path_data(pv[i], types[i]);
+        _body << "h\nW\nn\n";
+    }
+    if (pv.size() > 1) _body << "*U\n";
     return true;
 }
 

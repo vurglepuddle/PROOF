@@ -5451,6 +5451,97 @@ TEST_F(AiNativeImportTest, WrittenRecordsKeepSpotInksClipsAndArtboards)
     EXPECT_TRUE(clipped);
 }
 
+TEST_F(AiNativeImportTest, WrittenCompoundClipsKeepRulesHolesTransformsAndOpenContours)
+{
+    for (auto const rule : {"nonzero", "evenodd"}) {
+        SCOPED_TRACE(rule);
+        auto doc = svg_document(
+            std::string(R"(<defs><clipPath id="c" style="clip-rule:)") + rule + R"x("><path transform="translate(5 7)" )x"
+            R"(d="M0 0 H80 V80 H0 Z M20 20 V60 H60 V20 Z M100 0 H120 V20 H100" )"
+            R"(sodipodi:nodetypes="ccccczzzzzcccc"/></clipPath></defs>)"
+            R"x(<g transform="translate(10 3) scale(1.5)"><rect width="150" height="90" fill="#00ffff" clip-path="url(#c)"/></g>)x");
+        ASSERT_TRUE(doc);
+        doc->ensureUpToDate();
+        for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+            SCOPED_TRACE(static_cast<int>(version));
+            auto const written = AN::write_records(doc.get(), version);
+            ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+            std::string error;
+            auto ai = AN::read(written.records, error);
+            ASSERT_TRUE(ai) << error;
+            ASSERT_EQ(ai->layers.size(), 1u);
+            auto const &clip_group = ai->layers[0].children.at(0).children.at(0);
+            ASSERT_TRUE(clip_group.clipped);
+            ASSERT_EQ(clip_group.children.size(), 2u);
+            auto const &clip = clip_group.children[0];
+            EXPECT_EQ(clip.kind, AN::Node::Kind::Compound);
+            EXPECT_EQ(clip.evenodd, std::string_view(rule) == "evenodd");
+            EXPECT_FALSE(clip.fill);
+            EXPECT_FALSE(clip.stroke);
+            ASSERT_EQ(clip.children.size(), 3u);
+            for (auto const &part : clip.children) {
+                auto const &pv = part.path;
+                ASSERT_EQ(pv.size(), 1u);
+                EXPECT_TRUE(pv[0].closed());
+                EXPECT_NEAR(Geom::distance(pv[0].initialPoint(), pv[0].finalPoint()), 0, 1e-6);
+            }
+            auto const first = clip.children[0].path[0].initialPoint();
+            EXPECT_NEAR(first.x(), 13.125, 1e-4); // (5 * 1.5 + 10) * .75
+            EXPECT_NEAR(first.y(), version == AN::RecordsVersion::Modern ? -10.125 : 64.875, 1e-4);
+            EXPECT_FALSE(clip_group.children[1].evenodd); // clip-rule never becomes fill-rule
+            auto imported = make(written.records);
+            ASSERT_TRUE(imported);
+            auto clips = elements(imported->document->getReprRoot(), "svg:clipPath");
+            ASSERT_EQ(clips.size(), 1u);
+            auto paths = elements(clips[0], "svg:path");
+            ASSERT_EQ(paths.size(), 1u);
+            EXPECT_EQ(sp_svg_read_pathv(attr(paths[0], "d").c_str()).size(), 3u);
+            EXPECT_EQ(attr(paths[0], "style").find("clip-rule:evenodd") != std::string::npos,
+                      std::string_view(rule) == "evenodd");
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenClipRulesStayIndependentAcrossNestedClipsAndArtwork)
+{
+    auto doc = svg_document(
+        R"(<defs><clipPath id="outer"><path d="M0 0 H90 V90 H0 Z M10 10 H80 V80 H10 Z" clip-rule="evenodd"/></clipPath>)"
+        R"(<clipPath id="inner"><path d="M0 0 H50 V50 H0 Z M10 10 V40 H40 V10 Z" clip-rule="nonzero"/></clipPath></defs>)"
+        R"x(<g clip-path="url(#outer)"><g clip-path="url(#inner)"><path fill-rule="evenodd" d="M0 0 H100 V100 H0 Z M20 20 H30 V30 H20 Z"/></g></g>)x"
+        R"(<path fill-rule="nonzero" d="M100 0 H120 V20 H100 Z"/>)");
+    ASSERT_TRUE(doc);
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        auto const written = AN::write_records(doc.get(), version);
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        std::string error;
+        auto ai = AN::read(written.records, error);
+        ASSERT_TRUE(ai) << error;
+        auto const &outer = ai->layers.at(0).children.at(0);
+        ASSERT_TRUE(outer.clipped);
+        EXPECT_TRUE(outer.children.at(0).evenodd);
+        auto const &inner = outer.children.at(1);
+        ASSERT_TRUE(inner.clipped);
+        EXPECT_FALSE(inner.children.at(0).evenodd);
+        EXPECT_TRUE(inner.children.at(1).evenodd);
+        EXPECT_FALSE(ai->layers[0].children.at(1).evenodd);
+    }
+}
+
+TEST_F(AiNativeImportTest, WriterRefusesClippingOnTheClipGeometryInsteadOfDroppingIt)
+{
+    auto doc = svg_document(
+        R"(<defs><clipPath id="inner"><rect width="10" height="10"/></clipPath>)"
+        R"x(<clipPath id="outer"><path d="M0 0 H80 V80 H0 Z M20 20 V60 H60 V20 Z" clip-path="url(#inner)"/></clipPath></defs>)x"
+        R"x(<rect width="100" height="100" clip-path="url(#outer)"/>)x");
+    ASSERT_TRUE(doc);
+    for (auto const version : {AN::RecordsVersion::Modern, AN::RecordsVersion::Illustrator7}) {
+        auto const written = AN::write_records(doc.get(), version);
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "clipping on a clipping path's geometry"),
+                  written.refused.end());
+    }
+}
+
 TEST_F(AiNativeImportTest, WrittenRecordsKeepInksDefinedInLabAndRgb)
 {
     auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"

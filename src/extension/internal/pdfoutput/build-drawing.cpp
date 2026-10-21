@@ -17,6 +17,7 @@
 #include "build-patterns.h"
 #include "build-text.h"
 #include "object/sp-anchor.h"
+#include "object/sp-clippath.h"
 #include "object/sp-flowtext.h"
 #include "object/sp-image.h"
 #include "object/sp-item.h"
@@ -168,7 +169,22 @@ void DrawContext::paint_item(SPItem const *item, Geom::Affine const &tr, SPStyle
         if (auto text_clip = item->getClipTextObject()) {
             clip_text_layout(text_clip->layout);
         } else {
-            set_clip_path(item->getClipPathVector(), item->style);
+            // The clip geometry owns clip-rule, independently of the clipped artwork.
+            // A single path (including a compound path) retains its winding rule.
+            // Multiple clip objects still use getClipPathVector's merged geometry.
+            SPItem const *geometry = nullptr;
+            if (auto clip = item->getClipObject()) {
+                for (auto const &child : clip->children) {
+                    if (auto shape = cast<SPItem>(&child)) {
+                        if (geometry) {
+                            geometry = nullptr;
+                            break;
+                        }
+                        geometry = shape;
+                    }
+                }
+            }
+            set_clip_path(item->getClipPathVector(), geometry ? geometry->style : nullptr);
         }
     }
 
@@ -362,9 +378,9 @@ void DrawContext::set_clip_path(std::optional<Geom::PathVector> clip, SPStyle *s
         set_shape_pathvector(*clip);
         // Default to NONZERO when style is nullptr.
         if (style && style->clip_rule.computed == SP_WIND_RULE_EVENODD) {
-            _ctx.cmd_W();
-        } else {
             _ctx.cmd_Wstar();
+        } else {
+            _ctx.cmd_W();
         }
         _ctx.cmd_n();
     }

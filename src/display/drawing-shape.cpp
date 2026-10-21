@@ -62,7 +62,7 @@ void DrawingShape::setStyle(SPStyle const *style, SPStyle const *context_style)
     if (style) {
         vector_effect_stroke = style->vector_effect.stroke;
         stroke_extensions_hairline = style->stroke_extensions.hairline;
-        clip_rule = style->clip_rule.value;
+        clip_rule = style->clip_rule.computed;
         fill_rule = style->fill_rule.value;
         opacity = style->opacity.value;
     }

@@ -1294,7 +1294,8 @@ Illustrator 29.2.1. An actual Illustrator 7 executable remains untested.
   document; a fill and a stroke each with an opacity of its own; opacity
   masks; filters; patterns; meshes; markers; non-scaling strokes; strokes
   painted under their fill; strokes on stretched or skewed objects; clips of
-  more than one path; clipping on the SVG root; repeating or reflected
+  more than one path object or object-bounding-box units; clipping on a
+  clip's geometry or the SVG root; repeating or reflected
   gradients; gradient hard stops; spot inks defined in other colour spaces;
   context paint; numbers that overflow.
 
@@ -1703,3 +1704,79 @@ checks: `WrittenRecordsKeepInksDefinedInLabAndRgb`,
 `InkStopsDefinedInLabOrRgbAreWrittenAsIllustratorWritesThem`,
 `TheCmykBesideALabInkComesThroughTheDocumentsProfile`,
 `ColorCmsProfile.dumpDataKeepsTheBytesItCameFrom`, and the refusal lists.
+
+### Compound clipping paths written (2026-10-21, after spot inks)
+
+Both writers now keep a clip made from **one path object with several
+contours**, including holes. The records are `q`, the clip's winding rule
+(`XR`), `*u`, each closed contour with `W n`, `*U`, the artwork, and `Q`.
+Single-contour clips keep their existing form. Open clip contours are closed
+explicitly, including their closing side: Illustrator otherwise folds their
+last anchor into their first. The clip's own transform and the clipped
+object's transform compose before conversion to artboard coordinates.
+
+**The clip uses its computed `clip-rule`, independently of the artwork's
+`fill-rule`.** The writer updates the shared `XR` cache, so artwork and nested
+clips restore their own rules. Nonzero holes, even-odd holes, disjoint islands,
+reflections, nonuniform scaling, nested clipping-group intersections,
+gradients, strokes, embedded pictures and modern group opacity are covered.
+Smooth/corner point handling still uses the ordinary path writer.
+
+Separate objects inside an SVG `clipPath` are a union, and concatenating
+their paths could turn overlaps into holes. They remain refused by name,
+as do object-bounding-box clips. A clip on the clip's own geometry is now
+explicitly refused instead of being dropped. Empty clip geometry is refused.
+Nested clipping **groups** remain supported: they intersect as before.
+
+#### Canvas and PDF corrections found by the control
+
+- The canvas read `clip_rule.value`, ignoring inheritance. It now reads the
+  computed rule; an explicit rule on the path still overrides its parent's.
+- PDF export read the clipped artwork's rule and reversed the two PDF
+  operators. A single clip object's own computed rule now selects `W*` for
+  even-odd and `W` for nonzero; rectangle clips default to nonzero. The
+  pre-existing flattening of multiple clip objects is outside this round.
+
+These are shared display/PDF changes, relevant to the collaborator as well
+as `.ai` output. They are needed because the native Save As also carries a
+fresh PDF page, and the reader compares the two before accepting native art.
+
+#### Qualification
+
+`ai-compound-clip-output-smoke.py` generates a synthetic control with nine
+clip instances, eight compound and one simple, plus a modern variant whose
+clipped gradient/stroke group has 60% opacity. Both formats reopen natively,
+retain every contour and rule, and match all sampled canvas pixels exactly;
+a second write keeps the clips. Unsupported clips refuse without replacing
+an existing file. The modern PDF preserves every sampled clip/hole and flat
+RGB colour. CMYK-gradient colour conversion differs between canvas and
+Poppler, so its coverage is checked independently of those colour values.
+
+Illustrator **29.2.1** opened the modern, Illustrator 7 and transparent
+controls. All holes, islands and intersections drew correctly; its saved
+copies reopen natively with all nine clips and four even-odd rules. Flat
+colour and coverage probes match exactly; CMYK-gradient colour differences
+are at most 7 channel levels (5 for the transparent variant). Actual
+Illustrator 7 remains untested. No production artwork is in these controls.
+
+The owner's same **871 hash-verified staged copies**, active review paths
+and exclusions checked, still import as 862 native and nine page fallbacks.
+The modern writer writes **764 of 862** (748 before), and the Illustrator
+7 copy **100** (99 before); every accepted record stream reads back. All
+19 documents held by compound clips lose that refusal; the 16 held by it
+alone now write. This census checks record acceptance, separately from the
+synthetic Illustrator rendering gate.
+
+The remaining modern families include gradient colours other than standard
+RGB or CMYK (19 documents, now 13 held by nothing else), patterns (15, 14
+alone), opacity masks (seven, four alone), and type (60, 46 alone).
+
+Checks: **13 unit suites, zero failures; 24 export groups, 775 checks**,
+including the new control **19/19**. Reader 74 cases (one opt-in skip), importer
+164 (two), gradient writer 32, clip/blend renderer six. New unit cases cover
+compound rules/transforms/closure, nested clip state, refusal of a clip on
+clip geometry, and inherited/overridden canvas clip rules.
+
+Next: inspect the actual colour spaces behind the remaining gradient-colour
+refusals before implementation; then patterns and opacity masks. Type stays
+last. Multiple-object clip unions remain a separate feature.

@@ -85,6 +85,23 @@ void expect_grey(std::array<int, 3> const &p, int level, char const *what)
 
 } // namespace
 
+TEST(ClipBlendTest, CompoundClipUsesTheInheritedClipRuleAndItsOwnOverride)
+{
+    for (bool const override : {false, true}) {
+        auto const geometry = std::string("<path d='M10 10 H90 V90 H10 Z M30 30 H70 V70 H30 Z' ") +
+                              (override ? "clip-rule='nonzero' fill-rule='evenodd'" : "fill-rule='nonzero'") + "/>";
+        Shown shown("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>"
+                    "<defs><clipPath id='c' clip-rule='evenodd'>" + geometry + "</clipPath></defs>"
+                    "<rect width='100' height='100' fill='#808080'/>"
+                    "<rect width='100' height='100' fill='#ffffff' clip-path='url(#c)'/></svg>");
+        ASSERT_TRUE(shown.doc);
+        auto const surface = shown.draw(Geom::IntRect::from_xywh(0, 0, 100, 100));
+        expect_grey(pixel(surface, 20, 20), 255, "the outer contour clips the paint");
+        expect_grey(pixel(surface, 50, 50), override ? 255 : GREY, "the computed clip rule determines the hole");
+        expect_grey(pixel(surface, 5, 5), GREY, "outside the clip");
+    }
+}
+
 TEST(ClipBlendTest, AShadeInAClippedGroupDarkensWhatIsUnderTheGroup)
 {
     Shown shown(svg("<g clip-path='url(#c)'>" + SHADE + "</g>"));

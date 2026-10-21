@@ -51,16 +51,17 @@ document ICC profile or artboard name. Picture transparency and links remain
 refused in this format.
 Illustrator opening, editing and saving back into PROOF are checked with synthetic
 controls, the whole Illustrator 7 subset together in one. Of the 862 of the
-owner's documents PROOF reads natively, the native writer can write 748 and the
-Illustrator 7 copy 99 (2026-10-21, after spot inks defined in Lab or RGB);
-live type stops most of the rest, then clips of several paths, patterns and
-some gradient colours.
+owner's documents PROOF reads natively, the native writer can write 764 and the
+Illustrator 7 copy 100 (2026-10-21, after compound clipping paths). Both
+writers retain compound clip holes and winding rules; the canvas and PDF use
+the clip's own rule. Live type, some gradient colours, patterns and opacity
+masks remain among the main limits.
 
 | Capability | Current state |
 |---|---|
 | Native reading | Layers, paths, clips, compound paths, gradients, patterns, supported gradient meshes, greyscale opacity masks, embedded foreign PDF vectors, process/spot colours, document ICC profiles, pictures and supported editable type |
 | Safety check | Every artboard is compared with its PDF page. Unsupported or incomplete records, mismatched page counts and excessive visual differences use PDF import |
-| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips, with CMYK/RGB/grey paint, spot inks defined in CMYK, Lab or RGB with their tints, linear/radial gradient fills and strokes (including both on one path) with stop opacity, supported spot/ICC stops, embedded pictures and local PNG/JPEG/classic TIFF/PSD links, overprint and stroke styles, and each object's and group's transparency: opacity, the sixteen blend modes, isolated blending and knockout ([details](doc/PROOF-ai-interchange.md#transparency-and-blend-modes-in-the-modern-form-2026-10-21)) |
+| Native writing | **Save As → Adobe Illustrator (native)** writes named artboards, layers, groups, smooth paths, compound paths and clips (including compound holes), with CMYK/RGB/grey paint, spot inks defined in CMYK, Lab or RGB with their tints, linear/radial gradient fills and strokes (including both on one path) with stop opacity, supported spot/ICC stops, embedded pictures and local PNG/JPEG/classic TIFF/PSD links, overprint and stroke styles, and each object's and group's transparency: opacity, the sixteen blend modes, isolated blending and knockout ([details](doc/PROOF-ai-interchange.md#transparency-and-blend-modes-in-the-modern-form-2026-10-21)) |
 | Saving safely | Native records and PDF pages are written together from the current document. Unsupported features are named and the save is refused; a failed save leaves the previous file intact |
 | Legacy writing | **Save a Copy → Adobe Illustrator 7** writes one artboard as editable paths, layers, CMYK inks and opaque 8-bit grayscale/RGB/CMYK pictures, without a PDF preview or the bundled PDF backend. What it keeps and refuses: [the interchange document](doc/PROOF-ai-interchange.md#the-illustrator-7-copy-what-it-keeps-and-refuses-2026-10-21) |
 | Broader interchange | **Save a Copy → Illustrator interchange (PDF-based)** remains available for RGB PDF artwork. SVG keeps the working document's full PROOF features |
