@@ -2708,3 +2708,31 @@ remains 2d990f728e; this qualification updates documentation only in PROOF.
 Measured bounds apply to these controls and the inner 85% radial region; page
 PNG pixel identity and broader settings/versions/profiles remain unqualified.
 The detailed method and limits are in PROOF-document-colors.md.
+
+## Leaf Forms beside the RGB overprint pairs (2026-10-23)
+
+A page containing ordinary leaf Form XObjects no longer loses the bounded
+MultiChannelPaint preview solely because of those calls. Supported Form art:
+paths, process colours, shadings and ordinary images. The parser records every
+inherited state name as a shared page use. Local state dictionaries stay
+original, including indirect aliases shared with the page; a caller's state
+also used by a Form is ineligible. Known complete Normal states and no active
+soft mask are required. Forms are scanned after the page, so aliased streams
+cannot disrupt an active page parser.
+
+The additional per-page Form budget is 64 calls, 8 MB decoded contents and one
+million tokens. Text/pattern art, nested Forms, inline images, partial/masked
+states and unknown operators retain their old refusal; marked pairs inside
+Forms remain unsupported. Original resources/bytes and visual thresholds are
+unchanged. Corrected references now use rgb-overprint-3; ordinary heavy-page
+cache identities stay valid. The workbench already fingerprints the helper.
+
+Seven targeted unit tests pass, including native Form acceptance, local state
+shadowing, inherited-state rejection, cycles/unknown art/limits and the existing
+image/cache/thread cases. Seven synthetic internal-import controls pass 133
+checks: plain/masked ramps, local state aliases over a coloured backdrop,
+inherited safe/unsafe states, nested-Form refusal and an image within a Form.
+They check editable vectors, unchanged paint, retained image identity, independent
+PDF output and source integrity. Only affected controls ran; no artwork corpus,
+census, lite or new Illustrator session. General overprint, the optional
+Cairo-to-SVG route and foreign-PDF overprint remain outside this correction.

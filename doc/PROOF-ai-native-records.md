@@ -2507,3 +2507,22 @@ can, and remain excluded. Any changed state also used to paint an image remains
 ineligible. The cache version changes only for corrected documents. Five affected
 import/cache/thread tests and 57 picture checks pass, including masks, original
 image colour, editable gradients and independent PDF output. No corpus run.
+
+### Leaf Forms beside RGB overprint pairs (2026-10-23)
+
+The disposable page comparison/default editable PDF import now permits bounded
+leaf Form XObjects with paths, process colours, shadings and ordinary images.
+It scans Forms after the page parser finishes, avoiding stream-alias interference.
+Inherited graphics-state names count as shared page uses; local Form states
+remain untouched, even when they reference the same original indirect state.
+A changed state used to invoke a Form remains ineligible. The Form call and its
+known complete Normal states must have no soft mask.
+
+Forms have a separate aggregate budget of 64 calls, 8 MB decoded content and
+one million tokens per page. Nested Forms, text, patterns, inline images,
+uninspected operators and mask-bearing/partial states retain the prior refusal.
+Marked pairs inside Forms are not part of this extension. Page state copies
+remain local; the source and original Form resources are never rewritten.
+The corrected-page cache suffix is rgb-overprint-3; unrelated heavy-page entries
+remain valid. Seven focused import/cache/thread tests and 133 checks across
+seven exact synthetic controls pass. No corpus, census, lite or live UI run.

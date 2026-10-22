@@ -25,7 +25,8 @@ def array(values):
     return ArrayObject([BooleanObject(v) if isinstance(v, bool) else FloatObject(v) for v in values])
 
 
-def control(path, masked=False, marked=True, shared=False, picture=False, picture_shared=False, form=False):
+def control(path, masked=False, marked=True, shared=False, picture=False, picture_shared=False, form=False,
+            form_state=None):
     writer = PdfWriter()
     page = writer.add_blank_page(width=200, height=100)
     page[NameObject('/Group')] = dictionary(S=NameObject('/Transparency'), CS=NameObject('/DeviceRGB'),
@@ -65,9 +66,31 @@ def control(path, masked=False, marked=True, shared=False, picture=False, pictur
     if picture:
         object = DecodedStreamObject()
         if form:
-            object.set_data(b'0.8 0.2 0.5 rg 0 0 1 1 re f')
+            body = b'0.8 0.2 0.5 rg 0 0 1 1 re f'
+            if form_state in ('own', 'base', 'ink'):
+                body = (b'/Base gs ' if form_state == 'base' else b'/Ink gs ') + body
+            object.set_data(body)
             object.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Form'),
                                      BBox=array([0, 0, 1, 1])))
+            if form_state == 'own':
+                # Both names reference the same original state. The page's disposable
+                # replacement must leave the Form's original Normal dictionary intact.
+                original = writer._add_object(states['/Ink'])
+                states[NameObject('/Ink')] = original
+                object[NameObject('/Resources')] = dictionary(ExtGState=dictionary(Ink=original))
+            elif form_state in ('nested', 'image'):
+                child = DecodedStreamObject()
+                if form_state == 'nested':
+                    child.set_data(body)
+                    child.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Form'),
+                                            BBox=array([0, 0, 1, 1]), Resources=DictionaryObject()))
+                else:
+                    child.set_data(bytes([204, 51, 128]))
+                    child.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Image'),
+                                            Width=NumberObject(1), Height=NumberObject(1),
+                                            BitsPerComponent=NumberObject(8), ColorSpace=NameObject('/DeviceRGB')))
+                object.set_data(b'/Child Do')
+                object[NameObject('/Resources')] = dictionary(XObject=dictionary(Child=writer._add_object(child)))
         else:
             object.set_data(bytes([204, 51, 128]))
             object.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Image'),
@@ -77,7 +100,8 @@ def control(path, masked=False, marked=True, shared=False, picture=False, pictur
         picture_state = state(False)
         picture_state[NameObject('/SMask')] = NameObject('/None')
         states[NameObject('/Picture')] = picture_state
-        content = f'q /{"Ink" if picture_shared else "Picture"} gs 20 0 0 8 10 86 cm /Picture Do Q\n'
+        content = 'q /Picture gs 0.6 0.7 0.8 rg 10 86 20 8 re f Q\n' if form_state == 'own' else ''
+        content += f'q /{"Ink" if picture_shared else "Picture"} gs 20 0 0 8 10 86 cm /Picture Do Q\n'
     for name, x in [('L', 10), ('R', 110)]:
         content += '/MultiChannelPaint << >> BDC\n' if marked else ''
         content += f'q {x} 20 80 60 re W n q /Base gs /{name}S sh Q q /Ink gs /{name}P sh Q Q\n'
@@ -100,7 +124,13 @@ def main():
              'shared': dict(shared=True), 'picture': dict(picture=True),
              'picture-mask': dict(picture=True, masked=True),
              'picture-shared': dict(picture=True, picture_shared=True),
-             'form': dict(picture=True, form=True)}
+             'form': dict(picture=True, form=True),
+             'form-mask': dict(picture=True, form=True, masked=True),
+             'form-own-state': dict(picture=True, form=True, form_state='own'),
+             'form-inherited-state': dict(picture=True, form=True, form_state='base'),
+             'form-inherited-ink': dict(picture=True, form=True, form_state='ink'),
+             'form-nested': dict(picture=True, form=True, form_state='nested'),
+             'form-image': dict(picture=True, form=True, form_state='image')}
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--case', action='append', choices=list(cases))
     parser.add_argument('--route', action='append', choices=['internal', 'cairo'])
@@ -133,7 +163,8 @@ def main():
         marked = options.get('marked', True)
         picture = options.get('picture', False)
         form = options.get('form', False)
-        supported = marked and not any(options.get(k, False) for k in ('shared', 'picture_shared', 'form'))
+        supported = marked and not any(options.get(k, False) for k in ('shared', 'picture_shared'))
+        supported = supported and options.get('form_state') not in ('ink', 'nested')
         source = out / (case + '.pdf')
         control(source, **options)
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -157,7 +188,7 @@ def main():
             root = ET.parse(svg).getroot()
             if route == 'internal':
                 check(label + ': editable vector gradients', len(list(root.iter('{http://www.w3.org/2000/svg}linearGradient'))) >= 2)
-                image_count = int(picture and not form)
+                image_count = int(picture and (not form or options.get('form_state') == 'image'))
                 check(label + ': only the original raster image',
                       len(list(root.iter('{http://www.w3.org/2000/svg}image'))) == image_count)
                 if picture:

@@ -97,8 +97,9 @@ their drawn result with an explicit note.
 
 The page comparison and default editable PDF importer now simulate the bounded
 RGB `/MultiChannelPaint` ink/process pairs Illustrator writes, including on pages
-with ordinary raster pictures. The qualified RGB control returns natively; general overprint and the optional Cairo-to-SVG import
-remain outside this correction. Unknown extended gradient settings still fail
+with ordinary raster pictures and supported leaf Form objects beside the pairs.
+Inherited/shared states remain protected. The qualified RGB control returns
+natively; broader overprint and the optional Cairo-to-SVG import remain open. Unknown extended gradient settings still fail
 closed. Next are extended Oklab settings and additional mesh qualification;
 native type writing stays last in the agreed order.
 

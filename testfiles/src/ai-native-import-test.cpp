@@ -5363,6 +5363,57 @@ TEST_F(AiNativeImportTest, RgbOverprintOnAPageWithAnImageKeepsItsPixelsAndReject
         "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 11 >>\nstream\n/Ink gs 0 g\nendstream"));
 }
 
+TEST_F(AiNativeImportTest, RgbOverprintLeafFormsKeepTheirPaintAndLocalStates)
+{
+    auto form = [](std::string const &body, std::string const &resources = "") {
+        return "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] " + resources +
+               " /Length " + std::to_string(body.size()) + " >>\nstream\n" + body + "\nendstream";
+    };
+    std::string const body = "0.2 0.4 0.8 rg 0 0 1 1 re f";
+    std::string const picture = " q /Base gs 1 0 0 rg 120 20 8 8 re f 8 0 0 8 120 20 cm /Image Do Q";
+    std::string const native = records(layer("0.1 0.4 0.2 Xa\n" + rect +
+        "0.2 0.4 0.8 Xa\n120 20 m 120 28 L 128 28 L 128 20 L h f\n"), {}, false);
+    auto check = [&](std::string const &object) {
+        auto const path = fixture(native, {overprint_pair + picture}, overprint_boxes,
+                                  {}, {}, {}, overprint_resources(), object);
+        std::string reason;
+        auto opened = Extension::Internal::open_ai_native(path, reason);
+        ASSERT_TRUE(opened) << reason;
+        EXPECT_LT(opened->differences[0].colour, .001);
+        EXPECT_LT(opened->differences[0].lightness, .001);
+    };
+    check(form(body)); // Inherited resources, but no state lookup.
+    check(form("/Base gs " + body)); // An inherited state not changed by the preview.
+    check(form("/Ink gs " + body, "/Resources << /ExtGState << /Ink "
+        "<< /Type /ExtGState /BM /Normal /CA 1 /ca 1 /OPM 1 /SMask /None /op true /OP true >> >> >>"));
+    // A local /Ink shadows the page's /Ink and must stay Normal over the red backdrop.
+}
+
+TEST_F(AiNativeImportTest, RgbOverprintLeafFormsRejectInheritedInkAndUninspectedDrawing)
+{
+    auto preview = [&](std::string const &body, std::string const &content = "") {
+        std::string const object = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length " +
+                                  std::to_string(body.size()) + " >>\nstream\n" + body + "\nendstream";
+        auto const file = fixture({}, {content.empty() ? overprint_pair + " q /Base gs /Image Do Q" : content},
+                                  overprint_boxes, {}, {}, {}, overprint_resources(), object);
+        auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(file.c_str());
+        return Extension::Internal::rgb_overprint_preview(*pdf);
+    };
+    EXPECT_FALSE(preview("/Ink gs 0 g 0 0 1 1 re f")); // Inherited candidate state is shared.
+    EXPECT_FALSE(preview("/Image Do")); // A self-referencing nested Form never recurses.
+    EXPECT_FALSE(preview("BI /W 1 /H 1 ID x EI"));
+    EXPECT_FALSE(preview("/P scn 0 0 1 1 re f")); // A pattern could execute uninspected content.
+    EXPECT_FALSE(preview("BT /Font 10 Tf (x) Tj ET")); // Including Type 3 glyphs.
+    EXPECT_FALSE(preview("q 0 g")); // Unbalanced save.
+    EXPECT_FALSE(preview("Q"));
+    EXPECT_FALSE(preview("0 g 0 0 1 1 re f", overprint_pair + " q /Ink gs /Image Do Q"));
+    EXPECT_FALSE(preview("0 g 0 0 1 1 re f",
+        "/MultiChannelPaint BMC q /Base gs /Spot sh /Ink gs /Process sh /Image Do Q EMC"));
+    std::string calls;
+    for (unsigned i = 0; i < 65; ++i) calls += " q /Base gs /Image Do Q";
+    EXPECT_FALSE(preview("0 g 0 0 1 1 re f", overprint_pair + calls));
+}
+
 TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)
 {
     auto const path = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f"});

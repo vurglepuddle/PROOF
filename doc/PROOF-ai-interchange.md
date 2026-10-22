@@ -150,15 +150,21 @@ page. A disposable PDF preview gives that second shading Multiply appearance;
 the original file and its separations are untouched. Resource/state dictionaries
 are copied per page, leaving soft-mask Forms and other pages unchanged. SVG
 import retains both editable ramps and their compositing. Ordinary image XObjects
-elsewhere on the page are supported; a state also used to paint an image is left
-unchanged. DeviceGray soft-mask
-paint remains numeric coverage rather than being converted to print grey.
+elsewhere on the page are supported, as are bounded leaf Forms containing
+paths, process colours, shadings and ordinary images. A state also used to paint
+an image/Form, or looked up by a Form through inherited resources, stays
+unchanged. A Form's local states remain original, including when they share an
+indirect object with the page state. DeviceGray soft-mask paint stays numeric
+coverage rather than being converted to print grey.
 
 This is deliberately limited: at most 100 MB input, 256 pages, 8 MB of content
 per page, complete known graphics states and exactly two shadings per marked
-pair. Pages containing Form XObject calls or inline images, nested marked paints,
-states shared with other artwork, other blend/overprint modes and other colour
-space combinations retain existing handling. The optional Cairo-to-SVG importer
+pair. Leaf Forms have a separate page-wide budget: at most 64 calls, 8 MB of
+additional decoded content and one million tokens. Their called states must be
+complete known Normal states with no soft mask; the call itself also needs no
+active soft mask. Nested Forms, text/pattern art inside Forms, inline images,
+marked pairs inside Forms, nested marked paints, shared states, other
+blend/overprint modes and colour spaces retain existing handling. The optional Cairo-to-SVG importer
 is unchanged: its compositing-filter bounds need separate work. Embedded foreign
 PDF overprint remains outside that importer's bounded subset.
 

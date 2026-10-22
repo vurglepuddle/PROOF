@@ -26,7 +26,7 @@ namespace {
 
 constexpr std::size_t CONTENT_LIMIT = 8u << 20;
 
-bool may_have_pairs(Object &contents)
+bool bounded_contents(Object &contents, bool require_pairs, std::size_t *remaining = nullptr)
 {
     std::string bytes;
     auto append = [&](Object &object) {
@@ -38,7 +38,8 @@ bool may_have_pairs(Object &contents)
         stream->reset();
 #endif
         for (int c; (c = stream->getChar()) != EOF;) {
-            if (bytes.size() == CONTENT_LIMIT) { stream->close(); return false; }
+            if (bytes.size() == CONTENT_LIMIT || (remaining && !*remaining)) { stream->close(); return false; }
+            if (remaining) --*remaining;
             bytes += char(c);
         }
         stream->close();
@@ -53,7 +54,7 @@ bool may_have_pairs(Object &contents)
         }
     } else return false;
     // Only a fast exclusion: the parser below distinguishes names from strings/comments.
-    return bytes.find("MultiChannelPaint") != bytes.npos;
+    return !require_pairs || bytes.find("MultiChannelPaint") != bytes.npos;
 }
 
 bool full_state(Object const &s, bool overprint)
@@ -83,6 +84,74 @@ bool full_state(Object const &s, bool overprint)
     return !s.dictLookup("SMask").isNull();
 }
 
+/// Leaf Forms may paint paths, shadings and ordinary images. Collect inherited gs names so
+/// the page never changes a state that a Form also uses. Own state dictionaries stay original.
+/// Text/patterns, nested Forms, inline images and mask-bearing states need a wider resource walk.
+std::optional<std::set<std::string>> leaf_form_states(Object &form, Object const &page_states,
+                                                     Object const &page_images, XRef *xref,
+                                                     std::size_t &bytes_left, unsigned &tokens_left)
+{
+    if (!bounded_contents(form, false, &bytes_left)) return {};
+    auto resources = form.getStream()->getDict()->lookup("Resources");
+    if (!resources.isNull() && !resources.isDict()) return {};
+    auto lookup = [&](char const *kind, char const *name, Object const &fallback) {
+        if (resources.isDict()) {
+            auto local = resources.dictLookup(kind);
+            if (local.isDict()) {
+                auto object = local.dictLookup(name);
+                if (!object.isNull()) return object;
+            } else if (!local.isNull()) return local;
+        }
+        return fallback.isDict() ? fallback.dictLookup(name) : fallback.copy();
+    };
+    static std::set<std::string_view> const allowed = {
+        "q", "Q", "cm", "w", "J", "j", "M", "d", "ri", "i",
+        "m", "l", "c", "v", "y", "h", "re", "W", "W*", "n",
+        "S", "s", "f", "F", "f*", "B", "B*", "b", "b*",
+        "g", "G", "rg", "RG", "k", "K", "sh", "gs", "Do", "BX", "EX"
+    };
+    ::Parser parser(xref, &form, false);
+    std::vector<Object> args;
+    std::set<std::string> inherited;
+    unsigned saves = 0;
+    for (; tokens_left; --tokens_left) {
+        auto object = parser.getObj();
+        if (object.isEOF()) {
+            if (!args.empty() || saves) return {};
+            return inherited;
+        }
+        if (object.isError()) return {};
+        if (!object.isCmd()) {
+            if (args.size() == 64) return {};
+            args.push_back(std::move(object));
+            continue;
+        }
+        std::string_view op(object.getCmd());
+        if (!allowed.count(op)) return {};
+        if (op == "q") {
+            if (!args.empty() || saves == 256) return {};
+            ++saves;
+        } else if (op == "Q") {
+            if (!args.empty() || !saves) return {};
+            --saves;
+        } else if (op == "gs") {
+            if (args.size() != 1 || !args[0].isName()) return {};
+            auto const *name = args[0].getName();
+            auto state = lookup("ExtGState", name, page_states);
+            if ((!full_state(state, false) && !full_state(state, true)) ||
+                !state.dictLookup("SMask").isName("None")) return {};
+            auto local = resources.isDict() ? resources.dictLookup("ExtGState") : resources.copy();
+            if (!local.isDict() || local.dictLookup(name).isNull()) inherited.insert(name);
+        } else if (op == "Do") {
+            if (args.size() != 1 || !args[0].isName()) return {};
+            auto image = lookup("XObject", args[0].getName(), page_images);
+            if (!image.isStream() || !image.getStream()->getDict()->lookup("Subtype").isName("Image")) return {};
+        }
+        args.clear();
+    }
+    return {};
+}
+
 /// Resource names that are used ONLY as the second shading of a supported marked pair.
 /// Images cannot look up a page's graphics-state resources; Forms can inherit them.
 /// Never change a state that also paints an image or other unmarked artwork.
@@ -93,7 +162,7 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
     auto knockout = group->lookup("K");
     if (!knockout.isNull() && (!knockout.isBool() || knockout.getBool())) return {};
     auto contents = page.getContents();
-    if (!may_have_pairs(contents)) return {};
+    if (!bounded_contents(contents, true)) return {};
     auto *resources = page.getResourceDict();
     if (!resources) return {};
     auto states = resources->lookup("ExtGState");
@@ -104,6 +173,7 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
     std::vector<Pair> pairs;
     std::vector<int> marks;
     std::vector<std::string> saves;
+    std::vector<Object> forms;
     std::string current;
     std::map<std::string, std::vector<int>> uses;
     ::Parser parser(xref, &contents, false);
@@ -119,6 +189,15 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
         auto obj = parser.getObj();
         if (obj.isEOF()) {
             if (!args.empty() || !marks.empty() || !saves.empty()) return {};
+            // Parse Forms after the page: a malformed file may alias their streams.
+            // Bound the extra work across all Forms, including repeated placements.
+            std::size_t form_bytes = CONTENT_LIMIT;
+            unsigned form_tokens = 1'000'000;
+            for (auto &form : forms) {
+                auto inherited = leaf_form_states(form, states, xobjects, xref, form_bytes, form_tokens);
+                if (!inherited) return {};
+                for (auto const &name : *inherited) uses[name].push_back(-1);
+            }
             std::set<std::string> result;
             for (auto const &[name, places] : uses) {
                 if (std::all_of(places.begin(), places.end(), [&](int i) {
@@ -166,9 +245,13 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
             } else if (op == "Do") {
                 if (args.size() != 1 || !args[0].isName() || !xobjects.isDict()) return {};
                 auto object = xobjects.dictLookup(args[0].getName());
-                // Forms (including those with inherited resources) remain outside this subset.
-                // An Image carries pixel data and cannot execute a nested gs operator.
-                if (!object.isStream() || !object.getStream()->getDict()->lookup("Subtype").isName("Image")) return {};
+                if (!object.isStream()) return {};
+                auto subtype = object.getStream()->getDict()->lookup("Subtype");
+                if (subtype.isName("Form")) {
+                    if (forms.size() == 64) return {};
+                    if (!current.empty() && !states.dictLookup(current.c_str()).dictLookup("SMask").isName("None")) return {};
+                    forms.push_back(std::move(object));
+                } else if (!subtype.isName("Image")) return {};
                 if (!current.empty()) uses[current].push_back(-1);
             } else if (op == "sh" && in >= 0) {
                 auto &pair = pairs[in];
