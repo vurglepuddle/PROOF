@@ -12,6 +12,7 @@
 #include <2geom/angle.h>
 #include <2geom/transforms.h>
 
+#include "object/sp-clippath.h"
 #include "object/sp-ellipse.h"
 #include "object/sp-item-group.h"
 #include "object/sp-rect.h"
@@ -318,6 +319,63 @@ std::vector<Geom::PathVector> invisible_outlines(std::vector<SPItem *> const &it
         }
     }
     return outlines;
+}
+
+std::vector<ClipOutline> clip_outlines(SPItem &clipped)
+{
+    std::vector<ClipOutline> outlines;
+    auto const clip = clipped.getClipObject();
+    if (!clip || clip->clippath_units()) {
+        return outlines;
+    }
+    // In user space, the clipping path is drawn where the object's own children are.
+    auto const i2dt = clipped.i2dt_affine();
+    for (auto &child : clip->children) {
+        if (auto item = cast<SPItem>(&child)) {
+            visit_objects(*item, item->transform * i2dt, false, [&](SPItem &object, Geom::Affine const &o2dt) {
+                auto const shape = cast<SPShape>(&object);
+                if (shape && shape->curve()) {
+                    outlines.push_back({&clipped, shape, *shape->curve() * o2dt});
+                }
+                return true;
+            });
+        }
+    }
+    return outlines;
+}
+
+std::optional<ClipOutline> clip_outline_at(std::vector<SPItem *> const &items, Geom::Point const &point,
+                                           double tolerance)
+{
+    std::optional<ClipOutline> found;
+    double best = tolerance;
+    for (auto item : items) {
+        auto const clip = item->getClipObject();
+        if (!clip) {
+            continue;
+        }
+        // Most clipping paths are far from the pointer, and their box says so without curves.
+        auto box = clip->geometricBounds(item->i2dt_affine());
+        if (!box) {
+            continue;
+        }
+        box->expandBy(tolerance);
+        if (!box->contains(point)) {
+            continue;
+        }
+        for (auto &outline : clip_outlines(*item)) {
+            auto const time = outline.path.nearestTime(point);
+            if (!time) {
+                continue;
+            }
+            double const distance = Geom::distance(outline.path.pointAt(*time), point);
+            if (distance < best || (!found && distance <= best)) {
+                best = distance;
+                found = std::move(outline);
+            }
+        }
+    }
+    return found;
 }
 
 } // namespace Inkscape

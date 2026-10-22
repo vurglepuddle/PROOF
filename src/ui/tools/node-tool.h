@@ -14,6 +14,7 @@
 
 #include <optional>
 
+#include "display/control/canvas-item-ptr.h"
 #include "ui/tools/tool-base.h"
 
 namespace Inkscape {
@@ -33,6 +34,8 @@ namespace Inkscape {
 
     class Selection;
     class Rubberband;
+    class CanvasItemBpath;
+    class CanvasItemCtrl;
     class CanvasItemGroup;
     struct ButtonPressEvent;
     struct ButtonReleaseEvent;
@@ -87,8 +90,27 @@ private:
         Geom::Point applied;       ///< The move applied so far.
         bool whole_items = false;
         bool moved = false;
+        bool fixed = false;        ///< The press only picked or put down; a drag moves nothing.
+        /// Clipping path shapes that move alone, each with the linear part of its clipped
+        /// object's desktop-to-user transform.
+        std::vector<std::pair<SPItem *, Geom::Affine>> clip_shapes;
     };
     std::optional<DirectPress> _direct_press;
+
+    /**
+     * PROOF: clipping paths picked by their outline, as with Illustrator's Direct Selection. The
+     * objects they are on stay selected, and the anchors of their clipping paths are edited
+     * instead of their own.
+     */
+    std::vector<SPItem *> _clip_targets;
+    CanvasItemPtr<CanvasItemBpath> _clip_hover;                ///< The outline under the pointer.
+    std::vector<CanvasItemPtr<CanvasItemCtrl>> _clip_centres; ///< A drag moves the clipping paths alone.
+    sigc::scoped_connection _clip_document_modified;
+    bool _pressClip(ButtonPressEvent const &event);
+    void _hoverClip(Geom::Point const &window_point);
+    void _moveClipShapes(DirectPress const &press, Geom::Point const &step);
+    void _updateClipCentres();
+
     bool _directPress(ButtonPressEvent const &event);
     void _directDrag(MotionEvent const &event);
     void _directRelease();

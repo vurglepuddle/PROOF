@@ -15,6 +15,7 @@
 #include "inkscape.h"
 #include "object/sp-item-group.h"
 #include "object/sp-item.h"
+#include "object/sp-shape.h"
 #include "preferences.h"
 #include "selection.h"
 #include "util/transform-objects.h"
@@ -429,6 +430,88 @@ TEST_F(BoxFrameTest, ShapesThatPaintNothingAreOutlined)
     EXPECT_TRUE(Geom::are_near(outlines[1].boundsExact()->min(), second->min() + Geom::Point(50, 0), EPSILON));
     EXPECT_TRUE(invisible_outlines({object("filled"), object("stroked")}, 10).empty());
     EXPECT_TRUE(invisible_outlines({object("mixed"), object("clone")}, 1).empty()); // Over the limit.
+}
+
+TEST_F(BoxFrameTest, ClippingPathsArePickedByTheirOutline)
+{
+    auto const clips = SPDocument::createNewDocFromMem(R"SVG(<svg xmlns="http://www.w3.org/2000/svg"
+      width="400" height="400">
+  <defs>
+    <clipPath id="clip" clipPathUnits="userSpaceOnUse">
+      <rect id="clip-rect" x="10" y="10" width="40" height="20" transform="translate(5 0)"/>
+    </clipPath>
+    <clipPath id="clip-group" clipPathUnits="userSpaceOnUse">
+      <g transform="translate(0 100)"><path id="clip-path" d="M 0,0 h 30 v 30 z"/></g>
+    </clipPath>
+    <clipPath id="clip-box" clipPathUnits="objectBoundingBox">
+      <rect x="0" y="0" width="0.5" height="1"/>
+    </clipPath>
+  </defs>
+  <g id="clipped" clip-path="url(#clip)" transform="translate(100 0)">
+    <rect x="0" y="0" width="100" height="100" fill="red"/>
+  </g>
+  <g id="twin" clip-path="url(#clip)" transform="translate(100 0)">
+    <rect x="0" y="0" width="100" height="100" fill="blue"/>
+  </g>
+  <path id="clipped-path" clip-path="url(#clip-group)" d="M 0,100 h 50 v 50 h -50 z"/>
+  <rect id="boxed" clip-path="url(#clip-box)" x="300" y="300" width="50" height="50"/>
+  <rect id="plain" x="0" y="0" width="5" height="5"/>
+</svg>)SVG"sv);
+    ASSERT_TRUE(clips);
+    clips->ensureUpToDate();
+    auto object = [&](char const *id) { return cast<SPItem>(clips->getObjectById(id)); };
+    auto shape = [&](char const *id) { return cast<SPShape>(clips->getObjectById(id)); };
+    auto const near_box = [](Geom::PathVector const &path, Geom::Rect const &box) {
+        auto const bounds = path.boundsExact();
+        return bounds && Geom::are_near(bounds->min(), box.min(), EPSILON) &&
+               Geom::are_near(bounds->max(), box.max(), EPSILON);
+    };
+
+    // The clipping path is where the object's own children are, with its shapes' transforms.
+    auto const clipped = object("clipped");
+    auto outlines = clip_outlines(*clipped);
+    ASSERT_EQ(outlines.size(), 1u);
+    EXPECT_EQ(outlines[0].clipped, clipped);
+    EXPECT_EQ(outlines[0].shape, shape("clip-rect"));
+    EXPECT_TRUE(near_box(outlines[0].path, Geom::Rect(15, 10, 55, 30) * clipped->i2dt_affine()));
+
+    // A shape in a group of the clipping path, under the group's transform.
+    outlines = clip_outlines(*object("clipped-path"));
+    ASSERT_EQ(outlines.size(), 1u);
+    EXPECT_EQ(outlines[0].shape, shape("clip-path"));
+    EXPECT_TRUE(near_box(outlines[0].path, Geom::Rect(0, 100, 30, 130) * object("clipped-path")->i2dt_affine()));
+
+    // Clipping paths in bounding box units are not edited, and an object without one has none.
+    EXPECT_TRUE(clip_outlines(*object("boxed")).empty());
+    EXPECT_TRUE(clip_outlines(*object("plain")).empty());
+
+    // Near the rectangle's top edge, within the tolerance, it is found; inside it, too far, not.
+    std::vector<SPItem *> const items = {object("plain"), object("clipped-path"), clipped, object("boxed")};
+    auto const on_top = Geom::Point(35, 12) * clipped->i2dt_affine();
+    auto found = clip_outline_at(items, on_top, 3);
+    ASSERT_TRUE(found);
+    EXPECT_EQ(found->clipped, clipped);
+    EXPECT_EQ(found->shape, shape("clip-rect"));
+    EXPECT_FALSE(clip_outline_at(items, on_top, 1));
+    EXPECT_FALSE(clip_outline_at(items, Geom::Point(35, 20) * clipped->i2dt_affine(), 3));
+
+    // Of two outlines within the tolerance, the nearer wins (the triangle's corner is at
+    // (30, 100) and the rectangle's at (115, 30) on the desktop).
+    auto const dt = object("clipped-path")->i2dt_affine();
+    found = clip_outline_at(items, Geom::Point(31, 65) * dt, 120);
+    ASSERT_TRUE(found);
+    EXPECT_EQ(found->clipped, object("clipped-path"));
+    found = clip_outline_at(items, Geom::Point(114, 31) * dt, 120);
+    ASSERT_TRUE(found);
+    EXPECT_EQ(found->clipped, clipped);
+
+    // Of two objects sharing a clipping path, the first passed, the topmost, wins.
+    found = clip_outline_at({object("twin"), clipped}, on_top, 3);
+    ASSERT_TRUE(found);
+    EXPECT_EQ(found->clipped, object("twin"));
+    found = clip_outline_at({clipped, object("twin")}, on_top, 3);
+    ASSERT_TRUE(found);
+    EXPECT_EQ(found->clipped, clipped);
 }
 
 /*

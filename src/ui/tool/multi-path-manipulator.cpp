@@ -921,7 +921,9 @@ Colors::Color MultiPathManipulator::_getOutlineColor(ShapeRole role, SPObject *o
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
     switch(role) {
     case SHAPE_ROLE_CLIPPING_PATH:
-        return prefs->getColor("/tools/nodes/clipping_path_color", "#00ff00ff");
+        // PROOF: blue, as Illustrator outlines a mask's path and PROOF outlines a path that
+        // paints nothing (box-frame.h), where Inkscape drew it green.
+        return prefs->getColor("/tools/nodes/clipping_path_color", "#277fffff");
     case SHAPE_ROLE_MASK:
         return prefs->getColor("/tools/nodes/mask_color", "#0000ffff");
     case SHAPE_ROLE_LPE_PARAM:
