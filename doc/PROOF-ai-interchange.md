@@ -2179,3 +2179,73 @@ groups, 859 checks**, the mask control **23/23**. Unit checks:
 `MasksOutsideTheWrittenSubsetAreRefusedByName`,
 `AGroupsOwnStateAfterItsDictionaryIsStillTheGroups` (reader), and the
 layer/root refusals, which now name where.
+
+### Registration defined in RGB written (2026-10-22, after opacity masks)
+
+The four documents the census held for "noncanonical Registration ink
+definitions" alone (`4760b1df4a`, `a1fd615076`, `bd055cc0ce`, `d2a72bb676`)
+are RGB documents from Illustrator CS5 and CS6 (`%AI5_FileFormat` 11 and 13).
+In an RGB document Illustrator defines Registration as RGB black:
+
+```text
+%%RGBProcessColor: 0 0 0 ([Registration])
+...
+0.7497 0.6792 0.6705 0.9015 0 0 0 ([Registration]) 0 1 Xz
+```
+
+its CMYK equivalent, its RGB, the tint taken from 1, the type of an RGB ink
+(1), then `Xz` (`XZ` for a stroke). Their pages draw it `/Separation /All
+/DeviceRGB`, paper at 0 and black at 1 (`C0 [1 1 1]`, `C1 [0 0 0]`). The
+import read it as the ink `All` defined as RGB black; the writer knew only the
+CMYK definition (`1 1 1 1 ([Registration]) tint Xs`) and refused it.
+
+**Written as Illustrator writes it.** The modern writer takes `All` defined as
+RGB black, fully opaque, as Registration too: `%%RGBProcessColor: 0 0 0
+([Registration])` in the header, and `c m y k 0 0 0 ([Registration]) tint 1
+Xz` (`XZ`), the CMYK that of the tinted colour as for any RGB ink
+(`ink_operands`). A document using both definitions is refused by name
+(`Registration defined in both CMYK and RGB`); any other definition stays
+`noncanonical Registration ink definitions`. Illustrator 7 still refuses
+Registration.
+
+**PDF output (shared code).** Registration defined in RGB is now `/Separation
+/All /DeviceRGB` with the tint transform `{ 1 exch sub dup dup }`, as on
+Illustrator's pages; before, it was drawn as plain black, on no plate of its
+own. The CMYK definition keeps `/DeviceCMYK` and `{ dup dup dup }`
+(`pdfoutput/build-styles.cpp`).
+
+**Illustrator 29.2.1** (one operation at a time, ten seconds after each open,
+save and close; closed without saving; idle after). The smoke's RGB control
+opened with `[Registration]` on all four paints (fills 100% and 35%, strokes
+60% and 100%), defined RGB 0 0 0, once the document also had an ordinary RGB
+colour. Painted with Registration alone, it opened as a CMYK document though
+its header says RGB (`%AI9_ColorModel: 1`, as the masks round's RGB control,
+which opened RGB), with Registration at the same tints. Illustrator's saved
+copies, the CMYK one and the RGB one, both keep Registration as
+`%%RGBProcessColor` and `Xz`/`XZ` in the same layout, with their own CMYK, and
+both pages draw `/All /DeviceRGB`: Illustrator keeps a Registration defined in
+RGB in a CMYK document, so the writer takes it there too. Both copies reopen
+in PROOF natively, the three tints RGB black; PROOF writes the CMYK one again
+as Illustrator did (`%AI9_ColorModel: 2`, Registration in RGB).
+
+**Real documents.** All four now write. Saved as `.ai` and reopened, each
+opens natively and draws as the original import within 8 channel levels, no
+pixel more than 24 apart; the copies are unchanged; their pages have
+`/All /DeviceRGB`.
+
+The round's census, the same 871 copies (12 minutes, nothing else
+running): import unchanged at 862 native and nine pages; **the modern form
+writes 798 of 862** (was 794), exactly the four, none lost, no other
+document's outcome or reasons changed, every accepted stream read back;
+Illustrator 7 stays 100. Left for the modern form: type 60 (52 alone),
+missing links 6 (0), meshes 3 (1), coincident stops 2 (2), mixed gradient
+spaces 1 (1).
+
+Checks: **13 unit suites, 0 failures** (importer 170 with two opt-in skips,
+reader 75 with one, PDF output 5); **27 export groups, 867 checks** (was
+859; the registration smoke 88, was 80). Unit: `AnRgbDocumentsRegistrationIsWrittenAsIllustratorWritesItThere`
+(Illustrator's form in, written, read back, written again the same), and in
+`TheWriterRefusesAmbiguousAndMalformedRegistration` RGB not quite black
+refused, RGB black in a CMYK document taken, both definitions refused. The
+registration smoke **88/88**: the RGB definition in an RGB and in a CMYK
+document, records, PDF separation and native reopen.
