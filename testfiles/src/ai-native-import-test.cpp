@@ -6159,7 +6159,7 @@ TEST_F(AiNativeImportTest, TheWriterRefusesAmbiguousAndMalformedRegistration)
     std::vector<Case> const cases{
         {R"x(proof:ink="[Registration]" proof:ink-alternate="device-cmyk(1 1 1 1)")x", "ambiguous Registration ink names"},
         {R"x(proof:ink="All" proof:ink-alternate="device-cmyk(0.75 0.68 0.67 0.9)")x", "noncanonical Registration ink definitions"},
-        {R"(proof:ink="All" proof:ink-alternate="#000000")", "noncanonical Registration ink definitions"},
+        {R"(proof:ink="All" proof:ink-alternate="#010101")", "noncanonical Registration ink definitions"},
         {R"x(proof:ink="All" proof:ink-alternate="lab(0% 0 0)")x", "noncanonical Registration ink definitions"},
         {R"(proof:ink="All" proof:ink-alternate="not-a-colour")", "malformed Registration ink definitions"},
         {R"(proof:ink="All")", "malformed Registration ink definitions"},
@@ -6185,6 +6185,93 @@ TEST_F(AiNativeImportTest, TheWriterRefusesAmbiguousAndMalformedRegistration)
         auto const written = AN::write_records(doc.get());
         EXPECT_TRUE(written.records.empty());
         EXPECT_EQ(written.refused, std::vector<std::string>{"noncanonical Registration ink definitions"});
+    }
+    // RGB black is Registration in a CMYK document too, as Illustrator 29 keeps an RGB
+    // document's when the document becomes CMYK: %%RGBProcessColor and Xz still.
+    auto cmyk = svg_document(
+        R"(<defs><linearGradient id="ink" inkscape:swatch="solid" proof:ink="All" proof:ink-alternate="#000000">)"
+        R"x(<stop offset="0" stop-color="#000000"/></linearGradient></defs><rect width="20" height="20" fill="url(#ink)"/>)x",
+        R"(width="200" height="100" viewBox="0 0 200 100" proof:color-mode="CMYK")");
+    ASSERT_TRUE(cmyk);
+    auto const in_cmyk = AN::write_records(cmyk.get());
+    ASSERT_TRUE(in_cmyk.refused.empty()) << in_cmyk.refused.front();
+    EXPECT_NE(in_cmyk.records.find("%AI9_ColorModel: 2\n"), std::string::npos);
+    EXPECT_NE(in_cmyk.records.find("%%RGBProcessColor: 0 0 0 ([Registration])\n"), std::string::npos);
+    EXPECT_NE(in_cmyk.records.find(" 0 0 0 ([Registration]) 0 1 Xz\n"), std::string::npos);
+    // One document, one Registration: not defined both ways.
+    auto both = svg_document(
+        R"x(<defs><linearGradient id="c" inkscape:swatch="solid" proof:ink="All" proof:ink-alternate="device-cmyk(1 1 1 1)">)x"
+        R"(<stop offset="0" stop-color="#000000"/></linearGradient>)"
+        R"(<linearGradient id="r" inkscape:swatch="solid" proof:ink="All" proof:ink-alternate="#000000">)"
+        R"(<stop offset="0" stop-color="#000000"/></linearGradient></defs>)"
+        R"x(<rect width="20" height="20" fill="url(#c)"/><rect x="30" width="20" height="20" fill="url(#r)"/>)x");
+    ASSERT_TRUE(both);
+    EXPECT_EQ(AN::write_records(both.get()).refused, std::vector<std::string>{"Registration defined in both CMYK and RGB"});
+}
+
+TEST_F(AiNativeImportTest, AnRgbDocumentsRegistrationIsWrittenAsIllustratorWritesItThere)
+{
+    // As the owner's Illustrator CS5 and CS6 RGB documents carry it: RGB black, its CMYK
+    // first, `c m y k 0 0 0 ([Registration]) tint 1 Xz` (XZ for a stroke), 0 at full strength.
+    std::string const registration = "0.75 0.68 0.67 0.9 0 0 0 ([Registration]) ";
+    auto const art = registration + "0 1 Xz\n" + box(10, 10, 30, 30) + "f\n" +
+                     registration + "0.4 1 XZ\n2 w\n" + box(50, 10, 30, 30) + "S\n" +
+                     registration + "0.65 1 Xz\n" + box(90, 10, 30, 30) + "f\n";
+    auto made = make(records(layer(art), {}, false));
+    ASSERT_TRUE(made);
+    auto *doc = made->document.get();
+    std::vector<SpotInk::Ink> inks;
+    for (auto *swatch : elements(doc->getDefs()->getRepr(), "svg:linearGradient")) {
+        if (auto ink = SpotInk::read(swatch)) inks.push_back(*ink);
+    }
+    ASSERT_EQ(inks.size(), 3u);
+    for (auto const &ink : inks) {
+        EXPECT_EQ(ink.name, "All");
+        ASSERT_TRUE(ink.alternate.getSpace());
+        EXPECT_EQ(ink.alternate.getSpace()->getComponentType(), Type::RGB);
+        EXPECT_EQ(ink.alternate.toString(false), "#000000");
+    }
+
+    auto const written = AN::write_records(doc);
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &r = written.records;
+    EXPECT_EQ(occurrences(r, "%%RGBProcessColor: 0 0 0 ([Registration])\n"), 1u);
+    EXPECT_EQ(r.find("%%CMYKProcessColor:"), std::string::npos);
+    EXPECT_EQ(r.find("%%DocumentCustomColors:"), std::string::npos);
+    EXPECT_EQ(r.find(" Xs\n"), std::string::npos);
+    EXPECT_EQ(occurrences(r, " 0 0 0 ([Registration]) 0 1 Xz\n"), 1u) << r;
+    EXPECT_EQ(occurrences(r, " 0 0 0 ([Registration]) 0.4 1 XZ\n"), 1u);
+    EXPECT_EQ(occurrences(r, " 0 0 0 ([Registration]) 0.65 1 Xz\n"), 1u);
+
+    std::string error;
+    auto ai = AN::read(r, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->layers.size(), 1u);
+    auto const &children = ai->layers[0].children;
+    ASSERT_EQ(children.size(), 3u);
+    std::array<std::optional<AN::Paint> const *, 3> const paints{&children[0].fill, &children[1].stroke, &children[2].fill};
+    std::array<double, 3> const tints{1.0, 0.6, 0.35};
+    for (unsigned i = 0; i < paints.size(); ++i) {
+        SCOPED_TRACE(i);
+        ASSERT_TRUE(*paints[i]);
+        auto const &paint = **paints[i];
+        ASSERT_GE(paint.ink, 0);
+        auto const &ink = ai->inks[paint.ink];
+        EXPECT_EQ(ink.kind, AN::Ink::Kind::Registration);
+        EXPECT_EQ(ink.name, "[Registration]");
+        EXPECT_EQ(ink.color.model, AN::Color::Model::Rgb);
+        EXPECT_EQ(ink.color.v[0] + ink.color.v[1] + ink.color.v[2], 0.0);
+        EXPECT_NEAR(paint.tint, tints[i], 1e-6);
+    }
+
+    // Reopened and written again, the same.
+    auto again = make(r);
+    ASSERT_TRUE(again);
+    auto const rewritten = AN::write_records(again->document.get());
+    ASSERT_TRUE(rewritten.refused.empty()) << rewritten.refused.front();
+    for (auto const *line : {"%%RGBProcessColor: 0 0 0 ([Registration])\n", " 0 0 0 ([Registration]) 0 1 Xz\n",
+                             " 0 0 0 ([Registration]) 0.4 1 XZ\n", " 0 0 0 ([Registration]) 0.65 1 Xz\n"}) {
+        EXPECT_EQ(occurrences(rewritten.records, line), 1u) << line;
     }
 }
 

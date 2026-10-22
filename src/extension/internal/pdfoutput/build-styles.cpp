@@ -41,11 +41,12 @@ public:
 
 } // namespace
 
-CapyPDF_SeparationId DocumentGenerator::add_registration_ink(CapyPDF_FunctionId tint_transform)
+CapyPDF_SeparationId DocumentGenerator::add_registration_ink(CapyPDF_FunctionId tint_transform,
+                                                            CapyPDF_Device_Colorspace alternate)
 {
     CapyPDF_SeparationId separation;
     auto const error = capy_generator_add_separation(
-        *this, "All", 3, CAPY_DEVICE_CS_CMYK, tint_transform, &separation);
+        *this, "All", 3, alternate, tint_transform, &separation);
     if (error) throw capypdf::PdfException(capy_error_message(error));
     return separation;
 }
@@ -381,21 +382,29 @@ std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle
             if (!opacity && ink && ink->name == "All") {
                 auto const &alternate = ink->alternate;
                 auto const space = alternate.getSpace();
-                bool const canonical = space && space->getComponentType() == Colors::Space::Type::CMYK &&
-                    alternate.getOpacity() == 1.0 && alternate[0] == 1.0 && alternate[1] == 1.0 &&
-                    alternate[2] == 1.0 && alternate[3] == 1.0 && std::isfinite(ink->tint) &&
+                auto const type = space ? space->getComponentType() : Colors::Space::Type::NONE;
+                bool const valid = alternate.getOpacity() == 1.0 && std::isfinite(ink->tint) &&
                     ink->tint >= 0.0 && ink->tint <= 1.0;
-                if (canonical) {
-                    if (!_registration_ink) {
-                        // CapyPDF accepts only calculator functions for Separation
-                        // tint transforms. This maps t to the CMYK alternate t,t,t,t.
+                bool const cmyk = valid && type == Colors::Space::Type::CMYK && alternate[0] == 1.0 &&
+                    alternate[1] == 1.0 && alternate[2] == 1.0 && alternate[3] == 1.0;
+                // An RGB document's Registration is RGB black, and Illustrator's pages draw it
+                // /Separation /All /DeviceRGB.
+                bool const rgb = valid && type == Colors::Space::Type::RGB && alternate[0] == 0.0 &&
+                    alternate[1] == 0.0 && alternate[2] == 0.0;
+                if (cmyk || rgb) {
+                    auto &registration = cmyk ? _registration_ink : _registration_rgb_ink;
+                    if (!registration) {
+                        // CapyPDF accepts only calculator functions for Separation tint
+                        // transforms. This maps t to the CMYK alternate t,t,t,t, or to the
+                        // RGB alternate 1-t,1-t,1-t.
                         double domain[]{0, 1};
                         double range[]{0, 1, 0, 1, 0, 1, 0, 1};
-                        capypdf::Type4Function tint_transform(domain, 2, range, 8, "{ dup dup dup }", -1);
+                        capypdf::Type4Function tint_transform(domain, 2, range, cmyk ? 8 : 6,
+                                                              cmyk ? "{ dup dup dup }" : "{ 1 exch sub dup dup }", -1);
                         auto const function = _gen.add_function(tint_transform);
-                        _registration_ink = _gen.add_registration_ink(function);
+                        registration = _gen.add_registration_ink(function, cmyk ? CAPY_DEVICE_CS_CMYK : CAPY_DEVICE_CS_RGB);
                     }
-                    return capypdf::Color{RegistrationColor(*_registration_ink, ink->tint)};
+                    return capypdf::Color{RegistrationColor(*registration, ink->tint)};
                 }
             }
             return get_color(swatch->getPreviewAverageColor(), opacity);

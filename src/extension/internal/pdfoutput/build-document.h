@@ -97,7 +97,7 @@ class DocumentGenerator : public capypdf::Generator
 public:
     using capypdf::Generator::Generator;
 
-    CapyPDF_SeparationId add_registration_ink(CapyPDF_FunctionId tint_transform);
+    CapyPDF_SeparationId add_registration_ink(CapyPDF_FunctionId tint_transform, CapyPDF_Device_Colorspace alternate);
 };
 
 class Document
@@ -204,6 +204,7 @@ private:
 
     std::map<std::string, CapyPDF_IccColorSpaceId> _icc_cache;
     std::optional<CapyPDF_SeparationId> _registration_ink;
+    std::optional<CapyPDF_SeparationId> _registration_rgb_ink; ///< An RGB document's Registration.
     std::map<ItemCacheKey, CapyPDF_TransparencyGroupId> _item_cache;
     std::map<std::string, CapyPDF_TransparencyGroupId> _mask_cache;
     std::map<std::string, CapyPDF_PatternId> _pattern_cache;

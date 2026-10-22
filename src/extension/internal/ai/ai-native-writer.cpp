@@ -190,7 +190,9 @@ private:
     std::ostringstream _body;
     std::set<std::string> _refused;
     std::map<std::string, InkDefinition> _spots;
+    /// Registration used as defined in CMYK (Xs), and as an RGB document defines it, in RGB (Xz).
     bool _registration = false;
+    bool _registration_rgb = false;
     std::vector<std::string> _gradients;
     /// Each pattern definition written: the tile it is for, its name, and its records.
     struct PatternDefinition
@@ -233,6 +235,7 @@ std::string Writer::encoded_name(std::string const &text, std::string_view what)
 void Writer::ink_comments(std::ostream &head)
 {
     if (_registration) head << "%%CMYKProcessColor: 1 1 1 1 ([Registration])\n";
+    if (_registration_rgb) head << "%%RGBProcessColor: 0 0 0 ([Registration])\n";
     bool first = true;
     for (auto const &[name, c] : _spots) {
         head << (first ? "%%DocumentCustomColors: " : "%%+ ") << encoded_name(name, "ink names") << '\n';
@@ -346,15 +349,37 @@ std::optional<std::string> Writer::paint(SPIPaint const &p, SPStyle const *style
                 while (end && g_ascii_isspace(*end)) ++end;
                 valid_tint = valid_tint && end && !*end;
             }
-            if (!valid_tint || !a.getSpace() || a.getSpace()->getComponentType() != Type::CMYK ||
-                a.getOpacity() != 1.0 || a[0] != 1.0 || a[1] != 1.0 || a[2] != 1.0 || a[3] != 1.0) {
+            auto const type = a.getSpace() ? a.getSpace()->getComponentType() : Type::NONE;
+            bool const cmyk = type == Type::CMYK && a[0] == 1.0 && a[1] == 1.0 && a[2] == 1.0 && a[3] == 1.0;
+            // An RGB document's Registration is RGB black: the owner's Illustrator CS5 and CS6
+            // RGB documents define it so, and their pages draw it /Separation /All /DeviceRGB.
+            // Illustrator 29 keeps it so in a CMYK document too, records and page.
+            bool const rgb = type == Type::RGB && a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0;
+            if (!valid_tint || a.getOpacity() != 1.0 || (!cmyk && !rgb)) {
                 refuse("noncanonical Registration ink definitions");
                 return {};
             }
-            _registration = true;
-            // Illustrator writes a process Registration declaration and Xs/XS,
-            // never an ordinary custom ink named All. Its operand is 1 - tint.
-            return "1 1 1 1 ([Registration]) " + num(1.0 - ink->tint) + (fill ? " Xs" : " XS");
+            if (cmyk ? _registration_rgb : _registration) {
+                refuse("Registration defined in both CMYK and RGB");
+                return {};
+            }
+            if (cmyk) {
+                _registration = true;
+                // Illustrator writes a process Registration declaration and Xs/XS,
+                // never an ordinary custom ink named All. Its operand is 1 - tint.
+                return "1 1 1 1 ([Registration]) " + num(1.0 - ink->tint) + (fill ? " Xs" : " XS");
+            }
+            // In RGB Illustrator writes it as an RGB ink, the CMYK of the tinted colour first, with
+            // Xz/XZ: `c m y k 0 0 0 ([Registration]) 0 1 Xz` at full strength.
+            auto const definition = ink_definition(a, _doc);
+            auto const operands = std::holds_alternative<InkDefinition>(definition)
+                ? ink_operands(std::get<InkDefinition>(definition), a, ink->tint, _doc) : std::string();
+            if (operands.empty()) {
+                refuse("noncanonical Registration ink definitions");
+                return {};
+            }
+            _registration_rgb = true;
+            return operands + " ([Registration]) " + num(1.0 - ink->tint) + " 1" + (fill ? " Xz" : " XZ");
         }
         auto const definition = ink_definition(a, _doc);
         if (auto const *why = std::get_if<std::string>(&definition)) {

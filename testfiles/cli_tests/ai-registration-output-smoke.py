@@ -62,6 +62,20 @@ def control(tint=.35, registration=True):
       </svg>'''
 
 
+def rgb_control(mode="RGB"):
+    # An RGB document's Registration is RGB black, as Illustrator CS5 and CS6 define it there;
+    # Illustrator 29 keeps it so when the document is CMYK.
+    definitions = (swatch("full", "All", 1, "#000000") + swatch("tint", "All", .35, "#000000") +
+                   swatch("line", "All", .6, "#000000"))
+    return HEAD.replace('proof:color-mode="CMYK"', f'proof:color-mode="{mode}"') + "<defs>" + definitions + '''</defs>
+      <rect x="10" y="10" width="60" height="50" fill="url(#full)"/>
+      <rect x="110" y="10" width="60" height="50" fill="url(#tint)"
+        stroke="url(#line)" stroke-width="6" proof:overprint="fill stroke"/>
+      <path d="M210 10H280V60H210Z" fill="none" stroke="url(#full)"
+        stroke-width="6" proof:overprint="stroke"/>
+      </svg>'''
+
+
 def gradient(name):
     return HEAD + f'''<defs><linearGradient id="ramp">
       <stop offset="0" proof:ink="{name}" proof:ink-alternate="device-cmyk(1 1 1 1)"
@@ -265,7 +279,7 @@ def main():
     for label, name, alternate in (
             ("alias", "[Registration]", "device-cmyk(1 1 1 1)"),
             ("noncanonical-cmyk", "All", "device-cmyk(0 0 0 1)"),
-            ("rgb", "All", "#000000"),
+            ("noncanonical-rgb", "All", "#010101"),
             ("lab", "All", "lab(50 0 0)")):
         text = HEAD + "<defs>" + swatch("ink", name, .5, alternate) + \
                '</defs><rect x="10" y="10" width="100" height="80" fill="url(#ink)"/></svg>'
@@ -301,6 +315,37 @@ def main():
             absent = out / (name + ".ai")
             result = run(name + "-new", path, absent, extension, success=False)
             check(name + ": no new destination", result.returncode == 1 and not absent.exists())
+    # Registration defined in RGB, as an RGB document has it and Illustrator 29 keeps it in a
+    # CMYK one: Illustrator's RGB form in the records, an RGB All separation in the PDF.
+    for mode in ("RGB", "CMYK"):
+        label = "rgb-registration-" + mode.lower()
+        rgb_source = source(label, rgb_control(mode))
+        rgb_target = out / (label + ".ai")
+        run(label + "-save", rgb_source, rgb_target, "native")
+        native = records(label, rgb_target, False)
+        paints = re.findall(rb"^[\d. ]+ 0 0 0 \(\[Registration\]\) ([\d.]+) 1 (Xz|XZ)$", native, re.M)
+        model = b"%AI9_ColorModel: " + (b"1" if mode == "RGB" else b"2") + b"\n"
+        check(label + ": Illustrator's RGB Registration records",
+              model in native and b"%%RGBProcessColor: 0 0 0 ([Registration])\n" in native and
+              b"%%CMYKProcessColor" not in native and b"%%DocumentCustomColors" not in native and
+              sorted((round(1 - float(t), 6), op.decode()) for t, op in paints) ==
+              sorted([(1, "Xz"), (.35, "Xz"), (.6, "XZ"), (1, "XZ")]), str(paints))
+        spaces, tints = pdf_registration(PdfReader(rgb_target, strict=True))
+        functions = [s[3].get_object() for s in spaces]
+        check(label + ": PDF uses an RGB All separation, paper at 0 and black at 1",
+              bool(spaces) and all(s[2] == "/DeviceRGB" for s in spaces) and
+              all(f.get("/FunctionType") == 4 and list(f.get("/Range", [])) == [0, 1] * 3 and
+                  f.get_data().split() == [b"{", b"1", b"exch", b"sub", b"dup", b"dup", b"}"] for f in functions) and
+              tints == {("fill", 1), ("fill", .35), ("stroke", .6), ("stroke", 1)}, str(sorted(tints)))
+        reopened = out / (label + "-reopened.svg")
+        result = run(label + "-reopen", rgb_target, reopened)
+        root = ET.parse(reopened).getroot()
+        alternates = {e.get(PROOF + "ink-alternate") for e in root.iter() if e.get(PROOF + "ink") == "All"}
+        expected = Counter({("All", 1, "fill", ()): 1, ("All", .35, "fill", ("fill", "stroke")): 1,
+                            ("All", .6, "stroke", ("fill", "stroke")): 1, ("All", 1, "stroke", ("stroke",)): 1})
+        check(label + ": native reopen keeps Registration as RGB black",
+              b"opens from its PDF page" not in result.stdout + result.stderr and used_inks(root) == expected and
+              alternates == {"#000000"}, f"{used_inks(root)} {alternates}")
     check("all synthetic SVG sources unchanged", all(hashlib.sha256((out / n).read_bytes()).hexdigest() == sha
                                                      for n, sha in sources.items()))
     check("no temporary output files left", not list(out.glob("*.proof-*")))
