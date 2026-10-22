@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <set>
 #include <string_view>
@@ -51,6 +52,7 @@
 #include "document.h"
 #include "extension/internal/ai/ai-native-import.h"
 #include "extension/internal/ai/ai-native-reader.h"
+#include "io/resource.h"
 #include "io/sys.h"
 #include "object/sp-image.h"
 #include "object/sp-page.h"
@@ -96,6 +98,16 @@ constexpr int LIGHTNESS_STEP = 48;
 constexpr int COLOUR_STEP = 80;
 /// Differences worth a note.
 constexpr double NOTABLE = 0.002;
+/// A page that takes Poppler longer than this many seconds to draw is kept for the next opening
+/// of the same file, and when it passes at first sight it isn't drawn again finer: there that
+/// changes only the figure reported, and one page of 18 placements took Poppler about 100 s at
+/// any size (PROOF-ai-native-records.md, "Pages slow to draw: weighed once and kept").
+constexpr double SLOW_PAGE = 10.0;
+/// Files whose slow pages an ordinary opening keeps; the folder least lately written goes first.
+constexpr std::size_t KEPT_FILES = 64;
+/// What a kept page depends on beside the file, Poppler and Cairo: raise it when draw_page or
+/// the comparison sizes change.
+constexpr int PAGE_STORE_FORMAT = 1;
 
 std::string num(double v)
 {
@@ -264,6 +276,144 @@ void cache_reference(Picture const &picture, std::string const &path)
     }
     g_free(bytes);
 }
+
+/// SLOW_PAGE, or the test suite's own (PROOF_AI_SLOW_PAGE_SECONDS) so it can try the rule on
+/// pages that draw in an instant.
+double slow_page()
+{
+    if (auto const *value = g_getenv("PROOF_AI_SLOW_PAGE_SECONDS")) {
+        double const seconds = g_ascii_strtod(value, nullptr);
+        if (std::isfinite(seconds) && seconds >= 0) return seconds;
+    }
+    return SLOW_PAGE;
+}
+
+/// The SHA-256 of a file's bytes, read a megabyte at a time; empty when it can't be read.
+std::string file_checksum(std::string const &path)
+{
+    std::unique_ptr<FILE, int (*)(FILE *)> file(g_fopen(path.c_str(), "rb"), &std::fclose);
+    if (!file) return {};
+    auto *sum = g_checksum_new(G_CHECKSUM_SHA256);
+    std::vector<guchar> block(1u << 20);
+    for (std::size_t n; (n = std::fread(block.data(), 1, block.size(), file.get())) > 0;) {
+        g_checksum_update(sum, block.data(), gssize(n));
+    }
+    std::string const digest = std::ferror(file.get()) ? "" : g_checksum_get_string(sum);
+    g_checksum_free(sum);
+    return digest;
+}
+
+#ifdef HAVE_POPPLER_CAIRO
+/**
+ * PROOF: the pages of a file drawn for the comparison, kept for its next opening. The test
+ * runner passes a directory of its own, keyed by content, where everything is kept, as before.
+ * An ordinary opening keeps only pages slow to draw, in the user's cache: a folder per file,
+ * found by its path, size and time, Poppler's and Cairo's versions and PAGE_STORE_FORMAT, and
+ * used only while the file's content is still the one it was kept for.
+ */
+class PageStore
+{
+public:
+    PageStore(std::string const &path, AiNativeCache const *cache)
+        : _path(path)
+    {
+        if (cache && !cache->reference_directory.empty()) {
+            _directory = cache->reference_directory;
+            _test = true;
+            return;
+        }
+        GStatBuf stat;
+        if (g_stat(path.c_str(), &stat)) return;
+        auto const key = checksum(path + "|" + std::to_string(stat.st_size) + "|" + std::to_string(stat.st_mtime) +
+                                  "|" + poppler_get_version() + "|" + cairo_version_string() + "|" +
+                                  std::to_string(PAGE_STORE_FORMAT));
+        // The test suite gives a store of its own (the user cache folder is fixed once a process asks).
+        auto const *own = g_getenv("PROOF_AI_PAGE_STORE");
+        _base = own ? own : IO::Resource::get_path_string(IO::Resource::CACHE, IO::Resource::NONE, "proof-ai-pages");
+        _directory = _base + G_DIR_SEPARATOR_S + key.substr(0, 32);
+    }
+
+    /// The page drawn at an earlier opening at this size, and the seconds it took to draw.
+    std::optional<std::pair<Picture, double>> find(std::string const &name, int w, int h)
+    {
+        if (_directory.empty() || !g_file_test(_directory.c_str(), G_FILE_TEST_IS_DIR)) return {};
+        if (!_test) {
+            auto const kept_for = read_cached(_directory + G_DIR_SEPARATOR_S "source", 64);
+            if (!kept_for || *kept_for != digest()) return {};
+        }
+        auto picture = read_reference(_directory + G_DIR_SEPARATOR_S + name + ".png", w, h);
+        if (!picture) return {};
+        double seconds = 0;
+        if (auto const text = read_cached(_directory + G_DIR_SEPARATOR_S + name + ".seconds", 32)) {
+            seconds = g_ascii_strtod(text->c_str(), nullptr);
+            if (!std::isfinite(seconds) || seconds < 0) seconds = 0;
+        }
+        return std::pair(std::move(*picture), seconds);
+    }
+
+    /// Keep a page that took `seconds` to draw; an ordinary opening keeps slow ones only.
+    void keep(std::string const &name, Picture const &picture, double seconds)
+    {
+        if (_directory.empty() || (!_test && seconds <= slow_page())) return;
+        if (!_test && !g_file_test(_directory.c_str(), G_FILE_TEST_IS_DIR)) {
+            if (digest().empty()) return;
+            make_room();
+        }
+        g_mkdir_with_parents(_directory.c_str(), 0700);
+        if (!_test) write_cached(_directory + G_DIR_SEPARATOR_S "source", digest());
+        cache_reference(picture, _directory + G_DIR_SEPARATOR_S + name + ".png");
+        char text[32];
+        g_ascii_formatd(text, sizeof text, "%.3f", seconds);
+        write_cached(_directory + G_DIR_SEPARATOR_S + name + ".seconds", text);
+    }
+
+private:
+    std::string const &digest()
+    {
+        if (!_digest) _digest = file_checksum(_path);
+        return *_digest;
+    }
+
+    /// Let the folders least lately written go until there is room for one more. Only folders
+    /// named as these are, and only the files this store writes, are removed.
+    void make_room()
+    {
+        GDir *dir = g_dir_open(_base.c_str(), 0, nullptr);
+        if (!dir) return;
+        std::vector<std::pair<std::int64_t, std::string>> folders;
+        while (auto const *entry = g_dir_read_name(dir)) {
+            std::string_view const name = entry;
+            if (name.size() != 32 || name.find_first_not_of("0123456789abcdef") != std::string_view::npos) continue;
+            auto const folder = _base + G_DIR_SEPARATOR_S + entry;
+            GStatBuf stat;
+            if (!g_stat(folder.c_str(), &stat) && g_file_test(folder.c_str(), G_FILE_TEST_IS_DIR)) {
+                folders.emplace_back(std::int64_t(stat.st_mtime), folder);
+            }
+        }
+        g_dir_close(dir);
+        if (folders.size() < KEPT_FILES) return;
+        std::sort(folders.begin(), folders.end());
+        for (std::size_t i = 0; i + KEPT_FILES <= folders.size(); ++i) {
+            auto const &folder = folders[i].second;
+            GDir *files = g_dir_open(folder.c_str(), 0, nullptr);
+            if (!files) continue;
+            std::vector<std::string> names;
+            while (auto const *entry = g_dir_read_name(files)) {
+                std::string_view const name = entry;
+                bool const ours = name.starts_with("page-") || name.starts_with("source");
+                if (ours) names.emplace_back(entry);
+            }
+            g_dir_close(files);
+            for (auto const &name : names) g_remove((folder + G_DIR_SEPARATOR_S + name).c_str());
+            g_rmdir(folder.c_str());
+        }
+    }
+
+    std::string _path, _base, _directory;
+    bool _test = false;
+    std::optional<std::string> _digest;
+};
+#endif
 
 int lightness(std::uint8_t const *p)
 {
@@ -805,6 +955,8 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     view.emplace(doc);
     std::size_t worst = 0;
     if (!diagnostic_directory.empty()) g_mkdir_with_parents(diagnostic_directory.c_str(), 0700);
+    PageStore store(path, cache);
+    double slowest_once = 0; // The longest a page took that was weighed once, being slow.
     for (std::size_t i = 0; i < compared; ++i) {
         auto *page = pdf->getCatalog()->getPage(int(i) + 1);
         if (!page || page->getRotate() % 360 != 0) {
@@ -839,19 +991,26 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             reason = "its page " + std::to_string(i + 1) + " can't be drawn";
             return {};
         }
-        std::optional<Picture> reference;
-        std::string reference_path;
-        if (cache && !cache->reference_directory.empty()) {
-            g_mkdir_with_parents(cache->reference_directory.c_str(), 0700);
-            reference_path = cache->reference_directory + "/page-" + std::to_string(i + 1) + ".png";
-            reference = read_reference(reference_path, w, h);
-            if (reference) ++cache->references_reused;
+        // The page as drawn at an earlier opening, or drawn now and kept when slow (PageStore).
+        auto const page_name = "page-" + std::to_string(i + 1);
+        auto const draw_timed = [&](double factor, double &seconds) {
+            auto const start = std::chrono::steady_clock::now();
+            auto picture = factor == 1 ? draw_page(drawn.get(), crop, trim, scale, w, h)
+                                       : averaged(draw_page(drawn.get(), crop, trim, scale * factor,
+                                                            int(w * factor), int(h * factor)), int(factor));
+            seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            return picture;
+        };
+        Picture page_picture;
+        double page_seconds = 0;
+        if (auto kept = store.find(page_name, w, h)) {
+            std::tie(page_picture, page_seconds) = std::move(*kept);
+            if (cache) ++cache->references_reused;
+            ++result.pages_reused;
+        } else {
+            page_picture = draw_timed(1, page_seconds);
+            store.keep(page_name, page_picture, page_seconds);
         }
-        if (!reference) {
-            reference = draw_page(drawn.get(), crop, trim, scale, w, h);
-            if (!reference_path.empty()) cache_reference(*reference, reference_path);
-        }
-        auto page_picture = std::move(*reference);
         if (!unweighed.empty()) {
             double const share = double(leave_out(page_picture, unweighed, board, scale)) / std::max(1.0, double(w) * h);
             if (share > most_unweighed) {
@@ -883,13 +1042,27 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             return std::pair(difference, std::move(picture));
         };
         std::tie(d, native_picture) = weigh_art(page_picture, [&] { return view->draw(board, scale, w, h); });
-        if (difference_score(d) > FINER_FROM) {
+        // A page slow to draw that passes at first sight isn't drawn again finer: there that
+        // changes only the figure reported, not whether the art opens.
+        bool const slow_and_passing = page_seconds > slow_page() && difference_score(d) <= 1.0;
+        if (difference_score(d) > FINER_FROM && slow_and_passing) {
+            slowest_once = std::max(slowest_once, page_seconds);
+        } else if (difference_score(d) > FINER_FROM) {
             // Lines thinner than a pixel are where the two renderers part: Poppler draws them
             // a whole pixel wide and on the pixel grid, the drawing as thin as they are. A
             // page of hairlines then seems to differ everywhere. Drawn FINER times larger and
             // averaged down, with the drawing keeping thin lines a pixel wide as well, both
             // show the same ink for the same line; art that really differs still does.
-            auto fine_page = averaged(draw_page(drawn.get(), crop, trim, scale * FINER, w * FINER, h * FINER), FINER);
+            auto const fine_name = page_name + "-finer";
+            Picture fine_page;
+            if (auto kept = store.find(fine_name, w, h)) {
+                fine_page = std::move(kept->first);
+                ++result.pages_reused;
+            } else {
+                double fine_seconds = 0;
+                fine_page = draw_timed(FINER, fine_seconds);
+                store.keep(fine_name, fine_page, fine_seconds);
+            }
             if (!unweighed.empty()) leave_out(fine_page, unweighed, board, scale);
             auto [e, fine_native] = weigh_art(fine_page, [&] {
                 return averaged(view->draw(board, scale * FINER, w * FINER, h * FINER, true), FINER);
@@ -923,6 +1096,11 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     if (std::max(d.lightness, d.colour) > NOTABLE) {
         result.notes.push_back("its own art differs from its page" + where + " in about " +
                                percent(std::max(d.lightness, d.colour)) + " of it");
+    }
+    if (slowest_once > 0) {
+        result.notes.push_back("its page took " + std::to_string(int(std::lround(slowest_once))) +
+                               " s to draw, so it was compared once and not again more finely; it is kept for "
+                               "the next opening");
     }
     if (!changed.empty()) {
         std::string names;

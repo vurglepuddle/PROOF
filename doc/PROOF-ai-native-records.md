@@ -2426,3 +2426,41 @@ functions match the supplied raster samples within 1.9 percentage points per
 channel. A deliberately dull blend between K-free endpoints would give a
 further direct black-generation control.
 [Rendering, writing and qualification](PROOF-ai-interchange.md#native-oklab-gradients-2026-10-22).
+
+## Pages slow to draw: weighed once and kept (2026-10-22)
+
+A document from the collaborator's corpus (`9047eb9b4e`, 11 MB, with five
+linked `.ai` and PDF files beside it) took four minutes to open and timed out
+their census at 300 s. It opens natively; almost all the time was the page
+check. Its one page is 7,739 by 2,339 points with 61 embedded objects and 18
+placements, most of a 17.5 MB linked `.ai`, and Poppler takes about 98 s to
+draw it at any size (600 px and 2,400 px alike: the content, not the pixels).
+It fails the first weighing and passes the finer one (0.2%), so both drawings
+were needed. In October the reader refused its linked `.ai` before the check,
+in 0.7 s. The owner chose two remedies, and a look at why Poppler is slow
+afterwards:
+
+- **Kept for the next opening.** A page Poppler took longer than
+  `SLOW_PAGE` (10 s) to draw is kept, with its finer drawing when one is
+  made, in the user's cache (`proof-ai-pages` under Inkscape's cache folder):
+  a folder per file, found by its path, size and time, Poppler's and Cairo's
+  versions and `PAGE_STORE_FORMAT`, and used only while the file's SHA-256 is
+  the one it was kept for, so a changed file is drawn again. Each picture
+  carries its checksum and how long it took. At most 64 files are kept; the
+  folder least lately written goes first, and only folders and files the store
+  names are removed. Quick pages are never kept, so ordinary files don't hash
+  or write anything. The test runner's own cache directories work as before,
+  now keeping the finer drawing and the time too.
+- **Weighed once when slow and passing.** A slow page that passes at first
+  sight is not drawn again finer: in that band (`FINER_FROM` up to the limit)
+  the finer weighing changes only the figure reported, never whether the art
+  opens. The import then notes that the page was compared once. A slow page
+  that fails at first sight is still weighed finer, since that decides.
+
+For this document: first opening 232 s, every later one **33.5 s**, the same
+0.2% each time. Its first opening only gets faster with Poppler, the next
+step. Tests: `PagesSlowToDrawAreKeptForTheNextOpening` (every page counted
+slow through `PROOF_AI_SLOW_PAGE_SECONDS`, a store of its own through
+`PROOF_AI_PAGE_STORE`: kept, reused, ignored and kept anew when the checksum
+isn't the file's, a quick page not kept); the importer suite (182); the whole
+lite set, 23 of 23 as before.

@@ -94,6 +94,9 @@ struct AiNativeOpen
     /// How long each part of opening took, in seconds: "records" (decoding them), "read",
     /// "build" (the document), "compare" (drawing it and the pages).
     std::vector<std::pair<std::string, double>> timings;
+    /// Pages drawn at an earlier opening of the same file and used again (pages slow to draw are
+    /// kept; see SLOW_PAGE in ai-native-open.cpp).
+    unsigned pages_reused = 0;
 };
 
 /// Optional local test caches. The caller supplies trusted directories keyed by source

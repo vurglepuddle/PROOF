@@ -5227,6 +5227,67 @@ TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)
     EXPECT_TRUE(Extension::Internal::open_ai_native(path, reason)) << reason;
 }
 
+TEST_F(AiNativeImportTest, PagesSlowToDrawAreKeptForTheNextOpening)
+{
+    auto const path = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f"});
+    auto const folder = path.substr(0, path.find_last_of("/\\"));
+    auto const store = folder + "/page-store";
+    // Every page counts as slow here, and the store is this test's own.
+    struct Environment
+    {
+        Environment(std::string const &store)
+        {
+            g_setenv("PROOF_AI_SLOW_PAGE_SECONDS", "0", true);
+            g_setenv("PROOF_AI_PAGE_STORE", store.c_str(), true);
+        }
+        ~Environment()
+        {
+            g_unsetenv("PROOF_AI_SLOW_PAGE_SECONDS");
+            g_unsetenv("PROOF_AI_PAGE_STORE");
+        }
+    } environment(store);
+    auto const folders = [&] {
+        std::vector<std::string> found;
+        if (GDir *dir = g_dir_open(store.c_str(), 0, nullptr)) {
+            while (auto const *name = g_dir_read_name(dir)) found.push_back(store + "/" + name);
+            g_dir_close(dir);
+        }
+        return found;
+    };
+
+    std::string reason;
+    auto first = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(first) << reason;
+    EXPECT_EQ(first->pages_reused, 0u);
+    // One folder for the file: its content's checksum, the page and how long it took.
+    auto const kept = folders();
+    ASSERT_EQ(kept.size(), 1u);
+    for (auto const *name : {"/source", "/page-1.png", "/page-1.seconds"}) {
+        EXPECT_TRUE(g_file_test((kept[0] + name).c_str(), G_FILE_TEST_EXISTS)) << name;
+    }
+    auto second = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(second) << reason;
+    EXPECT_EQ(second->pages_reused, 1u);
+    ASSERT_EQ(first->differences.size(), second->differences.size());
+    EXPECT_DOUBLE_EQ(first->differences[0].lightness, second->differences[0].lightness);
+
+    // A folder whose content checksum isn't this file's is drawn again, and kept anew.
+    auto const source = kept[0] + "/source";
+    ASSERT_TRUE(g_file_set_contents(source.c_str(), std::string(64, '0').c_str(), 64, nullptr));
+    auto third = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(third) << reason;
+    EXPECT_EQ(third->pages_reused, 0u);
+    auto fourth = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(fourth) << reason;
+    EXPECT_EQ(fourth->pages_reused, 1u);
+
+    // A page that draws quickly isn't kept by an ordinary opening.
+    g_setenv("PROOF_AI_SLOW_PAGE_SECONDS", "1000", true);
+    auto const quick = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f % other bytes"});
+    EXPECT_TRUE(Extension::Internal::open_ai_native(quick, reason)) << reason;
+    EXPECT_EQ(folders().size(), 1u);
+}
+
 TEST_F(AiNativeImportTest, Corpus)
 {
     auto const *roots = g_getenv("PROOF_AI_CORPUS");
