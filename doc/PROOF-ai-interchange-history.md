@@ -2689,3 +2689,22 @@ is a 150-by-67 image, a possible rasterization contributor that does not yet
 explain every residual. See the measured limits in PROOF-document-colors.md.
 Original geometry and editable values, CMYK re-separation, unknown-setting
 refusals and visual acceptance thresholds are unchanged.
+
+## Radial cache sampling qualified on the returned controls (2026-10-23)
+
+The large radial-stop page PNG difference is explained for the two Illustrator
+30.6 controls by their 150-by-67 raster cache grid. Aligning only the diagnostic
+viewport to that grid brings the installed native canvas within 6 RGB / 4 CMYK
+display levels and one opacity level. Independent evaluation of the existing
+vector PDF functions agrees within 5.697 RGB / 3.295 CMYK raw 8-bit-scaled
+components (about 1.3 CMYK ink percentage points), opacity within .684 level.
+Original geometry, editable stops/profile, output and acceptance gates stay
+intact. Output gradients remain vectors, not image substitutes.
+
+Twenty-two new checks pass, rendering only the two copied radial controls.
+Prior eight unit and 32 return checks are reused. No renderer change, rebuild,
+installation, new Illustrator session or corpus/lite run. The installed editor
+remains 2d990f728e; this qualification updates documentation only in PROOF.
+Measured bounds apply to these controls and the inner 85% radial region; page
+PNG pixel identity and broader settings/versions/profiles remain unqualified.
+The detailed method and limits are in PROOF-document-colors.md.

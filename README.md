@@ -65,8 +65,9 @@ gradients retain their editable stops and method; rendered CMYK colours follow
 RGB/Oklab/profile re-separation, including endpoints and black generation.
 Illustrator 29.2.1 opens their Classic alternate and loses Oklab on save;
 Illustrator 30.6.0 retains the editable methods, stops, midpoints and CMYK
-profile. Its returned controls confirmed a midpoint correction below 50%;
-remaining radial appearance differences are still under investigation.
+profile. The two returned controls qualify the gradient colour and opacity
+fields, including off-centre midpoints. Low-resolution raster previews can
+differ around a radial colour stop; measured limits are documented below.
 [Colour and Oklab contract](doc/PROOF-ai-interchange.md#colour-and-rendering-contracts).
 
 Linked CMYK TIFF and Photoshop pictures retain supported process channels,
@@ -98,7 +99,7 @@ The page comparison and default editable PDF importer now simulate the bounded
 RGB `/MultiChannelPaint` ink/process pairs Illustrator writes, including on pages
 with ordinary raster pictures. The qualified RGB control returns natively; general overprint and the optional Cairo-to-SVG import
 remain outside this correction. Unknown extended gradient settings still fail
-closed. Next are remaining Oklab appearance/settings and additional mesh qualification;
+closed. Next are extended Oklab settings and additional mesh qualification;
 native type writing stays last in the agreed order.
 
 Native AI output retains supported spot names and tints, but PDF spot plates

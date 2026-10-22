@@ -351,6 +351,46 @@ The independent vector-PDF radial means/maxima are 2.285/30 RGB and 2.162/11
 CMYK. Optional Dither/unknown settings, named inks and other profiles retain
 the qualification limits above.
 
+### Radial cache sampling qualification (2026-10-23)
+
+The larger RGB radial-stop discrepancy above is now explained for these two
+Illustrator 30.6.0 controls. Their saved PDF radials are 150-by-67 images with
+samples at the cache grid origins. The editable gradient is evaluated by the
+canvas at page pixel centres. Near the yellow stop, a small displacement
+samples a steeply changing blue component; comparing those page PNGs can give
+a maximum difference of 30 while both retain the intended colour field.
+
+The follow-up checker locates the image by its PDF placement and the native
+radial centre, derives that grid from its actual size/matrix, and aligns a
+copied diagnostic SVG viewport by half a cache pixel. It does not modify the
+input geometry, gradient stops, PDF output or the editor. Only the same two
+radials are rendered, using installed `2d990f728e`. Twenty-two new checks pass;
+the prior eight unit tests and 32 return checks are reused, not rerun.
+
+| Same-coordinate comparison, radial interior | RGB mean / max | CMYK mean / max |
+|---|---:|---:|
+| Native canvas, white-composited display channels | .271 / 6 | .919 / 4 |
+| Vector PDF function, raw 8-bit-scaled components | .279 / 5.697 | .936 / 3.295 |
+| Canvas opacity, 8-bit levels | .061 / 1 | .061 / 1 |
+| PDF opacity function, 8-bit-scaled levels | .187 / .683 | .187 / .683 |
+
+The PDF CMYK component maximum is about 1.3 ink percentage points. Its
+stitching/exponential colour and opacity functions are evaluated independently
+at the image's coordinates, avoiding PDF-renderer sampling differences.
+Output remains vector, without images. CMYK image bytes use their exact
+embedded SWOP profile with relative colorimetric intent and black-point
+compensation, matching the document; a generic CMYK image conversion would
+introduce an unrelated colour discrepancy. The original input hashes match.
+
+This qualifies the sampled radial colour and opacity fields on the two existing
+controls, within the measured bounds and inner 85% radius. It resolves the
+large radial-stop discrepancy as a preview-sampling effect; it does not assert
+page PNG pixel identity, every antialiased boundary, other Illustrator versions,
+profiles, Dither/unknown settings, freeform gradients or Perceptual named inks.
+Those unsupported forms keep their existing refusals. Original editable values,
+native acceptance gates and rendering implementation are unchanged in this
+qualification round.
+
 ## A CMYK document's gradients and meshes blended in CMYK on the screen (2026-10-22)
 
 The owner, 2026-10-22: "of course we want gradients blended in CMYK".
