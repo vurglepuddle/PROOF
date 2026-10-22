@@ -152,6 +152,9 @@ struct Gradient
 {
     std::string name;
     bool radial = false;
+    /// Extra Bd operands, retained without guessing their meaning. Illustrator 30.6 writes
+    /// `1 0` for the qualified Perceptual controls; Classic definitions have none.
+    std::vector<double> options;
     std::vector<GradientStop> stops; ///< In ramp order.
 };
 

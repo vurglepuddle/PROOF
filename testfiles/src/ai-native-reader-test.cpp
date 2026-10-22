@@ -802,6 +802,45 @@ TEST(AiNativeReader, GradientMatricesOfSeveralRamps)
     EXPECT_EQ(p.hilight_length, 0.5);
 }
 
+TEST(AiNativeReader, PerceptualGradientPaintDoesNotSilentlyBecomeClassic)
+{
+    // The alternate is for older Illustrator versions. Reading it instead would silently
+    // discard the newer method even if the page comparison happened to accept the result.
+    std::string const setup = "%AI17_Begin_Content_if_version_gt:24 16\n"
+        "%AI5_BeginGradient: (G)\n(G) 0 2 1 0 Bd\n[\n0 0 50 100 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n"
+        "%AI17_Alternate_Content\n"
+        "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 0 50 100 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n"
+        "%AI17_End_Versioned_Content\n";
+    for (bool stroke : {false, true}) {
+        auto const art = "0 g\n" + rect(0, 0, 100, 100) + (stroke ? "1 Bb\n" : "0 Bb\n") +
+            "0 (G) 0 0 0 100 1 0 0 1 0 0 Bg\n" + (stroke ? "s\n" : "f\n") + "0 BB\n";
+        EXPECT_NE(read_error(records(layer("L", art), setup)).find("Perceptual gradients"), std::string::npos);
+    }
+}
+
+TEST(AiNativeReader, UnpaintedGradientSettingsAreKeptWithoutForcingFallback)
+{
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 1 0 Bd\n[\n0 0 50 100 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    auto const art = "0 g\n" + rect(0, 0, 20, 20) + "f\nBb\n0 (G) 0 0 0 100 1 0 0 1 0 0 Bg\n0 BB\n";
+    auto doc = read_ok(records(layer("L", art), setup));
+    ASSERT_EQ(doc.gradients.size(), 1u);
+    EXPECT_EQ(doc.gradients[0].options, (std::vector<double>{1, 0}));
+    ASSERT_EQ(doc.layers[0].children.size(), 1u);
+    ASSERT_TRUE(doc.layers[0].children[0].fill);
+    EXPECT_EQ(doc.layers[0].children[0].fill->kind, Paint::Kind::Solid);
+}
+
+TEST(AiNativeReader, UnknownGradientSettingsAreNotAssumedClassic)
+{
+    for (auto const *options : {"0", "0 1", "2 0"}) {
+        auto const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 "s + options +
+            " Bd\n[\n0 0 50 100 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n";
+        auto const art = "0 g\n" + rect(0, 0, 100, 100) +
+            "Bb\n0 (G) 0 0 0 100 1 0 0 1 0 0 Bg\nf\n0 BB\n";
+        EXPECT_NE(read_error(records(layer("L", art), setup)).find("gradient interpolation settings"), std::string::npos);
+    }
+}
+
 // ---- the reader: images, drawn looks, text -----------------------------------------------
 
 TEST(AiNativeReader, UncountedRasterIsRefusedInsteadOfSilentlyDropped)

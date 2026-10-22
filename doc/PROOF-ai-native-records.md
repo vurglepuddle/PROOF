@@ -2377,3 +2377,24 @@ The writer emits separate `[1 1]` Cartesian meshes for SVG patches because
 Illustrator smooths colours across a larger grid's lines. Its saved controls
 retain all 21 patches, corners, handles, opacity and device colour models.
 [Interchange details and limits](PROOF-ai-interchange.md#editable-mesh-patches-written-2026-10-22).
+
+### Perceptual gradient settings are recognised (2026-10-22)
+
+Two copied Illustrator 30.6 controls, `5051fa0707` (RGB) and `5aa616098d`
+(CMYK), write `(name) 0 3 1 0 Bd` inside
+`%AI17_Begin_Content_if_version_gt:24 16`, followed by a Classic definition
+in `%AI17_Alternate_Content`. The reader selects the newer block and now
+retains the additional `Bd` operands. It does not reinterpret the second
+operand as Dither without a qualified control.
+
+Until Oklab interpolation is implemented, a path painted with this definition
+explicitly refuses native import as "Perceptual gradients" and uses the PDF
+page where available. Previously it silently drew Classic and could pass the
+visual gate, whose tolerance exceeds that colour difference. Unknown extended
+settings also refuse native paint. Unused definitions and state notes without
+paint do not force fallback; ordinary Classic definitions remain supported.
+
+This is recognition and safe fallback, not editable Perceptual support. The
+approved remaining work is to retain the method in the working document,
+render it in Oklab through the document's CMYK profile with exact ink endpoints,
+and write vector PDF and versioned AI definitions with a Classic alternate.

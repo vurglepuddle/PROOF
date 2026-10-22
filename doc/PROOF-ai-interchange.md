@@ -2503,3 +2503,12 @@ changed copy hashes. Remaining modern refusals are type 60 (54 alone) and
 missing links six (all also type). **13 focused unit suites, zero failures;
 30 export groups, 927 checks**, including the mesh control **25/25**.
 Existing opt-in/GUI skips remain; no editing-UI acceptance is claimed.
+## Perceptual gradient import guard (2026-10-22)
+
+Illustrator 30.6's extended `Bd` definition is recognised and its extra operands
+retained by the records reader. Painted Perceptual gradients now explicitly
+fall back to the PDF page; they no longer silently become Classic when the
+visual comparison tolerates the difference. Unknown extended settings also
+refuse native paint. Unused definitions/state notes do not force fallback.
+Oklab canvas/vector PDF rendering and native method round-trip remain open.
+See [the records contract](PROOF-ai-native-records.md#perceptual-gradient-settings-are-recognised-2026-10-22).

@@ -1303,6 +1303,7 @@ void Reader::op(std::string_view w, bool hidden)
             }
         }
         def.gradient.radial = !nums.empty() && nums.front() == 1.0;
+        if (nums.size() > 2) def.gradient.options.assign(nums.begin() + 2, nums.end());
         if (!def.gradient.name.empty()) _gradient_def = std::move(def);
     } else if (w == "Bs" || w == "BD") {
     } else if (w == "Bb") {
@@ -2635,6 +2636,22 @@ void Reader::paint(std::string_view op, bool hidden, bool guide)
     // W clips the following artwork; it doesn't cancel this path's own paint.
     if (do_fill) node.fill = fill_paint ? fill_paint : _gs.fill;
     if (do_stroke) node.stroke = stroke_paint ? stroke_paint : _gs.stroke;
+    // The visual gate can accept a Perceptual ramp drawn as Classic: its tolerance is
+    // intentionally wider than their difference. Refuse the semantics themselves until
+    // the canvas and vector PDF path implement them. A definition or state note that
+    // paints nothing must not trigger fallback. Unknown extensions are equally unsafe.
+    auto check_gradient = [&](std::optional<Paint> const &paint) {
+        if (!paint || paint->kind != Paint::Kind::Gradient || paint->gradient.gradient < 0 ||
+            paint->gradient.gradient >= static_cast<int>(_doc.gradients.size())) return;
+        auto const &options = _doc.gradients[paint->gradient.gradient].options;
+        if (!options.empty()) {
+            unreadable(options.front() == 1.0 ? "Perceptual gradients" : "unrecognised gradient interpolation settings");
+        }
+    };
+    if (!guide) {
+        check_gradient(node.fill);
+        check_gradient(node.stroke);
+    }
     node.stroke_style = _gs.style;
     node.overprint_fill = _gs.overprint_fill && do_fill;
     node.overprint_stroke = _gs.overprint_stroke && do_stroke;
