@@ -312,6 +312,45 @@ mirrored branch below .5, but is not a generally qualified replacement.
 No sampler or acceptance threshold was changed. Dither-on, freeform, named-ink
 Perceptual and other profile controls remain open.
 
+### Perceptual midpoint symmetry (2026-10-23)
+
+The Illustrator 30.6 returns above confirm a mirrored branch below a 50%
+midpoint. For midpoint `m < .5`, rendering now uses
+`1 - (1-u)^(log(.5)/log(1-m))`; at or above .5 it retains
+`u^(log(.5)/log(m))`. Reversing the stops, their opacity and the midpoint now
+reverses the rendered ramp. The change is confined to Perceptual rendering
+samples shared by the canvas and vector PDF; Classic interpolation, original
+editable stops, native definitions and the CMYK re-separation policy stay intact.
+
+Eight focused gradient/importer tests pass, including independent Illustrator
+RGB probes and reversal across midpoints .13/.35/.5/.65/.87. Thirty-two checks
+on the two exact synthetic source/return controls pass: methods, original
+channels/offsets/midpoints/opacity, byte-exact CMYK ICC, native acceptance,
+untouched symmetric/Classic interiors and vector PDF without pictures. No
+artwork corpus, lite run or fresh Illustrator session was needed.
+
+Against the unchanged Illustrator 72-ppi PNGs, off-centre linear interiors:
+
+| Route | RGB mean / max | CMYK mean / max |
+|---|---:|---:|
+| Native return canvas | .242 / 1 | 1.447 / 8 |
+| Vector PDF, independent profile-managed rendering | .525 / 3 | 1.053 / 6 |
+
+The old native canvas values were 9.436/23 and 7.909/27. PDF comparison must
+use the embedded SWOP profile as DefaultCMYK and sRGB for the display, rather
+than comparing a generic unprofiled CMYK preview with Illustrator's output.
+
+Full appearance qualification remains open. The inner radial region now has
+mean/max .874/30 RGB and 1.270/8 CMYK; RGB's 99th percentile is 6. The largest
+RGB differences concentrate near the 45% colour stop; away from that stop and
+the centre the maximum is 7. Illustrator's saved PDF stores the radial in a
+150-by-67-pixel image. Different rasterization is a possible contributor, not
+a proven explanation for every residual. Original geometry is preserved; no
+file-specific adjustment, raster replacement or acceptance-gate relaxation.
+The independent vector-PDF radial means/maxima are 2.285/30 RGB and 2.162/11
+CMYK. Optional Dither/unknown settings, named inks and other profiles retain
+the qualification limits above.
+
 ## A CMYK document's gradients and meshes blended in CMYK on the screen (2026-10-22)
 
 The owner, 2026-10-22: "of course we want gradients blended in CMYK".

@@ -11,6 +11,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -544,6 +545,68 @@ TEST_F(GradientRenderingTest, APerceptualGradientKeepsItsOklabSamples)
     ASSERT_EQ(vector.stops.size(), oklab.stops.size());
     for (std::size_t i = 0; i < vector.stops.size(); ++i) {
         EXPECT_EQ(vector.stops[i].offset, oklab.stops[i].offset);
+    }
+}
+
+TEST_F(GradientRenderingTest, PerceptualMidpointBelowHalfMatchesIllustrator306)
+{
+    auto document = blend_document("RGB",
+        R"S(<stop stop-color="#ff0000" proof:gradient-midpoint="0.35"/>)S"
+        R"S(<stop offset="1" stop-color="#0000ff"/>)S", R"S(proof:gradient-method="oklab")S");
+    ASSERT_TRUE(document);
+    auto *gradient = blend_gradient(*document);
+    auto const samples = PerceptualGradient::rendering_vector(gradient);
+    ASSERT_EQ(samples.stops.size(), 129u);
+    // Independent 72-ppi Illustrator 30.6 PNG probes of the synthetic red/blue
+    // qualification ramp. Its start is x=195, length 150; sample pixel centres.
+    struct Probe { int x; std::array<double, 3> rgb; };
+    for (auto const &probe : {Probe{210, {219, 62, 85}}, Probe{240, {154, 83, 150}},
+                              Probe{285, {75, 69, 214}}, Probe{330, {13, 21, 251}}}) {
+        SCOPED_TRACE(probe.x);
+        double const position = (probe.x + .5 - 195) / 150 * 128;
+        auto const index = unsigned(position);
+        auto const from = samples.stops[index].color->converted(Colors::Space::Type::RGB);
+        auto const to = samples.stops[index + 1].color->converted(Colors::Space::Type::RGB);
+        ASSERT_TRUE(from);
+        ASSERT_TRUE(to);
+        for (unsigned c = 0; c < 3; ++c) {
+            EXPECT_NEAR(((*from)[c] + ((*to)[c] - (*from)[c]) * (position - index)) * 255,
+                        probe.rgb[c], 2);
+        }
+    }
+    EXPECT_EQ(gradient->getGradientVector()->stops.size(), 2u);
+    EXPECT_STREQ(gradient->getRepr()->firstChild()->attribute("proof:gradient-midpoint"), "0.35");
+}
+
+TEST_F(GradientRenderingTest, ReversingPerceptualStopsAndMidpointReversesColourAndOpacity)
+{
+    for (auto const midpoint : {.13, .35, .5, .65, .87}) {
+        SCOPED_TRACE(midpoint);
+        auto make = [&](bool reverse) {
+            auto const first = reverse ? "#0000ff" : "#ff0000";
+            auto const last = reverse ? "#ff0000" : "#0000ff";
+            auto const stops = std::string("<stop stop-color=\"") + first + "\" stop-opacity=\"" +
+                (reverse ? "0.2" : "0.8") + "\" proof:gradient-midpoint=\"" +
+                std::to_string(reverse ? 1 - midpoint : midpoint) + "\"/><stop offset=\"1\" stop-color=\"" +
+                last + "\" stop-opacity=\"" + (reverse ? "0.8" : "0.2") + "\"/>";
+            return blend_document("RGB", stops.c_str(), R"S(proof:gradient-method="oklab")S");
+        };
+        auto forward = make(false), reverse = make(true);
+        ASSERT_TRUE(forward);
+        ASSERT_TRUE(reverse);
+        auto const a = PerceptualGradient::rendering_vector(blend_gradient(*forward));
+        auto const b = PerceptualGradient::rendering_vector(blend_gradient(*reverse));
+        ASSERT_EQ(a.stops.size(), b.stops.size());
+        for (std::size_t k = 0; k < a.stops.size(); ++k) {
+            auto const &x = a.stops[k], &y = b.stops[b.stops.size() - 1 - k];
+            ASSERT_TRUE(x.color);
+            ASSERT_TRUE(y.color);
+            EXPECT_NEAR(x.offset, 1 - y.offset, 1e-12);
+            auto const p = x.color->getValues(), q = y.color->getValues();
+            ASSERT_EQ(p.size(), q.size());
+            for (std::size_t c = 0; c < p.size(); ++c) EXPECT_NEAR(p[c], q[c], 1e-6);
+            EXPECT_NEAR(x.color->getOpacity(), y.color->getOpacity(), 1e-12);
+        }
     }
 }
 

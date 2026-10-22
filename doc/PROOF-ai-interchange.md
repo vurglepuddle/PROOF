@@ -126,10 +126,13 @@ Illustrator 30.6.0 qualification (2026-10-23, two synthetic controls from
 `209a170c14`) retains one Classic and three Perceptual methods per document,
 original (2,3,2) editable Perceptual stops, channels, midpoints, radial alpha and
 stroke geometry. Both saved returns reopen natively; the CMYK ICC stays
-byte-identical. **Appearance is not fully qualified:** the off-centre linear
-interiors differ from Illustrator's 72-ppi PNGs by up to 23 RGB / 27 CMYK display
-levels. Native page acceptance is not a PNG parity assertion. See the
-[midpoint qualification limits](PROOF-document-colors.md#illustrator-306-return-qualification-2026-10-23).
+byte-identical. The returned PNGs confirmed that midpoints below 50% need a
+mirrored power curve. With that correction, linear interiors differ by at most
+1 RGB / 8 CMYK display levels on the native canvas, and 3 / 6 in independently
+rendered vector PDF. **Full appearance remains open:** RGB radial differences
+concentrate near the interior colour stop (maximum 30, 99th percentile 6).
+Native page acceptance is not a PNG parity assertion. See the
+[midpoint correction and remaining limits](PROOF-document-colors.md#perceptual-midpoint-symmetry-2026-10-23).
 Unknown extra settings, Perceptual spot-ink gradients and Perceptual output
 inside opacity masks refuse safely; the extra setting is not labelled Dither
 without a confirming control.
@@ -203,7 +206,7 @@ and visual acceptance are separate from complete Illustrator editability.
 Subsequent changes use affected units, export controls and copied lite cases;
 a new full census waits for an agreed feature-family milestone.
 
-Next: Oklab off-centre appearance parity and remaining extended-setting
+Next: remaining Oklab radial appearance differences and extended-setting
 controls; additional connected/folded mesh
 qualification; then agree the native-type writing subset. Type remains last.
 PDF spot separations, PDF/X, full press soft proofing and physical print matching

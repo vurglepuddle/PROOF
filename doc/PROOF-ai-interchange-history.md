@@ -2670,3 +2670,22 @@ read back natively with three Oklab methods and original stop counts (2, 3, 2).
 This is preparation, not newer-Illustrator qualification; that return remains
 pending. Unknown settings, Perceptual
 named inks and other unsupported forms retain their existing refusals.
+
+## Illustrator 30.6 returns and mirrored Perceptual midpoints (2026-10-23)
+
+The two synthetic RGB/CMYK returns preserve methods, original editable stops,
+midpoints, radial opacity, stroke geometry and the CMYK profile. Both reopen
+natively. The reported off-centre discrepancy confirmed a mirrored power curve
+below 50%, now applied by the shared canvas/vector-PDF Perceptual sampler.
+Independent Illustrator probes and gradient reversal tests cover the correction;
+eight selected units and 32 exact-control checks pass. No artwork corpus or
+lite rerun. Classic and symmetric Perceptual interiors are unchanged.
+
+Native linear interiors improve from maximum 23 RGB / 27 CMYK display levels
+to 1 / 8; independently profile-managed vector PDF is within 3 / 6. Full radial
+appearance remains open: inner-region native RGB maximum 30, 99th percentile 6,
+concentrated near its interior stop; CMYK maximum 8. Illustrator's PDF radial
+is a 150-by-67 image, a possible rasterization contributor that does not yet
+explain every residual. See the measured limits in PROOF-document-colors.md.
+Original geometry and editable values, CMYK re-separation, unknown-setting
+refusals and visual acceptance thresholds are unchanged.

@@ -125,11 +125,16 @@ SPGradientVector rendering_vector(SPGradient const *gradient)
         if (!a.color || !b.color || b.offset <= a.offset) continue;
         auto cb = to_oklab(*b.color);
         if (!ca || !cb) continue;
-        double const power = std::log(.5) / std::log(points[i]);
+        double const midpoint = points[i];
+        bool const mirrored = midpoint < .5;
+        double const power = std::log(.5) / std::log(mirrored ? 1 - midpoint : midpoint);
         // Bounded vector approximation. Sampling stays out of the document and
         // native definitions, and is recomputed after edits to any real stop.
         for (unsigned k = 1; k < divisions; ++k) {
-            double const u = double(k) / divisions, t = std::pow(u, power);
+            double const u = double(k) / divisions;
+            // Illustrator 30.6 mirrors the power curve for midpoints below 50%.
+            // This preserves the curve when reversing stops and their midpoint.
+            double const t = mirrored ? 1 - std::pow(1 - u, power) : std::pow(u, power);
             Triple mix;
             for (unsigned c = 0; c < 3; ++c) mix[c] = (*ca)[c] + ((*cb)[c] - (*ca)[c]) * t;
             auto color = from_oklab(mix, *a.color);
