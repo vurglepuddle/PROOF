@@ -25,7 +25,7 @@
 #define noSP_GRADIENT_VERBOSE
 
 #include "sp-gradient.h"
-#include "gradient-perceptual.h"
+#include "gradient-rendering.h"
 
 #include <cstring>
 #include <cairo.h>
@@ -1216,7 +1216,7 @@ sp_gradient_pattern_common_setup(cairo_pattern_t *cp,
 
     // add stops
     if (!is<SPMeshGradient>(gr)) {
-        for (auto const &stop : Inkscape::PerceptualGradient::rendering_vector(gr).stops) {
+        for (auto const &stop : Inkscape::GradientRendering::canvas_vector(gr).stops) {
             // multiply stop opacity by paint opacity
             ink_cairo_pattern_add_color_stop(cp, stop.offset, stop.color->withOpacity(opacity));
         }
@@ -1237,7 +1237,7 @@ void SPGradient::forEachPreviewPatternStop(std::function<void (double, Color con
     if (!is<SPMeshGradient>(this)) {
         ensureVector();
 
-        for (auto const &stop : Inkscape::PerceptualGradient::rendering_vector(this).stops) {
+        for (auto const &stop : Inkscape::GradientRendering::canvas_vector(this).stops) {
             if (stop.color) {
                 callback(stop.offset, *stop.color);
             }

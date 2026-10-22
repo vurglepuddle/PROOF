@@ -87,8 +87,11 @@ def control(mode):
 
 
 def pixels(png):
+    """On white, as Illustrator's renders are: a stop's opacity shows as it does there."""
     with Image.open(png) as im:
-        return np.asarray(im.convert('RGB'), dtype=np.int16)
+        rgba = np.asarray(im.convert('RGBA'), dtype=np.float64)
+    alpha = rgba[..., 3:] / 255
+    return np.rint(rgba[..., :3] * alpha + 255 * (1 - alpha)).astype(np.int16)
 
 
 def compare(a_png, b_png):

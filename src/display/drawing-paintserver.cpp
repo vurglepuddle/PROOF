@@ -5,11 +5,53 @@
 
 #include "cairo-utils.h"
 #include "colors/color.h"
+#include "colors/spaces/base.h"
 #include "object/sp-paint-server.h"
 #include "object/sp-gradient.h"
-#include "object/gradient-perceptual.h"
+#include "object/gradient-rendering.h"
 
 namespace Inkscape {
+
+namespace {
+
+/// For Cairo, which takes sRGB: converted once here rather than again for every tile.
+void to_srgb(std::optional<Colors::Color> &color)
+{
+    if (color && color->getSpace()->getType() != Colors::Space::Type::RGB) {
+        if (auto rgb = color->converted(Colors::Space::Type::RGB)) {
+            color = std::move(rgb);
+        }
+    }
+}
+
+/// PROOF: the stops and patches the canvas draws (a CMYK document's blended in CMYK, a
+/// Perceptual gradient's in Oklab: object/gradient-rendering.h), in sRGB. A change of the
+/// working colours restyles every object, which builds these again
+/// (Colors::DocumentColors::refresh).
+SPGradientVector canvas_stops(SPPaintServer *ps)
+{
+    auto const *gradient = cast<SPGradient>(ps);
+    auto vector = gradient ? GradientRendering::canvas_vector(gradient) : *ps->getGradientVector();
+    for (auto &stop : vector.stops) {
+        to_srgb(stop.color);
+    }
+    return vector;
+}
+
+SPGradientMesh canvas_patches(SPPaintServer *ps)
+{
+    auto mesh = GradientRendering::canvas_mesh(ps->document, *ps->getGradientMesh());
+    for (auto &row : mesh.patches) {
+        for (auto &patch : row) {
+            for (auto &color : patch.color) {
+                to_srgb(color);
+            }
+        }
+    }
+    return mesh;
+}
+
+} // namespace
 
 std::unique_ptr<Inkscape::DrawingPaintServer> create_drawing_paintserver(SPPaintServer *ps)
 {
@@ -19,20 +61,21 @@ std::unique_ptr<Inkscape::DrawingPaintServer> create_drawing_paintserver(SPPaint
             break;
         case PaintServerType::LINEAR_GRADIENT:
         {
-            auto const *gradient = cast<SPGradient>(ps);
-            auto vector = gradient ? PerceptualGradient::rendering_vector(gradient) : *ps->getGradientVector();
+            auto vector = canvas_stops(ps);
             return std::make_unique<Inkscape::DrawingLinearGradient>(ps->getSpread(), ps->getUnits(), ps->getGradientTransform(), &vector);
         }
             break;
         case PaintServerType::RADIAL_GRADIENT:
         {
-            auto const *gradient = cast<SPGradient>(ps);
-            auto vector = gradient ? PerceptualGradient::rendering_vector(gradient) : *ps->getGradientVector();
+            auto vector = canvas_stops(ps);
             return std::make_unique<Inkscape::DrawingRadialGradient>(ps->getSpread(), ps->getUnits(), ps->getGradientTransform(), &vector);
         }
             break;
         case PaintServerType::MESH_GRADIENT:
-            return std::make_unique<Inkscape::DrawingMeshGradient>(ps->getSpread(), ps->getUnits(), ps->getGradientTransform(), ps->getGradientMesh());
+        {
+            auto mesh = canvas_patches(ps);
+            return std::make_unique<Inkscape::DrawingMeshGradient>(ps->getSpread(), ps->getUnits(), ps->getGradientTransform(), &mesh);
+        }
             break;
     }
     return {};

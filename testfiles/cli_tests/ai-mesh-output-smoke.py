@@ -152,6 +152,19 @@ def main():
         repeated, log = png(stem + '-again', again)
         check(f'{mode}: repeated save keeps 21 native meshes', records_of(again).count('/Mesh X!') == 21 and
               'opens from its PDF page' not in log and close(compare(original, repeated)))
+        # A CMYK document's canvas blends mesh corners in CMYK, as Illustrator does and as a CMYK
+        # shading in the PDF is blended (PROOF-document-colors.md, "A CMYK document's gradients
+        # and meshes blended in CMYK on the screen"); Poppler converts the corners to RGB first
+        # and blends there (10 to 21 levels from Illustrator on average, the canvas under 3). So
+        # what Poppler can show, the same patches and corners in the same places, is checked
+        # against the canvas's RGB blend of the same corners: the control as an RGB document,
+        # whose CMYK paint shows through the same working profile.
+        reference = original
+        if mode == 'CMYK':
+            rgb_blend = out / 'cmyk-rgb-blend.svg'
+            rgb_blend.write_text(control(mode).replace('proof:color-mode="CMYK"', 'proof:color-mode="RGB"'),
+                                 encoding='utf-8')
+            reference, _ = png('cmyk-rgb-blend', rgb_blend)
         for label, document in [('ai-page', ai), ('pdf', out / f'{stem}-control.pdf')]:
             if label == 'pdf':
                 run(stem + '-pdf', exe, source, f'--export-filename={document}')
@@ -161,8 +174,9 @@ def main():
             renderer = (args.pdftoppm or args.dll_dir / 'pdftoppm.exe').with_name('pdftocairo.exe')
             run(stem + '-' + label, renderer, '-r', '96', '-png',
                 '-singlefile', document, target)
-            result = compare(original, target.with_suffix('.png'))
-            check(f'{mode}: {label} matches the canvas', close(result), result)
+            result = compare(reference, target.with_suffix('.png'))
+            check(f'{mode}: {label} matches the canvas' + (' blended in RGB' if mode == 'CMYK' else ''),
+                  close(result), result)
         opaque = out / f'{stem}-opaque.svg'
         opaque.write_text(control(mode).replace('stop-opacity:0.5', 'stop-opacity:1'), encoding='utf-8')
         opaque_png, _ = png(stem + '-opaque', opaque)

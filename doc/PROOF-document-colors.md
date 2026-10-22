@@ -289,3 +289,78 @@ or the ICC profile conversion code. A method chooser and live gradient UI
 acceptance are not part of this round. The qualified CMYK comparison uses
 the supplied SWOP v2 controls; other RGB working-space setups need separate
 qualification rather than a claim of exact Illustrator agreement.
+
+## A CMYK document's gradients and meshes blended in CMYK on the screen (2026-10-22)
+
+The owner, 2026-10-22: "of course we want gradients blended in CMYK".
+Illustrator blends a CMYK document's gradients and meshes in CMYK, as they
+print, and shows the result through the document's profile. Cairo, like a
+browser, blends whatever colours it is given in RGB, so PROOF's canvas drew
+the same stops with a different middle: up to 31 levels from Illustrator
+mid-ramp for two process stops, 63 for yellow to a Lab ink, 78 inside a mesh.
+PDF output already blended in CMYK (a shading in a CMYK space does).
+
+In a CMYK document (`proof:color-mode="CMYK"`) the canvas and the gradient
+previews now draw from samples blended in CMYK
+(`src/object/gradient-rendering.h`):
+
+- **Linear and radial (Classic):** each stop's inks in the document's CMYK,
+  a CMYK stop with its own numbers as the document reads them (`interpret`),
+  other paint converted as the document converts it (its profile, or the
+  working CMYK profile when it has none). Between two stops, up to 64 samples
+  blended in CMYK, fewer for a smaller step (a whole channel's step gets 64);
+  none across a hard edge. Cairo then joins the samples in RGB. Opacity
+  blends as before.
+- **Meshes:** a patch whose corners differ is cut along its own parameters
+  into up to 8 by 8 smaller patches, the same surface exactly (the Coons
+  patch's tensor points by ISO 32000, as Cairo computes them, then
+  de Casteljau along both directions); each small corner is coloured from
+  the four corners blended bilinearly in CMYK, as Cairo would have blended
+  them in RGB.
+- **Perceptual gradients** keep their Oklab samples (above).
+- **RGB documents are unchanged**, to the pixel.
+
+Drawing only. The stops and patches in the document, and what the writers
+and PDF output take, stay as they are. The samples are converted to sRGB once,
+when the canvas builds the gradient's paint, instead of again for every tile;
+a change of the working colours restyles every object, which builds them
+again.
+
+**Against Illustrator 29.2.1** (its renders of the round's controls, cells
+composited on white): the mixed-model control's CMYK document, process to RGB
+31 to 20 at most (within 1 to 4 along most of the ramp; the 20 is where cyan
+leaves the screen's gamut, which the two colour engines clip differently), RGB
+to a Lab ink 63 to 11, RGB, CMYK, RGB 17 to 12, an RGB ink to CMYK 22 to 9;
+its RGB document is unchanged. The mesh control's CMYK document, mean
+difference per cell from 10 to 22 levels down to 1.8 to 2.9, the 99th
+percentile from 37 to 69 down to 8 to 18, except two cells: the reflected
+mesh's 35 is its own antialiased edge inside the cell, and the masked mesh
+stays near 10 on average, because the round's writer gives Illustrator mask
+art in Gray, which Illustrator blends in black ink alone.
+
+**Still differs from Illustrator:** an ink beside process colour, which
+Illustrator draws overprinting the process ramp (its DeviceN tint transform:
+each channel 1 - (1 - tint x ink)(1 - process)), lighter mid-ramp than a CMYK
+blend; the next step. Grey (Gray) stops blended in black alone. Transparency
+composited in CMYK (the canvas composites in RGB).
+
+**PDF readers differ here.** A CMYK mesh shading in the PDF is unchanged, and
+a conforming reader blends it in CMYK. Poppler converts mesh corners to RGB
+first: against Illustrator's render of the mesh control, Poppler's Cairo
+drawing of PROOF's PDF is 10 to 21 levels off on average and its Splash
+drawing 17 to 52, the canvas under 3. So `ai-mesh-output-smoke.py` checks the
+CMYK document's PDF and `.ai` page, through Poppler, against the canvas's RGB
+blend of the same corners (the control rendered as an RGB document, whose
+CMYK paint shows through the same working profile): the same patches and
+corners in the same places. `ai-mixed-gradient-output-smoke.py` now
+composites PNGs on white before comparing, as Illustrator's renders are.
+
+**Checks:** `test_sp-gradient` 25 (eight new, `GradientRenderingTest`: RGB
+documents untouched, the CMYK blend and its sample counts, hard edges, RGB
+stops converted as the document converts them, Perceptual left to Oklab, a
+mesh patch cut 8 by 8 on its own surface with corners blended in CMYK, curved
+sides traced exactly); `test_ai-native-import` 181 (two opt-in skips); 15
+export groups, 361 checks; the lite gradient and mesh cases, 6 of 6, no
+regression. Exporting a CMYK document of 2,000 gradients and 40 sixteen-patch
+meshes takes 6.2 s instead of 5.5 s, start-up included; the same document in
+RGB is unchanged.

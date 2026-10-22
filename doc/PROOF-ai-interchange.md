@@ -1328,7 +1328,9 @@ not by what the file holds:
 
 - **CMYK gradients** (up to 42 between stops; the ends and stops agree):
   Illustrator blends a CMYK gradient in CMYK, as it prints; PROOF's canvas
-  blends the stops' screen colours.
+  blended the stops' screen colours. **Since 2026-10-22 it blends a CMYK
+  document's gradients and meshes in CMYK too** (`PROOF-document-colors.md`,
+  "A CMYK document's gradients and meshes blended in CMYK on the screen").
 - **The grey picture** (up to 31): Illustrator shows it as black ink on paper,
   never darker than K alone; PROOF's canvas shows the grey as it is.
 - **A deep green spot** (20, in red only): the two clip a colour outside the
@@ -1398,7 +1400,8 @@ by their extra artboards, which a one-page copy avoids.
   CMYK paint operators in the cached records, 118,819 (in 254 of 1,976 record
   sets) have four, so the import rounds them: by at most 0.05% ink, below a
   plate's step, but Illustrator's panel then reads 74.5% where it read 74.51%.
-- The canvas's CMYK gradients and grey pictures, above.
+- The canvas's grey pictures, above. (Its CMYK gradients: blended in CMYK
+  since 2026-10-22.)
 - An actual Illustrator 7 executable; Lab spot inks in either form.
 
 Checks: all **13 unit suites, 0 failures** (reader 74 cases with one opt-in
@@ -2485,6 +2488,9 @@ within the control's 2% colour tolerance (two outer pixels excluded for clipping
 antialiasing). Both saved controls reopen natively after the post-mesh opacity
 fix. **CMYK preview remains limited:** Illustrator blends CMYK channels, while
 PROOF's canvas blends RGB previews. This is not a CMYK screen-match claim.
+(Since 2026-10-22 the canvas blends a CMYK document's meshes in CMYK: mean
+difference from Illustrator 1.8 to 2.9 levels in five of the six cells;
+`PROOF-document-colors.md`.)
 Poppler's Splash and Cairo backends also differ on translucent mesh soft masks;
 the check uses Cairo for these, and independently checks opaque untransformed
 RGB meshes with Splash. Full diagnostics remain local.

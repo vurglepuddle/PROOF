@@ -23,6 +23,10 @@
 #include "document-undo.h"
 #include "gradient-chemistry.h"
 #include "inkscape.h"
+#include "colors/color.h"
+#include "colors/spaces/base.h"
+#include "object/gradient-perceptual.h"
+#include "object/gradient-rendering.h"
 #include "object/mesh-object.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-path.h"
@@ -427,4 +431,218 @@ TEST_F(MeshObjectTest, ReferencedMeshUsesItsOwnTransformAndFreshSourceGeometry)
     mesh->array.write(mesh);
     EXPECT_NEAR(inherited->curve()->boundsExact()->right(), 490, 1e-6);
     EXPECT_NEAR(inherited->curve()->boundsExact()->top(), 15, 1e-6);
+}
+
+// PROOF: a CMYK document's gradients are drawn blended in CMYK, as Illustrator blends them
+// (object/gradient-rendering.h).
+namespace {
+
+std::unique_ptr<SPDocument> blend_document(char const *mode, char const *stops, char const *extra = "")
+{
+    auto const svg = std::string(R"S(<svg xmlns="http://www.w3.org/2000/svg" xmlns:proof="urn:x-proof:document:1" )S"
+                                 R"S(width="100" height="10" proof:color-mode=")S") + mode + R"S(">)S" +
+                     R"S(<defs><linearGradient id="g" x1="0" x2="100" y1="0" y2="0" gradientUnits="userSpaceOnUse" )S" +
+                     extra + ">" + stops + R"S(</linearGradient></defs>)S" +
+                     R"S(<rect width="100" height="10" fill="url(#g)"/></svg>)S";
+    auto document = SPDocument::createNewDocFromMem(svg);
+    if (document) document->ensureUpToDate();
+    return document;
+}
+
+SPGradient *blend_gradient(SPDocument &document)
+{
+    return cast<SPGradient>(document.getObjectById("g"));
+}
+
+constexpr auto PROCESS_STOPS = R"S(<stop offset="0" style="stop-color:device-cmyk(1 0 0 0);stop-opacity:1"/>)S"
+                               R"S(<stop offset="1" style="stop-color:device-cmyk(0 0 1 0.2);stop-opacity:0.5"/>)S";
+
+} // namespace
+
+class GradientRenderingTest : public DocPerCaseTest {};
+
+TEST_F(GradientRenderingTest, AnRgbDocumentsGradientIsDrawnFromItsOwnStops)
+{
+    auto document = blend_document("RGB", PROCESS_STOPS);
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    ASSERT_EQ(vector.stops.size(), 2u);
+    EXPECT_EQ(vector.stops[0].color->getSpace()->getComponentType(), Colors::Space::Type::CMYK);
+}
+
+TEST_F(GradientRenderingTest, ACmykDocumentsGradientIsBlendedInCmyk)
+{
+    auto document = blend_document("CMYK", PROCESS_STOPS);
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    // A whole channel's step gets the most samples.
+    ASSERT_EQ(vector.stops.size(), 65u);
+    double last = -1;
+    for (auto const &stop : vector.stops) {
+        ASSERT_TRUE(stop.color);
+        EXPECT_EQ(stop.color->getSpace()->getComponentType(), Colors::Space::Type::CMYK);
+        EXPECT_GT(stop.offset, last);
+        last = stop.offset;
+    }
+    // The ends keep their inks; between them every channel and the opacity move in step.
+    auto const &first = vector.stops.front().color->getValues();
+    EXPECT_NEAR(first[0], 1, 1e-9);
+    EXPECT_NEAR(first[3], 0, 1e-9);
+    EXPECT_NEAR(vector.stops.back().color->getOpacity(), 0.5, 1e-9);
+    auto const &middle = vector.stops[32];
+    EXPECT_NEAR(middle.offset, 0.5, 1e-9);
+    auto const &m = middle.color->getValues();
+    EXPECT_NEAR(m[0], 0.5, 1e-9);
+    EXPECT_NEAR(m[1], 0, 1e-9);
+    EXPECT_NEAR(m[2], 0.5, 1e-9);
+    EXPECT_NEAR(m[3], 0.1, 1e-9);
+    EXPECT_NEAR(middle.color->getOpacity(), 0.75, 1e-9);
+}
+
+TEST_F(GradientRenderingTest, ASmallStepGetsFewerSamplesAndAHardEdgeNone)
+{
+    auto document = blend_document("CMYK",
+        R"S(<stop offset="0" style="stop-color:device-cmyk(0 0.5 0 0)"/>)S"
+        R"S(<stop offset="0.5" style="stop-color:device-cmyk(0 0.6 0 0)"/>)S"
+        R"S(<stop offset="0.5" style="stop-color:device-cmyk(1 0 0 0)"/>)S"
+        R"S(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)S");
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    // 0.1 of magenta: seven steps, six samples; none at the edge; none between equal stops.
+    EXPECT_EQ(vector.stops.size(), 4u + 6u);
+    EXPECT_NEAR(vector.stops[7].offset, 0.5, 1e-9);
+    EXPECT_NEAR(vector.stops[8].offset, 0.5, 1e-9);
+}
+
+TEST_F(GradientRenderingTest, AnRgbStopInACmykDocumentIsBlendedAsTheDocumentConvertsIt)
+{
+    auto document = blend_document("CMYK",
+        R"S(<stop offset="0" style="stop-color:#c8503c"/>)S"
+        R"S(<stop offset="1" style="stop-color:device-cmyk(0 0 0 1)"/>)S");
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    ASSERT_GT(vector.stops.size(), 2u);
+    auto const expected = Colors::Color::parse("#c8503c")->converted(Colors::Space::Type::CMYK);
+    ASSERT_TRUE(expected);
+    auto const &first = vector.stops.front().color;
+    EXPECT_EQ(first->getSpace()->getComponentType(), Colors::Space::Type::CMYK);
+    for (unsigned k = 0; k < 4; ++k) {
+        EXPECT_NEAR(first->getValues()[k], expected->getValues()[k], 1e-6);
+    }
+}
+
+TEST_F(GradientRenderingTest, APerceptualGradientKeepsItsOklabSamples)
+{
+    auto document = blend_document("CMYK", PROCESS_STOPS, R"S(proof:gradient-method="oklab")S");
+    ASSERT_TRUE(document);
+    auto const gradient = blend_gradient(*document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(gradient);
+    auto const oklab = Inkscape::PerceptualGradient::rendering_vector(gradient);
+    ASSERT_EQ(vector.stops.size(), oklab.stops.size());
+    for (std::size_t i = 0; i < vector.stops.size(); ++i) {
+        EXPECT_EQ(vector.stops[i].offset, oklab.stops[i].offset);
+    }
+}
+
+namespace {
+
+/// One patch from (10, 20), 80 wide and 40 high, its corners cyan, magenta, yellow and black, or
+/// with a curved top side.
+std::unique_ptr<SPDocument> mesh_document(char const *mode, bool curved = false)
+{
+    auto const top = curved ? "C 20,-15 60,15 80,0" : "l 80,0";
+    auto const svg = std::string(R"S(<svg xmlns="http://www.w3.org/2000/svg" xmlns:proof="urn:x-proof:document:1" )S"
+                                 R"S(width="100" height="100" proof:color-mode=")S") + mode + R"S("><defs>)S" +
+                     R"S(<meshgradient id="m" x="10" y="20" gradientUnits="userSpaceOnUse"><meshrow><meshpatch>)S" +
+                     R"S(<stop path=")S" + top + R"S(" style="stop-color:device-cmyk(1 0 0 0)"/>)S" +
+                     R"S(<stop path="l 0,40" style="stop-color:device-cmyk(0 1 0 0)"/>)S" +
+                     R"S(<stop path="l -80,0" style="stop-color:device-cmyk(0 0 1 0);stop-opacity:0.5"/>)S" +
+                     R"S(<stop path="l 0,-40" style="stop-color:device-cmyk(0 0 0 1)"/>)S" +
+                     R"S(</meshpatch></meshrow></meshgradient></defs>)S" +
+                     R"S(<rect x="10" y="20" width="80" height="40" fill="url(#m)"/></svg>)S";
+    auto document = SPDocument::createNewDocFromMem(svg);
+    if (document) document->ensureUpToDate();
+    return document;
+}
+
+SPGradientMesh const &mesh_of(SPDocument &document)
+{
+    return *cast<SPGradient>(document.getObjectById("m"))->getGradientMesh();
+}
+
+std::vector<SPGradientPatch> all_patches(SPGradientMesh const &mesh)
+{
+    std::vector<SPGradientPatch> all;
+    for (auto const &row : mesh.patches) all.insert(all.end(), row.begin(), row.end());
+    return all;
+}
+
+} // namespace
+
+TEST_F(GradientRenderingTest, AnRgbDocumentsMeshKeepsItsPatches)
+{
+    auto document = mesh_document("RGB");
+    ASSERT_TRUE(document);
+    auto const &mesh = mesh_of(*document);
+    auto const drawn = Inkscape::GradientRendering::canvas_mesh(document.get(), mesh);
+    EXPECT_EQ(all_patches(drawn).size(), all_patches(mesh).size());
+}
+
+TEST_F(GradientRenderingTest, ACmykDocumentsMeshPatchIsCutAndBlendedInCmyk)
+{
+    auto document = mesh_document("CMYK");
+    ASSERT_TRUE(document);
+    auto const &mesh = mesh_of(*document);
+    ASSERT_EQ(all_patches(mesh).size(), 1u);
+    auto const patches = all_patches(Inkscape::GradientRendering::canvas_mesh(document.get(), mesh));
+    // Corners a whole channel apart: eight cuts a side.
+    ASSERT_EQ(patches.size(), 64u);
+    // Row by row from C0's side; each piece's corners lie on the patch, its inner points those
+    // of a flat patch (a third of the way in), and every corner is a CMYK colour.
+    for (unsigned i = 0; i < 8; ++i) {
+        for (unsigned j = 0; j < 8; ++j) {
+            auto const &piece = patches[i * 8 + j];
+            Geom::Point const c0(10 + 10.0 * j, 20 + 5.0 * i);
+            EXPECT_TRUE(Geom::are_near(piece.points[0][0], c0, 1e-9)) << i << " " << j;
+            EXPECT_TRUE(Geom::are_near(piece.points[1][0], c0 + Geom::Point(10, 0), 1e-9));
+            EXPECT_TRUE(Geom::are_near(piece.points[2][0], c0 + Geom::Point(10, 5), 1e-9));
+            EXPECT_TRUE(Geom::are_near(piece.points[3][0], c0 + Geom::Point(0, 5), 1e-9));
+            EXPECT_TRUE(Geom::are_near(piece.tensorpoints[0], c0 + Geom::Point(10.0 / 3, 5.0 / 3), 1e-9));
+            for (auto const &color : piece.color) {
+                ASSERT_TRUE(color);
+                EXPECT_EQ(color->getSpace()->getComponentType(), Colors::Space::Type::CMYK);
+            }
+        }
+    }
+    // The middle of the patch is the four inks blended evenly, the opacity too.
+    auto const &middle = patches[4 * 8 + 4].color[0];
+    for (unsigned c = 0; c < 4; ++c) {
+        EXPECT_NEAR(middle->getValues()[c], 0.25, 1e-9);
+    }
+    EXPECT_NEAR(middle->getOpacity(), 0.875, 1e-9);
+    // C2 (yellow, half opaque) is the far corner of the last piece.
+    auto const &far = patches.back().color[2];
+    EXPECT_NEAR(far->getValues()[2], 1, 1e-9);
+    EXPECT_NEAR(far->getOpacity(), 0.5, 1e-9);
+}
+
+TEST_F(GradientRenderingTest, ACutMeshKeepsItsCurvedSides)
+{
+    auto document = mesh_document("CMYK", true);
+    ASSERT_TRUE(document);
+    auto const &mesh = mesh_of(*document);
+    auto const original = all_patches(mesh).front();
+    auto const patches = all_patches(Inkscape::GradientRendering::canvas_mesh(document.get(), mesh));
+    ASSERT_EQ(patches.size(), 64u);
+    // The top side, cut in eight, traces the original curve: the pieces' top sides join at the
+    // curve's points at eighths, and the first piece's ends where the original's eighth is.
+    auto const &side = original.points[0];
+    auto const at = [&side](double t) {
+        double const u = 1 - t;
+        return side[0] * (u * u * u) + side[1] * (3 * u * u * t) + side[2] * (3 * u * t * t) + side[3] * (t * t * t);
+    };
+    for (unsigned j = 0; j < 8; ++j) {
+        EXPECT_TRUE(Geom::are_near(patches[j].points[0][0], at(j / 8.0), 1e-9)) << j;
+        EXPECT_TRUE(Geom::are_near(patches[j].points[0][3], at((j + 1) / 8.0), 1e-9)) << j;
+    }
 }
