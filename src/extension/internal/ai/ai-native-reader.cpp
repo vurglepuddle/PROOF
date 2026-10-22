@@ -1196,6 +1196,10 @@ void Reader::op(std::string_view w, bool hidden)
             auto def = std::move(*_gradient_def);
             _gradient_def.reset();
             if (!def.gradient.stops.empty()) {
+                // Illustrator lists a linear gradient's stops last first and takes them in that
+                // order, so two at one place come in its order once the list is turned round
+                // (its own copy of a hard stop drew red then blue as listed blue, red).
+                if (!def.gradient.radial) std::reverse(def.gradient.stops.begin(), def.gradient.stops.end());
                 std::stable_sort(def.gradient.stops.begin(), def.gradient.stops.end(),
                                  [](auto const &a, auto const &b) { return a.offset < b.offset; });
                 _gradient_index[def.gradient.name] = static_cast<int>(_doc.gradients.size());

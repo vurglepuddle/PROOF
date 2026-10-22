@@ -576,6 +576,17 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     auto const inks = stop_inks(gradient, effective->stops.size(), undefined);
     if (undefined) return refused("spot ink stops without a definition");
     if (inks.empty()) return refused("invalid gradient stops");
+    // Past its end a gradient extends with its last stop in SVG, but with the first of those at its
+    // end in Illustrator (29.2.1, linear and radial, 2026-10-22): two different ones there can't be
+    // drawn the same. At its start, and inside, both draw as SVG does.
+    for (std::size_t index = 1; index < effective->stops.size(); ++index) {
+        auto const &a = effective->stops[index - 1], &b = effective->stops[index];
+        if (a.offset < 1.0 - 1e-6 || !a.color || !b.color) continue;
+        bool const same_ink = inks[index - 1] && inks[index]
+            ? inks[index - 1]->name == inks[index]->name && inks[index - 1]->tint == inks[index]->tint
+            : !inks[index - 1] && !inks[index];
+        if (!same_ink || *a.color != *b.color) return refused("gradient stops of different colours at its end");
+    }
     WrittenGradient out;
     std::optional<Type> model;
     std::vector<std::string> stops;
@@ -610,7 +621,7 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
                 return refused("gradient interpolation other than RGB in opacity masks");
             }
             auto const offset = std::round(stop.offset * 1000000.0) / 1000000.0;
-            if (offset <= previous) return refused("gradient hard stops or coincident offsets");
+            if (offset < previous) return refused("gradient stops out of order");
             previous = offset;
             auto const after = (newer ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +
                                " 50 " + num(offset * 100) + " %_Bs\n";
@@ -657,7 +668,11 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
             return refused("gradient interpolation different from its stop colour space");
         }
         auto const offset = std::round(stop.offset * 1000000.0) / 1000000.0;
-        if (offset <= previous) return refused("gradient hard stops or coincident offsets");
+        // Two stops at one place, a hard edge or two at an end, are written as they come: Illustrator
+        // keeps both in the order listed (the owner's files: six gradients with two at 100, one with
+        // two at 0). Illustrator 7's reading of them is unqualified.
+        if (offset < previous) return refused("gradient stops out of order");
+        if (offset == previous && legacy) return refused("gradient hard stops (Illustrator 7)");
         previous = offset;
         // After the colour and its style: [opacity 6] midpoint ramp.
         auto const after = (newer ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +

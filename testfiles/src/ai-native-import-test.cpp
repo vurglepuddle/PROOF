@@ -934,6 +934,26 @@ TEST_F(AiNativeImportTest, GlobalProcessSwatches)
     EXPECT_NE(style.find("0.4"), std::string::npos);
 }
 
+TEST_F(AiNativeImportTest, EndpointPaddingUsesIllustratorsFirstEndStop)
+{
+    std::string setup = "%AI5_BeginGradient: (G)\n(G) 0 3 Bd\n[\n"
+                        "0 0 50 100 Bs\n0.25 0 50 100 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    auto b = make(records(layer("0 g\n10 20 m 90 20 L 90 60 L 10 60 L h\nBb\n"
+                                "0 (G) 10 20 0 80 1 0 0 1 0 0 Bg\nf\n0 BB\n"), setup, false));
+    ASSERT_TRUE(b);
+    ASSERT_EQ(b->notes.size(), 1u);
+    EXPECT_NE(b->notes[0].find("unused gradient stop at 100% was left out"), std::string::npos);
+    auto vectors = elements(b->document->getDefs()->getRepr(), "svg:linearGradient");
+    ASSERT_FALSE(vectors.empty());
+    auto stops = elements(vectors[0], "svg:stop");
+    ASSERT_EQ(stops.size(), 2u);
+    EXPECT_EQ(attr(stops.back(), "offset"), "1");
+    // Linear definitions run last first: .25 is the first visible stop at 100%.
+    auto color = b->document->getObjectByRepr(stops.back())->style->stop_color.getColor().converted(Type::RGB);
+    ASSERT_TRUE(color);
+    EXPECT_NEAR((*color)[0], .25, .001);
+}
+
 TEST_F(AiNativeImportTest, GradientMidpointUsesPowerCurve)
 {
     std::string setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n1 0 50 100 Bs\n0 0 80 0 Bs\nBD\n%AI5_EndGradient\n";

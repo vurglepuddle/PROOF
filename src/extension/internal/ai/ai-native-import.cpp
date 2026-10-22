@@ -558,6 +558,7 @@ public:
     std::size_t unordered_text = 0;
     /// Text objects painted with a gradient, which is black on type.
     std::size_t gradient_text = 0;
+    std::size_t unused_gradient_end_stops = 0;
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
     std::size_t path_text = 0; ///< Parameter brackets expanded to editable path distances.
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
@@ -719,7 +720,7 @@ void Builder::run()
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
                                        gradient_text, paragraph_styled_text, path_text, mesh_outlines, mesh_cut, foreign_objects,
-                                       hidden_foreign);
+                                       hidden_foreign, unused_gradient_end_stops);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
         images_left_out = images;
@@ -727,7 +728,7 @@ void Builder::run()
         foreign_error = foreign;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
                  substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, path_text, mesh_outlines,
-                 mesh_cut, foreign_objects, hidden_foreign) = counts;
+                 mesh_cut, foreign_objects, hidden_foreign, unused_gradient_end_stops) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -1561,12 +1562,21 @@ std::string Builder::gradient_vector(int index)
     auto const &stops = g.stops;
     for (std::size_t i = 0; i < stops.size(); ++i) {
         auto const &a = stops[i];
+        // Past its end Illustrator extends a gradient with the first of its stops there, where SVG
+        // takes the last, and the others never show (Illustrator 29.2.1, linear and radial,
+        // 2026-10-22; six gradients of the owner's have two at 100).
+        if (i > 0 && stops[i - 1].offset >= 1.0 && a.offset >= 1.0) {
+            ++unused_gradient_end_stops;
+            continue;
+        }
         StopPaint const pa{a.color, a.ink, a.tint};
         auto const ca = shown(pa);
         add_stop(vec, a.offset, &pa, ca, a.opacity, false);
         if (i + 1 == stops.size() || std::abs(a.midpoint - 0.5) < 0.005) continue;
         // Illustrator's blend between two stops follows u^n, half-way at the midpoint.
         auto const &b = stops[i + 1];
+        // Two stops at one place have nothing between them to blend.
+        if (b.offset <= a.offset) continue;
         StopPaint const pb{b.color, b.ink, b.tint};
         auto const cb = shown(pb);
         double const n = std::log(0.5) / std::log(a.midpoint);
@@ -2164,6 +2174,11 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     auto count = [](std::size_t n, char const *one, char const *many) {
         return std::to_string(n) + " " + (n == 1 ? one : many);
     };
+    if (b.unused_gradient_end_stops) {
+        notes.push_back(count(b.unused_gradient_end_stops, "unused gradient stop at 100% was left out",
+                             "unused gradient stops at 100% were left out") +
+                        "; Illustrator extends with the first stop there, where SVG uses the last");
+    }
     if (ai.drawn_looks) {
         notes.push_back(count(ai.drawn_looks, "object", "objects") +
                         " with several fills or strokes, effects or a brush came in as groups of what they draw");

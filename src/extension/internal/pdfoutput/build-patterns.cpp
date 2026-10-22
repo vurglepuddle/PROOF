@@ -434,23 +434,59 @@ std::optional<CapyPDF_FunctionId> Document::get_gradient_function(SPGradientVect
         *pdf_space = get_colorspace(color_space);
     }
 
+    // PROOF: the pieces of the gradient, each up to its end and from one colour to another. Two
+    // stops at one place (a hard stop) have nothing between them, and PDF's Bounds must increase:
+    // Poppler, which PROOF's check of an .ai against its page and its PDF import draw with, draws
+    // equal ones wrongly. Inside the gradient such a pair is left out, which changes nothing. At an
+    // end it decides the colour the gradient extends with, the first stop before the start and the
+    // last after the end as SVG has it, so it becomes a sliver of that colour too narrow to see.
+    struct Piece
+    {
+        double to;
+        Colors::Color const *from_color, *to_color;
+    };
+    std::vector<Piece> pieces;
+    for (unsigned i = 0; i + 1 < stops; ++i) {
+        auto const &a = vector.stops[i], &b = vector.stops[i + 1];
+        if (b.offset > a.offset) {
+            pieces.push_back({b.offset, &*a.color, &*b.color});
+        }
+    }
+    if (pieces.empty()) {
+        // A single stop gradient is a swatch, this makes a gradient but it might be better as a Spot Color
+        auto const &only = *vector.stops.front().color;
+        pieces.push_back({1.0, &only, &only});
+    } else {
+        auto const &front = vector.stops.front(), &back = vector.stops.back();
+        double const first_width = pieces.front().to - front.offset;
+        double const last_width = back.offset - (pieces.size() > 1 ? pieces[pieces.size() - 2].to : front.offset);
+        if (vector.stops[1].offset <= front.offset) {
+            double const sliver = std::min(1e-5, first_width / 3);
+            pieces.insert(pieces.begin(), {front.offset + sliver, &*front.color, &*front.color});
+        }
+        if (vector.stops[stops - 2].offset >= back.offset) {
+            double const sliver = std::min(1e-5, last_width / 3);
+            pieces.back().to = back.offset - sliver;
+            pieces.push_back({back.offset, &*back.color, &*back.color});
+        }
+    }
+
     // Type3 Function, a collection of Type2 functions between each color stop pair
     std::vector<CapyPDF_FunctionId> functs;
     std::vector<double> bounds;
     std::vector<double> encode;
 
-    for (unsigned int i = 0; i < stops - 1 || (i == 0 && stops == 1); i++) {
-        auto c1 = get_shading_color(*vector.stops[i].color->converted(color_space), opacity);
-        // A single stop gradient is a swatch, this makes a gradient but it might be better as a Spot Color
-        auto c2 = get_shading_color(*vector.stops[i + (stops == 1 ? 0 : 1)].color->converted(color_space), opacity);
+    for (auto const &piece : pieces) {
+        auto c1 = get_shading_color(*piece.from_color->converted(color_space), opacity);
+        auto c2 = get_shading_color(*piece.to_color->converted(color_space), opacity);
 
         auto func = capypdf::Type2Function(domain.data(), domain.size(), c1, c2);
         functs.push_back(_gen.add_function(func));
         encode.emplace_back(0.0);
         encode.emplace_back(1.0);
 
-        if (i != 0) {
-            bounds.emplace_back(vector.stops[i].offset);
+        if (&piece != &pieces.back()) {
+            bounds.emplace_back(piece.to);
         }
     }
 

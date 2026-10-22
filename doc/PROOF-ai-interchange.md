@@ -2249,3 +2249,81 @@ reader 75 with one, PDF output 5); **27 export groups, 867 checks** (was
 refused, RGB black in a CMYK document taken, both definitions refused. The
 registration smoke **88/88**: the RGB definition in an RGB and in a CMYK
 document, records, PDF separation and native reopen.
+
+### Hard stops, and gradient patterns imported in their own space (2026-10-22)
+
+The modern writer now writes coincident stops: a hard transition inside a
+linear/radial gradient, two stops at its start, and identical stops at its end.
+Linear definitions are listed last first and radial definitions first first,
+as Illustrator takes them. The reader reverses a linear list before stable
+sorting, so ties keep the order that paints correctly. A midpoint has no
+interval to interpolate between two coincident stops.
+
+There is a real endpoint difference: Illustrator extends with the first stop
+at 100%, while SVG uses the last. A source SVG whose final stops differ in
+colour, ink/tint or opacity is refused (`gradient stops of different colours
+at its end`), without replacing an existing file. On import, only Illustrator's
+first final stop is kept for painting; unused later final stops are omitted
+and explicitly reported in the import notes. Their inactive definitions are
+not retained as editable SVG stops. Illustrator 7 hard stops remain refused
+(`gradient hard stops (Illustrator 7)`); actual Illustrator 7 is unqualified.
+
+#### Shared PDF output and import fixes
+
+PDF output previously built zero-width stitching intervals between equal
+offsets, or bounds equal to the function's endpoints. Poppler rendered those
+incorrectly. Interior zero-width pieces are now omitted, retaining the two
+colours on either side of the hard edge. At an endpoint a constant interval
+at most 0.00001 of the ramp preserves SVG's extension colour with strictly
+increasing PDF bounds. Colour and opacity functions use the same construction.
+
+PDF import now evaluates each stitching piece at its own encoded endpoints.
+Evaluating the whole function at a shared boundary took the colour on one
+side for both stops and lost the transition. Adjacent pieces with different
+endpoint colours now keep both stops.
+
+The control also exposed ordinary PDF gradients being placed incorrectly
+inside forms, even without hard stops. The gradient builder now uses the
+parser's initial page/form/pattern matrix, updated on entry and restored on
+exit, instead of assuming a page-wide points-to-pixels scale and flip. This
+follows [ISO 32000-1, section 8.7.2](https://developer.adobe.com/document-services/docs/assets/35e4369068f86065372c18787171a17e/PDF_ISO_32000-1.pdf): a pattern matrix maps to its content stream's initial user space.
+These are shared PDF changes; the collaborator should know.
+
+#### Qualification and limits
+
+`ai-hard-stop-output-smoke.py` generates six linear/radial cells, checks
+native stop order, strictly increasing PDF stitching bounds, native reopening,
+a second write, both Poppler renderers, PDF import, endpoint refusal with
+and without an existing destination, and the Illustrator 7 refusal. Two
+independently authored PDF controls cover nonidentity pattern/form matrices,
+nested and repeated forms, page patterns after a form, stroke patterns and a
+rotated page. **15/15** checks pass. PDF import matches every sampled pixel
+of the six-cell control; second native saves are within one channel level.
+Hard-edge renderer comparisons allow the control's two-percent fraction above
+24 levels for antialiasing at a transition; the independent form controls
+stay below one percent (0.78% and 0.65%). No import gate was relaxed.
+
+Illustrator **29.2.1** draws all six final cells correctly. Differences above
+24 levels occupy at most 0.81% of a cell, confined to transition antialiasing.
+Its saved copy still opens through PDF: the native/page comparison reports
+2.2% colour disagreement against the existing 2% limit. Its PDF's coincident
+stitching bounds remain a Poppler comparison limitation. The corrected PDF
+import draws that saved copy correctly with editable gradient vectors; this
+is **not a qualified native Illustrator-saved return trip**.
+
+The independent cropped-page experiment found an existing page translation
+error: old and candidate imports have identical paint coverage, both shifted
+from the cropped reference. That separate placement issue remains open.
+
+Both formerly blocked copied documents now save and reopen **natively** in
+PROOF; their source/reopen differences peak at 20 and 3 channel levels, with
+no pixel above 24 and unchanged input hashes. The same **871 copied inputs**
+retain **862 native imports / nine page fallbacks**. Modern record writing
+rises **798 -> 800 of 862**, Illustrator 7 stays **100**, no earlier
+acceptance is lost, and every accepted stream reads back. Census record
+acceptance is separate from the Illustrator rendering/return-trip controls.
+
+Checks: **13 unit suites, zero failures; 28 export groups, 882 checks**.
+Reader 76 cases (one opt-in skip), importer 171 (two), gradient writer 36.
+Next: inspect the one mixed-gradient-space document, then the remaining mesh
+subset; type stays last (60 documents, 52 held by nothing else).

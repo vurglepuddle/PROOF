@@ -179,6 +179,7 @@ public:
     void updateTextShift(GfxState *state, double shift);
     void updateTextMatrix(GfxState *state, bool flip);
     void beforeStateChange(GfxState *old_state);
+    void setBaseMatrix(Geom::Affine const &matrix) { _base_matrix = matrix; }
 
     // Clipping
     void setClip(GfxState *state, GfxClipType clip, bool is_bbox = false);
@@ -306,6 +307,8 @@ private:
     double _page_top = 0 ; // Move to the top (maybe)
     bool _page_offset = false;
     Geom::Affine _page_affine = Geom::identity();
+    // Initial user space of the current page, form or pattern, supplied by PdfParser.
+    Geom::Affine _base_matrix = Geom::identity();
 
     std::map<std::string, std::pair<std::string, bool>> _ocgs;
 

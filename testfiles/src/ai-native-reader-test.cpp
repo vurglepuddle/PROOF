@@ -671,6 +671,27 @@ TEST(AiNativeReader, PaletteSettlesInks)
     EXPECT_EQ(fill.kind, Paint::Kind::Gradient);
 }
 
+TEST(AiNativeReader, CoincidentStopsKeepTheLinearAndRadialPaintOrder)
+{
+    for (bool const radial : {false, true}) {
+        auto const stops = radial
+            ? "1 0 50 0 Bs\n0.25 0 50 50 Bs\n0.75 0 50 50 Bs\n0 0 50 100 Bs\n"
+            : "0 0 50 100 Bs\n0.75 0 50 50 Bs\n0.25 0 50 50 Bs\n1 0 50 0 Bs\n";
+        auto const setup = std::string("%AI5_BeginGradient: (G)\n(G) ") + (radial ? "1" : "0") +
+                           " 4 Bd\n[\n" + stops + "BD\n%AI5_EndGradient\n";
+        auto doc = read_ok(records(layer("L", "0 g\n" + rect(0, 0, 10, 10) + "f\n"), setup));
+        ASSERT_EQ(doc.gradients.size(), 1u);
+        auto const &ramp = doc.gradients[0].stops;
+        ASSERT_EQ(ramp.size(), 4u);
+        EXPECT_EQ(ramp[0].color, Color::gray(1));
+        EXPECT_EQ(ramp[1].color, Color::gray(.25));
+        EXPECT_EQ(ramp[2].color, Color::gray(.75));
+        EXPECT_EQ(ramp[3].color, Color::gray(0));
+        EXPECT_EQ(ramp[1].offset, .5);
+        EXPECT_EQ(ramp[2].offset, .5);
+    }
+}
+
 TEST(AiNativeReader, StopsOfGlobalSwatchesAsIllustratorWritesThem)
 {
     // Each stop twice: a process stand-in ending "%_BS", then the exact stop on a "%_" line.

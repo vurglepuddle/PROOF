@@ -1213,13 +1213,13 @@ gchar *SvgBuilder::_createPattern(GfxPattern *pattern, GfxState *state, bool is_
         if ( pattern->getType() == 2 ) {  // Shading pattern
             GfxShadingPattern *shading_pattern = static_cast<GfxShadingPattern *>(pattern);
             // construct a (pattern space) -> (current space) transform matrix
-            auto flip = Geom::Affine(1.0, 0.0, 0.0, -1.0, 0.0, _height);
-            auto pt = Geom::Scale(Inkscape::Util::Quantity::convert(1.0, "pt", "px"));
             auto grad_affine = ctmToAffine(shading_pattern->getMatrix());
             auto obj_affine = stateToAffine(state);
             // SVG applies the object's affine on top of the gradient's affine,
             // So we must remove the object affine to move it back into place.
-            auto affine = (grad_affine * pt * flip) * obj_affine.inverse();
+            // The pattern is relative to this content stream's initial user space.
+            // A form may have its own transform; a fixed page flip/scale loses it.
+            auto affine = (grad_affine * _base_matrix) * obj_affine.inverse();
             id = _createGradient(state, shading_pattern->getShading(), affine);
         } else if ( pattern->getType() == 1 ) {   // Tiling pattern
             id = _createTilingPattern(static_cast<GfxTilingPattern*>(pattern), state, is_stroke);
@@ -1403,6 +1403,22 @@ static bool svgGetShadingColor(GfxShading *shading, double offset, GfxColor *res
 }
 
 
+/// PROOF: the colour one piece of a stitching function gives for its own input `t`, or false when its
+/// output isn't the shading's colour.
+static bool svgGetPieceColor(GfxShading *shading, _POPPLER_CONST Function *piece, double t, GfxColor *result)
+{
+    int const n = shading->getColorSpace()->getNComps();
+    if (!piece || piece->getInputSize() != 1 || piece->getOutputSize() != n || n > gfxColorMaxComps) {
+        return false;
+    }
+    double out[gfxColorMaxComps] = {};
+    piece->transform(&t, out);
+    for (int i = 0; i < n; ++i) {
+        result->c[i] = dblToCol(out[i]);
+    }
+    return true;
+}
+
 #define INT_EPSILON 8
 bool SvgBuilder::_addGradientStops(Inkscape::XML::Node *gradient, GfxState *state, GfxShading *shading,
                                    _POPPLER_CONST Function *func) {
@@ -1425,12 +1441,27 @@ bool SvgBuilder::_addGradientStops(Inkscape::XML::Node *gradient, GfxState *stat
         // Adjust gradient so it's always between 0.0 - 1.0
         double max_bound = std::max({1.0, bounds[num_funcs]});
 
-        // Add stops from all the stitched functions
+        // Add stops from all the stitched functions. PROOF: each piece's own colours at its ends,
+        // not the whole function's at the bounds, where two equal ones (a hard stop, as Illustrator
+        // writes one) both took the colour after it. A piece that starts in another colour than
+        // the one before ended in starts with a stop of its own.
+        auto const comps = space->getNComps();
+        auto at = [&](int i, bool end, GfxColor *c) {
+            if (!svgGetPieceColor(shading, stitchingFunc->getFunc(i), encode[2 * i + (end ? 1 : 0)], c)) {
+                svgGetShadingColor(shading, bounds[i + (end ? 1 : 0)], c);
+            }
+        };
         GfxColor prev_color, color;
-        svgGetShadingColor(shading, bounds[0], &prev_color);
+        at(0, false, &prev_color);
         _addStopToGradient(gradient, bounds[0], prev_color, space, intent, 1.0);
         for ( int i = 0 ; i < num_funcs ; i++ ) {
-            svgGetShadingColor(shading, bounds[i + 1], &color);
+            GfxColor start;
+            at(i, false, &start);
+            if (i > 0 && !std::equal(start.c, start.c + comps, prev_color.c)) {
+                _addStopToGradient(gradient, bounds[i] / max_bound, start, space, intent, 1.0);
+            }
+            prev_color = start;
+            at(i, true, &color);
             // Add stops
             if (stitchingFunc->getFunc(i)->getType() == _POPPLER_FUNCTION_TYPE_EXPONENTIAL) {
                 double expE = (static_cast<_POPPLER_CONST ExponentialFunction*>(stitchingFunc->getFunc(i)))->getE();

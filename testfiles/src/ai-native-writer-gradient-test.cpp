@@ -391,14 +391,25 @@ TEST_F(AiNativeWriterGradientTest, StopsKeepTheirOpacityInTheNewerFormOnly)
     EXPECT_NE(opaque.definition.find(" 2 50 100 %_Bs\n"), std::string::npos) << opaque.definition;
 }
 
-TEST_F(AiNativeWriterGradientTest, CoincidentDecreasingAndRoundedOffsetsFailClosed)
+TEST_F(AiNativeWriterGradientTest, CoincidentDecreasingAndRoundedOffsetsAreHardStops)
 {
+    // A decreasing offset is the one before it, as SVG says, and one within a millionth is the
+    // same place: all three are a hard stop at 50, green then blue, in the order Illustrator takes
+    // a linear gradient's (listed last first).
     for (auto const offset : {".5", ".4", ".50000001"}) {
+        SCOPED_TRACE(offset);
         auto doc = document(geometry, std::string(R"(<stop offset="0" stop-color="red"/><stop offset=".5" stop-color="green"/><stop offset=")") +
                             offset + R"(" stop-color="blue"/><stop offset="1" stop-color="black"/>)");
         ASSERT_TRUE(doc);
-        expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Hard"),
-                       "gradient hard stops or coincident offsets");
+        auto const written = AN::write_gradient(shape(doc.get()), Geom::identity(), "Hard");
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const &d = written.definition;
+        auto const blue = d.find(" 0 0 1 2 50 50 %_Bs\n"), green = d.find(" 0 0.502 0 2 50 50 %_Bs\n");
+        ASSERT_NE(blue, std::string::npos) << d;
+        ASSERT_NE(green, std::string::npos) << d;
+        EXPECT_LT(blue, green);
+        expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "Hard", true),
+                       "gradient hard stops (Illustrator 7)");
     }
 }
 
@@ -1243,6 +1254,22 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
             EXPECT_EQ(written.records.empty(), refused);
             EXPECT_EQ(std::find(written.refused.begin(), written.refused.end(), test.reason) != written.refused.end(),
                       refused);
+        }
+    }
+}
+
+TEST_F(AiNativeWriterGradientTest, EndpointColourOrOpacityChangesAreRefused)
+{
+    for (auto const *tag : {"linearGradient", "radialGradient"}) {
+        for (auto const *last : {R"(<stop offset="1" stop-color="blue"/>)",
+                                R"(<stop offset="1" stop-color="red" stop-opacity=".25"/>)"}) {
+            auto doc = document(std::string(tag) == "linearGradient" ? geometry :
+                                R"(gradientUnits="userSpaceOnUse" cx="100" cy="100" r="60")",
+                                std::string(R"(<stop offset="0" stop-color="white"/><stop offset="1" stop-color="red"/>)") + last,
+                                {}, {}, tag);
+            ASSERT_TRUE(doc);
+            expect_refusal(AN::write_gradient(shape(doc.get()), Geom::identity(), "End"),
+                           "gradient stops of different colours at its end");
         }
     }
 }

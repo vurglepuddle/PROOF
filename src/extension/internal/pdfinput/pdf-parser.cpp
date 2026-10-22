@@ -285,6 +285,7 @@ PdfParser::PdfParser(std::shared_ptr<PDFDoc> pdf_doc, Inkscape::Extension::Inter
     loadOptionalContentLayers(page->getResourceDict());
     loadColorProfile();
     baseMatrix = stateToAffine(state);
+    builder->setBaseMatrix(baseMatrix);
 
     if (page) {
         // Increment the page building here and set page label
@@ -342,6 +343,7 @@ PdfParser::PdfParser(XRef *xrefA, Inkscape::Extension::Internal::SvgBuilder *bui
 {
     setDefaultApproximationPrecision();
     baseMatrix = stateToAffine(state);
+    builder->setBaseMatrix(baseMatrix);
     formDepth = 0;
 }
 
@@ -2916,12 +2918,14 @@ void PdfParser::doForm1(Object *str, Dict *resDict, double *matrix, double *bbox
     // set new base matrix
     auto oldBaseMatrix = baseMatrix;
     baseMatrix = stateToAffine(state);
+    builder->setBaseMatrix(baseMatrix);
 
     // draw the form
     parse(str, gFalse);
 
     // restore base matrix
     baseMatrix = oldBaseMatrix;
+    builder->setBaseMatrix(baseMatrix);
 
     // restore parser
     parser = oldParser;
