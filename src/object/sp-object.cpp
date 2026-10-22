@@ -36,6 +36,7 @@
 #include "sp-factory.h"
 #include "sp-font.h"
 #include "sp-glyph.h"
+#include "sp-image.h"
 #include "sp-paint-server.h"
 #include "sp-page.h"
 #include "sp-root.h"
@@ -1182,6 +1183,9 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
 {
     auto const key = g_quark_to_string(key_);
     readAttr(key);
+    if (!std::strcmp(key, SPImage::PDF_PAGE_ATTRIBUTE) && is<SPImage>(this)) {
+        requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_IMAGE_HREF_MODIFIED_FLAG);
+    }
     if (!std::strcmp(key, "proof:gradient-method") || !std::strcmp(key, "proof:gradient-midpoint")) {
         requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);
     }

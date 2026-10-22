@@ -163,7 +163,7 @@ public:
     /// PROOF: when `filename` is a PDF (a linked .pdf or .ai), the stand-in for its first page,
     /// drawn where it is placed and replaced by the page itself once the file is written
     /// (placed-pages.h), and that page's crop box (PDF units). Nothing otherwise.
-    std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> placed_page(std::string const &filename);
+    std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> placed_page(std::string const &filename, int index = 1);
 private:
     std::optional<CapyPDF_PatternId> get_linear_pattern(SPLinearGradient const *linear, std::optional<double> opacity,
                                                       Geom::OptRect const &bbox);
@@ -212,8 +212,9 @@ private:
     std::map<std::string, CapyPDF_FontId> _font_cache;
     std::map<std::string, CapyPDF_ImageId> _raster_cache;
     std::string _filename;
-    std::map<std::string, std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>>> _placed_cache;
+    std::map<std::pair<std::string, int>, std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>>> _placed_cache;
     std::vector<PlacedPage> _placed;
+    std::string _placed_error; ///< A selected page that must fail the export at write(), before keeping a PDF.
 
     // Anchors are post-processed into pages
     std::set<SPAnchor const *> _anchors;

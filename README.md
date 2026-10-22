@@ -64,8 +64,11 @@ saves; the native writer keeps patterns on fills and strokes, and opacity masks
 of grey vector art with Clip on or off, plus supported hard gradient
 transitions and editable RGB/CMYK Coons mesh patches. Multiple mesh patches
 export as grouped independent meshes to retain SVG interpolation; a connected
-grid is kept in the working SVG. CMYK mesh channels are preserved, while the
-canvas still blends their RGB previews. Live type and other unsupported gradient forms remain among
+grid is kept in the working SVG. CMYK mesh channels are preserved; in a CMYK
+document the canvas blends them in CMYK through the document profile.
+Classic gradients follow the same document mode; mixed spot/process ramps
+follow Illustrator's overprint appearance on the canvas and in process-colour PDF output.
+Live type and other unsupported gradient forms remain among
 the main limits.
 
 | Capability | Current state |
@@ -85,8 +88,15 @@ as partial imports. More complex type, meshes and masks still need work.
 
 Linked Photoshop files (`.psd` and `.psb`) and CMYK TIFFs keep their process-ink
 numbers, depth and cut-out transparency in PDF output. Linked `.ai` and `.pdf`
-files show their first page and print as retained PDF vectors, preserving the
+files show their selected page (the first by default) and print as retained PDF vectors, preserving the
 placed page's fonts and inks. Changed or missing links are reported.
+[Placed-page contract](doc/PROOF-placed-pages.md).
+
+Slow Illustrator page checks retain their reference drawings for later openings.
+If the first drawing takes over 3 s, the finer drawing starts concurrently in
+its own Poppler document. The qualified heavy case improved from 232 s to 137 s
+on first opening and takes 33.5 s on later openings (2026-10-22).
+[Measurements and cache rules](doc/PROOF-ai-native-records.md#pages-slow-to-draw-weighed-once-and-kept-2026-10-22).
 
 The reader is also checked against real documents, with artwork kept private:
 

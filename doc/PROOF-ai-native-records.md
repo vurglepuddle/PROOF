@@ -1976,13 +1976,16 @@ it and prints the page itself. PROOF now does both
 `AI11 PlacedPDFCropTo`, in the art dictionary after `%AI5_EndPlace`); the
 placed box (always with its top-left at 7893, 7770 in the four placements
 read) has the size of the page box it is cropped to. The import shows the
-first page cropped to its crop box and refuses the rest with the reason.
+selected page cropped to its crop box (page 1 was the initial limit, removed
+on 2026-10-22). The selection is retained as `proof:pdf-page` on the image
+through SVG save/reopen and PDF output; unavailable or invalid pages still
+fail closed. Other crop boxes and rotated pages remain unsupported.
 
 The collaborator's `9047eb9b4e`, refused for its linked `.ai` before, opens
-natively at 0.22%, in about three minutes: its own page takes Poppler 28 seconds
-to draw even at 20 dpi, for its 127-megapixel picture, and its thin lines need
-the finer second drawing. Test:
-`ALinkedPdfPageShowsItsFirstPageCroppedToItsCropBox`.
+natively at 0.22% in the original round. Its slow page check was addressed
+on 2026-10-22: first opening 137 s, later ones 33.5 s; see
+"Pages slow to draw: weighed once and kept" below. Test:
+`ALinkedPdfPageShowsTheSelectedPageCroppedToItsCropBox`.
 
 ### Arrays nested too deeply (2026-10-17)
 

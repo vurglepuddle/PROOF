@@ -137,16 +137,31 @@ bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const 
     for (auto const &p : pages) {
         if (sources.count(p.file)) continue;
         auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(p.file.c_str());
-        if (!pdf || !pdf->isOk() || pdf->getNumPages() < 1 || !pdf->getPage(1)) {
+        if (!pdf || !pdf->isOk() || pdf->getNumPages() < 1) {
             error = "a placed file can't be read: " + p.file;
             return false;
         }
-        auto *page = pdf->getPage(1);
         std::set<std::pair<int, int>> seen;
         std::vector<Ref> found;
-        bool ok = reach(*page->getResourceDictObject(), pdf->getXRef(), seen, found);
-        if (auto *group = page->getGroup()) {
-            for (int i = 0; ok && i < group->getLength(); ++i) ok = reach(group->getValNF(i), pdf->getXRef(), seen, found);
+        bool ok = true;
+        // A file may supply several different pages. Copy the union of their resources,
+        // once, with one renumbering offset for the file, including shared fonts/pictures.
+        for (auto const &selected : pages) {
+            if (selected.file != p.file) continue;
+            auto *page = selected.index >= 1 && selected.index <= pdf->getNumPages()
+                             ? pdf->getPage(selected.index) : nullptr;
+            if (!page || page->getRotate() % 360 != 0) {
+                error = "a placed file's selected page is missing or turned: " + p.file;
+                return false;
+            }
+            if (auto *resources = page->getResourceDictObject()) {
+                ok = ok && reach(*resources, pdf->getXRef(), seen, found);
+            }
+            if (auto *group = page->getGroup()) {
+                for (int i = 0; ok && i < group->getLength(); ++i) {
+                    ok = reach(group->getValNF(i), pdf->getXRef(), seen, found);
+                }
+            }
         }
         if (!ok) {
             error = "a placed page uses too many objects: " + p.file;
@@ -169,7 +184,7 @@ bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const 
     // Each stand-in, now its page.
     for (auto const &p : pages) {
         auto const &source = sources.at(p.file);
-        auto *page = source.pdf->getPage(1);
+        auto *page = source.pdf->getPage(p.index);
         auto *from = source.pdf->getXRef();
         Ref const at = stand_ins.at(p.marker);
         std::string content;

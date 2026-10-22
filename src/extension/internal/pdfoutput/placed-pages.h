@@ -23,8 +23,9 @@ namespace Inkscape::Extension::Internal::PdfBuilder {
 
 struct PlacedPage
 {
-    std::string file;   ///< The placed PDF, its first page (UTF-8).
+    std::string file;   ///< The placed PDF (UTF-8).
     std::string marker; ///< What the stand-in's content holds and no other's does.
+    int index = 1;     ///< The selected page, from 1.
 };
 
 /// The stand-ins in the PDF at `path` replaced by their pages. When that fails the file is left

@@ -338,10 +338,9 @@ mesh's 35 is its own antialiased edge inside the cell, and the masked mesh
 stays near 10 on average, because the round's writer gives Illustrator mask
 art in Gray, which Illustrator blends in black ink alone.
 
-**Still differs from Illustrator:** an ink beside process colour, which
-Illustrator draws overprinting the process ramp (its DeviceN tint transform:
-each channel 1 - (1 - tint x ink)(1 - process)), lighter mid-ramp than a CMYK
-blend; done the same day, "An ink beside process colour" below. Grey (Gray) stops blended in black alone. Transparency
+**The ink/process difference was fixed later the same day**, "An ink beside
+process colour" below. **Still differs from Illustrator:** grey (Gray) stops
+blended in black alone. Transparency
 composited in CMYK (the canvas composites in RGB).
 
 **PDF readers differ here.** A CMYK mesh shading in the PDF is unchanged, and

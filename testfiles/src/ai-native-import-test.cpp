@@ -4441,11 +4441,12 @@ TEST_F(AiNativeImportTest, ALinkedPhotoshopFileShowsItsMergedImage)
     EXPECT_NE(error.find("flat.psd"), std::string::npos) << error;
 }
 
-TEST_F(AiNativeImportTest, ALinkedPdfPageShowsItsFirstPageCroppedToItsCropBox)
+TEST_F(AiNativeImportTest, ALinkedPdfPageShowsTheSelectedPageCroppedToItsCropBox)
 {
     // The collaborator's linked .ai and .pdf files (2026-10-17): Illustrator places a page and
-    // keeps it as it is. PROOF shows the first page's crop box, drawn by Poppler.
-    auto const placed = fixture(records(layer("0 g\n" + rect)), {"0 0 1 0 k 0 0 200 100 re f"}); // 200 by 100
+    // keeps it as it is. Each page must retain its own drawing, also in the screen cache.
+    auto const placed = fixture(records(layer("0 g\n" + rect)),
+                                {"0 0 1 0 k 0 0 200 100 re f", "0 1 0 rg 0 0 200 100 re f"});
     // As Illustrator writes the placement: the box the size of the page box it is cropped to.
     auto page = [](std::string const &file, double w, double h, int index) {
         auto num = [](double v) {
@@ -4482,15 +4483,63 @@ TEST_F(AiNativeImportTest, ALinkedPdfPageShowsItsFirstPageCroppedToItsCropBox)
     EXPECT_GT((yellow >> 8) & 0xff, 200u);
     EXPECT_LT(yellow & 0xff, 60u);
 
-    // Another page than the first, or another box than its crop box: refused, saying why.
+    // Select page 2, save/reopen, then change back and forth as Undo/Redo would.
     ai = AN::read(records(layer(page(placed, 200, 100, 2))), error);
     ASSERT_TRUE(ai) << error;
+    b = AN::build(*ai, error);
+    ASSERT_TRUE(b) << error;
+    auto saved = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(saved);
+    auto const second = elements(saved->getReprRoot(), "svg:image");
+    ASSERT_EQ(second.size(), 1u);
+    EXPECT_EQ(attr(second[0], SPImage::PDF_PAGE_ATTRIBUTE), "2");
+    image = cast<SPImage>(saved->getObjectByRepr(second[0]));
+    ASSERT_TRUE(image);
+    auto centre = [&]() {
+        saved->ensureUpToDate();
+        if (!image->pixbuf) return std::uint32_t(0);
+        auto *s = image->pixbuf->getSurfaceRaw();
+        return reinterpret_cast<std::uint32_t const *>(cairo_image_surface_get_data(s) +
+                   200 * cairo_image_surface_get_stride(s))[400];
+    };
+    EXPECT_EQ(centre(), 0xff00ff00u);
+    second[0]->removeAttribute(SPImage::PDF_PAGE_ATTRIBUTE);
+    EXPECT_EQ(centre(), yellow);
+    second[0]->setAttribute(SPImage::PDF_PAGE_ATTRIBUTE, "2");
+    EXPECT_EQ(centre(), 0xff00ff00u);
+    for (auto const *invalid : {"0", "-1", "2.5", "2147483648", "2junk"}) {
+        second[0]->setAttribute(SPImage::PDF_PAGE_ATTRIBUTE, invalid);
+        saved->ensureUpToDate();
+        EXPECT_EQ(image->pdfPage(), 0) << invalid;
+        EXPECT_TRUE(image->missing) << invalid;
+    }
+    second[0]->setAttribute(SPImage::PDF_PAGE_ATTRIBUTE, "3");
+    saved->ensureUpToDate();
+    EXPECT_TRUE(image->missing) << "an unavailable page must never load page 1";
+    second[0]->setAttribute(SPImage::PDF_PAGE_ATTRIBUTE, "2");
+    EXPECT_EQ(centre(), 0xff00ff00u);
+    // A missing page or another box than its crop box is refused, saying why.
+    ai = AN::read(records(layer(page(placed, 200, 100, 3))), error);
+    ASSERT_TRUE(ai) << error;
     EXPECT_FALSE(AN::build(*ai, error));
-    EXPECT_NE(error.find("page 2"), std::string::npos) << error;
+    EXPECT_NE(error.find("page 3"), std::string::npos) << error;
+    for (auto const *invalid : {"0", "-1", "2.5", "2147483648"}) {
+        auto record = page(placed, 200, 100, 2);
+        auto const at = record.find("%_2 /Int (AI11 PlacedPDFPageIndex)");
+        ASSERT_NE(at, std::string::npos);
+        record.replace(at + 2, 1, invalid);
+        EXPECT_FALSE(AN::read(records(layer(record)), error)) << invalid;
+        EXPECT_NE(error.find("invalid page number"), std::string::npos) << error;
+    }
     ai = AN::read(records(layer(page(placed, 150, 100, 1))), error);
     ASSERT_TRUE(ai) << error;
     EXPECT_FALSE(AN::build(*ai, error));
     EXPECT_NE(error.find("crop box"), std::string::npos) << error;
+    auto const rotated = fixture("", {"", ""}, "/MediaBox [0 0 200 100] /Rotate 90");
+    ai = AN::read(records(layer(page(rotated, 200, 100, 2))), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("page is turned"), std::string::npos) << error;
     // An .ai of Illustrator 8 or older is PostScript, not a page.
     auto const folder = temporary_folder();
     auto const old = folder + G_DIR_SEPARATOR_S + "old.ai";

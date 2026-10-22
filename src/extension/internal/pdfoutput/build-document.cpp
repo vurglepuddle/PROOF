@@ -328,12 +328,13 @@ std::optional<CapyPDF_ImageId> Document::add_own_pixels(std::string_view data, c
     return _gen.add_image(image, props);
 }
 
-std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> Document::placed_page(std::string const &filename)
+std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> Document::placed_page(std::string const &filename, int index)
 {
-    if (auto const it = _placed_cache.find(filename); it != _placed_cache.end()) {
+    auto const key = std::pair(filename, index);
+    if (auto const it = _placed_cache.find(key); it != _placed_cache.end()) {
         return it->second;
     }
-    auto &placed = _placed_cache[filename];
+    auto &placed = _placed_cache[key];
 #ifdef WITH_POPPLER
     gchar head[8] = {};
     if (FILE *f = g_fopen(filename.c_str(), "rb")) {
@@ -343,8 +344,9 @@ std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> Document::plac
     }
     if (!looks_like_pdf(std::string_view(head, 5))) return placed;
     std::string why;
-    auto const crop = placed_page_crop(filename, &why);
+    auto const crop = placed_page_crop(filename, &why, index);
     if (!crop) {
+        if (index != 1 && _placed_error.empty()) _placed_error = "a selected placed page can't go into the PDF: " + why;
         g_warning("A placed page can't go into the PDF: %s (%s)", why.c_str(), filename.c_str());
         return placed;
     }
@@ -356,13 +358,14 @@ std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> Document::plac
     stand_in._ctx.cmd_re(name, name, 1.0, 1.0);
     stand_in._ctx.cmd_n();
     placed = std::pair(_gen.add_transparency_group(stand_in._ctx), *crop);
-    _placed.push_back({filename, marker});
+    _placed.push_back({filename, marker, index});
 #endif
     return placed;
 }
 
 void Document::write()
 {
+    if (!_placed_error.empty()) throw PlacedPagesFailed(_placed_error);
     _gen.write();
     std::string error;
     if (!splice_placed_pages(_filename, _placed, error)) {

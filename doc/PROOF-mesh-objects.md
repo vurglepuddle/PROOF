@@ -153,5 +153,9 @@ The modern writer exports each SVG patch as a separate editable Illustrator
 mesh, grouped with the object's transparency and mask. Illustrator interpolates
 across a connected grid differently from SVG; keeping the patches independent
 preserves RGB appearance. The working SVG retains its connected grid. CMYK
-corner channels are retained, with the existing RGB canvas-blending limitation.
+corner channels are retained. Since the later CMYK canvas round on the same day,
+CMYK documents draw mesh colours blended in CMYK through their document profile;
+RGB documents keep their RGB interpolation. The temporary drawing patches do
+not change the editable grid or its saved channels.
+[Canvas interpolation](PROOF-document-colors.md#a-cmyk-documents-gradients-and-meshes-blended-in-cmyk-on-the-screen-2026-10-22).
 [Writer qualification and refusals](PROOF-ai-interchange.md#editable-mesh-patches-written-2026-10-22).

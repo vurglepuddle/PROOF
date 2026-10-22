@@ -34,23 +34,29 @@ bool looks_like_pdf(std::string_view data)
     return data.substr(0, 5) == "%PDF-";
 }
 
-std::optional<Geom::Rect> placed_page_crop(std::string const &path, std::string *why)
+std::optional<Geom::Rect> placed_page_crop(std::string const &path, std::string *why, int index)
 {
     auto fail = [why](char const *reason) -> std::optional<Geom::Rect> {
         if (why) *why = reason;
         return {};
     };
+    if (why) why->clear();
+    if (index < 1) return fail("its page number must be at least 1");
     if (!globalParams) globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
     auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(path.c_str());
     if (!pdf || !pdf->isOk()) return fail("it can't be read as a PDF");
     if (pdf->getNumPages() < 1) return fail("it has no page");
-    auto *page = pdf->getPage(1);
-    if (!page) return fail("its first page can't be read");
-    if (page->getRotate() % 360 != 0) return fail("its first page is turned");
+    if (index > pdf->getNumPages()) {
+        if (why) *why = "it has no page " + std::to_string(index);
+        return {};
+    }
+    auto *page = pdf->getPage(index);
+    if (!page) return fail("its selected page can't be read");
+    if (page->getRotate() % 360 != 0) return fail("its selected page is turned");
     auto const &c = page->getCropBox();
     if (!std::isfinite(c.x1) || !std::isfinite(c.y1) || !std::isfinite(c.x2) || !std::isfinite(c.y2) || c.x2 <= c.x1 ||
         c.y2 <= c.y1) {
-        return fail("its first page has no area");
+        return fail("its selected page has no area");
     }
     return Geom::Rect(Geom::Point(c.x1, c.y1), Geom::Point(c.x2, c.y2));
 }
@@ -91,11 +97,11 @@ cairo_surface_t *copy_of(cairo_surface_t *s)
 
 } // namespace
 
-cairo_surface_t *placed_page_surface(std::string_view data)
+cairo_surface_t *placed_page_surface(std::string_view data, int index)
 {
-    if (!looks_like_pdf(data)) return nullptr;
+    if (!looks_like_pdf(data) || index < 1) return nullptr;
     gchar *sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, reinterpret_cast<guchar const *>(data.data()), data.size());
-    std::string const key = std::string(sum) + ":" + std::to_string(data.size());
+    std::string const key = std::string(sum) + ":" + std::to_string(data.size()) + ":" + std::to_string(index);
     g_free(sum);
     auto &pages = drawn();
     for (auto it = pages.begin(); it != pages.end(); ++it) {
@@ -109,7 +115,7 @@ cairo_surface_t *placed_page_surface(std::string_view data)
     PopplerDocument *doc = poppler_document_new_from_bytes(bytes, nullptr, nullptr);
     g_bytes_unref(bytes);
     if (doc) {
-        PopplerPage *page = poppler_document_get_n_pages(doc) > 0 ? poppler_document_get_page(doc, 0) : nullptr;
+        PopplerPage *page = poppler_document_get_n_pages(doc) >= index ? poppler_document_get_page(doc, index - 1) : nullptr;
         double w = 0, h = 0;
         if (page) poppler_page_get_size(page, &w, &h);
         if (page && w > 0 && h > 0 && std::isfinite(w) && std::isfinite(h)) {
@@ -144,7 +150,7 @@ cairo_surface_t *placed_page_surface(std::string_view data)
     return copy_of(surface);
 }
 #else
-cairo_surface_t *placed_page_surface(std::string_view)
+cairo_surface_t *placed_page_surface(std::string_view, int)
 {
     return nullptr;
 }

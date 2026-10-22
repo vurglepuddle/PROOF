@@ -2564,3 +2564,24 @@ is `ai-perceptual-output-smoke.py`. No gradient editing UI was driven.
 Unknown extended settings, Perceptual spot-ink gradients, Perceptual gradients
 inside opacity-mask output and Illustrator 7 output remain explicit refusals.
 The additional setting must not be labelled Dither without a confirming file.
+
+## Selected pages of linked PDFs (2026-10-22)
+
+Native import now honours `AI11 PlacedPDFPageIndex` beyond page 1. The image
+keeps `proof:pdf-page` (one-based, default 1), and both its screen drawing and
+exported PDF use that selected page's crop box. Repeated uses of one page
+share their drawing/form; distinct pages of one file remain distinct, with
+shared PDF resources copied once. Invalid/missing pages fail closed. Crop
+boxes other than the PDF crop box and rotated pages remain unsupported.
+
+This is reader and shared image/PDF-output work. The modern `.ai` writer
+still explicitly refuses linked PDF/AI pages; its raster-link contract is
+unchanged. [Placed-page details and controls](PROOF-placed-pages.md).
+
+Qualification: 17 targeted picture/import checks, 69 placed-page checks
+(62 shared-image/PDF and seven native-AI), and 91 CMYK picture checks passed.
+The two selected lite cases retained their outcomes. The real `e1143523ac`
+requires pages 1-33 of its linked PDF, but the supplied companion has five
+pages: it now correctly refuses missing page 6. Its native qualification
+awaits the matching companion; no new census or native-acceptance gain is
+claimed.

@@ -80,19 +80,21 @@ public:
 
     // PROOF: `cmyk` is the document's CMYK profile, through which a CMYK TIFF shows (its numbers
     // are the document's); empty, and the picture's own profile or the working one is used.
+    // `pdf_page` selects a PDF page from 1; other image formats ignore it.
     static Pixbuf *create_from_data_uri(gchar const *uri, double svgdpi = 0,
-                                        std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+                                        std::shared_ptr<Colors::CMS::Profile> const &cmyk = {}, int pdf_page = 1);
     static Pixbuf *create_from_file(std::string const &fn, double svgddpi = 0,
-                                    std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+                                    std::shared_ptr<Colors::CMS::Profile> const &cmyk = {}, int pdf_page = 1);
     static Pixbuf *create_from_buffer(std::string const &, double svgddpi = 0, std::string const &fn = "",
-                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk = {}, int pdf_page = 1);
 
   private:
     static Pixbuf *create_from_buffer(gchar *&&, gsize, double svgddpi = 0, std::string const &fn = "",
-                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk = {});
+                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk = {}, int pdf_page = 1);
     /// A picture PROOF reads itself (a CMYK TIFF, a Photoshop file: display/raster-pixels.h) in
     /// `data`, taking `data` over when it is one; nothing otherwise.
-    static Pixbuf *create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk);
+    static Pixbuf *create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk,
+                                          int pdf_page);
     static Geom::Affine get_embedded_orientation(GdkPixbuf *buf);
     static GdkPixbuf *apply_embedded_orientation(GdkPixbuf *buf);
 

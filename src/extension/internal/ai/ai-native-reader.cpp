@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -2142,7 +2143,13 @@ void Reader::art_dictionary(Obj const &o)
     }
     if (n->placed >= 0 && n->placed < static_cast<int>(_doc.placed.size())) {
         auto &placed = _doc.placed[n->placed];
-        if (auto const page = o.nums("AI11 PlacedPDFPageIndex"); page.size() == 1) placed.page = int(page[0]);
+        if (auto const page = o.nums("AI11 PlacedPDFPageIndex"); !page.empty()) {
+            if (page.size() != 1 || !std::isfinite(page[0]) || page[0] < 1 ||
+                page[0] > std::numeric_limits<int>::max() || std::floor(page[0]) != page[0]) {
+                fail("a placed PDF has an invalid page number");
+            }
+            placed.page = int(page[0]);
+        }
         if (auto const crop = o.nums("AI11 PlacedPDFCropTo"); crop.size() == 1) placed.crop_to = int(crop[0]);
     }
     if (auto const *mask = o.obj("AI9_Mask")) {

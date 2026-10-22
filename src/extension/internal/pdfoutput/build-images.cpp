@@ -86,7 +86,7 @@ void DrawContext::paint_raster(SPImage const *image)
                 // PROOF: a file on another computer isn't looked up (io/link-policy.h).
             } else if (uri.getMimeType() == "image/svg+xml") {
                 svg = SPDocument::createNewDoc(uri.toNativeFilename().c_str());
-            } else if ((placed = _doc.placed_page(uri.toNativeFilename()))) {
+            } else if ((placed = _doc.placed_page(uri.toNativeFilename(), image->pdfPage()))) {
                 // PROOF: a placed PDF page (a linked .pdf or .ai), the page itself.
             } else {
                 // This is cached against the doc cache as the same filename might

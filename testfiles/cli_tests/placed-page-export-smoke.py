@@ -1,11 +1,12 @@
 """Placed PDF pages (linked .pdf and .ai), on the canvas and in the exported PDF (requires Pillow
 and pypdf).
 
-Two small PDFs are written here: one with a spot ink, CMYK numbers and type, one with a CMYK
-picture. A drawing places them by link, the first twice, and is exported with the built editor,
+Two small PDFs are written here: one with a spot ink, CMYK numbers and type on page 1 and a
+CMYK picture on page 2, one with a separate CMYK picture. A drawing places them by link,
+pages 1 and 2 each twice, and is exported with the built editor,
 as PDF 2.0 (whose cross-references are a stream) and as PDF 1.4 (a table). The page must go into
 the PDF as it is: the spot ink by its name, the numbers and the picture's samples unchanged, the
-font kept, one form for a file placed twice, and no stand-in left (see
+font kept and shared across the pages, one form per repeated page, and no stand-in left (see
 src/extension/internal/pdfoutput/placed-pages.h). The file must read strictly and draw without
 complaint, and the printed page and the canvas must show each page where it is placed.
 """
@@ -20,6 +21,7 @@ from pypdf import PdfReader
 
 SPOT_CONTENT = b"/CS0 cs 1 scn 0 0 100 100 re f 0 0 1 0 k 100 0 100 50 re f BT /F1 20 Tf 110 70 Td (PROOF) Tj ET"
 PICTURE = bytes([0, 0, 0, 255, 255, 0, 0, 0, 0, 255, 0, 0, 0, 0, 255, 0])  # black, cyan / magenta, yellow
+PAGE_TWO_CONTENT = b"q 100 0 0 100 10 20 cm /Im2 Do Q"
 
 
 def pdf(objects, root=1):
@@ -46,12 +48,18 @@ def spot_pdf():
     # Numbered with gaps and high, as real files are, to check the renumbering.
     return pdf({
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
-        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
         3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources 40 0 R /Contents 50 0 R >>",
+        4: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 140] /CropBox [10 20 110 120] "
+           b"/Resources 41 0 R /Contents 51 0 R /Group << /S /Transparency /CS /DeviceCMYK >> >>",
         40: b"<< /ColorSpace << /CS0 [/Separation /SpotOrange /DeviceCMYK 61 0 R] >> /Font << /F1 70 0 R >> >>",
+        41: b"<< /XObject << /Im2 80 0 R >> /Font << /F1 70 0 R >> >>",
         50: stream(SPOT_CONTENT),
+        51: stream(PAGE_TWO_CONTENT),
         61: b"<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.6 1 0] /N 1 >>",
         70: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        80: stream(PICTURE, b" /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceCMYK "
+                           b"/BitsPerComponent 8"),
     })
 
 
@@ -102,6 +110,63 @@ def images(reader):
     return found
 
 
+def native_control(out, exe, check, run):
+    """Independent native records and PDF reference pixels for a selected page."""
+    path = str((out / 'spot.pdf').resolve()).replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+    native = (
+        '%!PS-Adobe-3.0\n%%BoundingBox: 0 0 200 100\n%AI3_Cropmarks: 0 0 200 100\n'
+        '%AI5_RulerUnits: 1\n%AI9_ColorModel: 1\n%%EndComments\n%%BeginSetup\n%%EndSetup\n'
+        '%AI5_BeginLayer\n1 1 1 1 0 0 0 0 79 128 255 0 50 0 Lb\n(Artwork) Ln\n0 A 0 Xw\n'
+        '%AI5_BeginPlace\n%%FileType: 1\n[1 0 0 -1 0 100] 50 0 150 100 4 4 0\n('
+        + path + ')`\n%%IncludeFile:' + path + '\n~\n%AI5_EndPlace\n'
+        '%_/ArtDictionary :\n%_2 /Int (AI11 PlacedPDFPageIndex) ,\n'
+        '%_3 /Int (AI11 PlacedPDFCropTo) ,\n%_;\n9 () XW\nLB\n%AI5_EndLayer--\n'
+        '%%PageTrailer\nshowpage\n%%EOF\n').encode('utf-8')
+    source = out / 'selected-page.ai'
+    source.write_bytes(pdf({
+        1: b'<< /Type /Catalog /Pages 2 0 R >>',
+        2: b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        3: b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] '
+           b'/Resources << /XObject << /Im1 80 0 R >> >> /Contents 4 0 R '
+           b'/PieceInfo << /Illustrator << /Private 5 0 R >> >> >>',
+        4: stream(b'q 100 0 0 100 50 0 cm /Im1 Do Q'),
+        5: b'<< /AIPrivateData1 6 0 R /NumBlock 1 /ContainerVersion 11 /CreatorVersion 16 /RoundtripVersion 16 >>',
+        6: stream(native),
+        80: stream(PICTURE, b' /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceCMYK '
+                           b'/BitsPerComponent 8'),
+    }))
+    svg = out / 'selected-native.svg'
+    p = run('native-import', [exe, source, f'--export-filename={svg}'])
+    check('native AI: page 2 passes the PDF comparison', p.returncode == 0 and svg.is_file() and
+          b'opens from its PDF page' not in p.stderr)
+    if not svg.is_file():
+        return
+    check('native AI: SVG retains selected page', 'proof:pdf-page="2"' in svg.read_text(encoding='utf-8'))
+    target = out / 'selected-native.pdf'
+    p = run('native-print', [exe, svg, f'--export-filename={target}'])
+    check('native AI: saved SVG exports PDF', p.returncode == 0 and target.is_file())
+    if target.is_file():
+        found = [f for f in forms(PdfReader(target, strict=True)) if f.get_data() == PAGE_TWO_CONTENT]
+        check('native AI: original page 2 vectors retained', len(found) == 1 and
+              [float(v) for v in found[0]['/BBox']] == [10, 20, 110, 120])
+    canvas = out / 'selected-native.png'
+    run('native-canvas', [exe, svg, f'--export-filename={canvas}', '--export-width=200', '--export-height=100',
+                          '--export-background=white', '--export-background-opacity=1'])
+    check('native AI: saved SVG draws', canvas.is_file())
+    if canvas.is_file():
+        shown = Image.open(canvas).convert('RGB')
+        check('native AI: page 2 black in position', max(shown.getpixel((75, 25))) < 80)
+        r, g, b = shown.getpixel((125, 25))
+        check('native AI: page 2 cyan in position', r < 90 and g > 120 and b > 180)
+
+
+def report(out, checks):
+    result = dict(checks=checks, passed=all(c['passed'] for c in checks))
+    (out / 'report.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    print(f'{sum(c["passed"] for c in checks)}/{len(checks)} checks passed. {out / "report.json"}', flush=True)
+    raise SystemExit(0 if result['passed'] else 1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--inkscape", required=True, type=Path)
@@ -109,6 +174,7 @@ def main():
     ap.add_argument("--data-dir", type=Path)
     ap.add_argument("--pdftoppm", required=True, type=Path)
     ap.add_argument("--output", required=True, type=Path)
+    ap.add_argument("--native-only", action="store_true", help="Only the independent native-AI page-2 control")
     args = ap.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -135,20 +201,28 @@ def main():
 
     (out / "spot.pdf").write_bytes(spot_pdf())
     (out / "picture.pdf").write_bytes(picture_pdf())
+    if args.native_only:
+        native_control(out, exe, check, run)
+        report(out, checks)
     svg = out / "placed.svg"
     image = '<image preserveAspectRatio="none" '
     svg.write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+        'xmlns:proof="urn:x-proof:document:1" '
         'width="400" height="300" viewBox="0 0 400 300">'
         + image + 'x="0" y="0" width="200" height="100" xlink:href="spot.pdf"/>'
         + image + 'x="0" y="150" width="100" height="50" xlink:href="spot.pdf"/>'
         + image + 'x="250" y="0" width="100" height="100" xlink:href="picture.pdf"/>'
+        + image + 'x="250" y="150" width="100" height="100" proof:pdf-page="2" xlink:href="spot.pdf"/>'
+        + image + 'x="125" y="150" width="50" height="50" proof:pdf-page="2" xlink:href="spot.pdf"/>'
         + "</svg>", encoding="utf-8")
 
     # Where each page shows, in the drawing's units, and what it shows there.
     spots = [("the spot ink", (50, 50), "orange"), ("the CMYK yellow", (150, 75), "yellow"),
              ("the second placement", (25, 175), "orange"), ("the picture's black", (275, 25), "black"),
-             ("the picture's cyan", (325, 25), "cyan"), ("nothing placed", (375, 250), "white")]
+             ("the picture's cyan", (325, 25), "cyan"), ("nothing placed", (375, 250), "white"),
+             ("page 2 black", (275, 175), "black"), ("page 2 cyan", (325, 175), "cyan"),
+             ("page 2 repeated", (137, 162), "black")]
 
     def looks(rgb, what):
         r, g, b = rgb
@@ -184,9 +258,18 @@ def main():
             check(f"{name}: its font", font.get("/BaseFont") == "/Helvetica", str(font.get("/BaseFont")))
             check(f"{name}: the page's box", [float(v) for v in form["/BBox"]] == [0, 0, 200, 100], str(form["/BBox"]))
         pictures = [i for i in images(reader) if i.get("/Width") == 2 and i.get("/Height") == 2]
-        check(f"{name}: the picture's samples as they are", len(pictures) == 1 and pictures[0].get_data() == PICTURE
-              and pictures[0].get("/ColorSpace") == "/DeviceCMYK", str(len(pictures)))
+        check(f"{name}: the pictures' samples as they are", len(pictures) == 2 and all(i.get_data() == PICTURE
+              and i.get("/ColorSpace") == "/DeviceCMYK" for i in pictures), str(len(pictures)))
+        second_forms = [f for f in all_forms if PAGE_TWO_CONTENT in f.get_data()]
+        check(f"{name}: one form for page 2 placed twice", len(second_forms) == 1, str(len(second_forms)))
+        if second_forms:
+            form = second_forms[0]
+            check(f"{name}: page 2's own crop", [float(v) for v in form["/BBox"]] == [10, 20, 110, 120])
+            check(f"{name}: page 2's transparency group", form["/Group"]["/CS"] == "/DeviceCMYK")
+            check(f"{name}: shared font copied once", spot_forms and
+                  form["/Resources"]["/Font"].raw_get("/F1") == spot_forms[0]["/Resources"]["/Font"].raw_get("/F1"))
         check(f"{name}: no stand-in left", not any(b"7700001.000000" in f.get_data() or b"7700002.000000" in f.get_data()
+                                                or b"7700003.000000" in f.get_data()
                                                 for f in all_forms))
         raw = target.read_bytes()
         check(f"{name}: an update appended", raw.count(b"startxref") == 2 and raw.rstrip().endswith(b"%%EOF"))
@@ -211,10 +294,22 @@ def main():
             rgb = shown.getpixel((x, y))
             check(f"canvas: {label}", looks(rgb, what), str(rgb))
 
-    result = dict(checks=checks, passed=all(c["passed"] for c in checks))
-    (out / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-    print(f'{sum(c["passed"] for c in checks)}/{len(checks)} checks passed. {out / "report.json"}', flush=True)
-    raise SystemExit(0 if result["passed"] else 1)
+    # Save/reopen must retain the selected page; a missing selection must fail export.
+    saved = out / "saved.svg"
+    run("save", [exe, svg, f"--export-filename={saved}"])
+    reopened = out / "reopened.png"
+    run("reopen", [exe, saved, f"--export-filename={reopened}", "--export-background=white",
+                   "--export-background-opacity=1"])
+    check("SVG reopen: same selected pages", reopened.is_file() and canvas.is_file() and
+          Image.open(reopened).tobytes() == Image.open(canvas).tobytes())
+    invalid = out / "invalid.svg"
+    invalid.write_text(svg.read_text(encoding="utf-8").replace('proof:pdf-page="2"', 'proof:pdf-page="3"'), encoding="utf-8")
+    failed = out / "invalid.pdf"
+    r = run("invalid-page", [exe, invalid, f"--export-filename={failed}"])
+    check("missing selected page: export fails", r.returncode != 0 and not failed.exists())
+
+    native_control(out, exe, check, run)
+    report(out, checks)
 
 
 if __name__ == "__main__":

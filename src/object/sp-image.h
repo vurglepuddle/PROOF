@@ -53,6 +53,9 @@ public:
     /// PROOF: on a linked picture, the small picture its document keeps of it, as a data:
     /// address. It shows while the file can't be found, as it does in Illustrator.
     static constexpr char const *LINK_PREVIEW_ATTRIBUTE = "proof:link-preview";
+    /// PROOF: the selected page of a linked PDF/.ai, from 1 (absent means the first).
+    static constexpr char const *PDF_PAGE_ATTRIBUTE = "proof:pdf-page";
+    int pdfPage() const; ///< 0 when the stored page number is invalid.
 
     /// PROOF: whether this is a link to a file that can't be found or read.
     bool linkMissing() const;
@@ -90,7 +93,7 @@ public:
 private:
     /// PROOF: `cmyk` is the document's CMYK profile, for a CMYK TIFF (cairo-utils.h).
     static Inkscape::Pixbuf *readImage(gchar const *href, gchar const *absref, gchar const *base, double svgdpi = 0,
-                                       std::shared_ptr<Inkscape::Colors::CMS::Profile> const &cmyk = {});
+                                       std::shared_ptr<Inkscape::Colors::CMS::Profile> const &cmyk = {}, int pdf_page = 1);
     static Inkscape::Pixbuf *getBrokenImage(double width, double height);
 };
 

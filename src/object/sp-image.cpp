@@ -17,6 +17,7 @@
 #include "sp-image.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -260,7 +261,7 @@ void SPImage::update(SPCtx *ctx, unsigned int flags) {
             }
             pb = readImage(Inkscape::getHrefAttribute(*getRepr()).second,
                            getRepr()->attribute("sodipodi:absref"),
-                           document->getDocumentBase(), svgdpi, cmyk);
+                           document->getDocumentBase(), svgdpi, cmyk, pdfPage());
             if (!pb) {
                 missing = true;
                 // PROOF: what the document keeps of the picture stands in for it.
@@ -419,6 +420,7 @@ Inkscape::XML::Node *SPImage::write(Inkscape::XML::Document *xml_doc, Inkscape::
         repr->setAttributeSvgDouble("height", this->height.computed);
     }
     repr->setAttribute("inkscape:svg-dpi", this->getRepr()->attribute("inkscape:svg-dpi"));
+    repr->setAttribute(PDF_PAGE_ATTRIBUTE, getRepr()->attribute(PDF_PAGE_ATTRIBUTE));
 
     this->write_preserveAspectRatio(repr);
 
@@ -509,7 +511,7 @@ gchar* SPImage::description() const {
         }
         pb = readImage(Inkscape::getHrefAttribute(*this->getRepr()).second,
                        this->getRepr()->attribute("sodipodi:absref"),
-                       this->document->getDocumentBase(), svgdpi);
+                       this->document->getDocumentBase(), svgdpi, {}, pdfPage());
 
         if (pb) {
             ret = g_strdup_printf(_("%d &#215; %d: %s"),
@@ -529,6 +531,16 @@ gchar* SPImage::description() const {
 bool SPImage::linkMissing() const
 {
     return missing && href && *href && g_ascii_strncasecmp(href, "data:", 5) != 0;
+}
+
+int SPImage::pdfPage() const
+{
+    auto const *value = getRepr()->attribute(PDF_PAGE_ATTRIBUTE);
+    if (!value) return 1;
+    int page = 0;
+    auto const *end = value + std::strlen(value);
+    auto const result = std::from_chars(value, end, page);
+    return result.ec == std::errc{} && result.ptr == end && page > 0 ? page : 0;
 }
 
 std::string SPImage::linkedFile() const
@@ -640,8 +652,9 @@ Inkscape::DrawingItem* SPImage::show(Inkscape::Drawing &drawing, unsigned int /*
 
 
 Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gchar const *base, double svgdpi,
-                                     std::shared_ptr<Inkscape::Colors::CMS::Profile> const &cmyk)
+                                     std::shared_ptr<Inkscape::Colors::CMS::Profile> const &cmyk, int pdf_page)
 {
+    if (pdf_page < 1) return nullptr;
     Inkscape::Pixbuf *inkpb = nullptr;
 
     char const *filename = href;
@@ -650,7 +663,7 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
         if (g_ascii_strncasecmp(filename, "data:", 5) == 0) {
             /* data URI - embedded image */
             filename += 5;
-            inkpb = Inkscape::Pixbuf::create_from_data_uri(filename, svgdpi, cmyk);
+            inkpb = Inkscape::Pixbuf::create_from_data_uri(filename, svgdpi, cmyk, pdf_page);
         } else {
             auto url = Inkscape::URI::from_href_and_basedir(href, base);
 
@@ -659,7 +672,7 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
                     auto native = url.toNativeFilename();
                     // PROOF: a picture on another computer isn't looked up (io/link-policy.h).
                     if (Inkscape::IO::may_follow_link(native, base)) {
-                        inkpb = Inkscape::Pixbuf::create_from_file(native.c_str(), svgdpi, cmyk);
+                        inkpb = Inkscape::Pixbuf::create_from_file(native.c_str(), svgdpi, cmyk, pdf_page);
                     }
                 } catch (Glib::ConvertError const &e) {
                     g_warning("readImage: %s", e.what());
@@ -671,7 +684,7 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
 #ifndef _WIN32
                 try {
                     auto contents = url.getContents();
-                    inkpb = Inkscape::Pixbuf::create_from_buffer(contents, svgdpi, "", cmyk);
+                    inkpb = Inkscape::Pixbuf::create_from_buffer(contents, svgdpi, "", cmyk, pdf_page);
                 } catch (const Gio::Error &e) {
                     g_warning("URI::getContents failed for '%.100s'", href);
                 }
@@ -695,7 +708,7 @@ Inkscape::Pixbuf *SPImage::readImage(gchar const *href, gchar const *absref, gch
         }
 
         if (Inkscape::IO::may_follow_link(filename, base)) {
-            inkpb = Inkscape::Pixbuf::create_from_file(filename, svgdpi, cmyk);
+            inkpb = Inkscape::Pixbuf::create_from_file(filename, svgdpi, cmyk, pdf_page);
         }
         if (inkpb != nullptr) {
             return inkpb;

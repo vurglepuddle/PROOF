@@ -185,7 +185,8 @@ Pixbuf *Pixbuf::cropTo(const Geom::IntRect &area) const
     return new Pixbuf(cropped);
 }
 
-Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<Colors::CMS::Profile> const &cmyk,
+                                      int pdf_page)
 {
     std::string_view const bytes(reinterpret_cast<char const *>(data), len);
     std::optional<RasterPixels> pixels;
@@ -197,7 +198,7 @@ Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<
 #ifdef WITH_POPPLER
     } else if (Extension::Internal::looks_like_pdf(bytes)) {
         // A placed page (a linked .pdf or .ai), drawn by Poppler.
-        surface = Extension::Internal::placed_page_surface(bytes);
+        surface = Extension::Internal::placed_page_surface(bytes, pdf_page);
 #endif
     }
     if (pixels) surface = raster_surface(*pixels, cmyk);
@@ -208,7 +209,7 @@ Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<
 }
 
 Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
-                                     std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+                                     std::shared_ptr<Colors::CMS::Profile> const &cmyk, int pdf_page)
 {
     Pixbuf *pixbuf = nullptr;
     auto [data, type] = extract_uri_data(uri_data);
@@ -217,9 +218,16 @@ Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
         gsize decoded_len = 0;
         guchar *decoded = g_base64_decode(data, &decoded_len);
         // PROOF: a CMYK TIFF in the document's own CMYK; a Photoshop file.
-        if (auto *own = create_from_own_pixels(decoded, decoded_len, cmyk)) {
+        if (auto *own = create_from_own_pixels(decoded, decoded_len, cmyk, pdf_page)) {
             return own;
         }
+#ifdef WITH_POPPLER
+        // Another loader must not replace an unavailable selected page with page 1.
+        if (Extension::Internal::looks_like_pdf(std::string_view(reinterpret_cast<char const *>(decoded), decoded_len))) {
+            g_free(decoded);
+            return nullptr;
+        }
+#endif
 
         GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
 
@@ -308,7 +316,8 @@ Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
     return pixbuf;
 }
 
-Pixbuf *Pixbuf::create_from_file(std::string const &fn, double svgdpi, std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+Pixbuf *Pixbuf::create_from_file(std::string const &fn, double svgdpi,
+                                std::shared_ptr<Colors::CMS::Profile> const &cmyk, int pdf_page)
 {
     Pixbuf *pb = nullptr;
     // test correctness of filename
@@ -334,7 +343,7 @@ Pixbuf *Pixbuf::create_from_file(std::string const &fn, double svgdpi, std::shar
             return nullptr;
         }
 
-        pb = Pixbuf::create_from_buffer(std::move(data), len, svgdpi, fn, cmyk);
+        pb = Pixbuf::create_from_buffer(std::move(data), len, svgdpi, fn, cmyk, pdf_page);
 
         if (pb) {
             pb->_mod_time = stdir.st_mtime;
@@ -386,25 +395,31 @@ Geom::Affine Pixbuf::get_embedded_orientation(GdkPixbuf *buf)
 }
 
 Pixbuf *Pixbuf::create_from_buffer(std::string const &buffer, double svgdpi, std::string const &fn,
-                                   std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+                                   std::shared_ptr<Colors::CMS::Profile> const &cmyk, int pdf_page)
 {
 #if GLIB_CHECK_VERSION(2,67,3)
     auto datacopy = (gchar *)g_memdup2(buffer.data(), buffer.size());
 #else
     auto datacopy = (gchar *)g_memdup(buffer.data(), buffer.size());
 #endif
-    return Pixbuf::create_from_buffer(std::move(datacopy), buffer.size(), svgdpi, fn, cmyk);
+    return Pixbuf::create_from_buffer(std::move(datacopy), buffer.size(), svgdpi, fn, cmyk, pdf_page);
 }
 
 Pixbuf *Pixbuf::create_from_buffer(gchar *&&data, gsize len, double svgdpi, std::string const &fn,
-                                   std::shared_ptr<Colors::CMS::Profile> const &cmyk)
+                                   std::shared_ptr<Colors::CMS::Profile> const &cmyk, int pdf_page)
 {
     // PROOF: a CMYK TIFF in the document's own CMYK, with its transparency; a Photoshop file's
     // merged image.
-    if (auto *own = create_from_own_pixels(reinterpret_cast<guchar *>(data), len, cmyk)) {
+    if (auto *own = create_from_own_pixels(reinterpret_cast<guchar *>(data), len, cmyk, pdf_page)) {
         own->_path = fn;
         return own;
     }
+#ifdef WITH_POPPLER
+    if (Extension::Internal::looks_like_pdf(std::string_view(data, len))) {
+        g_free(data);
+        return nullptr;
+    }
+#endif
     bool has_ori = false;
     Pixbuf *pb = nullptr;
     GError *error = nullptr;
