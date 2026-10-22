@@ -122,7 +122,10 @@ K-free rule.
 
 Modern AI writes the newer method plus a Classic alternate. Illustrator 29.2.1
 opens that alternate as editable Classic gradients; saving there loses Oklab.
-Opening PROOF's new output in Illustrator 30.6 remains to be qualified.
+Opening PROOF's new output in Illustrator 30.6 remains to be qualified. A small
+RGB/CMYK pack has been prepared, with three Oklab gradients (linear fill, radial
+fill and stroke) and one Classic comparison per document. PROOF readback passes;
+the collaborator's newer-Illustrator return is pending.
 Unknown extra settings, Perceptual spot-ink gradients and Perceptual output
 inside opacity masks refuse safely; the extra setting is not labelled Dither
 without a confirming control.
@@ -136,12 +139,14 @@ followed by an overprinted DeviceRGB shading on an explicitly RGB transparency
 page. A disposable PDF preview gives that second shading Multiply appearance;
 the original file and its separations are untouched. Resource/state dictionaries
 are copied per page, leaving soft-mask Forms and other pages unchanged. SVG
-import retains both editable ramps and their compositing. DeviceGray soft-mask
+import retains both editable ramps and their compositing. Ordinary image XObjects
+elsewhere on the page are supported; a state also used to paint an image is left
+unchanged. DeviceGray soft-mask
 paint remains numeric coverage rather than being converted to print grey.
 
 This is deliberately limited: at most 100 MB input, 256 pages, 8 MB of content
 per page, complete known graphics states and exactly two shadings per marked
-pair. Pages containing XObject calls or inline images, nested marked paints,
+pair. Pages containing Form XObject calls or inline images, nested marked paints,
 states shared with other artwork, other blend/overprint modes and other colour
 space combinations retain existing handling. The optional Cairo-to-SVG importer
 is unchanged: its compositing-filter bounds need separate work. Embedded foreign

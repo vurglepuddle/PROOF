@@ -1069,7 +1069,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     view.emplace(doc);
     std::size_t worst = 0;
     if (!diagnostic_directory.empty()) g_mkdir_with_parents(diagnostic_directory.c_str(), 0700);
-    PageStore store(path, cache, page_preview ? "-rgb-overprint-1" : "");
+    PageStore store(path, cache, page_preview ? "-rgb-overprint-2" : "");
     double slowest_once = 0; // The longest a page took that was weighed once, being slow.
     for (std::size_t i = 0; i < compared; ++i) {
         auto *page = pdf->getCatalog()->getPage(int(i) + 1);

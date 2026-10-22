@@ -344,7 +344,7 @@ protected:
 std::string fixture(std::string const &native, std::vector<std::string> const &contents,
                     std::string const &boxes = "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]",
                     std::string const &font = {}, std::string const &profile = {}, std::string const &shading = {},
-                    std::string const &extra_resources = {})
+                    std::string const &extra_resources = {}, std::string const &xobject = {})
 {
     std::map<int, std::string> objects;
     objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -369,6 +369,11 @@ std::string fixture(std::string const &native, std::vector<std::string> const &c
         int const id = next++;
         objects[id] = shading;
         resources += " /Shading << /S1 " + std::to_string(id) + " 0 R >>";
+    }
+    if (!xobject.empty()) {
+        int const id = next++;
+        objects[id] = xobject;
+        resources += " /XObject << /Image " + std::to_string(id) + " 0 R >>";
     }
     resources = "<<" + resources + extra_resources + " >>";
     for (std::size_t i = 0; i < contents.size(); ++i) {
@@ -5331,6 +5336,31 @@ TEST_F(AiNativeImportTest, RgbOverprintPreviewOnlyChangesExclusivelyMarkedPairs)
     resources.replace(at, 6, "/OPM 0");
     EXPECT_FALSE(preview(overprint_pair, overprint_boxes, resources));
     EXPECT_FALSE(preview(overprint_pair + " EMC")); // Unbalanced marked content cannot change a state.
+}
+
+TEST_F(AiNativeImportTest, RgbOverprintOnAPageWithAnImageKeepsItsPixelsAndRejectsInheritedForms)
+{
+    std::string const image = "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 "
+                              "/BitsPerComponent 8 /ColorSpace /DeviceRGB /Length 3 >>\nstream\n" +
+                              std::string("\x33\x66\xcc", 3) + "\nendstream";
+    std::string const picture = " q /Base gs 8 0 0 8 120 20 cm /Image Do Q";
+    auto const native = records(layer("0.1 0.4 0.2 Xa\n" + rect + "0.2 0.4 0.8 Xa\n" + "120 20 m 120 28 L 128 28 L 128 20 L h f\n"), {}, false);
+    auto const path = fixture(native, {overprint_pair + picture}, overprint_boxes, {}, {}, {}, overprint_resources(), image);
+    std::string reason;
+    auto accepted = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(accepted) << reason;
+    EXPECT_LT(accepted->differences[0].colour, 0.001);
+    EXPECT_LT(accepted->differences[0].lightness, 0.001);
+    auto preview = [&](std::string const &content, std::string const &object) {
+        auto const file = fixture({}, {content}, overprint_boxes, {}, {}, {}, overprint_resources(), object);
+        auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(file.c_str());
+        return Extension::Internal::rgb_overprint_preview(*pdf);
+    };
+    EXPECT_TRUE(preview(picture + overprint_pair, image)); // Picture before the first pair too.
+    EXPECT_FALSE(preview(overprint_pair + " q /Ink gs /Image Do Q", image)); // The changed state also paints pixels.
+    EXPECT_FALSE(preview("/MultiChannelPaint BMC q /Base gs /Spot sh /Ink gs /Process sh /Image Do Q EMC", image));
+    EXPECT_FALSE(preview(overprint_pair + picture,
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 11 >>\nstream\n/Ink gs 0 g\nendstream"));
 }
 
 TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)

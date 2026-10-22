@@ -84,7 +84,8 @@ bool full_state(Object const &s, bool overprint)
 }
 
 /// Resource names that are used ONLY as the second shading of a supported marked pair.
-/// Never change a shared state used by other artwork, inline images or inherited XObjects.
+/// Images cannot look up a page's graphics-state resources; Forms can inherit them.
+/// Never change a state that also paints an image or other unmarked artwork.
 std::set<std::string> pair_states(Page &page, XRef *xref)
 {
     auto group = page.getGroup();
@@ -97,6 +98,7 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
     if (!resources) return {};
     auto states = resources->lookup("ExtGState");
     auto shadings = resources->lookup("Shading");
+    auto xobjects = resources->lookup("XObject");
     if (!states.isDict() || !shadings.isDict()) return {};
     struct Pair { bool valid = true; unsigned shades = 0; std::string second; };
     std::vector<Pair> pairs;
@@ -133,7 +135,7 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
         }
         std::string_view op(obj.getCmd());
         int const in = active();
-        if (op == "BI" || op == "Do") return {}; // No inherited resource/state surprises.
+        if (op == "BI") return {}; // Inline image bytes require their own parser path.
         if (op == "BDC" || op == "BMC") {
             if (args.empty() || !args[0].isName() || marks.size() == 256) return {};
             if (in >= 0) pairs[in].valid = false; // Nested marked paints need separate qualification.
@@ -161,6 +163,13 @@ std::set<std::string> pair_states(Page &page, XRef *xref)
                 auto full = states.dictLookup(current.c_str());
                 if (!full_state(full, false) && !full_state(full, true)) return {};
                 uses[current].push_back(in);
+            } else if (op == "Do") {
+                if (args.size() != 1 || !args[0].isName() || !xobjects.isDict()) return {};
+                auto object = xobjects.dictLookup(args[0].getName());
+                // Forms (including those with inherited resources) remain outside this subset.
+                // An Image carries pixel data and cannot execute a nested gs operator.
+                if (!object.isStream() || !object.getStream()->getDict()->lookup("Subtype").isName("Image")) return {};
+                if (!current.empty()) uses[current].push_back(-1);
             } else if (op == "sh" && in >= 0) {
                 auto &pair = pairs[in];
                 if (args.size() != 1 || !args[0].isName()) return {};

@@ -2641,3 +2641,32 @@ units cover the independent PDF comparison, wrong-native-art rejection,
 unsupported/shared-state guards, finer-thread parity, caches and existing
 foreign-PDF refusal/CMYK paint controls. One affected lite case is unchanged. Final checks: 12 targeted units, 92
 synthetic PDF checks and 19 existing-Illustrator-control checks, all passing.
+
+## Pictures on the RGB overprint page; newer-Illustrator pack (2026-10-22)
+
+The preview now permits ordinary Image XObjects outside the marked pairs. The
+previous blanket Do refusal also excluded pages with unrelated photographs.
+Image dictionaries contain pixels and cannot execute nested gs operators; Form
+XObjects can inherit page resources and remain outside the current subset.
+A state also used by an image remains excluded, including when it escapes a
+marked section. Inline images and images within a marked paint remain outside
+the qualified pair. The reference-cache suffix is now rgb-overprint-2, only on
+corrected documents; ordinary heavy-page cache keys are unchanged.
+
+Five targeted import/cache/thread tests pass. Three small picture controls pass
+57 checks: ordinary/masked ramps and a shared-state refusal, image colour,
+editable vector gradients, unchanged source bytes and independent PDF output.
+The Form control also retains its refusal. No artwork corpus or lite rerun.
+The smoke accepts --case and --route for exact selections; its image structural
+check distinguishes the original picture/alpha plane from gradient rasterization.
+Evidence: artifacts/rgb-overprint-pictures-20261022/.
+
+A separate two-document Oklab qualification pack was generated with PROOF
+209a170c14 for the collaborator's Illustrator 30.6 or newer. Each has a Classic
+comparison, Perceptual linear/radial fills and a Perceptual stroke, off-centre
+midpoints and a fading radial stop. The CMYK one embeds the installed SWOP
+profile byte for byte; its original editable channel values are listed. Both
+read back natively with three Oklab methods and original stop counts (2, 3, 2).
+This is preparation, not newer-Illustrator qualification; that return remains
+pending. Unknown settings, Perceptual
+named inks and other unsupported forms retain their existing refusals.

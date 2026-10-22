@@ -25,7 +25,7 @@ def array(values):
     return ArrayObject([BooleanObject(v) if isinstance(v, bool) else FloatObject(v) for v in values])
 
 
-def control(path, masked=False, marked=True, shared=False):
+def control(path, masked=False, marked=True, shared=False, picture=False, picture_shared=False, form=False):
     writer = PdfWriter()
     page = writer.add_blank_page(width=200, height=100)
     page[NameObject('/Group')] = dictionary(S=NameObject('/Transparency'), CS=NameObject('/DeviceRGB'),
@@ -47,21 +47,37 @@ def control(path, masked=False, marked=True, shared=False):
                 Coords=array(coords), Extend=array([True, True]), Function=ramp)
     mask = NameObject('/None')
     if masked:
-        form = DecodedStreamObject()
-        form.set_data(b'0.5 g 0 0 200 100 re f')
-        form.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Form'),
+        mask_form = DecodedStreamObject()
+        mask_form.set_data(b'0.5 g 0 0 200 100 re f')
+        mask_form.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Form'),
                                BBox=array([0, 0, 200, 100]), Resources=DictionaryObject(),
                                Group=dictionary(S=NameObject('/Transparency'), CS=NameObject('/DeviceGray'))))
-        mask = dictionary(S=NameObject('/Luminosity'), G=writer._add_object(form))
+        mask = dictionary(S=NameObject('/Luminosity'), G=writer._add_object(mask_form))
 
     def state(op):
         return dictionary(Type=NameObject('/ExtGState'), BM=NameObject('/Normal'),
                           CA=FloatObject(1), ca=FloatObject(1), OPM=NumberObject(1),
                           OP=BooleanObject(op), op=BooleanObject(op), SMask=mask)
 
-    page[NameObject('/Resources')] = dictionary(
-        Shading=shaders, ExtGState=dictionary(Base=state(False), Ink=state(True)))
+    states = dictionary(Base=state(False), Ink=state(True))
+    page[NameObject('/Resources')] = dictionary(Shading=shaders, ExtGState=states)
     content = ''
+    if picture:
+        object = DecodedStreamObject()
+        if form:
+            object.set_data(b'0.8 0.2 0.5 rg 0 0 1 1 re f')
+            object.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Form'),
+                                     BBox=array([0, 0, 1, 1])))
+        else:
+            object.set_data(bytes([204, 51, 128]))
+            object.update(dictionary(Type=NameObject('/XObject'), Subtype=NameObject('/Image'),
+                                     Width=NumberObject(1), Height=NumberObject(1),
+                                     BitsPerComponent=NumberObject(8), ColorSpace=NameObject('/DeviceRGB')))
+        page['/Resources'][NameObject('/XObject')] = dictionary(Picture=writer._add_object(object))
+        picture_state = state(False)
+        picture_state[NameObject('/SMask')] = NameObject('/None')
+        states[NameObject('/Picture')] = picture_state
+        content = f'q /{"Ink" if picture_shared else "Picture"} gs 20 0 0 8 10 86 cm /Picture Do Q\n'
     for name, x in [('L', 10), ('R', 110)]:
         content += '/MultiChannelPaint << >> BDC\n' if marked else ''
         content += f'q {x} 20 80 60 re W n q /Base gs /{name}S sh Q q /Ink gs /{name}P sh Q Q\n'
@@ -80,7 +96,14 @@ def main():
     parser.add_argument('--dll-dir', type=Path)
     parser.add_argument('--data-dir', type=Path)
     parser.add_argument('--pdftoppm', required=True, type=Path)
+    cases = {'pair': {}, 'mask': dict(masked=True), 'unmarked': dict(marked=False),
+             'shared': dict(shared=True), 'picture': dict(picture=True),
+             'picture-mask': dict(picture=True, masked=True),
+             'picture-shared': dict(picture=True, picture_shared=True),
+             'form': dict(picture=True, form=True)}
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--case', action='append', choices=list(cases))
+    parser.add_argument('--route', action='append', choices=['internal', 'cairo'])
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -104,12 +127,17 @@ def main():
         (out / (label + '.log')).write_bytes(result.stdout + result.stderr)
         check(label, result.returncode == 0 and target.exists(), str(result.returncode))
 
-    for case, masked, marked, shared in [('pair', False, True, False), ('mask', True, True, False),
-                                         ('unmarked', False, False, False), ('shared', False, True, True)]:
+    for case in args.case or list(cases):
+        options = cases[case]
+        masked = options.get('masked', False)
+        marked = options.get('marked', True)
+        picture = options.get('picture', False)
+        form = options.get('form', False)
+        supported = marked and not any(options.get(k, False) for k in ('shared', 'picture_shared', 'form'))
         source = out / (case + '.pdf')
-        control(source, masked, marked, shared)
+        control(source, **options)
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        for route in ('internal', 'cairo'):
+        for route in args.route or ['internal', 'cairo']:
             label = case + '-' + route
             svg, png, pdf = [out / (label + suffix) for suffix in ('.svg', '.png', '-output.pdf')]
             run(label + '-import', source, svg, *(['--pdf-poppler'] if route == 'cairo' else []))
@@ -119,7 +147,7 @@ def main():
                 ink = [1 - t * (1 - c) for c in (0.2, 0.8, 0.4)]
                 process = [c + t * (1 - c) for c in (0.2, 0.3, 0.9)]
                 alpha = 0.5 if masked else 1
-                if marked and not shared and route == 'internal':
+                if supported and route == 'internal':
                     expected = [(1 - alpha + alpha * a) * (1 - alpha + alpha * b) for a, b in zip(ink, process)]
                 else:
                     expected = [(1 - alpha) * (1 - alpha + alpha * a) + alpha * b for a, b in zip(ink, process)]
@@ -129,26 +157,37 @@ def main():
             root = ET.parse(svg).getroot()
             if route == 'internal':
                 check(label + ': editable vector gradients', len(list(root.iter('{http://www.w3.org/2000/svg}linearGradient'))) >= 2)
-                check(label + ': no raster fallback', not list(root.iter('{http://www.w3.org/2000/svg}image')))
+                image_count = int(picture and not form)
+                check(label + ': only the original raster image',
+                      len(list(root.iter('{http://www.w3.org/2000/svg}image'))) == image_count)
+                if picture:
+                    actual = im.getpixel((20, 10))
+                    check(label + ': placed picture keeps its colour',
+                          max(abs(a - b) for a, b in zip(actual, (204, 51, 128))) <= 2, str(actual))
                 blends = [n for n in root.iter() if 'mix-blend-mode:multiply' in n.get('style', '')]
-                check(label + ': multiply only on supported pairs', len(blends) == (2 if marked and not shared else 0))
+                check(label + ': multiply only on supported pairs', len(blends) == (2 if supported else 0))
                 run(label + '-pdf', svg, pdf)
-                def has_image(obj, seen):
+                def painted_images(obj, seen):
                     obj = obj.get_object() if hasattr(obj, 'get_object') else obj
                     if not isinstance(obj, (dict, list)) or id(obj) in seen:
-                        return False
+                        return []
                     seen.add(id(obj))
                     if isinstance(obj, dict):
-                        return obj.get('/Subtype') == '/Image' or any(has_image(v, seen) for v in obj.values())
-                    return any(has_image(v, seen) for v in obj)
-                check(label + ': PDF remains vector', not has_image(PdfReader(pdf).pages[0]['/Resources'], set()))
+                        if obj.get('/Subtype') == '/Image':
+                            # An image's own alpha plane is part of that picture, not another
+                            # painted object. Gradient rasterization would have larger bounds.
+                            return [(int(obj['/Width']), int(obj['/Height']))]
+                        return sum((painted_images(v, seen) for v in obj.values()), [])
+                    return sum((painted_images(v, seen) for v in obj), [])
+                check(label + ': PDF keeps vector gradients and original picture',
+                      painted_images(PdfReader(pdf).pages[0]['/Resources'], set()) == [(1, 1)] * image_count)
                 prefix = out / (label + '-pdf-drawn')
                 result = subprocess.run([str(args.pdftoppm.resolve()), '-r', '72', '-singlefile', '-png',
                                          str(pdf), str(prefix)], env=env, capture_output=True, timeout=30)
                 (out / (label + '-pdf-drawn.log')).write_bytes(result.stdout + result.stderr)
                 check(label + ': independent PDF render', result.returncode == 0)
                 printed = Image.open(prefix.with_suffix('.png')).convert('RGB')
-                for x, y in [(30, 50), (70, 50), (160, 50), (180, 50)]:
+                for x, y in [(30, 50), (70, 50), (160, 50), (180, 50)] + ([(20, 90)] if picture else []):
                     a, b = im.getpixel((x, 100 - y)), printed.getpixel((x, 100 - y))
                     check(f'{label}: PDF agrees with canvas at {x},{y}',
                           max(abs(v - w) for v, w in zip(a, b)) <= 5, str((a, b)))

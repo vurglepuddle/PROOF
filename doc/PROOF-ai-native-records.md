@@ -2498,3 +2498,12 @@ entries remain usable. Default editable PDF import uses the same correction.
 The Illustrator-saved RGB mixed-gradient control now returns natively.
 [Current scope](PROOF-ai-interchange.md#rgb-pdf-overprint) and
 [format/qualification](PROOF-ai-interchange-history.md#rgb-pdf-overprint-2026-10-22).
+
+### Ordinary pictures beside the RGB overprint pairs (2026-10-22)
+
+Image XObject calls outside the marked pairs no longer exclude a page from the
+preview. Images cannot execute a nested graphics-state resource lookup; Forms
+can, and remain excluded. Any changed state also used to paint an image remains
+ineligible. The cache version changes only for corrected documents. Five affected
+import/cache/thread tests and 57 picture checks pass, including masks, original
+image colour, editable gradients and independent PDF output. No corpus run.
