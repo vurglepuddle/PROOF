@@ -1595,12 +1595,30 @@ std::string Builder::gradient_vector(int index)
                 for (int k = 0; k < 4; ++k) mid.color.v[k] = pa.color.v[k] + (pb.color.v[k] - pa.color.v[k]) * v;
                 add_stop(vec, offset, &mid, shown(mid), opacity, true);
             } else {
-                // Different models: blend what they show.
-                auto ra = ca.converted(Type::RGB), rb = cb.converted(Type::RGB);
-                if (!ra || !rb) continue;
-                std::vector<double> rgb(3);
-                for (int k = 0; k < 3; ++k) rgb[k] = (*ra)[k] + ((*rb)[k] - (*ra)[k]) * v;
-                add_stop(vec, offset, nullptr, Colors::Color(Type::RGB, std::move(rgb)), opacity, true);
+                // Different models (a spot ink and a process colour, RGB and CMYK): blend what they
+                // show in the document's colour mode. Illustrator 29.2.1 blends process colours of
+                // two models so (within 1 level in an RGB document), and its ramp of the owner's one
+                // ink-to-RGB gradient follows one curve in R, G and B; an ink beside a process
+                // colour it draws overprinting the process ramp, lighter mid-ramp than this
+                // (PROOF-ai-interchange.md, "Gradient stops of different colour models").
+                auto const mode = _ai.cmyk ? Type::CMYK : Type::RGB;
+                auto const values = [&](Colors::Color const &c) -> std::optional<std::vector<double>> {
+                    auto const space = c.getSpace();
+                    if (space && space->getComponentType() == mode) return c.getValues();
+                    // Into the document's CMYK profile, as an RGB end is read there (interpret).
+                    auto converted = mode == Type::CMYK && _cmyk_space ? c.converted(_cmyk_space) : c.converted(mode);
+                    if (!converted) return {};
+                    return converted->getValues();
+                };
+                auto ra = values(ca), rb = values(cb);
+                std::size_t const count = mode == Type::CMYK ? 4 : 3;
+                if (!ra || !rb || ra->size() < count || rb->size() < count) continue;
+                std::vector<double> mix(count);
+                for (std::size_t k = 0; k < count; ++k) mix[k] = (*ra)[k] + ((*rb)[k] - (*ra)[k]) * v;
+                auto const sample = mode == Type::CMYK ? (_cmyk_space ? Colors::Color(_cmyk_space, std::move(mix))
+                                                                      : Colors::Color(Type::CMYK, std::move(mix)))
+                                                       : Colors::Color(Type::RGB, std::move(mix));
+                add_stop(vec, offset, nullptr, sample, opacity, true);
             }
         }
     }

@@ -973,6 +973,44 @@ TEST_F(AiNativeImportTest, GradientMidpointUsesPowerCurve)
     }
 }
 
+TEST_F(AiNativeImportTest, MidpointBetweenModelsBlendsInTheDocumentsMode)
+{
+    // Cyan in CMYK at 0, red in RGB at 100, the midpoint at 80. Illustrator blends stops of
+    // different models in the document's mode: its ramp of the owner's one such gradient, in an
+    // RGB document, follows one curve in R, G and B.
+    std::string setup = "%AI5_BeginGradient: (G)\n(G) 0 2 Bd\n[\n0 1 1 0 1 0 0 2 50 100 Bs\n1 0 0 0 1 80 0 Bs\nBD\n"
+                        "%AI5_EndGradient\n";
+    double const n = std::log(0.5) / std::log(0.8);
+    for (bool cmyk : {true, false}) {
+        SCOPED_TRACE(cmyk ? "CMYK document" : "RGB document");
+        auto b = make(records(layer("0 g\n10 20 m 90 20 L 90 60 L 10 60 L h\nBb\n0 (G) 10 20 0 80 1 0 0 1 0 0 Bg\nf\n0 BB\n"),
+                              setup, cmyk));
+        ASSERT_TRUE(b);
+        auto vectors = elements(b->document->getDefs()->getRepr(), "svg:linearGradient");
+        ASSERT_FALSE(vectors.empty());
+        auto stops = elements(vectors[0], "svg:stop");
+        ASSERT_GT(stops.size(), 3u);
+        auto colour_of = [&](XML::Node *s) { return b->document->getObjectByRepr(s)->style->stop_color.getColor(); };
+        auto const from = colour_of(stops.front()), to = colour_of(stops.back());
+        auto const mode = cmyk ? Type::CMYK : Type::RGB;
+        auto values = [&](Colors::Color const &c) {
+            return c.getSpace()->getComponentType() == mode ? c.getValues() : c.converted(mode)->getValues();
+        };
+        auto const a = values(from), z = values(to);
+        int samples = 0;
+        for (auto s : stops) {
+            if (attr(s, "proof:midpoint-sample") != "true") continue;
+            ++samples;
+            auto const u = g_ascii_strtod(s->attribute("offset"), nullptr);
+            auto const colour = colour_of(s);
+            ASSERT_EQ(colour.getSpace()->getComponentType(), mode);
+            double const v = std::pow(u, n);
+            for (std::size_t k = 0; k < (cmyk ? 4u : 3u); ++k) EXPECT_NEAR(colour[k], a[k] + (z[k] - a[k]) * v, 0.005);
+        }
+        EXPECT_GT(samples, 2);
+    }
+}
+
 TEST_F(AiNativeImportTest, GradientMatricesPlaceTheWholeRamp)
 {
     // As Illustrator writes them since CS4: Bg's values relative to the object's bounds, and
@@ -6012,9 +6050,13 @@ TEST_F(AiNativeImportTest, WrittenRecordsKeepInksDefinedInLabAndRgb)
     auto const written = AN::write_records(doc.get());
     ASSERT_TRUE(written.refused.empty()) << written.refused.front();
     auto const &records = written.records;
-    // Every name, then CMYK inks by their CMYK and RGB and Lab inks by their RGB, that list last.
-    EXPECT_NE(records.find("%%DocumentCustomColors: (Book Red)\n%%+ (Press Orange)\n%%+ (Screen Green)\n"),
+    // Every name, then CMYK inks by their CMYK and RGB and Lab inks by their RGB, that list last;
+    // all after the format, as Illustrator writes them. Before it, a `%%+` line left Illustrator
+    // 29.2.1 misreading every radial gradient's Bm.
+    EXPECT_NE(records.find("%AI3_ColorUsage: Color\n%%DocumentCustomColors: (Book Red)\n%%+ (Press Orange)\n"
+                           "%%+ (Screen Green)\n"),
               std::string::npos);
+    EXPECT_LT(records.find("%AI5_FileFormat 14.0\n"), records.find("%%DocumentCustomColors:"));
     auto const cmyk_list = records.find("%%CMYKCustomColor: 0 0.6 1 0 (Press Orange)\n%%RGBCustomColor: ");
     ASSERT_NE(cmyk_list, std::string::npos);
     auto const rgb_list = records.find("%%RGBCustomColor: ");
