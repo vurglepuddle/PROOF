@@ -2583,5 +2583,13 @@ Qualification: 17 targeted picture/import checks, 69 placed-page checks
 The two selected lite cases retained their outcomes. The real `e1143523ac`
 requires pages 1-33 of its linked PDF, but the supplied companion has five
 pages: it now correctly refuses missing page 6. Its native qualification
-awaits the matching companion; no new census or native-acceptance gain is
-claimed.
+is not a remaining page-selection implementation task: the owner identifies
+it as a damaged catalogue revision. The related 3.601 GB source already in
+the excluded pack has 30 pages; its later 30-page PDF, newly supplied by the
+owner, matches a copy already present. The owner clarifies that this is the
+production PDF without covers and the interior artwork should otherwise
+match. Its page correspondence to the older 33 placements remains unverified;
+no interior-artwork difference is inferred from the count or saved dates.
+The older project's existing fallback
+remains; repairing its artwork is separate. No new census or native-acceptance
+gain is claimed, and the large file was not imported or rendered.

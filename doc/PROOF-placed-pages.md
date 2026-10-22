@@ -143,6 +143,17 @@ expected outcomes. No full lite/corpus run or new census was made.
 The collaborator's `e1143523ac` now gets past page 2 but correctly falls back
 at page 6. Its decoded records contain 33 placements of pages 1 through 33
 of the same linked PDF; the supplied companion (`3da18b676b`) has five pages.
-All 21 copied inputs remain hash-identical. The owner has asked the
-collaborator to find the matching 33-page companion. Native qualification of
-that artwork remains pending that input; it is not counted as newly native.
+All 21 copied inputs remained hash-identical in that check. The owner then
+identified the 33-page project as a damaged version of the same catalogue.
+The related large source, `e03227b6e7` (3.601 GB), was already in the excluded
+review pack: its PDF has 30 pages, saved 2021-12-20; the damaged project was
+saved 2021-12-10. The owner supplied a 62.1 MB, 30-page PDF, `179214c23a`,
+byte-identical to the PDF already in the copied pack and sharing Adobe
+document lineage with the large source. The owner clarifies that the 30 pages
+are production files excluding the covers; the interior artwork should
+otherwise be identical. Cover content and the mapping of production pages to
+the older 33 placements have not been matched. Count and saved dates alone
+do not establish an interior-artwork difference. Keep the existing fallback, with any
+artwork repair separate; no new native acceptance is claimed. The large
+copy was inspected through PDF metadata only and remains outside routine
+checks. No asset was automatically substituted or renumbered.
