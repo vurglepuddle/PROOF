@@ -11,14 +11,17 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <set>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -103,6 +106,9 @@ constexpr double NOTABLE = 0.002;
 /// changes only the figure reported, and one page of 18 placements took Poppler about 100 s at
 /// any size (PROOF-ai-native-records.md, "Pages slow to draw: weighed once and kept").
 constexpr double SLOW_PAGE = 10.0;
+/// A page's first drawing runs this long alone; then its finer drawing starts beside it
+/// (FinerBeside), the page being heavy.
+constexpr double FINER_HEAD_START = 3.0;
 /// Files whose slow pages an ordinary opening keeps; the folder least lately written goes first.
 constexpr std::size_t KEPT_FILES = 64;
 /// What a kept page depends on beside the file, Poppler and Cairo: raise it when draw_page or
@@ -286,6 +292,17 @@ double slow_page()
         if (std::isfinite(seconds) && seconds >= 0) return seconds;
     }
     return SLOW_PAGE;
+}
+
+/// FINER_HEAD_START, or the test suite's own (PROOF_AI_FINER_HEAD_START: 0 starts every page's
+/// finer drawing beside its first).
+double finer_head_start()
+{
+    if (auto const *value = g_getenv("PROOF_AI_FINER_HEAD_START")) {
+        double const seconds = g_ascii_strtod(value, nullptr);
+        if (std::isfinite(seconds) && seconds >= 0) return seconds;
+    }
+    return FINER_HEAD_START;
 }
 
 /// The SHA-256 of a file's bytes, read a megabyte at a time; empty when it can't be read.
@@ -617,6 +634,85 @@ struct Unref
 {
     void operator()(gpointer p) const { g_object_unref(p); }
 };
+
+/**
+ * PROOF: a page's finer drawing, started on a thread of its own once the first drawing has run
+ * FINER_HEAD_START seconds. A page that heavy may well need it (the collaborator's 2.7 m page
+ * fails at first sight and passes finer), and Poppler can't draw a page faster than its pictures
+ * decode, at any size: the two drawings then take the time of one. The thread opens the file
+ * in a Poppler document of its own; nothing is shared with the first drawing. A page that
+ * draws within the head start never starts it. A page that doesn't need it waits only for
+ * the rest of it, begun seconds after the first.
+ */
+class FinerBeside
+{
+public:
+    FinerBeside(std::string uri, int index, PDFRectangle crop, PDFRectangle trim, double scale, int w, int h)
+    {
+        _thread = std::thread([this, uri = std::move(uri), index, crop, trim, scale, w, h] {
+            {
+                std::unique_lock lock(_mutex);
+                if (_cv.wait_for(lock, std::chrono::duration<double>(finer_head_start()), [this] { return _first_done; })) {
+                    return;
+                }
+                _started = true;
+            }
+            auto const start = std::chrono::steady_clock::now();
+            std::optional<Picture> picture;
+            GError *error = nullptr;
+            std::unique_ptr<PopplerDocument, Unref> document(poppler_document_new_from_file(uri.c_str(), nullptr, &error));
+            if (error) g_error_free(error);
+            if (document) {
+                std::unique_ptr<PopplerPage, Unref> page(poppler_document_get_page(document.get(), index));
+                if (page) {
+                    picture = averaged(draw_page(page.get(), crop, trim, scale * FINER, w * FINER, h * FINER), FINER);
+                }
+            }
+            double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            std::lock_guard lock(_mutex);
+            _picture = std::move(picture);
+            _seconds = seconds;
+            _finished = true;
+            _cv.notify_all();
+        });
+    }
+
+    FinerBeside(FinerBeside const &) = delete;
+    FinerBeside &operator=(FinerBeside const &) = delete;
+
+    ~FinerBeside()
+    {
+        first_done();
+        if (_thread.joinable()) _thread.join();
+    }
+
+    /// The first drawing is done: a finer one not yet started never starts.
+    void first_done()
+    {
+        std::lock_guard lock(_mutex);
+        _first_done = true;
+        _cv.notify_all();
+    }
+
+    /// The finer drawing and the seconds it took, waited for if it was started; nothing if it
+    /// wasn't (call first_done before).
+    std::optional<std::pair<Picture, double>> take()
+    {
+        std::unique_lock lock(_mutex);
+        if (!_started) return {};
+        _cv.wait(lock, [this] { return _finished; });
+        if (!_picture) return {};
+        return std::pair(std::move(*_picture), _seconds);
+    }
+
+private:
+    std::thread _thread;
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    bool _first_done = false, _started = false, _finished = false;
+    std::optional<Picture> _picture;
+    double _seconds = 0;
+};
 #endif
 
 std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &reason, AiKeepDiffering keep,
@@ -906,8 +1002,10 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     gchar *uri = g_filename_to_uri(absolute, nullptr, &gerror);
     g_free(absolute);
     std::unique_ptr<PopplerDocument, Unref> pages;
+    std::string page_uri; // For a heavy page's finer drawing, in a document of its own.
     if (uri) {
         pages.reset(poppler_document_new_from_file(uri, nullptr, &gerror));
+        page_uri = uri;
         g_free(uri);
     }
     if (gerror) {
@@ -1003,12 +1101,16 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
         };
         Picture page_picture;
         double page_seconds = 0;
+        std::optional<FinerBeside> beside;
         if (auto kept = store.find(page_name, w, h)) {
             std::tie(page_picture, page_seconds) = std::move(*kept);
             if (cache) ++cache->references_reused;
             ++result.pages_reused;
         } else {
+            // A heavy page's finer drawing starts beside the first (FinerBeside).
+            if (!page_uri.empty()) beside.emplace(page_uri, int(i), crop, trim, scale, w, h);
             page_picture = draw_timed(1, page_seconds);
+            if (beside) beside->first_done();
             store.keep(page_name, page_picture, page_seconds);
         }
         if (!unweighed.empty()) {
@@ -1058,6 +1160,9 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             if (auto kept = store.find(fine_name, w, h)) {
                 fine_page = std::move(kept->first);
                 ++result.pages_reused;
+            } else if (auto drawn_beside = beside ? beside->take() : std::nullopt) {
+                fine_page = std::move(drawn_beside->first);
+                store.keep(fine_name, fine_page, drawn_beside->second);
             } else {
                 double fine_seconds = 0;
                 fine_page = draw_timed(FINER, fine_seconds);

@@ -5288,6 +5288,56 @@ TEST_F(AiNativeImportTest, PagesSlowToDrawAreKeptForTheNextOpening)
     EXPECT_EQ(folders().size(), 1u);
 }
 
+TEST_F(AiNativeImportTest, AFinerDrawingBesideTheFirstGivesTheSameResult)
+{
+    // Hairlines: Poppler draws them a pixel wide at the first size, so the finer weighing runs.
+    std::string lines, page;
+    for (int y = 10; y <= 90; y += 4) {
+        auto const at = std::to_string(y);
+        lines += "10 " + at + " m 190 " + at + " L S\n";
+        page += " 10 " + at + " m 190 " + at + " l S";
+    }
+    auto const path = fixture(records(layer("0 G 0.12 w\n" + lines)), {"0 G 0.12 w" + page});
+    auto open = [&](char const *head_start) {
+        if (head_start) g_setenv("PROOF_AI_FINER_HEAD_START", head_start, true);
+        std::string reason;
+        auto result = Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::All);
+        g_unsetenv("PROOF_AI_FINER_HEAD_START");
+        return result;
+    };
+    auto const alone = open(nullptr); // Quick: the finer drawing comes after the first, if at all.
+    auto const beside = open("0");   // Started at once, on a thread of its own.
+    ASSERT_TRUE(alone);
+    ASSERT_TRUE(beside);
+    ASSERT_EQ(alone->differences.size(), 1u);
+    ASSERT_EQ(beside->differences.size(), 1u);
+    EXPECT_DOUBLE_EQ(alone->differences[0].lightness, beside->differences[0].lightness);
+    EXPECT_DOUBLE_EQ(alone->differences[0].colour, beside->differences[0].colour);
+    // The finer drawing taken from beside is the one used: kept, when every page counts as slow.
+    auto const store = path.substr(0, path.find_last_of("/\\")) + "/page-store";
+    g_setenv("PROOF_AI_SLOW_PAGE_SECONDS", "0", true);
+    g_setenv("PROOF_AI_PAGE_STORE", store.c_str(), true);
+    auto const kept = open("0");
+    g_unsetenv("PROOF_AI_SLOW_PAGE_SECONDS");
+    g_unsetenv("PROOF_AI_PAGE_STORE");
+    ASSERT_TRUE(kept);
+    bool finer = false;
+    if (GDir *dir = g_dir_open(store.c_str(), 0, nullptr)) {
+        while (auto const *name = g_dir_read_name(dir)) {
+            finer = finer || g_file_test((store + "/" + name + "/page-1-finer.png").c_str(), G_FILE_TEST_EXISTS);
+        }
+        g_dir_close(dir);
+    }
+    EXPECT_TRUE(finer);
+    // A page that needs no finer drawing waits for the one begun beside it, and is the same too.
+    auto const plain = fixture(records(layer("0 g\n" + rect)), {"0 g 10 20 80 40 re f"});
+    g_setenv("PROOF_AI_FINER_HEAD_START", "0", true);
+    std::string reason;
+    auto const quick = Extension::Internal::open_ai_native(plain, reason);
+    g_unsetenv("PROOF_AI_FINER_HEAD_START");
+    EXPECT_TRUE(quick) << reason;
+}
+
 TEST_F(AiNativeImportTest, Corpus)
 {
     auto const *roots = g_getenv("PROOF_AI_CORPUS");

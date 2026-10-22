@@ -2464,3 +2464,23 @@ slow through `PROOF_AI_SLOW_PAGE_SECONDS`, a store of its own through
 `PROOF_AI_PAGE_STORE`: kept, reused, ignored and kept anew when the checksum
 isn't the file's, a quick page not kept); the importer suite (182); the whole
 lite set, 23 of 23 as before.
+
+**Two drawings at once (same day, the owner's choice of remedy 3).** Why
+Poppler takes 98 s: the placed `.ai` holds two soft-masked pictures of 29,970
+by 4,249 (DeviceN) and 31,205 by 2,716 pixels, each drawn 12 times, so every
+drawing of the page decodes and colour-converts about 2.6 gigapixels; Poppler
+converts each source pixel before scaling, hence the same time at any size.
+(Poppler's Splash renderer takes 28.8 s, but the check is calibrated on Cairo,
+and Splash misdraws translucent soft masks.) Illustrator itself takes about 23
+s to open the file, the owner measured. Now a page's first drawing runs alone
+for `FINER_HEAD_START` (3 s); still running then, the page is heavy, and its
+finer drawing starts beside it on a thread of its own, in a Poppler document of
+its own (`FinerBeside`). Pages that draw within 3 s never start a second
+thread. A page that turns out not to need the finer drawing waits for the rest
+of it, begun 3 s after the first. **The timeout document's first opening:
+137 s, was 232 s** (98.3 and 98.4 s side by side); later openings 33.5 s; the
+same 0.2% throughout. Test: `AFinerDrawingBesideTheFirstGivesTheSameResult`
+(a page of hairlines that needs the finer weighing: the same result with the
+finer drawing beside the first as after it, and the one used is the one drawn
+beside; `PROOF_AI_FINER_HEAD_START` for tests). Importer suite 183; the whole
+lite set 23 of 23.
