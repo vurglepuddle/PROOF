@@ -45,6 +45,10 @@ back as native `.ai`, with layers, named artboards and ink values. Illustrator
 does not need to be installed to read or write these files.
 
 Native output contains fresh Illustrator records and compatible PDF 1.7 pages.
+Supported Perceptual gradients retain their Oklab method and editable stops in
+PROOF, with vector PDF shading and a Classic alternate for older Illustrator.
+CMYK rendering follows RGB conversion and profile re-separation, while the
+original editable stop values remain intact. [Contract and qualification](doc/PROOF-ai-interchange.md#native-oklab-gradients-2026-10-22).
 It currently requires PROOF's bundled PDF backend. The optional Illustrator 7
 copy format uses standalone records instead, with stricter limits: one artboard,
 Windows-1252 names, opaque 8-bit embedded pictures, and no retained

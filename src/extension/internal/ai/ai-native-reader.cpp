@@ -2636,16 +2636,19 @@ void Reader::paint(std::string_view op, bool hidden, bool guide)
     // W clips the following artwork; it doesn't cancel this path's own paint.
     if (do_fill) node.fill = fill_paint ? fill_paint : _gs.fill;
     if (do_stroke) node.stroke = stroke_paint ? stroke_paint : _gs.stroke;
-    // The visual gate can accept a Perceptual ramp drawn as Classic: its tolerance is
-    // intentionally wider than their difference. Refuse the semantics themselves until
-    // the canvas and vector PDF path implement them. A definition or state note that
-    // paints nothing must not trigger fallback. Unknown extensions are equally unsafe.
+    // The visual gate cannot identify unsupported method flags reliably. Only the
+    // qualified Perceptual form is interpreted; other settings remain explicit refusals.
     auto check_gradient = [&](std::optional<Paint> const &paint) {
         if (!paint || paint->kind != Paint::Kind::Gradient || paint->gradient.gradient < 0 ||
             paint->gradient.gradient >= static_cast<int>(_doc.gradients.size())) return;
         auto const &options = _doc.gradients[paint->gradient.gradient].options;
-        if (!options.empty()) {
-            unreadable(options.front() == 1.0 ? "Perceptual gradients" : "unrecognised gradient interpolation settings");
+        if (!options.empty() && options != std::vector<double>{1, 0}) {
+            unreadable("unrecognised gradient interpolation settings");
+        } else if (!options.empty()) {
+            auto const &stops = _doc.gradients[paint->gradient.gradient].stops;
+            if (std::any_of(stops.begin(), stops.end(), [](GradientStop const &stop) { return stop.ink >= 0; })) {
+                unreadable("Perceptual gradients with spot inks");
+            }
         }
     };
     if (!guide) {

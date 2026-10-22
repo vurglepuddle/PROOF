@@ -1735,6 +1735,8 @@ std::string Builder::gradient_vector(int index)
     auto const id = unique("gradient");
     vec->setAttribute("id", id);
     if (!g.name.empty()) vec->setAttribute("inkscape:label", g.name);
+    bool const perceptual = g.options == std::vector<double>{1, 0};
+    if (perceptual) vec->setAttribute("proof:gradient-method", "oklab");
     auto const &stops = g.stops;
     for (std::size_t i = 0; i < stops.size(); ++i) {
         auto const &a = stops[i];
@@ -1748,6 +1750,10 @@ std::string Builder::gradient_vector(int index)
         StopPaint const pa{a.color, a.ink, a.tint};
         auto const ca = shown(pa);
         add_stop(vec, a.offset, &pa, ca, a.opacity, false);
+        if (perceptual) {
+            vec->lastChild()->setAttribute("proof:gradient-midpoint", num(a.midpoint));
+            continue; // Rendering samples are computed from the editable originals.
+        }
         if (i + 1 == stops.size() || std::abs(a.midpoint - 0.5) < 0.005) continue;
         // Illustrator's blend between two stops follows u^n, half-way at the midpoint.
         auto const &b = stops[i + 1];

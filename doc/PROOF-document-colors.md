@@ -267,3 +267,25 @@ Checks: `ColorsSpacesCmyk.shownThroughProfile`,
 `ColorDocumentCMSObjsTest.deviceCmykShownThroughWorkingProfile`, and the radial
 smoke's cyan control, which reopens from its own records with its flat colours
 within 17 of Poppler's (82 at `b83a8dcf39`, where it opened from its page).
+
+## Oklab gradient interpolation (2026-10-22)
+
+This is a gradient method, separate from the ICC rendering intent also named
+Perceptual. Native AI `Bd` settings `1 0` map to `proof:gradient-method="oklab"`
+on the SVG stop vector. Original stop colours/midpoints stay editable; the
+canvas, previews and bundled PDF backend compute a bounded vector ramp.
+
+The owner's updated CMYK decision is to follow Illustrator's appearance:
+convert through RGB, interpolate in Oklab, then re-separate through the CMYK
+profile, including rendered endpoints. The original editable CMYK values are
+retained, but the printed values can change. No K-free constraint is imposed.
+An earlier claim of black added between K-free stops was incorrect: the
+23-47% K row belonged to a gradient ending at K=49; the bright all-K-free
+gradient stays K-free. See the corrected evidence and limits in
+[the interchange contract](PROOF-ai-interchange.md#native-oklab-gradients-2026-10-22).
+
+This changes shared gradient rendering and PDF shading, not Classic blending
+or the ICC profile conversion code. A method chooser and live gradient UI
+acceptance are not part of this round. The qualified CMYK comparison uses
+the supplied SWOP v2 controls; other RGB working-space setups need separate
+qualification rather than a claim of exact Illustrator agreement.

@@ -2380,6 +2380,8 @@ retain all 21 patches, corners, handles, opacity and device colour models.
 
 ### Perceptual gradient settings are recognised (2026-10-22)
 
+The interim fallback at `517da8bec5` is superseded by native Oklab support below.
+
 Two copied Illustrator 30.6 controls, `5051fa0707` (RGB) and `5aa616098d`
 (CMYK), write `(name) 0 3 1 0 Bd` inside
 `%AI17_Begin_Content_if_version_gt:24 16`, followed by a Classic definition
@@ -2398,3 +2400,29 @@ This is recognition and safe fallback, not editable Perceptual support. The
 approved remaining work is to retain the method in the working document,
 render it in Oklab through the document's CMYK profile with exact ink endpoints,
 and write vector PDF and versioned AI definitions with a Classic alternate.
+
+### Native Oklab and the Classic alternate (2026-10-22)
+
+For the qualified `1 0` setting the reader now retains the method and imports
+the original stops as an Oklab vector. The Classic linear ramp cache is
+compatibility data, not the newer gradient's interpolation. The writer emits
+the observed versioned `Bd` form and a Classic alternate, without replacing
+editable stops with rendering samples. Unknown extended settings still fail
+closed. Perceptual stop midpoints are retained on their original SVG stops.
+
+The two supplied files each have three gradients, two Perceptual and one
+Classic. **Correction to the initial CMYK interpretation:** gradient 150's
+6,666,724 raster pixels all have K=0. The ellipse's original endpoints are
+`79.8 96 55.1 0` and `100 42 71 49`; its roughly 23-47% K sample row is not
+evidence of black generated between two K-free stops. Its first pixel already
+has about 23% K because Illustrator re-separates even the original K-free
+endpoint. The profile controls black generation; the bright gradient alone
+cannot establish whether a K-free constraint exists.
+
+The owner chose Illustrator's RGB/Oklab/profile route, including rendered
+endpoints, while retaining original editable stop values. This supersedes the
+initial proposal to keep printed endpoint channels exact. PROOF's vector CMYK
+functions match the supplied raster samples within 1.9 percentage points per
+channel. A deliberately dull blend between K-free endpoints would give a
+further direct black-generation control.
+[Rendering, writing and qualification](PROOF-ai-interchange.md#native-oklab-gradients-2026-10-22).

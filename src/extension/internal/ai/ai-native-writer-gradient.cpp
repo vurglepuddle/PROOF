@@ -40,6 +40,7 @@
 #include "colors/document-colors.h"
 #include "colors/spaces/base.h"
 #include "object/sp-gradient.h"
+#include "object/gradient-perceptual.h"
 #include "object/sp-gradient-reference.h"
 #include "object/sp-linear-gradient.h"
 #include "object/sp-mesh-gradient.h"
@@ -532,6 +533,13 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         return refused(stroke ? "strokes other than linear or radial gradients" : "fills other than linear or radial gradients");
     }
     if (auto why = check_references(gradient)) return refused(*why);
+    bool const perceptual = PerceptualGradient::enabled(gradient);
+    auto const *method = gradient->getVector()->getRepr()->attribute("proof:gradient-method");
+    if (method && *method && std::string_view(method) != "oklab" && std::string_view(method) != "classic") {
+        return refused("unrecognised gradient interpolation settings");
+    }
+    if (perceptual && legacy) return refused("Perceptual gradients (Illustrator 7)");
+    if (perceptual && coverage) return refused("Perceptual gradients in opacity masks");
     if (gradient->fetchSpread() != SP_GRADIENT_SPREAD_PAD) return refused("repeating or reflected gradients");
     auto const interpolation = gradient->style->color_interpolation.getInterpolationSpace();
     if (interpolation && interpolation->getType() != Type::RGB && interpolation->getType() != Type::CMYK) {
@@ -581,6 +589,10 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     auto const inks = stop_inks(gradient, effective->stops.size(), undefined);
     if (undefined) return refused("spot ink stops without a definition");
     if (inks.empty()) return refused("invalid gradient stops");
+    if (perceptual && std::any_of(inks.begin(), inks.end(), [](auto const &ink) { return bool(ink); })) {
+        return refused("Perceptual gradients with spot inks");
+    }
+    auto const midpoints = PerceptualGradient::midpoints(gradient);
     // Past its end a gradient extends with its last stop in SVG, but with the first of those at its
     // end in Illustrator (29.2.1, linear and radial, 2026-10-22): two different ones there can't be
     // drawn the same. At its start, and inside, both draw as SVG does.
@@ -682,7 +694,7 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         previous = offset;
         // After the colour and its style: [opacity 6] midpoint ramp.
         auto const after = (newer ? " " + num(std::clamp(color.getOpacity(), 0.0, 1.0)) + " 6" : std::string()) +
-                           " 50 " + num(offset * 100);
+                           " " + num(perceptual ? midpoints[index] * 100 : 50) + " " + num(offset * 100);
         auto const tail = after + " %_Bs\n";
         if (ink) {
             // A tint of a spot ink: its full-strength CMYK, its name, the tint taken from 1 as
@@ -739,15 +751,20 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
     // and takes them in that order whatever their ramp points say: a radial's written last
     // first opened inside out in Illustrator 29 (2026-10-20). Its own files, without
     // exception: 6,906 linear definitions descending, 4,482 radial ones ascending.
-    std::ostringstream definition;
-    definition << "%AI5_BeginGradient: " << name << '\n' << name << (radial ? " 1 " : " 0 ") << stops.size() << " Bd\n[\n";
-    if (radial) {
-        for (auto const &stop : stops) definition << stop;
-    } else {
-        for (auto it = stops.rbegin(); it != stops.rend(); ++it) definition << *it;
-    }
-    definition << "BD\n%AI5_EndGradient\n";
-    out.definition = definition.str();
+    auto definition = [&](bool newer_method) {
+        std::ostringstream text;
+        text << "%AI5_BeginGradient: " << name << '\n' << name << (radial ? " 1 " : " 0 ") << stops.size()
+             << (newer_method ? " 1 0 Bd\n[\n" : " Bd\n[\n");
+        if (radial) {
+            for (auto const &stop : stops) text << stop;
+        } else {
+            for (auto it = stops.rbegin(); it != stops.rend(); ++it) text << *it;
+        }
+        text << "BD\n%AI5_EndGradient\n";
+        return text.str();
+    };
+    out.definition = perceptual ? "%AI17_Begin_Content_if_version_gt:24 16\n" + definition(true) +
+        "%AI17_Alternate_Content\n" + definition(false) + "%AI17_End_Versioned_Content\n" : definition(false);
     out.begin = std::get<std::string>(instance);
     return out;
 }

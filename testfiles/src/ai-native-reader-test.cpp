@@ -802,7 +802,7 @@ TEST(AiNativeReader, GradientMatricesOfSeveralRamps)
     EXPECT_EQ(p.hilight_length, 0.5);
 }
 
-TEST(AiNativeReader, PerceptualGradientPaintDoesNotSilentlyBecomeClassic)
+TEST(AiNativeReader, PerceptualGradientPaintKeepsItsMethodAndSkipsClassicAlternate)
 {
     // The alternate is for older Illustrator versions. Reading it instead would silently
     // discard the newer method even if the page comparison happened to accept the result.
@@ -814,7 +814,12 @@ TEST(AiNativeReader, PerceptualGradientPaintDoesNotSilentlyBecomeClassic)
     for (bool stroke : {false, true}) {
         auto const art = "0 g\n" + rect(0, 0, 100, 100) + (stroke ? "1 Bb\n" : "0 Bb\n") +
             "0 (G) 0 0 0 100 1 0 0 1 0 0 Bg\n" + (stroke ? "s\n" : "f\n") + "0 BB\n";
-        EXPECT_NE(read_error(records(layer("L", art), setup)).find("Perceptual gradients"), std::string::npos);
+        auto doc = read_ok(records(layer("L", art), setup));
+        ASSERT_EQ(doc.gradients.size(), 1u);
+        EXPECT_EQ(doc.gradients[0].options, (std::vector<double>{1, 0}));
+        auto const &node = doc.layers[0].children.at(0);
+        ASSERT_TRUE(stroke ? node.stroke : node.fill);
+        EXPECT_EQ((stroke ? node.stroke : node.fill)->kind, Paint::Kind::Gradient);
     }
 }
 
@@ -832,7 +837,7 @@ TEST(AiNativeReader, UnpaintedGradientSettingsAreKeptWithoutForcingFallback)
 
 TEST(AiNativeReader, UnknownGradientSettingsAreNotAssumedClassic)
 {
-    for (auto const *options : {"0", "0 1", "2 0"}) {
+    for (auto const *options : {"0", "0 1", "1 1", "2 0"}) {
         auto const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 "s + options +
             " Bd\n[\n0 0 50 100 Bs\n1 0 50 0 Bs\nBD\n%AI5_EndGradient\n";
         auto const art = "0 g\n" + rect(0, 0, 100, 100) +

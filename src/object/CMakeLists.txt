@@ -4,6 +4,7 @@ target_sources(inkscape_base PRIVATE
   box3d-side.cpp
   box3d.cpp
   color-profile.cpp
+  gradient-perceptual.cpp
   mesh-object.cpp
   object-set.cpp
   persp3d-reference.cpp

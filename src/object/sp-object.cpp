@@ -1182,6 +1182,9 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
 {
     auto const key = g_quark_to_string(key_);
     readAttr(key);
+    if (!std::strcmp(key, "proof:gradient-method") || !std::strcmp(key, "proof:gradient-midpoint")) {
+        requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);
+    }
     if (document && document->getReprRoot() == getRepr() &&
         (!std::strcmp(key, "proof:color-mode") || !std::strcmp(key, "proof:color-profile"))) {
         Inkscape::Colors::DocumentColors::assignmentChanged(document);

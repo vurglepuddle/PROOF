@@ -82,6 +82,7 @@
 #include "psd-fixture.h"
 #include "object/sp-item.h"
 #include "object/sp-gradient.h"
+#include "object/gradient-perceptual.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-namedview.h"
 #include "object/sp-page.h"
@@ -5985,6 +5986,114 @@ std::string box(int x, int y, int w, int h)
 }
 
 } // namespace
+
+TEST_F(AiNativeImportTest, PerceptualGradientRendersOklabAndRetainsEditableStops)
+{
+    // Red to blue has a purple Oklab midpoint with substantial green. Classic's
+    // midpoint has none. Independent expected values, not a second call to the sampler.
+    std::string const source = R"svg(<svg xmlns="http://www.w3.org/2000/svg"
+        xmlns:proof="urn:x-proof:document:1" width="200" height="100">
+        <defs><linearGradient id="g" proof:gradient-method="oklab">
+        <stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/>
+        </linearGradient></defs><rect width="80" height="80" fill="url(#g)"/></svg>)svg";
+    auto doc = SPDocument::createNewDocFromMem(source);
+    ASSERT_TRUE(doc);
+    auto *gradient = cast<SPGradient>(doc->getObjectById("g"));
+    ASSERT_TRUE(gradient);
+    auto samples = PerceptualGradient::rendering_vector(gradient);
+    ASSERT_EQ(samples.stops.size(), 129u);
+    auto rgb = samples.stops[64].color->converted(Type::RGB);
+    ASSERT_TRUE(rgb);
+    EXPECT_NEAR((*rgb)[0] * 255, 140.36, 2);
+    EXPECT_NEAR((*rgb)[1] * 255, 83.03, 2);
+    EXPECT_NEAR((*rgb)[2] * 255, 162.31, 2);
+    EXPECT_EQ(elements(gradient->getRepr(), "svg:stop").size(), 2u);
+    auto svg = SPDocument::createNewDocFromMem(sp_repr_save_buf(doc->getReprDoc()).raw());
+    ASSERT_TRUE(svg);
+    auto *saved = cast<SPGradient>(svg->getObjectById("g"));
+    EXPECT_TRUE(PerceptualGradient::enabled(saved));
+    EXPECT_EQ(elements(saved->getRepr(), "svg:stop").size(), 2u);
+
+    auto written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find(" 0 2 1 0 Bd"), std::string::npos);
+    EXPECT_NE(written.records.find("%AI17_Alternate_Content"), std::string::npos);
+    std::string error;
+    auto native = AN::read(written.records, error);
+    ASSERT_TRUE(native) << error;
+    ASSERT_EQ(native->gradients.size(), 1u);
+    EXPECT_EQ(native->gradients[0].options, (std::vector<double>{1, 0}));
+    EXPECT_EQ(native->gradients[0].stops.size(), 2u);
+    auto reopened = make(written.records);
+    ASSERT_TRUE(reopened);
+    EXPECT_LE(largest_difference(page_pixels(doc.get()), page_pixels(reopened->document.get())), 2);
+    auto legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_FALSE(legacy.refused.empty());
+    gradient->getRepr()->setAttribute("proof:gradient-method", "future-method");
+    EXPECT_FALSE(AN::write_records(doc.get()).refused.empty());
+}
+
+TEST_F(AiNativeImportTest, PerceptualMidpointsStayOnOriginalStopsAfterEdits)
+{
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 1 0 Bd\n[\n"
+        "0 0 1 0 0 0 1 2 50 100 Bs\n0 1 1 0 1 0 0 2 80 0 Bs\nBD\n%AI5_EndGradient\n";
+    auto b = make(records(layer("0 g\n10 20 m 90 20 L 90 60 L 10 60 L h\n"
+        "Bb\n0 (G) 10 20 0 80 1 0 0 1 0 0 Bg\nf\n0 BB\n"), setup, false));
+    ASSERT_TRUE(b);
+    auto vectors = elements(b->document->getDefs()->getRepr(), "svg:linearGradient");
+    ASSERT_FALSE(vectors.empty());
+    auto *gradient = cast<SPGradient>(b->document->getObjectByRepr(vectors.front()));
+    ASSERT_TRUE(gradient);
+    EXPECT_TRUE(PerceptualGradient::enabled(gradient));
+    auto stops = elements(vectors.front(), "svg:stop");
+    ASSERT_EQ(stops.size(), 2u);
+    EXPECT_EQ(attr(stops.front(), "proof:gradient-midpoint"), "0.8");
+    auto before = PerceptualGradient::rendering_vector(gradient);
+    stops.front()->setAttribute("style", "stop-color:#00ff00");
+    b->document->ensureUpToDate();
+    auto after = PerceptualGradient::rendering_vector(gradient);
+    EXPECT_NE(before.stops[64].color, after.stops[64].color);
+    auto written = AN::write_records(b->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    std::string error;
+    auto native = AN::read(written.records, error);
+    ASSERT_TRUE(native) << error;
+    EXPECT_NEAR(native->gradients.at(0).stops.at(0).midpoint, .8, 1e-6);
+}
+
+TEST_F(AiNativeImportTest, PerceptualCmykKeepsEditableInksWhileReseparatingTheRendering)
+{
+    std::string const setup = "%AI5_BeginGradient: (G)\n(G) 0 2 1 0 Bd\n[\n"
+        "0 0 1 0 1 50 100 Bs\n1 0 0 0 1 50 0 Bs\nBD\n%AI5_EndGradient\n";
+    auto b = make(records(layer("0 g\n10 20 m 90 20 L 90 60 L 10 60 L h\n"
+        "Bb\n0 (G) 10 20 0 80 1 0 0 1 0 0 Bg\nf\n0 BB\n"), setup, true));
+    ASSERT_TRUE(b);
+    auto vectors = elements(b->document->getDefs()->getRepr(), "svg:linearGradient");
+    ASSERT_FALSE(vectors.empty());
+    auto const *gradient = cast<SPGradient>(b->document->getObjectByRepr(vectors.front()));
+    auto samples = PerceptualGradient::rendering_vector(gradient);
+    ASSERT_GT(samples.stops.size(), 2u);
+    EXPECT_EQ(samples.stops.front().color->getSpace()->getComponentType(), Type::CMYK);
+    auto const *editable = gradient->getGradientVector();
+    EXPECT_EQ(editable->stops.front().color->getValues(), (std::vector<double>{1, 0, 0, 0, 1}));
+    EXPECT_EQ(editable->stops.back().color->getValues(), (std::vector<double>{0, 0, 1, 0, 1}));
+    // The preview/PDF endpoint is deliberately a re-separation, as Illustrator
+    // renders it; the editable CMYK channels above never undergo that conversion.
+    auto expected = editable->stops.front().color->converted(Type::RGB);
+    ASSERT_TRUE(expected);
+    for (unsigned c = 0; c < 3; ++c) expected->set(c, std::clamp((*expected)[c], 0.0, 1.0));
+    ASSERT_TRUE(expected->convert(editable->stops.front().color->getSpace()));
+    for (unsigned c = 0; c < 4; ++c) EXPECT_NEAR((*samples.stops.front().color)[c], (*expected)[c], .002);
+    auto written = AN::write_records(b->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    std::string error;
+    auto native = AN::read(written.records, error);
+    ASSERT_TRUE(native) << error;
+    auto const &stops = native->gradients.at(0).stops;
+    ASSERT_EQ(stops.size(), 2u);
+    EXPECT_EQ(stops.front().color, AN::Color::cmyk(1, 0, 0, 0));
+    EXPECT_EQ(stops.back().color, AN::Color::cmyk(0, 0, 1, 0));
+}
 
 TEST_F(AiNativeImportTest, WrittenOpacityMasksReadBackAndDrawAsTheyDid)
 {

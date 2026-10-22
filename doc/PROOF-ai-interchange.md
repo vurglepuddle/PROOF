@@ -2505,6 +2505,8 @@ missing links six (all also type). **13 focused unit suites, zero failures;
 Existing opt-in/GUI skips remain; no editing-UI acceptance is claimed.
 ## Perceptual gradient import guard (2026-10-22)
 
+Interim behaviour at `517da8bec5`, superseded by the native support below.
+
 Illustrator 30.6's extended `Bd` definition is recognised and its extra operands
 retained by the records reader. Painted Perceptual gradients now explicitly
 fall back to the PDF page; they no longer silently become Classic when the
@@ -2512,3 +2514,44 @@ visual comparison tolerates the difference. Unknown extended settings also
 refuse native paint. Unused definitions/state notes do not force fallback.
 Oklab canvas/vector PDF rendering and native method round-trip remain open.
 See [the records contract](PROOF-ai-native-records.md#perceptual-gradient-settings-are-recognised-2026-10-22).
+
+## Native Oklab gradients (2026-10-22)
+
+The qualified `1 0 Bd` Perceptual setting now imports as an editable Oklab
+gradient, rather than PDF fallback or a silent Classic substitution. Working
+SVG keeps `proof:gradient-method="oklab"` on the stop vector and
+`proof:gradient-midpoint` on the original stops. Samples are computed for
+rendering only; they do not become extra editable stops. Recolouring a stop
+recomputes the ramp. Linear and radial geometry use the existing placement.
+
+The modern writer preserves those original stops and writes the newer
+definition in `%AI17_Begin_Content_if_version_gt:24 16`, with a Classic
+definition in `%AI17_Alternate_Content`. PROOF reads the newer definition.
+Illustrator 29.2.1 opened the written RGB control as three editable Classic
+gradients; its saved copy has Classic definitions. Saving through that older
+Illustrator therefore does not retain the Oklab method. Actual opening of this
+writer's new output in Illustrator 30.6 remains to be qualified.
+
+**CMYK policy, owner's updated decision:** match Illustrator's intended Oklab
+appearance. CMYK colours go through RGB, blend in Oklab, then separate back
+through the CMYK profile, including at the rendered endpoints. Editable/native
+stop values remain the original CMYK numbers; rendered/PDF values can change.
+There is no rule forcing K to zero. This replaces the earlier proposal to
+avoid RGB clipping and preserve the printed endpoint separations.
+
+The shared canvas, gradient previews and bundled PDF backend use the same
+bounded ramp samples. PDF writes vector stitching functions and shadings, not
+gradient images. The supplied RGB/CMYK controls each retain three gradient
+shapes; their saved PDFs have no image XObjects. RGB agrees with the newer
+Illustrator page within 5 channel levels inside the shapes. CMYK function
+samples agree with its raster within 1.9 percentage points per ink channel,
+mean below 0.45 points. RGB native round-trip differs by at most 6 display
+levels; the final CMYK round-trip by 4. Copies remain hash-identical.
+
+Qualification is targeted: 11 reader checks, seven importer checks, the new
+linear/radial RGB control (16 checks), the existing Classic control (20), and
+five lite gradient cases. The full artwork census was not rerun. The new smoke
+is `ai-perceptual-output-smoke.py`. No gradient editing UI was driven.
+Unknown extended settings, Perceptual spot-ink gradients, Perceptual gradients
+inside opacity-mask output and Illustrator 7 output remain explicit refusals.
+The additional setting must not be labelled Dither without a confirming file.

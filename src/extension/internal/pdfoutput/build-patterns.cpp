@@ -23,6 +23,7 @@
 #include "colors/manager.h"
 #include "colors/spaces/base.h"
 #include "object/sp-gradient.h"
+#include "object/gradient-perceptual.h"
 #include "object/sp-linear-gradient.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-pattern.h"
@@ -188,7 +189,7 @@ std::optional<CapyPDF_PatternId> Document::get_linear_pattern(SPLinearGradient c
         cm *= to_userspace;
     }
 
-    if (auto func = get_gradient_function(*linear->getGradientVector(), opacity, &color_space, linear->document)) {
+    if (auto func = get_gradient_function(PerceptualGradient::rendering_vector(linear), opacity, &color_space, linear->document)) {
         auto d1 = 0.0;
         auto d2 = 1.0;
 
@@ -258,7 +259,7 @@ std::optional<CapyPDF_PatternId> Document::get_radial_pattern(SPRadialGradient c
         cm *= to_userspace;
     }
 
-    if (auto func = get_gradient_function(*radial->getGradientVector(), opacity, &color_space, radial->document)) {
+    if (auto func = get_gradient_function(PerceptualGradient::rendering_vector(radial), opacity, &color_space, radial->document)) {
         double d1 = 0.0;
         double d2 = 1.0;
 
