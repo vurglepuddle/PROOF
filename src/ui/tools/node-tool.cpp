@@ -13,17 +13,24 @@
 
 #include "ui/tools/node-tool.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <iomanip>
 #include <glib/gi18n.h>
 
+#include "box-frame.h"
+#include "desktop.h"
 #include "display/control/canvas-item-bpath.h"
+#include "display/control/canvas-item-ctrl.h"
 #include "display/control/canvas-item-group.h"
 #include "display/control/snap-indicator.h"
 #include "document-undo.h"
+#include "layer-manager.h"
 #include "path/path-curve.h"
 #include "live_effects/effect.h"
 #include "message-context.h"
 #include "object/sp-clippath.h"
+#include "object/sp-item-group.h"
 #include "object/sp-mask.h"
 #include "object/sp-namedview.h"
 #include "object/sp-shape.h"
@@ -172,6 +179,9 @@ NodeTool::NodeTool(SPDesktop *desktop)
     _selected_nodes->showTransformHandles(false, false);
     sp_event_context_read(this, "edit_clipping_paths");
     sp_event_context_read(this, "edit_masks");
+
+    // A picked clipping path's centre follows its edits, and an undo of them.
+    _clip_document_modified = desktop->getDocument()->connectModified([this](unsigned) { _updateClipCentres(); });
 
     selection_changed(selection);
     update_tip();
@@ -357,8 +367,20 @@ void NodeTool::selection_changed(Inkscape::Selection *sel)
     if (_multipath->isReplacingItem()) return;
     std::set<ShapeRecord> shapes;
 
+    // A clipping path stays picked while the object it is on stays selected.
+    auto const picked = [this](SPItem *item) { return std::ranges::find(_clip_targets, item) != _clip_targets.end(); };
+    std::vector<SPItem *> still_picked;
     for (auto item : sel->items()) {
-        if (item) {
+        if (item && item->getClipObject() && picked(item)) {
+            still_picked.push_back(item);
+        }
+    }
+    _clip_targets = std::move(still_picked);
+
+    for (auto item : sel->items()) {
+        if (item && picked(item)) {
+            gather_items(this, item, item->getClipObject(), SHAPE_ROLE_CLIPPING_PATH, shapes);
+        } else if (item) {
             gather_items(this, nullptr, item, SHAPE_ROLE_NORMAL, shapes);
         }
     }
@@ -383,6 +405,7 @@ void NodeTool::selection_changed(Inkscape::Selection *sel)
     }
 
     _multipath->setItems(shapes);
+    _updateClipCentres();
     update_tip();
     sp_update_helperpath(_desktop);
 }
@@ -458,6 +481,8 @@ bool NodeTool::root_handler(CanvasEvent const &event)
             // Mouse button is up, but rubberband is still kicking.
             rubberband->stop();
         }
+
+        _hoverClip(motion_w);
 
         auto &m = _desktop->getNamedView()->snap_manager;
 
@@ -587,6 +612,7 @@ bool NodeTool::root_handler(CanvasEvent const &event)
 
         auto const event_pt = event.pos;
         auto const desktop_pt = _desktop->w2d(event_pt);
+        _clip_hover.reset();
 
         if (event.num_press == 1) {
             if (_directPress(event)) {
@@ -769,6 +795,171 @@ Inkscape::UI::SelectableControlPoint *NodeTool::_nodeNear(Geom::Point const &win
     return nearest;
 }
 
+/// Objects with a clipping path that can be picked: shown and not locked, in groups too.
+static void collect_clipped(SPObject &parent, SPDesktop *desktop, std::vector<SPItem *> &items)
+{
+    for (auto &child : parent.children) {
+        auto item = cast<SPItem>(&child);
+        if (!item || desktop->itemIsHidden(item) || item->isLocked()) {
+            continue;
+        }
+        if (item->getClipObject()) {
+            items.push_back(item);
+        }
+        if (is<SPGroup>(item)) {
+            collect_clipped(*item, desktop, items);
+        }
+    }
+}
+
+/// The clipping path shape whose outline is under the pointer, within the grab sensitivity.
+static std::optional<ClipOutline> clip_outline_under(SPDesktop *desktop, Geom::Point const &window_point)
+{
+    std::vector<SPItem *> items;
+    collect_clipped(*desktop->layerManager().currentRoot(), desktop, items);
+    std::ranges::reverse(items); // Topmost first.
+    auto const tolerance = Preferences::get()->getIntLimited("/options/grabsensitivity/value", 8, 1, 100);
+    return clip_outline_at(items, desktop->w2d(window_point), tolerance / desktop->current_zoom());
+}
+
+/// The selection box's blue, in which PROOF outlines what shows nothing of itself.
+constexpr std::uint32_t CLIP_OUTLINE_COLOR = 0x277fffff;
+
+/**
+ * PROOF: a press on the outline of a clipping path, or on the centre of a picked one, as with
+ * Illustrator's Direct Selection, where the outline is all that shows of a mask's path. The
+ * outline picks the clipping path: the object it is on is selected, with the clipping path's
+ * anchors in place of its own; the press then takes the anchor or segment under the pointer, as
+ * on any path, and elsewhere the clipping path moves alone. The centre moves the picked clipping
+ * paths alone. Anchors already shown come first; Shift adds a clipping path or puts it down.
+ */
+bool NodeTool::_pressClip(ButtonPressEvent const &event)
+{
+    auto const tolerance = Preferences::get()->getIntLimited("/options/grabsensitivity/value", 8, 1, 100);
+    if (_nodeNear(event.pos, tolerance)) {
+        return false;
+    }
+    bool const add = event.modifiers & GDK_SHIFT_MASK;
+    auto const point = _desktop->w2d(event.pos);
+    DirectPress press;
+    press.origin = point;
+    press.origin_w = event.pos;
+    press.reference = point;
+    auto const add_shapes = [&press](SPItem *clipped) {
+        auto const dt2u = clipped->i2dt_affine().inverse().withoutTranslation();
+        for (auto &child : clipped->getClipObject()->children) {
+            if (auto shape = cast<SPItem>(&child)) {
+                press.clip_shapes.emplace_back(shape, dt2u);
+            }
+        }
+    };
+
+    if (!add) {
+        for (auto clipped : _clip_targets) {
+            auto const clip = clipped->getClipObject();
+            auto const box = clip ? clip->geometricBounds(clipped->i2dt_affine()) : Geom::OptRect();
+            if (box && Geom::distance(_desktop->d2w(box->midpoint()), event.pos) <= tolerance) {
+                press.reference = box->midpoint();
+                for (auto target : _clip_targets) {
+                    if (target->getClipObject()) {
+                        add_shapes(target);
+                    }
+                }
+                _direct_press = press;
+                return true;
+            }
+        }
+    }
+
+    auto const clip = clip_outline_under(_desktop, event.pos);
+    if (!clip) {
+        return false;
+    }
+    auto const clipped = clip->clipped;
+    auto selection = _desktop->getSelection();
+    if (std::ranges::find(_clip_targets, clipped) != _clip_targets.end() && add) {
+        std::erase(_clip_targets, clipped);
+        selection->remove(clipped);
+        press.fixed = true;
+        _direct_press = press;
+        return true;
+    }
+    if (!add) {
+        _clip_targets.clear();
+    }
+    _clip_targets.push_back(clipped);
+    if (add) {
+        selection->add(clipped);
+    } else if (selection->single() != clipped) {
+        selection->set(clipped);
+    }
+    selection_changed(selection); // The clipping path's anchors, also when the object was selected.
+
+    if (auto node = _nodeNear(event.pos, tolerance)) {
+        if (!add) _selected_nodes->clear();
+        _selected_nodes->insert(node);
+        press.reference = node->position();
+    } else if (_multipath->pressSegment(clip->shape, this, event)) {
+        return true;
+    } else {
+        _selected_nodes->clear();
+        add_shapes(clipped);
+    }
+    _direct_press = press;
+    return true;
+}
+
+/// While nothing is pressed, the outline of a clipping path under the pointer shows, as in
+/// Illustrator, unless the clipping path is picked and its own outline shows already.
+void NodeTool::_hoverClip(Geom::Point const &window_point)
+{
+    auto const clip = clip_outline_under(_desktop, window_point);
+    if (!clip || std::ranges::find(_clip_targets, clip->clipped) != _clip_targets.end()) {
+        if (_clip_hover) {
+            _clip_hover.reset();
+            update_tip();
+        }
+        return;
+    }
+    if (!_clip_hover) {
+        _clip_hover = make_canvasitem<CanvasItemBpath>(_desktop->getCanvasControls());
+        _clip_hover->set_stroke(CLIP_OUTLINE_COLOR);
+        _clip_hover->set_fill(0x0, SP_WIND_RULE_NONZERO);
+    }
+    _clip_hover->set_bpath(clip->path, true);
+    message_context->set(Inkscape::NORMAL_MESSAGE,
+                         C_("Node tool tip", "<b>Clipping path</b>: click to edit its anchors, drag to reshape it"));
+}
+
+/// Move clipping path shapes by a step in desktop coordinates, in the user space of what they clip.
+void NodeTool::_moveClipShapes(DirectPress const &press, Geom::Point const &step)
+{
+    for (auto const &[shape, dt2u] : press.clip_shapes) {
+        shape->doWriteTransform(shape->transform * Geom::Translate(step * dt2u), nullptr, false);
+    }
+}
+
+/// The centre of each picked clipping path, which moves it alone, as in Illustrator.
+void NodeTool::_updateClipCentres()
+{
+    std::vector<Geom::Point> centres;
+    for (auto clipped : _clip_targets) {
+        auto const clip = clipped->getClipObject();
+        if (auto const box = clip ? clip->geometricBounds(clipped->i2dt_affine()) : Geom::OptRect()) {
+            centres.push_back(box->midpoint());
+        }
+    }
+    _clip_centres.resize(std::min(_clip_centres.size(), centres.size()));
+    for (std::size_t i = 0; i < centres.size(); ++i) {
+        if (i < _clip_centres.size()) {
+            _clip_centres[i]->set_position(centres[i]);
+        } else {
+            _clip_centres.push_back(make_canvasitem<CanvasItemCtrl>(_desktop->getCanvasControls(),
+                                                                    CANVAS_ITEM_CTRL_TYPE_BOX_CENTER, centres[i]));
+        }
+    }
+}
+
 /**
  * PROOF: Illustrator's Direct Selection press, for a press on an object outside any handle with
  * no modifier. It selects that object alone, inside groups too. With the pointer on one of its
@@ -780,6 +971,9 @@ bool NodeTool::_directPress(ButtonPressEvent const &event)
 {
     if (event.modifiers & GDK_CONTROL_MASK) {
         return false;
+    }
+    if (!(event.modifiers & GDK_ALT_MASK) && _pressClip(event)) {
+        return true;
     }
     auto item = sp_event_context_find_item(_desktop, event.pos, false, true);
     if (!item) {
@@ -839,6 +1033,10 @@ bool NodeTool::_directPress(ButtonPressEvent const &event)
 void NodeTool::_directDrag(MotionEvent const &event)
 {
     auto &press = *_direct_press;
+    if (press.fixed) {
+        gobble_motion_events(GDK_BUTTON1_MASK);
+        return;
+    }
     if (!press.moved) {
         auto const tolerance = Preferences::get()->getIntLimited("/options/dragtolerance/value", 0, 0, 100);
         if (Geom::LInfty(event.pos - press.origin_w) < tolerance) {
@@ -857,7 +1055,7 @@ void NodeTool::_directDrag(MotionEvent const &event)
     } else if (!mod_move_no_snapping->active(event.modifiers)) {
         auto &m = _desktop->getNamedView()->snap_manager;
         std::vector<Inkscape::SnapCandidatePoint> unselected;
-        if (!press.whole_items) {
+        if (!press.whole_items && press.clip_shapes.empty()) {
             _selected_nodes->getUnselectedPoints(unselected);
         }
         m.setupIgnoreSelection(_desktop, true, &unselected);
@@ -873,7 +1071,9 @@ void NodeTool::_directDrag(MotionEvent const &event)
     }
 
     auto const step = delta - press.applied;
-    if (press.whole_items) {
+    if (!press.clip_shapes.empty()) {
+        _moveClipShapes(press, step);
+    } else if (press.whole_items) {
         _desktop->getSelection()->moveRelative(step);
     } else {
         _selected_nodes->transform(Geom::Translate(step));
@@ -895,7 +1095,9 @@ void NodeTool::_directRelease()
     if (!press.moved || press.applied == Geom::Point()) {
         return;
     }
-    if (press.whole_items) {
+    if (!press.clip_shapes.empty()) {
+        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Move clipping path"), INKSCAPE_ICON("tool-node-editor"));
+    } else if (press.whole_items) {
         DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Move"), INKSCAPE_ICON("tool-node-editor"));
     } else {
         _selected_nodes->signal_commit.emit(Inkscape::UI::COMMIT_MOUSE_MOVE);
@@ -908,7 +1110,9 @@ void NodeTool::_directCancel()
     auto const press = *_direct_press;
     _direct_press.reset();
     _desktop->getSnapIndicator()->remove_snaptarget();
-    if (press.whole_items) {
+    if (!press.clip_shapes.empty()) {
+        _moveClipShapes(press, -press.applied);
+    } else if (press.whole_items) {
         _desktop->getSelection()->moveRelative(-press.applied);
     } else {
         _selected_nodes->transform(Geom::Translate(-press.applied));

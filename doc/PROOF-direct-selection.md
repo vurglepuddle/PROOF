@@ -43,6 +43,31 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
   and loses it when it shows again. Inkscape showed only its anchors, and the
   path itself was hard to find (the owner, 2026-10-22, reporting it for masks,
   whose objects are invisible). The Selection tool outlines it the same way.
+- **Clipping paths** (the owner, 2026-10-22: "We should follow Illustrator for
+  this"): a clipping path is picked by its outline, as Illustrator's Direct
+  Selection picks a mask's path, the outline being all that shows of it.
+  - With nothing pressed, the outline of a clipping path within the grab
+    sensitivity of the pointer shows as a 1 px line in the selection box's
+    blue, wherever it runs, and the status bar says what a click does.
+  - A press on it picks it: the object the clipping path is on (the clipped
+    group, or a clipped object) is selected, and the clipping path's anchors
+    are shown in place of the object's own, outlined in the same blue (no
+    longer Inkscape's green). The same press takes the anchor or segment under
+    the pointer, as on any path, so one gesture can pick and reshape; anywhere
+    else along the outline the drag moves the clipping path alone.
+  - A picked clipping path shows Illustrator's centre mark. Dragging it moves
+    the picked clipping paths alone, with Shift, snapping, Escape and one Undo
+    step as for any move.
+  - Shift+press on an outline adds that clipping path; on a picked one it puts
+    it down. Escape, or selecting something else, puts it down too.
+  - A press on what shows inside the mask selects that object, as before; a
+    press where the content is hidden outside the mask selects nothing. In
+    Inkscape such a press reached the hidden object, because picking inside a
+    group tested the object's own drawing and not its group's clip;
+    `SPDesktop::find_items_at_point` now tests every clipped group above it,
+    so the Selection tool's picks in groups follow the clip too.
+  - The document keeps SVG's form, a `<clipPath>` in `<defs>`: only the path
+    there changes. Clipping paths in `objectBoundingBox` units are not picked.
 - **No box around selected anchors:** Inkscape's transformation handles for
   selected nodes (scale, then rotate and skew) are not part of Direct Selection.
   While they showed, a click on a selected anchor switched their mode where it
@@ -71,6 +96,13 @@ adds View visibility and a transformed-angle limit in Node Preferences.
 [Corner groups](PROOF-corner-groups.md) now apply selected radius/type edits
 across objects with one shared limit and one document Undo step.
 
+Clipping masks continue in the owner's brief (`brief/direct-selection-brief.md`,
+"Clipping masks in Direct Selection"): Edit Mask, Edit Contents and Select >
+Object > Clipping Masks; Make and Release without paint; paint on a clipping
+path (with the owner's side, as the writers read it); the clipping path in
+Layers and Objects. Finding an outline walks the visible clipped objects at
+each pointer motion, which has not been measured on very large documents.
+
 Stars and spirals, shapes with live path effects or markers, and geometry
 animations retain their existing shape editors. Their conversion needs separate
 handling. [Circle, polygon and polyline](PROOF-native-primitives.md) use the same
@@ -84,6 +116,13 @@ Windows setup, including transformed open polylines and child metadata.
   `ControlPointSelection::transform` and are committed with
   `COMMIT_MOUSE_MOVE`, as keyboard moves are. Whole objects move through
   `ObjectSet::moveRelative`.
+- Clipping paths: `NodeTool::_pressClip`, `_hoverClip`, `_moveClipShapes` and
+  `_updateClipCentres`, with `_clip_targets` (the objects whose clipping path is
+  picked) consulted by `NodeTool::selection_changed`, which gathers their
+  clipping path with `SHAPE_ROLE_CLIPPING_PATH` instead of the object. The
+  geometry, `clip_outlines` and `clip_outline_at`, is in `src/box-frame.h`.
+  A whole clipping path moves through each shape's `doWriteTransform`, in the
+  clipped object's user space.
 - `CurveDragPoint::_moveSegment` is in `src/ui/tool/curve-drag-point.cpp`.
 - `SelectionHelper::selectNone` is in `src/selection-chemistry.cpp`.
 - Ordinary-shape staging/conversion is in `PathManipulator` in
@@ -106,6 +145,17 @@ pass:
 
 `tools/direct-selection-explore.py` takes screenshots of the remaining
 differences.
+
+Clipping paths (2026-10-22, collaborator): `test_box-frame` 19/19, with
+`ClippingPathsArePickedByTheirOutline` for the outlines, their transforms and
+the nearest pick. `tools/clip-selection-check.py` passes 14/14 on the installed
+build: hover outline shown and gone, a click picks without changing anything,
+Escape puts it down, a one-gesture edge drag moves that edge alone and Undo
+restores it, a centre drag moves the clipping path alone and Undo restores
+it, Escape mid-drag, and clicks inside and outside the mask. Its first run
+failed only the last check, which led to the picking fix above. The same build
+passes `direct-selection-check.py` 15/15 and `segment-selection-check.py`
+30/30. Windows 11, 1858x1080 window at 100%.
 
 The collaborator's 2026-10-11 installed build passes
 `tools/shape-anchor-check.py` 33/33: rectangle, ellipse, rounded rectangle,

@@ -23,6 +23,8 @@
 
 #include "object/sp-item.h"
 
+class SPShape;
+
 namespace Inkscape {
 
 /// The angle of an object's box in its own coordinates, in degrees from -180 to 180, when it is
@@ -75,6 +77,25 @@ bool paints_nothing(SPItem const &item);
 /// The outlines of the shapes that paint nothing among these objects and in their groups and
 /// clones, in desktop coordinates. Empty when there are more than `limit` of them.
 std::vector<Geom::PathVector> invisible_outlines(std::vector<SPItem *> const &items, std::size_t limit);
+
+/// A shape of the clipping path on an object, which Illustrator's Direct Selection picks by its
+/// outline: in a mask the outline is all that shows of it.
+struct ClipOutline
+{
+    SPItem *clipped = nullptr; ///< The object or group the clipping path is on.
+    SPShape *shape = nullptr;  ///< The shape in its clipPath.
+    Geom::PathVector path;     ///< The shape's outline in desktop coordinates.
+};
+
+/// The shapes of the clipping path on this object, in its groups too. None for a clipping path
+/// in the units of the object's bounding box, which the node tool doesn't edit.
+std::vector<ClipOutline> clip_outlines(SPItem &clipped);
+
+/// The clipping path shape whose outline passes nearest the point, no further than `tolerance`,
+/// among the clipping paths on these objects (desktop coordinates). Of two equally near, the
+/// first wins: pass the objects topmost first.
+std::optional<ClipOutline> clip_outline_at(std::vector<SPItem *> const &items, Geom::Point const &point,
+                                           double tolerance);
 
 } // namespace Inkscape
 

@@ -439,6 +439,24 @@ std::vector<SPItem*> SPDesktop::find_items_at_point(std::deque<SPItem*> const &n
 
     auto area_world = canvas->get_area_world();
     bool outline = canvas->canvas_point_in_outline_zone(p - canvas->get_pos());
+    unsigned const flags = Inkscape::DrawingItem::PICK_STICKY | outline * Inkscape::DrawingItem::PICK_OUTLINE;
+
+    // PROOF: a clipping path on a group hides its objects outside it, and a press there reaches
+    // none of them, as in Illustrator. An object's own drawing knows only its own clip.
+    auto shown_through_clips = [&](SPItem *item) {
+        if (outline) {
+            return true;
+        }
+        for (auto parent = cast<SPItem>(item->parent); parent && !is<SPRoot>(parent); parent = cast<SPItem>(parent->parent)) {
+            if (parent->getClipObject()) {
+                auto pdi = parent->get_arenaitem(dkey);
+                if (pdi && !pdi->pick(p, delta, area_world, flags)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
 
     bool seen_upto = !upto;
     for (auto node : nodes) {
@@ -449,7 +467,7 @@ std::vector<SPItem*> SPDesktop::find_items_at_point(std::deque<SPItem*> const &n
             continue;
         }
         if (auto di = node->get_arenaitem(dkey)) {
-            if (di->pick(p, delta, area_world, Inkscape::DrawingItem::PICK_STICKY | outline * Inkscape::DrawingItem::PICK_OUTLINE)) {
+            if (di->pick(p, delta, area_world, flags) && shown_through_clips(node)) {
                 result.emplace_back(node);
                 if (--items_count == 0) {
                     break;
