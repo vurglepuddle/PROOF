@@ -62,6 +62,7 @@
 #include "object/sp-root.h"
 #include "page-manager.h"
 #include "poppler-transition-api.h"
+#include "rgb-overprint.h"
 #include "svg/css-ostringstream.h"
 #include "xml/node.h"
 #include "xml/repr.h"
@@ -331,11 +332,11 @@ std::string file_checksum(std::string const &path)
 class PageStore
 {
 public:
-    PageStore(std::string const &path, AiNativeCache const *cache)
+    PageStore(std::string const &path, AiNativeCache const *cache, std::string const &rendering)
         : _path(path)
     {
         if (cache && !cache->reference_directory.empty()) {
-            _directory = cache->reference_directory;
+            _directory = cache->reference_directory + rendering;
             _test = true;
             return;
         }
@@ -343,7 +344,7 @@ public:
         if (g_stat(path.c_str(), &stat)) return;
         auto const key = checksum(path + "|" + std::to_string(stat.st_size) + "|" + std::to_string(stat.st_mtime) +
                                   "|" + poppler_get_version() + "|" + cairo_version_string() + "|" +
-                                  std::to_string(PAGE_STORE_FORMAT));
+                                  std::to_string(PAGE_STORE_FORMAT) + rendering);
         // The test suite gives a store of its own (the user cache folder is fixed once a process asks).
         auto const *own = g_getenv("PROOF_AI_PAGE_STORE");
         _base = own ? own : IO::Resource::get_path_string(IO::Resource::CACHE, IO::Resource::NONE, "proof-ai-pages");
@@ -635,6 +636,21 @@ struct Unref
     void operator()(gpointer p) const { g_object_unref(p); }
 };
 
+// Both drawings must see the same disposable overprint preview, each in its own document.
+std::unique_ptr<PopplerDocument, Unref> open_pages(std::string const &uri,
+                                                 std::shared_ptr<std::string const> const &preview)
+{
+    GError *error = nullptr;
+    PopplerDocument *document;
+    if (preview) {
+        auto *bytes = g_bytes_new(preview->data(), preview->size());
+        document = poppler_document_new_from_bytes(bytes, nullptr, &error);
+        g_bytes_unref(bytes);
+    } else document = poppler_document_new_from_file(uri.c_str(), nullptr, &error);
+    if (error) g_error_free(error);
+    return std::unique_ptr<PopplerDocument, Unref>(document);
+}
+
 /**
  * PROOF: a page's finer drawing, started on a thread of its own once the first drawing has run
  * FINER_HEAD_START seconds. A page that heavy may well need it (the collaborator's 2.7 m page
@@ -647,9 +663,9 @@ struct Unref
 class FinerBeside
 {
 public:
-    FinerBeside(std::string uri, int index, PDFRectangle crop, PDFRectangle trim, double scale, int w, int h)
+    FinerBeside(std::string uri, std::shared_ptr<std::string const> preview, int index, PDFRectangle crop, PDFRectangle trim, double scale, int w, int h)
     {
-        _thread = std::thread([this, uri = std::move(uri), index, crop, trim, scale, w, h] {
+        _thread = std::thread([this, uri = std::move(uri), preview = std::move(preview), index, crop, trim, scale, w, h] {
             {
                 std::unique_lock lock(_mutex);
                 if (_cv.wait_for(lock, std::chrono::duration<double>(finer_head_start()), [this] { return _first_done; })) {
@@ -659,9 +675,7 @@ public:
             }
             auto const start = std::chrono::steady_clock::now();
             std::optional<Picture> picture;
-            GError *error = nullptr;
-            std::unique_ptr<PopplerDocument, Unref> document(poppler_document_new_from_file(uri.c_str(), nullptr, &error));
-            if (error) g_error_free(error);
+            auto document = open_pages(uri, preview);
             if (document) {
                 std::unique_ptr<PopplerPage, Unref> page(poppler_document_get_page(document.get(), index));
                 if (page) {
@@ -1002,9 +1016,11 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     gchar *uri = g_filename_to_uri(absolute, nullptr, &gerror);
     g_free(absolute);
     std::unique_ptr<PopplerDocument, Unref> pages;
+    std::shared_ptr<std::string const> page_preview;
+    if (auto bytes = rgb_overprint_preview(*pdf)) page_preview = std::make_shared<std::string const>(std::move(*bytes));
     std::string page_uri; // For a heavy page's finer drawing, in a document of its own.
     if (uri) {
-        pages.reset(poppler_document_new_from_file(uri, nullptr, &gerror));
+        pages = open_pages(uri, page_preview);
         page_uri = uri;
         g_free(uri);
     }
@@ -1053,7 +1069,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
     view.emplace(doc);
     std::size_t worst = 0;
     if (!diagnostic_directory.empty()) g_mkdir_with_parents(diagnostic_directory.c_str(), 0700);
-    PageStore store(path, cache);
+    PageStore store(path, cache, page_preview ? "-rgb-overprint-1" : "");
     double slowest_once = 0; // The longest a page took that was weighed once, being slow.
     for (std::size_t i = 0; i < compared; ++i) {
         auto *page = pdf->getCatalog()->getPage(int(i) + 1);
@@ -1108,7 +1124,7 @@ std::optional<AiNativeOpen> open_checked(std::string const &path, std::string &r
             ++result.pages_reused;
         } else {
             // A heavy page's finer drawing starts beside the first (FinerBeside).
-            if (!page_uri.empty()) beside.emplace(page_uri, int(i), crop, trim, scale, w, h);
+            if (!page_uri.empty()) beside.emplace(page_uri, page_preview, int(i), crop, trim, scale, w, h);
             page_picture = draw_timed(1, page_seconds);
             if (beside) beside->first_done();
             store.keep(page_name, page_picture, page_seconds);

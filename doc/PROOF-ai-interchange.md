@@ -128,16 +128,32 @@ inside opacity masks refuse safely; the extra setting is not labelled Dither
 without a confirming control.
 [Format and measured comparisons](PROOF-ai-interchange-history.md#native-oklab-gradients-2026-10-22).
 
-### RGB PDF overprint: remaining disagreement
+### RGB PDF overprint
 
-Illustrator represents some mixed spot/process gradients using overlapping
-Separation and DeviceRGB shadings marked `/MultiChannelPaint`. Poppler does not
-simulate their overprint in PROOF's page check or PDF import, so those pages
-show one ramp alone and can reject otherwise supported native artwork. The
-native gradient renderer already draws the intended mixed ramp. Correcting the
-PDF reference/import path is next; changing the native ramp or loosening the
-comparison gate would conceal the problem.
-[Colour contract and measurements](PROOF-document-colors.md#an-ink-beside-process-colour-2026-10-22).
+The page comparison and default editable PDF importer now simulate the bounded
+`/MultiChannelPaint` pairs Illustrator writes: a Separation axial/radial shading
+followed by an overprinted DeviceRGB shading on an explicitly RGB transparency
+page. A disposable PDF preview gives that second shading Multiply appearance;
+the original file and its separations are untouched. Resource/state dictionaries
+are copied per page, leaving soft-mask Forms and other pages unchanged. SVG
+import retains both editable ramps and their compositing. DeviceGray soft-mask
+paint remains numeric coverage rather than being converted to print grey.
+
+This is deliberately limited: at most 100 MB input, 256 pages, 8 MB of content
+per page, complete known graphics states and exactly two shadings per marked
+pair. Pages containing XObject calls or inline images, nested marked paints,
+states shared with other artwork, other blend/overprint modes and other colour
+space combinations retain existing handling. The optional Cairo-to-SVG importer
+is unchanged: its compositing-filter bounds need separate work. Embedded foreign
+PDF overprint remains outside that importer's bounded subset.
+
+The Illustrator-saved RGB mixed-gradient control now opens natively; canvas
+samples differ from Illustrator by at most 13 display levels and the default
+PDF import by 11. The visual gate is unchanged. Both concurrent comparison
+drawings use the same preview bytes; only corrected documents get a new cache
+identity, preserving unrelated heavy-page cache entries.
+[Implementation and controls](PROOF-ai-interchange-history.md#rgb-pdf-overprint-2026-10-22).
+[Colour contract](PROOF-document-colors.md#an-ink-beside-process-colour-2026-10-22).
 
 ## Linked PDF/AI pages
 
@@ -178,8 +194,8 @@ and visual acceptance are separate from complete Illustrator editability.
 Subsequent changes use affected units, export controls and copied lite cases;
 a new full census waits for an agreed feature-family milestone.
 
-Next: bounded RGB PDF overprint support; newer-Illustrator Oklab qualification
-and remaining extended-setting controls; additional connected/folded mesh
+Next: newer-Illustrator Oklab qualification and remaining extended-setting
+controls; additional connected/folded mesh
 qualification; then agree the native-type writing subset. Type remains last.
 PDF spot separations, PDF/X, full press soft proofing and physical print matching
 are unfinished or unqualified.

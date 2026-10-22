@@ -2487,3 +2487,14 @@ same 0.2% throughout. Test: `AFinerDrawingBesideTheFirstGivesTheSameResult`
 finer drawing beside the first as after it, and the one used is the one drawn
 beside; `PROOF_AI_FINER_HEAD_START` for tests). Importer suite 183; the whole
 lite set 23 of 23.
+
+## RGB overprint in the page comparison (2026-10-22)
+
+The page check now uses a disposable appearance PDF for the supported
+`/MultiChannelPaint` Separation/DeviceRGB pairs, with the same preview bytes in
+both drawing threads. The original input and the visual thresholds are unchanged.
+Only corrected documents get a new reference-cache identity; ordinary slow-page
+entries remain usable. Default editable PDF import uses the same correction.
+The Illustrator-saved RGB mixed-gradient control now returns natively.
+[Current scope](PROOF-ai-interchange.md#rgb-pdf-overprint) and
+[format/qualification](PROOF-ai-interchange-history.md#rgb-pdf-overprint-2026-10-22).

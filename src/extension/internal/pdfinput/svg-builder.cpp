@@ -434,6 +434,12 @@ std::string SvgBuilder::convertGfxColor(const GfxColor &color, GfxColorSpace *sp
                                         bool as_paint)
 {
     using Colors::Space::Type;
+    // In a soft mask DeviceGray is coverage, not a print ink. Turning 50% mask
+    // grey into 50K applies the working CMYK profile and changes the opacity.
+    if (!_mask_groups.empty() && space->getMode() == csDeviceGray) {
+        double const value = colToDbl(color.c[0]);
+        return Colors::Color(Type::RGB, {value, value, value}).toString();
+    }
     auto icc_space = _icc_profile ? _icc_profile->getColorSpace() : cmsSigXYZData;
     auto &cm = Colors::Manager::get();
 
@@ -935,6 +941,7 @@ void SvgBuilder::addShadedFill(GfxState *state, GfxShading *shading, const Geom:
     sp_repr_css_set_property(css, "stroke", "none");
     sp_repr_css_change(path_node, css, "style");
     sp_repr_css_attr_unref(css);
+    _setBlendMode(path_node, state);
 }
 
 /**

@@ -2598,3 +2598,46 @@ no interior-artwork difference is inferred from the count or saved dates.
 The older project's existing fallback
 remains; repairing its artwork is separate. No new census or native-acceptance
 gain is claimed, and the large file was not imported or rendered.
+
+## RGB PDF overprint (2026-10-22)
+
+The former RGB spot-gradient preview disagreement is resolved for the qualified
+Illustrator `/MultiChannelPaint` pairs. `rgb-overprint.cpp` parses bounded page
+content and finds exactly two axial/radial shadings: Separation then overprinted
+DeviceRGB, in complete known Normal/OPM-1 states on a DeviceRGB transparency
+page. A state used by any unmarked/unsupported art is excluded. Inline images,
+XObject calls, nested marked paint, knockout pages and larger inputs are outside
+the preview subset. Limits: 100 MB source, 256 pages, 8 MB content per page,
+one million parser tokens and 4096 marked pairs. This is RGB appearance
+simulation, not general overprint or PDF spot separation output.
+
+The helper deep-copies page resources and resolved graphics states, sets the
+second shading's preview blend to Multiply, and serializes a disposable PDF.
+It never writes the input. Inherited resources, original indirect states and
+soft-mask Form resources stay intact. The reader's normal and finer drawings,
+including the separate thread, each open those same preview bytes. Corrected
+files use a distinct reference-cache identity; ordinary heavy-page cache keys
+stay unchanged. The workbench fingerprints the new helper too.
+
+Default editable PDF import reads that preview, keeps both vector gradients and
+now applies shading blend modes. DeviceGray inside a soft mask stays numeric
+coverage; treating 50% grey as 50K applied the CMYK profile and changed opacity.
+Ordinary grey PDF paint still retains its black channel. The optional
+Cairo-to-SVG route remains unchanged: the new control exposed clipping of its
+compositing filters near a radial edge, so it is not included in this correction.
+The foreign-object PDF subset still explicitly refuses overprint.
+
+The previously saved Illustrator 29.2.1 RGB control now returns natively. Against
+its existing Illustrator rendering, cell interiors differ by at most 13 display
+levels on the native canvas and 11 after default PDF import (before, more than
+100 in ink cells). The control and its intake source remain byte-identical.
+No new Illustrator session or full corpus/census was run. The original 1%
+lightness / 2% colour gate is unchanged.
+
+Checks and local evidence: `artifacts/pdf-overprint-20261022/`. The new
+`pdf-rgb-overprint-smoke.py` exercises linear/radial pairs, luminosity masks,
+unmarked/shared states, vector output and source integrity. Targeted import
+units cover the independent PDF comparison, wrong-native-art rejection,
+unsupported/shared-state guards, finer-thread parity, caches and existing
+foreign-PDF refusal/CMYK paint controls. One affected lite case is unchanged. Final checks: 12 targeted units, 92
+synthetic PDF checks and 19 existing-Illustrator-control checks, all passing.

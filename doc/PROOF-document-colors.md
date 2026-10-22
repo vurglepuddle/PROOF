@@ -422,3 +422,18 @@ reach the ends, PDF output's vector the canvas's); `test_ai-native-import`
 181; 15 export groups, 361 checks (with only the canvas changed, the
 gradient-paint control's written `.ai` fell back to its page: the reason PDF
 output follows); the lite gradient, non-CMYK spot and mesh cases 7 of 7.
+
+### RGB PDF overprint preview follows the mixed ramp (2026-10-22)
+
+The RGB page-check/import limit above is now corrected for the bounded
+`/MultiChannelPaint` Separation/DeviceRGB pairs. A disposable PDF preview uses
+Multiply on the second shading; the source's ink records and PDF separations
+are untouched. Both comparison threads and the default editable PDF importer
+use it. The qualified Illustrator-saved RGB control now opens natively, within
+13 display levels of Illustrator; default PDF import is within 11. Unknown,
+shared-state and broader overprint forms remain outside this simulation; the
+optional Cairo-to-SVG route and embedded foreign-PDF subset are unchanged.
+DeviceGray soft-mask art also keeps its numeric coverage instead of going
+through print-black conversion. Ordinary PDF grey paint still retains K.
+[Current scope](PROOF-ai-interchange.md#rgb-pdf-overprint) and
+[qualification](PROOF-ai-interchange-history.md#rgb-pdf-overprint-2026-10-22).

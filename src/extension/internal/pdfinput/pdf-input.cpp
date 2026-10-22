@@ -26,6 +26,7 @@
 #include <OptionalContent.h>
 #include <PDFDoc.h>
 #include <Page.h>
+#include <Stream.h>
 #include <goo/GooString.h>
 
 #ifdef HAVE_POPPLER_CAIRO
@@ -59,6 +60,7 @@
 #include <cmath>
 #include <string_view>
 #include <utility>
+#include <type_traits>
 
 #include "ai-native-open.h"
 #include "async/async.h"
@@ -69,6 +71,7 @@
 #include "inkscape.h"
 #include "object/sp-root.h"
 #include "pdf-parser.h"
+#include "rgb-overprint.h"
 #include "preferences.h"
 #include "ui/builder-utils.h"
 #include "ui/dialog-events.h"
@@ -81,6 +84,13 @@
 using namespace Inkscape::UI;
 
 namespace {
+
+template <typename StreamPointer>
+std::shared_ptr<PDFDoc> memory_pdf(StreamPointer stream)
+{
+    if constexpr (std::is_constructible_v<PDFDoc, StreamPointer>) return std::make_shared<PDFDoc>(std::move(stream));
+    else return std::make_shared<PDFDoc>(stream.release());
+}
 
 void sanitize_page_number(int &page_num, const int num_pages) {
     if (page_num < 1 || page_num > num_pages) {
@@ -723,6 +733,7 @@ std::unique_ptr<SPDocument> PdfInput::open(Input *mod, char const *uri, bool)
 
     // Open the file using poppler
     // PDFDoc is from poppler. PDFDoc is used for preview and for native import.
+    std::optional<std::string> overprint_preview; // Outlives the memory PDF that borrows these bytes.
     std::shared_ptr<PDFDoc> pdf_doc;
 
     // poppler does not use glib g_open. So on win32 we must use unicode call. code was copied from
@@ -756,6 +767,16 @@ std::unique_ptr<SPDocument> PdfInput::open(Input *mod, char const *uri, bool)
         }
 
         return nullptr;
+    }
+
+    overprint_preview = rgb_overprint_preview(*pdf_doc);
+    if (overprint_preview) {
+        Object null;
+        null.setToNull();
+        auto preview = memory_pdf(std::make_unique<MemStream>(overprint_preview->data(), 0,
+                                                              overprint_preview->size(), std::move(null)));
+        if (preview->isOk()) pdf_doc = std::move(preview);
+        else overprint_preview.reset();
     }
 
     std::optional<PdfImportDialog> dlg;
@@ -851,7 +872,9 @@ std::unique_ptr<SPDocument> PdfInput::open(Input *mod, char const *uri, bool)
         GError *error = NULL;
         /// @todo handle password
         /// @todo check if win32 unicode needs special attention
-        PopplerDocument* document = poppler_document_new_from_file(full_uri.c_str(), NULL, &error);
+        // The optional Cairo-to-SVG route has separate compositing/filter bounds limits.
+        // Keep its original page until that route can retain the simulated pairs faithfully.
+        PopplerDocument *document = poppler_document_new_from_file(full_uri.c_str(), nullptr, &error);
 
         if(error != NULL) {
             std::cerr << "PDFInput::open: error opening document: " << full_uri.raw() << std::endl;

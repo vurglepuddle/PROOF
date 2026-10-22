@@ -92,11 +92,12 @@ forms, advanced meshes and additional linked formats. Modern AI without usable
 PDF-compatible content is unsupported. Many imported live appearances retain
 their drawn result with an explicit note.
 
-The next reader/rendering task is Illustrator's RGB PDF `/MultiChannelPaint`
-overprint: Poppler currently shows one of the mixed ink/process ramps alone,
-affecting both the page comparison and PDF import. Unknown extended gradient
-settings still fail closed. Newer-Illustrator Oklab and additional mesh controls
-need qualification; native type writing stays last in the agreed order.
+The page comparison and default editable PDF importer now simulate the bounded
+RGB `/MultiChannelPaint` ink/process pairs Illustrator writes. The qualified RGB
+control returns natively; general overprint and the optional Cairo-to-SVG import
+remain outside this correction. Unknown extended gradient settings still fail
+closed. Next are newer-Illustrator Oklab and additional mesh qualification;
+native type writing stays last in the agreed order.
 
 Native AI output retains supported spot names and tints, but PDF spot plates
 and PDF/X remain separate work. Full CMYK transparency/knockout appearance,

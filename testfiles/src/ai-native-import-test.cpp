@@ -61,7 +61,11 @@
 #include "libnrtype/font-factory.h"
 #include "libnrtype/font-instance.h"
 #if defined(WITH_POPPLER) && defined(HAVE_POPPLER_CAIRO)
+#include <Dict.h>
+#include <PDFDoc.h>
+#include "extension/internal/pdfinput/poppler-transition-api.h"
 #include "extension/internal/pdfinput/ai-native-open.h"
+#include "extension/internal/pdfinput/rgb-overprint.h"
 #endif
 #if defined(WITH_POPPLER) && defined(WITH_CAPYPDF)
 #include <cstdint>
@@ -339,7 +343,8 @@ protected:
 // its own box; changing either half exercises the safety net rather than the parser.
 std::string fixture(std::string const &native, std::vector<std::string> const &contents,
                     std::string const &boxes = "/MediaBox [0 0 200 100] /TrimBox [0 0 200 100]",
-                    std::string const &font = {}, std::string const &profile = {}, std::string const &shading = {})
+                    std::string const &font = {}, std::string const &profile = {}, std::string const &shading = {},
+                    std::string const &extra_resources = {})
 {
     std::map<int, std::string> objects;
     objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -365,7 +370,7 @@ std::string fixture(std::string const &native, std::vector<std::string> const &c
         objects[id] = shading;
         resources += " /Shading << /S1 " + std::to_string(id) + " 0 R >>";
     }
-    resources = "<<" + resources + " >>";
+    resources = "<<" + resources + extra_resources + " >>";
     for (std::size_t i = 0; i < contents.size(); ++i) {
         int const p = 5 + int(i) * 2;
         kids += std::to_string(p) + " 0 R ";
@@ -5238,6 +5243,94 @@ TEST_F(AiNativeImportTest, IndependentThresholdsCheckedOnEveryPage)
     EXPECT_GT(d->differences[1].lightness, Extension::Internal::AI_NATIVE_MAX_LIGHTNESS);
     EXPECT_FALSE(Extension::Internal::open_ai_native(path, reason));
     EXPECT_NE(reason.find("artboard 2"), std::string::npos);
+}
+
+namespace {
+std::string overprint_resources()
+{
+    auto state = [](bool op) {
+        return std::string("<< /Type /ExtGState /BM /Normal /CA 1 /ca 1 /OPM 1 /SMask /None /op ") +
+               (op ? "true /OP true" : "false /OP false") + " >>";
+    };
+    return " /ExtGState << /Base " + state(false) + " /Ink " + state(true) + " >>"
+           " /Shading << /Spot << /ShadingType 2 /Coords [10 20 90 20] /Extend [true true]"
+           " /ColorSpace [/Separation /TestInk /DeviceRGB << /FunctionType 2 /Domain [0 1]"
+           " /C0 [1 1 1] /C1 [0.2 0.8 0.4] /N 1 >>]"
+           " /Function << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [1] /N 1 >> >>"
+           " /Process << /ShadingType 2 /Coords [10 20 90 20] /Extend [true true]"
+           " /ColorSpace /DeviceRGB /Function << /FunctionType 2 /Domain [0 1]"
+           " /C0 [0.5 0.5 0.5] /C1 [0.5 0.5 0.5] /N 1 >> >> >>";
+}
+std::string const overprint_boxes = "/MediaBox [0 0 200 100] /Group << /S /Transparency /CS /DeviceRGB /I false /K false >>";
+std::string const overprint_pair = "/MultiChannelPaint << >> BDC q 10 20 80 40 re W n "
+                                    "q /Base gs /Spot sh Q q /Ink gs /Process sh Q Q EMC";
+}
+
+TEST_F(AiNativeImportTest, RgbOverprintPageChecksItsCombinedColourWithoutChangingTheSource)
+{
+    auto const native = records(layer("0.1 0.4 0.2 Xa\n" + rect), {}, false);
+    auto const path = fixture(native, {overprint_pair}, overprint_boxes, {}, {}, {}, overprint_resources());
+    auto bytes = [](std::string const &path) {
+        std::ifstream in(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    auto const before = bytes(path);
+    std::string reason;
+    auto result = Extension::Internal::open_ai_native(path, reason);
+    ASSERT_TRUE(result) << reason;
+    EXPECT_LT(result->differences[0].colour, 0.001);
+    EXPECT_LT(result->differences[0].lightness, 0.001);
+    EXPECT_EQ(bytes(path), before);
+    // Wrong native art must still fail against the corrected, independent PDF.
+    auto const wrong = fixture(records(layer("1 0 0 Xa\n" + rect), {}, false), {overprint_pair},
+                               overprint_boxes, {}, {}, {}, overprint_resources());
+    EXPECT_FALSE(Extension::Internal::open_ai_native(wrong, reason));
+    EXPECT_NE(reason.find("draws differently"), std::string::npos) << reason;
+
+    // Hairlines force the finer reference to be USED, not just drawn then discarded.
+    // A thread of its own must use the preview bytes, not reopen the uncorrected file.
+    std::string lines, page_lines;
+    for (int y = 10; y <= 90; y += 4) {
+        auto const at = std::to_string(y);
+        lines += "10 " + at + " m 190 " + at + " L S\n";
+        page_lines += " 10 " + at + " m 190 " + at + " l S";
+    }
+    auto const thin = fixture(records(layer("0.1 0.4 0.2 Xa\n" + rect + "0 G 0.12 w\n" + lines), {}, false),
+                              {overprint_pair + " q /Base gs 0 G 0.12 w" + page_lines + " Q"},
+                              overprint_boxes, {}, {}, {}, overprint_resources());
+    auto alone = Extension::Internal::open_ai_native(thin, reason, Extension::Internal::AiKeepDiffering::All);
+    ASSERT_TRUE(alone) << reason;
+    g_setenv("PROOF_AI_FINER_HEAD_START", "0", true);
+    auto cleanup = scope_exit([] { g_unsetenv("PROOF_AI_FINER_HEAD_START"); });
+    auto beside = Extension::Internal::open_ai_native(thin, reason, Extension::Internal::AiKeepDiffering::All);
+    ASSERT_TRUE(beside) << reason;
+    EXPECT_FALSE(beside->differing);
+    EXPECT_DOUBLE_EQ(alone->differences[0].colour, beside->differences[0].colour);
+    EXPECT_DOUBLE_EQ(alone->differences[0].lightness, beside->differences[0].lightness);
+}
+
+TEST_F(AiNativeImportTest, RgbOverprintPreviewOnlyChangesExclusivelyMarkedPairs)
+{
+    auto preview = [&](std::string const &content, std::string const &boxes = overprint_boxes,
+                       std::string const &resources = overprint_resources()) {
+        auto const path = fixture({}, {content}, boxes, {}, {}, {}, resources);
+        auto pdf = _POPPLER_MAKE_SHARED_PDFDOC(path.c_str());
+        return Extension::Internal::rgb_overprint_preview(*pdf);
+    };
+    EXPECT_TRUE(preview(overprint_pair));
+    EXPECT_FALSE(preview("q /Base gs /Spot sh /Ink gs /Process sh Q"));
+    EXPECT_FALSE(preview(overprint_pair, "/MediaBox [0 0 200 100]"));
+    EXPECT_FALSE(preview(overprint_pair + " q /Ink gs /Process sh Q")); // Shared with unmarked art.
+    EXPECT_FALSE(preview(overprint_pair + " /Image Do")); // Inherited resources are outside the subset.
+    EXPECT_FALSE(preview("/MultiChannelPaint BMC q /Base gs /Spot sh /Ink gs /Process sh /Process sh Q EMC"));
+    EXPECT_FALSE(preview("/MultiChannelPaint BMC q /Base gs /Spot sh /Ink gs 0 g 10 20 80 40 re f Q EMC"));
+    EXPECT_FALSE(preview("/MultiChannelPaint BMC q /Ink gs /Process sh /Base gs /Spot sh Q EMC"));
+    auto resources = overprint_resources();
+    auto at = resources.find("/OPM 1", resources.find("/Ink"));
+    ASSERT_NE(at, resources.npos);
+    resources.replace(at, 6, "/OPM 0");
+    EXPECT_FALSE(preview(overprint_pair, overprint_boxes, resources));
+    EXPECT_FALSE(preview(overprint_pair + " EMC")); // Unbalanced marked content cannot change a state.
 }
 
 TEST_F(AiNativeImportTest, DiagnosticCachesReuseAndRecoverFromDamage)

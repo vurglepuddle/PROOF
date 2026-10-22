@@ -230,6 +230,7 @@ if(WITH_POPPLER)
         internal/pdfinput/pdf-parser.cpp
         internal/pdfinput/svg-builder.cpp
         internal/pdfinput/ai-native-open.cpp
+        internal/pdfinput/rgb-overprint.cpp
         internal/pdfinput/ai-native-foreign.cpp
         internal/pdfinput/ai-private-data.cpp
         internal/pdfinput/placed-page.cpp
@@ -242,6 +243,7 @@ if(WITH_POPPLER)
         internal/pdfinput/pdf-parser.h
         internal/pdfinput/svg-builder.h
         internal/pdfinput/ai-native-open.h
+        internal/pdfinput/rgb-overprint.h
         internal/pdfinput/ai-native-foreign.h
         internal/pdfinput/ai-private-data.h
         internal/pdfinput/placed-page.h
