@@ -290,6 +290,28 @@ acceptance are not part of this round. The qualified CMYK comparison uses
 the supplied SWOP v2 controls; other RGB working-space setups need separate
 qualification rather than a claim of exact Illustrator agreement.
 
+### Illustrator 30.6 return qualification (2026-10-23)
+
+Two synthetic RGB/CMYK documents from `209a170c14` were opened in Illustrator
+30.6.0, saved in its newest non-legacy AI format with PDF compatibility and ICC
+embedding, and exported at 72 ppi, artboard bounds, white, Art Optimized. All
+four objects retain their expected Classic/Perceptual methods, original stops
+and channels, 35% linear and 60/40% radial midpoints, 65% final radial opacity
+and 13.5-pt stroke. Both returns reopen natively with identical original stop
+vectors and a byte-preserved CMYK SWOP profile. Six focused reader/importer
+tests pass. No artwork corpus or broader setting qualification was run.
+
+The supplied references and Illustrator PNGs are **not pixel-identical**.
+Perceptual linear interiors differ by mean/max 9.436/23 RGB and 7.909/27 CMYK
+display-channel levels. RGB Classic and the symmetric Perceptual stroke agree
+within one level. A diagnostic of the RGB 35% ramp gives mean/max .346/1.351
+for `1-(1-u)^(log(.5)/log(1-m))`, versus 9.427/23.282 for the current
+`u^(log(.5)/log(m))` mapping. The radial also favours mirroring its .4 interval
+while keeping its .6 interval unchanged. This suggests a midpoint-dependent
+mirrored branch below .5, but is not a generally qualified replacement.
+No sampler or acceptance threshold was changed. Dither-on, freeform, named-ink
+Perceptual and other profile controls remain open.
+
 ## A CMYK document's gradients and meshes blended in CMYK on the screen (2026-10-22)
 
 The owner, 2026-10-22: "of course we want gradients blended in CMYK".
