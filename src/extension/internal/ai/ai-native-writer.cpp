@@ -13,6 +13,7 @@
 #include "ai-native-writer.h"
 #include "ai-native-writer-gradient.h"
 #include "ai-native-writer-ink.h"
+#include "ai-native-writer-mesh.h"
 #include "ai-native-writer-picture.h"
 #include "ai-native-writer-string.h"
 
@@ -20,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <format>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -164,6 +166,7 @@ private:
     void item(SPItem const *item);
     void contents(SPObject const *parent);
     void shape(SPShape const *shape, bool clipped);
+    void mesh_shape(SPShape const *shape, SPMeshGradient const *mesh, bool clipped, std::function<void()> const &attach);
     void check_effects(SPItem const *item, std::string_view where = {});
     std::string transparency(SPItem const *item, double alpha = 1.0);
     void end_group(std::string_view own);
@@ -802,6 +805,78 @@ void Writer::shape(SPShape const *s, bool clipped)
     _body << "*U\n";
 }
 
+/**
+ * A shape filled with a mesh gradient: Illustrator's gradient mesh (write_mesh), an object of its
+ * own, which has no stroke and is its own outline. Where the shape's outline isn't the mesh's, the
+ * mesh goes in a clipping group of that outline, which takes the object's transparency and mask.
+ * `attach` writes the object's mask: after `/End X!` and before `0 0 Xd`, `6 () XW`, as
+ * Illustrator writes a mesh's dictionary.
+ */
+void Writer::mesh_shape(SPShape const *s, SPMeshGradient const *mesh, bool clipped, std::function<void()> const &attach)
+{
+    auto const *style = s->style;
+    if (!s->curve() || s->curve()->empty()) return;
+    // Gradient meshes came with Illustrator 8.
+    if (_legacy) {
+        refuse("mesh gradients (Illustrator 7)");
+        return;
+    }
+    if (_in_pattern) {
+        refuse("mesh gradients in patterns");
+        return;
+    }
+    if (!_masks.empty()) {
+        refuse("mesh gradients in opacity masks");
+        return;
+    }
+    if (s->hasMarkers()) refuse("markers");
+    if (style->stroke_width.computed > 0 && !style->stroke.isNone()) refuse("strokes on mesh-filled objects");
+    auto const overprint = s->getAttribute("proof:overprint");
+    if (overprint && std::string_view(overprint).find("fill") != std::string_view::npos) {
+        refuse("overprint on mesh gradients");
+    }
+    auto const affine = s->i2doc_affine() * _to_art;
+    auto const written = write_mesh(s, mesh, affine);
+    for (auto const &why : written.refused) refuse(why);
+    if (!_refused.empty()) return;
+    // The fill's own opacity is the object's, the mesh being its only paint (as in Writer::shape).
+    auto const own = transparency(clipped ? nullptr : s, scale24(style->fill_opacity.value));
+    bool const clip = !written.outlined;
+    bool const multiple = written.patches > 1;
+    bool const wrap = clip || multiple;
+    if (clip) {
+        // The region the shape fills, by its fill rule, clips the mesh.
+        auto pv = pathv_to_linear_and_cubic_beziers(*s->curve() * affine);
+        auto const types = path_types(s, pv, affine);
+        _body << "q\n";
+        state(_rule, style->fill_rule.computed == SP_WIND_RULE_EVENODD ? "1 XR" : "0 XR");
+        state(_transparency, std::string(OPAQUE));
+        if (pv.size() > 1) _body << "*u\n";
+        for (std::size_t i = 0; i < pv.size(); ++i) {
+            pv[i].close(true);
+            path_data(pv[i], types[i]);
+            _body << "h\nW\nn\n";
+        }
+        if (pv.size() > 1) _body << "*U\n";
+    } else if (multiple) {
+        _body << "u\n";
+    }
+    state(_fill_over, "0 O");
+    // Illustrator sets Gray black before every mesh it writes (its controls and files).
+    state(_fill, "0 g");
+    state(_transparency, wrap ? std::string(OPAQUE) : own);
+    _body << written.records;
+    if (!multiple) {
+        if (!wrap && !clipped) attach();
+        _body << "0 0 Xd\n6 () XW\n";
+    }
+    if (wrap) {
+        _body << (clip ? "Q\n" : "U\n");
+        if (!clipped) attach();
+        end_group(own);
+    }
+}
+
 /// `where` names what isn't an object (a layer, the document): the modern form writes an
 /// object's and a group's transparency, and refuses it there as Illustrator 7 does everywhere.
 void Writer::check_effects(SPItem const *it, std::string_view where)
@@ -1074,10 +1149,15 @@ void Writer::item(SPItem const *it)
             end_group(own);
         }
     } else if (auto s = cast<SPShape>(it)) {
-        auto const before = _body.tellp();
-        shape(s, clipped);
-        // A shape without a path writes nothing, and has nothing to mask.
-        if (!clipped && _body.tellp() != before) attach();
+        auto const &fill = s->style->fill;
+        if (auto const *mesh = cast<SPMeshGradient>(fill.isPaintserver() && fill.href ? fill.href->getObject() : nullptr)) {
+            mesh_shape(s, mesh, clipped, attach);
+        } else {
+            auto const before = _body.tellp();
+            shape(s, clipped);
+            // A shape without a path writes nothing, and has nothing to mask.
+            if (!clipped && _body.tellp() != before) attach();
+        }
     } else if (auto image = cast<SPImage>(it); image && _in_pattern) {
         refuse("pictures in patterns");
     } else if (image) {

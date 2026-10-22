@@ -564,6 +564,7 @@ public:
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
     std::size_t mesh_cut = 0; ///< Mesh patches bent through anchors, cut into cells there.
+    std::size_t mesh_split = 0; ///< Meshes drawn patch by patch: not one grid, or too many cells.
     std::size_t foreign_objects = 0;
     std::size_t hidden_foreign = 0;
     std::string foreign_error;
@@ -600,7 +601,10 @@ private:
     XML::Node *group(Node const &n);
     XML::Node *shape(Node const &n, Geom::PathVector const &pv, std::string const &nodetypes);
     XML::Node *mesh(Node const &n);
+    XML::Node *whole_mesh(Node const &n);
     XML::Node *mesh_cells(MeshPatch const &p);
+    XML::Node *mesh_grid(std::size_t across, std::size_t up, std::vector<MeshPatch const *> const &grid,
+                         std::vector<std::vector<double>> const &us, std::vector<std::vector<double>> const &vs);
     XML::Node *foreign(Node const &n);
     XML::Node *image(Node const &n);
     XML::Node *placed(Node const &n);
@@ -719,8 +723,8 @@ void Builder::run()
         auto const foreign = foreign_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
-                                       gradient_text, paragraph_styled_text, path_text, mesh_outlines, mesh_cut, foreign_objects,
-                                       hidden_foreign, unused_gradient_end_stops);
+                                       gradient_text, paragraph_styled_text, path_text, mesh_outlines, mesh_cut, mesh_split,
+                                       foreign_objects, hidden_foreign, unused_gradient_end_stops);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
         images_left_out = images;
@@ -728,7 +732,7 @@ void Builder::run()
         foreign_error = foreign;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
                  substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, path_text, mesh_outlines,
-                 mesh_cut, foreign_objects, hidden_foreign, unused_gradient_end_stops) = counts;
+                 mesh_cut, mesh_split, foreign_objects, hidden_foreign, unused_gradient_end_stops) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
             auto const *child_id = child->attribute("id");
@@ -1301,48 +1305,87 @@ struct MeshEdge
     }
 };
 
-} // namespace
-
-/** A mesh patch whose colour changes and whose edges bend through anchors, as the mesh
- * gradient Illustrator draws (gradient mesh controls, 2026-10-17): the Coons patch of its
- * edges, its colour the corners' blended by the patch's parameters, edge 0 running along u
- * and edge 3 back along v. Cut wherever an edge has an anchor, each cell's sides are exact
- * cubics of that surface, so the cells draw it exactly.
- */
-XML::Node *Builder::mesh_cells(MeshPatch const &p)
+/// What Illustrator draws of a mesh patch (gradient mesh controls, 2026-10-17): the Coons patch of
+/// its edges, edge 0 running along u and edge 3 back along v, its colour the corners' blended by
+/// the patch's parameters.
+struct CoonsPatch
 {
-    MeshEdge const e0(p.edges[0], _to_doc, false), e1(p.edges[1], _to_doc, false);
-    MeshEdge const e2(p.edges[2], _to_doc, true), e3(p.edges[3], _to_doc, true);
-    auto cuts = [](MeshEdge const &a, MeshEdge const &b) {
-        std::vector<double> c(a.knots);
-        c.insert(c.end(), b.knots.begin(), b.knots.end());
-        std::sort(c.begin(), c.end());
-        c.erase(std::unique(c.begin(), c.end(), [](double x, double y) { return y - x < 1e-9; }), c.end());
-        c.back() = 1.0;
-        return c;
-    };
-    auto const us = cuts(e0, e2), vs = cuts(e3, e1);
+    MeshPatch const *patch;
+    MeshEdge e0, e1, e2, e3;
     std::array<Geom::Point, 4> corner;
-    for (std::size_t k = 0; k < 4; ++k) corner[k] = p.corners[k].point * _to_doc;
 
+    CoonsPatch(MeshPatch const &p, Geom::Affine const &to)
+        : patch(&p)
+        , e0(p.edges[0], to, false)
+        , e1(p.edges[1], to, false)
+        , e2(p.edges[2], to, true)
+        , e3(p.edges[3], to, true)
+    {
+        for (std::size_t k = 0; k < 4; ++k) corner[k] = p.corners[k].point * to;
+    }
+    /// The cubic of each edge a cell lies against.
     struct At
     {
         std::size_t s0, s1, s2, s3;
     };
-    auto point = [&](double u, double v, At const &a) {
+    At at(double u0, double u1, double v0, double v1) const
+    {
+        return {e0.segment((u0 + u1) / 2), e1.segment((v0 + v1) / 2), e2.segment((u0 + u1) / 2),
+                e3.segment((v0 + v1) / 2)};
+    }
+    Geom::Point point(double u, double v, At const &a) const
+    {
         return e0.at(u, a.s0) * (1 - v) + e2.at(u, a.s2) * v + e3.at(v, a.s3) * (1 - u) + e1.at(v, a.s1) * u -
                (corner[0] * ((1 - u) * (1 - v)) + corner[1] * (u * (1 - v)) + corner[2] * (u * v) +
                 corner[3] * ((1 - u) * v));
-    };
-    auto along_u = [&](double u, double v, At const &a) {
+    }
+    Geom::Point along_u(double u, double v, At const &a) const
+    {
         return e0.slope(u, a.s0) * (1 - v) + e2.slope(u, a.s2) * v - e3.at(v, a.s3) + e1.at(v, a.s1) -
                ((corner[1] - corner[0]) * (1 - v) + (corner[2] - corner[3]) * v);
-    };
-    auto along_v = [&](double u, double v, At const &a) {
+    }
+    Geom::Point along_v(double u, double v, At const &a) const
+    {
         return e2.at(u, a.s2) - e0.at(u, a.s0) + e3.slope(v, a.s3) * (1 - u) + e1.slope(v, a.s1) * u -
                ((corner[3] - corner[0]) * (1 - u) + (corner[2] - corner[1]) * u);
-    };
-    auto stop_style = [&](double u, double v) {
+    }
+};
+
+/// Cuts from 0 to 1, each once: those of two edges across from each other, or of a row's.
+std::vector<double> merged(std::vector<double> c)
+{
+    std::sort(c.begin(), c.end());
+    c.erase(std::unique(c.begin(), c.end(), [](double x, double y) { return y - x < 1e-9; }), c.end());
+    c.back() = 1.0;
+    return c;
+}
+
+/// The cells one SVG mesh gradient may have: the reader's default limit of patches in a mesh.
+constexpr std::size_t MAX_MESH_CELLS = 4096;
+
+} // namespace
+
+/**
+ * Patches of a mesh as one SVG mesh gradient, cut into cells: column a of them at `us[a]`, row b
+ * at `vs[b]`, each a list of cuts from 0 to 1 along the patch's u or v. Each cell's sides are exact
+ * cubics of its patch's Coons surface, and that surface is the Coons patch of the cell's sides (it
+ * is linear in u or v term by term), so the cells draw the patches exactly; each cell's corners
+ * have the colour the patch has there. Patch [a b] of `grid` (at b * across + a) is row b, column
+ * a, each corner and side numbered as Illustrator's (corner k, the side from it to corner k + 1).
+ */
+XML::Node *Builder::mesh_grid(std::size_t across, std::size_t up, std::vector<MeshPatch const *> const &grid,
+                              std::vector<std::vector<double>> const &us, std::vector<std::vector<double>> const &vs)
+{
+    std::vector<CoonsPatch> surfaces;
+    surfaces.reserve(grid.size());
+    for (auto const *p : grid) surfaces.emplace_back(*p, _to_doc);
+    auto stop_style = [&](MeshPatch const &p, double u, double v) {
+        // Uncut patches can have a different model at each corner. At an original corner keep
+        // that exact colour; only new points between corners need interpolation in one model.
+        if ((u == 0 || u == 1) && (v == 0 || v == 1)) {
+            auto const &c = p.corners[v == 0 ? (u == 0 ? 0 : 1) : (u == 0 ? 3 : 2)];
+            return "stop-color:" + process(c.color).toString(false) + ";stop-opacity:" + num(c.opacity);
+        }
         double const w[4] = {(1 - u) * (1 - v), u * (1 - v), u * v, (1 - u) * v};
         Color color = p.corners[0].color;
         color.v = {};
@@ -1353,7 +1396,7 @@ XML::Node *Builder::mesh_cells(MeshPatch const &p)
         }
         return "stop-color:" + process(color).toString(false) + ";stop-opacity:" + num(opacity);
     };
-    auto side = [&](Geom::Point a, Geom::Point h1, Geom::Point h2, Geom::Point b) {
+    auto side = [&](Geom::Point h1, Geom::Point h2, Geom::Point b) {
         return "C " + num(h1.x()) + " " + num(h1.y()) + " " + num(h2.x()) + " " + num(h2.y()) + " " + num(b.x()) +
                " " + num(b.y());
     };
@@ -1362,52 +1405,198 @@ XML::Node *Builder::mesh_cells(MeshPatch const &p)
     auto const id = unique("mesh");
     gradient->setAttribute("id", id);
     gradient->setAttribute("gradientUnits", "userSpaceOnUse");
-    gradient->setAttribute("x", num(corner[0].x()));
-    gradient->setAttribute("y", num(corner[0].y()));
+    gradient->setAttribute("x", num(surfaces[0].corner[0].x()));
+    gradient->setAttribute("y", num(surfaces[0].corner[0].y()));
     // Rows and columns as Inkscape writes them (SPMeshNodeArray::write): a top side in the
     // first row only, a left side in the first column only, each colour on the corner its
     // side starts from.
-    for (std::size_t i = 0; i + 1 < vs.size(); ++i) {
-        auto row = create("svg:meshrow");
-        double const v0 = vs[i], v1 = vs[i + 1], dv = (v1 - v0) / 3;
-        for (std::size_t j = 0; j + 1 < us.size(); ++j) {
-            double const u0 = us[j], u1 = us[j + 1], du = (u1 - u0) / 3;
-            At const a{e0.segment((u0 + u1) / 2), e1.segment((v0 + v1) / 2), e2.segment((u0 + u1) / 2),
-                       e3.segment((v0 + v1) / 2)};
-            auto const p00 = point(u0, v0, a), p10 = point(u1, v0, a), p11 = point(u1, v1, a), p01 = point(u0, v1, a);
-            auto patch = create("svg:meshpatch");
-            auto add = [&](std::string const &path, std::optional<std::pair<double, double>> colour) {
-                auto stop = create("svg:stop");
-                stop->setAttribute("path", path);
-                if (colour) stop->setAttribute("style", stop_style(colour->first, colour->second));
-                append(patch, stop);
-            };
-            if (i == 0) {
-                add(side(p00, p00 + along_u(u0, v0, a) * du, p10 - along_u(u1, v0, a) * du, p10),
-                    j == 0 ? std::optional(std::pair(u0, v0)) : std::nullopt);
+    bool first_row = true;
+    for (std::size_t b = 0; b < up; ++b) {
+        for (std::size_t i = 0; i + 1 < vs[b].size(); ++i) {
+            auto row = create("svg:meshrow");
+            double const v0 = vs[b][i], v1 = vs[b][i + 1], dv = (v1 - v0) / 3;
+            bool first_column = true;
+            for (std::size_t a = 0; a < across; ++a) {
+                auto const &s = surfaces[b * across + a];
+                auto const &p = *s.patch;
+                for (std::size_t j = 0; j + 1 < us[a].size(); ++j) {
+                    double const u0 = us[a][j], u1 = us[a][j + 1], du = (u1 - u0) / 3;
+                    auto const at = s.at(u0, u1, v0, v1);
+                    auto const p00 = s.point(u0, v0, at), p10 = s.point(u1, v0, at), p11 = s.point(u1, v1, at),
+                               p01 = s.point(u0, v1, at);
+                    auto patch = create("svg:meshpatch");
+                    auto add = [&](std::string const &path, std::optional<std::pair<double, double>> colour) {
+                        auto stop = create("svg:stop");
+                        stop->setAttribute("path", path);
+                        if (colour) stop->setAttribute("style", stop_style(p, colour->first, colour->second));
+                        append(patch, stop);
+                    };
+                    if (first_row) {
+                        add(side(p00 + s.along_u(u0, v0, at) * du, p10 - s.along_u(u1, v0, at) * du, p10),
+                            first_column ? std::optional(std::pair(u0, v0)) : std::nullopt);
+                    }
+                    add(side(p10 + s.along_v(u1, v0, at) * dv, p11 - s.along_v(u1, v1, at) * dv, p11),
+                        first_row ? std::optional(std::pair(u1, v0)) : std::nullopt);
+                    add(side(p11 - s.along_u(u1, v1, at) * du, p01 + s.along_u(u0, v1, at) * du, p01), std::pair(u1, v1));
+                    if (first_column) {
+                        add(side(p01 - s.along_v(u0, v1, at) * dv, p00 + s.along_v(u0, v0, at) * dv, p00),
+                            std::pair(u0, v1));
+                    }
+                    append(row, patch);
+                    first_column = false;
+                }
             }
-            add(side(p10, p10 + along_v(u1, v0, a) * dv, p11 - along_v(u1, v1, a) * dv, p11),
-                i == 0 ? std::optional(std::pair(u1, v0)) : std::nullopt);
-            add(side(p11, p11 - along_u(u1, v1, a) * du, p01 + along_u(u0, v1, a) * du, p01), std::pair(u1, v1));
-            if (j == 0) {
-                add(side(p01, p01 - along_v(u0, v1, a) * dv, p00 + along_v(u0, v0, a) * dv, p00), std::pair(u0, v1));
-            }
-            append(row, patch);
+            append(gradient, row);
+            first_row = false;
         }
-        append(gradient, row);
     }
     append(_defs, gradient);
-    ++mesh_cut;
     return gradient;
+}
+
+/** A patch on its own as an SVG mesh gradient: its Coons patch, cut wherever an edge has an
+ * anchor (mesh_grid).
+ */
+XML::Node *Builder::mesh_cells(MeshPatch const &p)
+{
+    CoonsPatch const s(p, _to_doc);
+    auto cuts = [](MeshEdge const &a, MeshEdge const &b) {
+        std::vector<double> c(a.knots);
+        c.insert(c.end(), b.knots.begin(), b.knots.end());
+        return merged(std::move(c));
+    };
+    mesh_cut += std::any_of(p.edges.begin(), p.edges.end(), [](auto const &e) { return e.size() > 1; });
+    return mesh_grid(1, 1, {&p}, {cuts(s.e0, s.e2)}, {cuts(s.e3, s.e1)});
+}
+
+/**
+ * A mesh as Illustrator edits it, one grid: one SVG mesh gradient on its outline, which the writer
+ * gives back as one mesh. Its patches are cut into cells where their edges have anchors: a
+ * column at all of its patches' anchors along it, a row likewise, so neighbours share their cut
+ * sides (mesh_grid). Neighbours must share their corners, colours and sides, as Illustrator writes
+ * them; a patch that is cut, one colour model. Otherwise, or past MAX_MESH_CELLS cells, nothing,
+ * and each patch is drawn on its own; so is one patch of one colour bent through anchors, which
+ * is its outline.
+ */
+XML::Node *Builder::whole_mesh(Node const &n)
+{
+    auto const &m = n.mesh;
+    auto const across = m.size[0], up = m.size[1];
+    if (!across || !up || m.patches.size() != across * up) return nullptr;
+    std::vector<MeshPatch const *> grid(across * up, nullptr);
+    for (auto const &p : m.patches) {
+        if (p.place[0] >= across || p.place[1] >= up) return nullptr;
+        auto &slot = grid[p.place[1] * across + p.place[0]];
+        if (slot) return nullptr;
+        slot = &p;
+    }
+    if (grid.size() == 1 && grid[0]->outlined) return nullptr;
+    auto at = [&](std::size_t a, std::size_t b) -> MeshPatch const & { return *grid[b * across + a]; };
+    auto near = [](Geom::Point const &p, Geom::Point const &q) { return Geom::distance(p, q) <= 1e-4; };
+    auto same_corner = [&](MeshCorner const &c, MeshCorner const &d) {
+        return near(c.point, d.point) && c.color == d.color && std::abs(c.opacity - d.opacity) <= 1e-6;
+    };
+    // `y` is the same side as `x`, run the other way.
+    auto same_side = [&](std::vector<Geom::CubicBezier> const &x, std::vector<Geom::CubicBezier> const &y) {
+        if (x.size() != y.size()) return false;
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            auto const &c = x[i], &d = y[y.size() - 1 - i];
+            for (unsigned k = 0; k < 4; ++k) {
+                if (!near(c[k], d[3 - k])) return false;
+            }
+        }
+        return true;
+    };
+    for (std::size_t b = 0; b < up; ++b) {
+        for (std::size_t a = 0; a < across; ++a) {
+            auto const &p = at(a, b);
+            if (a + 1 < across) {
+                // Its side from corner 1 to 2 is the next one's from 3 to 0.
+                auto const &q = at(a + 1, b);
+                if (!same_corner(p.corners[1], q.corners[0]) || !same_corner(p.corners[2], q.corners[3]) ||
+                    !same_side(p.edges[1], q.edges[3])) {
+                    return nullptr;
+                }
+            }
+            if (b + 1 < up) {
+                // Its side from corner 2 to 3 is the one above's from 0 to 1.
+                auto const &q = at(a, b + 1);
+                if (!same_corner(p.corners[3], q.corners[0]) || !same_corner(p.corners[2], q.corners[1]) ||
+                    !same_side(p.edges[2], q.edges[0])) {
+                    return nullptr;
+                }
+            }
+        }
+    }
+    // Where each column and row is cut: at every anchor of its patches' edges along it.
+    std::vector<std::vector<double>> us(across), vs(up);
+    for (std::size_t a = 0; a < across; ++a) {
+        std::vector<double> c;
+        for (std::size_t b = 0; b < up; ++b) {
+            for (int k : {0, 2}) {
+                auto const knots = MeshEdge(at(a, b).edges[k], _to_doc, k == 2).knots;
+                c.insert(c.end(), knots.begin(), knots.end());
+            }
+        }
+        us[a] = merged(std::move(c));
+    }
+    for (std::size_t b = 0; b < up; ++b) {
+        std::vector<double> c;
+        for (std::size_t a = 0; a < across; ++a) {
+            for (int k : {1, 3}) {
+                auto const knots = MeshEdge(at(a, b).edges[k], _to_doc, k == 3).knots;
+                c.insert(c.end(), knots.begin(), knots.end());
+            }
+        }
+        vs[b] = merged(std::move(c));
+    }
+    std::size_t columns = 0, rows = 0;
+    for (auto const &u : us) columns += u.size() - 1;
+    for (auto const &v : vs) rows += v.size() - 1;
+    if (columns * rows > MAX_MESH_CELLS) return nullptr;
+    // A cell's colour blends its patch's corners, in one model.
+    for (std::size_t b = 0; b < up; ++b) {
+        for (std::size_t a = 0; a < across; ++a) {
+            auto const &c = at(a, b).corners;
+            bool const cut = us[a].size() > 2 || vs[b].size() > 2;
+            if (cut && std::any_of(c.begin(), c.end(), [&](MeshCorner const &k) { return k.color.model != c[0].color.model; })) {
+                return nullptr;
+            }
+        }
+    }
+
+    auto gradient = mesh_grid(across, up, grid, us, vs);
+    for (auto const *p : grid) {
+        mesh_cut += std::any_of(p->edges.begin(), p->edges.end(), [](auto const &e) { return e.size() > 1; });
+    }
+    // The outline as Illustrator has it, anchors and all: the first row's edge 0, the last
+    // column's edge 1, the last row's edge 2 and the first column's edge 3, around from the
+    // first patch's corner 0.
+    Geom::Path outline(at(0, 0).corners[0].point * _to_doc);
+    auto edge = [&](MeshPatch const &p, std::size_t k) {
+        for (auto const &c : p.edges[k]) outline.appendNew<Geom::CubicBezier>(c[1] * _to_doc, c[2] * _to_doc, c[3] * _to_doc);
+    };
+    for (std::size_t a = 0; a < across; ++a) edge(at(a, 0), 0);
+    for (std::size_t b = 0; b < up; ++b) edge(at(across - 1, b), 1);
+    for (std::size_t a = across; a-- > 0;) edge(at(a, up - 1), 2);
+    for (std::size_t b = up; b-- > 0;) edge(at(0, b), 3);
+    outline.close(true);
+
+    auto path = create("svg:path");
+    path->setAttribute("d", sp_svg_write_path(Geom::PathVector{outline}));
+    std::string style = "fill:url(#" + std::string(gradient->attribute("id")) + ");stroke:none;";
+    common(path, n, style);
+    path->setAttribute("style", style);
+    path->setAttribute("proof:ai-mesh", "true");
+    path->setAttribute("proof:mesh-object", "true");
+    return path;
 }
 
 XML::Node *Builder::mesh(Node const &n)
 {
-    auto e = create("svg:g");
-    std::string style;
-    common(e, n, style);
-    if (!style.empty()) e->setAttribute("style", style);
-    e->setAttribute("proof:ai-mesh", "true");
+    if (auto whole = whole_mesh(n)) return whole;
+    if (n.mesh.patches.size() > 1) ++mesh_split;
+    std::vector<XML::Node *> paths;
     for (auto const &p : n.mesh.patches) {
         auto path = create("svg:path");
         path->setAttribute("d", sp_svg_write_path(p.boundary * _to_doc));
@@ -1416,36 +1605,23 @@ XML::Node *Builder::mesh(Node const &n)
             ++mesh_outlines;
             fill = process(p.corners[0].color).toString(false) + ";fill-opacity:" + num(p.corners[0].opacity);
             path->setAttribute("proof:mesh-outline", "true");
-        } else if (std::any_of(p.edges.begin(), p.edges.end(), [](auto const &e) { return e.size() > 1; })) {
-            fill = "url(#" + std::string(mesh_cells(p)->attribute("id")) + ")";
         } else {
-            auto gradient = create("svg:meshgradient");
-            auto const id = unique("mesh");
-            gradient->setAttribute("id", id);
-            gradient->setAttribute("gradientUnits", "userSpaceOnUse");
-            auto const start = p.corners[0].point * _to_doc;
-            gradient->setAttribute("x", num(start.x()));
-            gradient->setAttribute("y", num(start.y()));
-            auto row = create("svg:meshrow");
-            auto patch = create("svg:meshpatch");
-            for (std::size_t i = 0; i < 4; ++i) {
-                auto const &a = p.corners[i], &b = p.corners[(i + 1) % 4];
-                auto const h1 = a.next * _to_doc, h2 = b.previous * _to_doc, end = b.point * _to_doc;
-                auto stop = create("svg:stop");
-                stop->setAttribute("path", "C " + num(h1.x()) + " " + num(h1.y()) + " " +
-                                   num(h2.x()) + " " + num(h2.y()) +
-                                   (i == 3 ? "" : " " + num(end.x()) + " " + num(end.y())));
-                stop->setAttribute("style", "stop-color:" + process(a.color).toString(false) +
-                                   ";stop-opacity:" + num(a.opacity));
-                append(patch, stop);
-            }
-            append(row, patch);
-            append(gradient, row);
-            append(_defs, gradient);
-            fill = "url(#" + id + ")";
+            fill = "url(#" + std::string(mesh_cells(p)->attribute("id")) + ")";
+            path->setAttribute("proof:mesh-object", "true");
         }
-        path->setAttribute("style", "fill:" + fill + ";stroke:none");
-        append(e, path);
+        path->setAttribute("style", "fill:" + fill + ";stroke:none;");
+        paths.push_back(path);
+    }
+    // A mesh of one patch is that path, with the mesh's own state: no group about it, which
+    // each save and reopen would add again.
+    bool const single = paths.size() == 1;
+    auto e = single ? paths.front() : create("svg:g");
+    std::string style = single ? e->attribute("style") : "";
+    common(e, n, style);
+    if (!style.empty()) e->setAttribute("style", style);
+    e->setAttribute("proof:ai-mesh", "true");
+    if (!single) {
+        for (auto *path : paths) append(e, path);
     }
     return e;
 }
@@ -2328,7 +2504,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
                                              "uniform mesh patches came in as the outlines") + " they draw; mesh editing is not kept for them");
     if (b.mesh_cut) notes.push_back(count(b.mesh_cut, "mesh patch bent through anchors came in cut into cells there",
                                           "mesh patches bent through anchors came in cut into cells there") +
-                                    ", each anchor a mesh point with the colour it had between its corners");
+                                    ", each anchor a mesh point with the colour it had between its corners, on a mesh line across its mesh");
+    if (b.mesh_split) notes.push_back(count(b.mesh_split, "gradient mesh came in patch by patch, each its own mesh",
+                                            "gradient meshes came in patch by patch, each its own mesh") +
+                                      ": not one grid, or more than 4096 cells as one");
     if (b.foreign_objects) notes.push_back(count(b.foreign_objects, "foreign object came in as what it draws, in an editable group",
                                                "foreign objects came in as what they draw, in editable groups") +
         "; vector paths and gradients are editable; the original embedded PDF is kept separately and is not updated by edits");

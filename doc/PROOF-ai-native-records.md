@@ -2357,3 +2357,23 @@ radial writer (`PROOF-ai-interchange.md`, "Radial gradients"):
 Census tools: `tools\ai-records-census.py` (now with `--max-mb`, default the
 everyday 100) and the delta report, `audit-results\vectorcraft-delta-2026-10-20.md`
 in the workspace.
+
+### Editable mesh patches written (2026-10-22)
+
+The reader now retains `/Size` and each patch's `/P` position. Compatible
+patches sharing corners, colours and sides import as one SVG mesh on its
+outer boundary. Extra boundary anchors cut complete grid lines, within 4096
+cells; incompatible grids retain the per-patch form and report it. Mesh paths
+carry `proof:mesh-object="true"`, joining outline synchronization to mesh edits.
+Original corners keep their own colour models, including an uncut patch with
+mixed models. A single patch needs no wrapper group.
+
+`Xy` immediately after a mesh's `/End`, before its style marker, is that mesh's
+own transparency. Illustrator writes this form when a previous object's state
+is still current; reading only the preceding state gave the wrong opacity.
+The new reader regression covers post-record opacity and the settled marker.
+
+The writer emits separate `[1 1]` Cartesian meshes for SVG patches because
+Illustrator smooths colours across a larger grid's lines. Its saved controls
+retain all 21 patches, corners, handles, opacity and device colour models.
+[Interchange details and limits](PROOF-ai-interchange.md#editable-mesh-patches-written-2026-10-22).

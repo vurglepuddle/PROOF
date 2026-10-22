@@ -85,9 +85,8 @@ bool gradient_has_transparency(SPPaintServer const *paint)
             }
         }
     } else if (auto mesh = cast<SPMeshGradient>(paint)) {
-        SPMeshNodeArray array;
-        array.read(const_cast<SPMeshGradient *>(mesh));
-        for (auto &a : array.nodes) {
+        mesh->ensureArray();
+        for (auto const &a : mesh->array.nodes) {
             for (auto &b : a) {
                 if (b->color && b->color->getOpacity() < 1.0) {
                     return true;
@@ -115,7 +114,8 @@ std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *pain
     // Patterns are cached so they can be reused
     std::string cache_key = get_id(paint);
     auto const *tiled = cast<SPPattern>(paint);
-    if (bbox && (is<SPLinearGradient>(paint) || is<SPRadialGradient>(paint) || (tiled && sized_to_object(tiled)))) {
+    if (bbox && (is<SPLinearGradient>(paint) || is<SPRadialGradient>(paint) || is<SPMeshGradient>(paint) ||
+                 (tiled && sized_to_object(tiled)))) {
         // Different instances can share stops, but not an object-bounding-box
         // placement (or the paintable area used for repeat/reflect).
         std::ostringstream placement;
@@ -141,7 +141,7 @@ std::optional<CapyPDF_PatternId> Document::get_pattern(SPPaintServer const *pain
     } else if (auto radial = cast<SPRadialGradient>(paint)) {
         pattern_id = get_radial_pattern(radial, opacity, bbox);
     } else if (auto mesh = cast<SPMeshGradient>(paint)) {
-        pattern_id = get_mesh_pattern(mesh, opacity);
+        pattern_id = get_mesh_pattern(mesh, opacity, bbox);
     } else if (tiled) {
         // The art is the first pattern's along the href chain that has any; the tile and its
         // placement can come from any pattern along it.
@@ -303,9 +303,10 @@ std::optional<CapyPDF_PatternId> Document::get_radial_pattern(SPRadialGradient c
  *
  * @returns A PDF Id of the new gradient object in the PDF document, if created.
  */
-std::optional<CapyPDF_PatternId> Document::get_mesh_pattern(SPMeshGradient const *mesh, std::optional<double> opacity)
+std::optional<CapyPDF_PatternId> Document::get_mesh_pattern(SPMeshGradient const *mesh, std::optional<double> opacity,
+                                                        Geom::OptRect const &item_bbox)
 {
-    auto bbox = mesh->getAllItemsBox();
+    auto bbox = item_bbox ? item_bbox : mesh->getAllItemsBox();
     if (!bbox) {
         g_warning("Mesh gradient has no paintable area: '%s'", get_id(mesh).c_str());
         return {};
@@ -313,11 +314,14 @@ std::optional<CapyPDF_PatternId> Document::get_mesh_pattern(SPMeshGradient const
 
     auto color_space = opacity ? CAPY_DEVICE_CS_GRAY : get_default_colorspace();
     auto to_userspace = Geom::Affine(bbox->width(), 0, 0, bbox->height(), bbox->left(), bbox->top());
-    auto cm = mesh->gradientTransform;
+    auto cm = mesh->getGradientTransform();
+    if (mesh->getUnits() == SP_GRADIENT_UNITS_OBJECTBOUNDINGBOX) {
+        cm *= to_userspace;
+    }
 
-    SPMeshNodeArray array;
-    // TODO: Find out why array read can't be const.
-    array.read(const_cast<SPMeshGradient *>(mesh));
+    // Use the same built array as the canvas, including a mesh obtained through href.
+    mesh->ensureArray();
+    auto &array = mesh->array;
 
     if (array.nodes.size() == 0 || array.nodes[0].size() == 0) {
         g_warning("Mesh gradient has no paintable nodes.");
@@ -330,8 +334,24 @@ std::optional<CapyPDF_PatternId> Document::get_mesh_pattern(SPMeshGradient const
         color_space = get_colorspace(space);
     }
 
-    auto box = *bbox * cm.inverse();
-    auto shading = capypdf::Type6Shading(color_space, box.left(), box.bottom(), box.right(), box.top());
+    // PDF encodes each control point in this rectangle. It must enclose the control polygons in
+    // mesh space: a painted item's box is in a different space, and can clip or collapse every
+    // encoded coordinate when the item is translated or the mesh is reused elsewhere.
+    Geom::OptRect box;
+    for (unsigned i = 0; i < array.patch_rows(); ++i) {
+        for (unsigned j = 0; j < array.patch_columns(); ++j) {
+            auto patch = SPMeshPatchI(&array.nodes, i, j);
+            for (unsigned k = 0; k < 4; ++k) {
+                for (unsigned l = 0; l < 3; ++l) {
+                    auto const p = patch.getPoint(k, l);
+                    if (box) box->expandTo(p);
+                    else box = Geom::Rect(p, p);
+                }
+            }
+        }
+    }
+    if (!box || box->width() == 0 || box->height() == 0) return {};
+    auto shading = capypdf::Type6Shading(color_space, box->left(), box->top(), box->right(), box->bottom());
 
     for (unsigned i = 0; i < array.patch_rows(); i++) {
         for (unsigned j = 0; j < array.patch_columns(); j++) {

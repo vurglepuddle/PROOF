@@ -169,7 +169,8 @@ private:
                                                       Geom::OptRect const &bbox);
     std::optional<CapyPDF_PatternId> get_radial_pattern(SPRadialGradient const *radial, std::optional<double> opacity,
                                                       Geom::OptRect const &bbox);
-    std::optional<CapyPDF_PatternId> get_mesh_pattern(SPMeshGradient const *mesh, std::optional<double> opacity);
+    std::optional<CapyPDF_PatternId> get_mesh_pattern(SPMeshGradient const *mesh, std::optional<double> opacity,
+                                                   Geom::OptRect const &bbox);
     std::optional<CapyPDF_PatternId> get_tiling_pattern(SPPattern const *pat, SPPattern const *root,
                                                         Geom::OptRect const &bbox);
     std::optional<CapyPDF_FunctionId> get_gradient_function(SPGradientVector const &vector,

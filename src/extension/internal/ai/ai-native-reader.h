@@ -255,10 +255,14 @@ struct MeshPatch
     /// of more than one cubic makes the patch the Coons patch of its edges, cut into cells there.
     std::array<std::vector<Geom::CubicBezier>, 4> edges;
     bool outlined = false; ///< Uniform colour, extra boundary nodes: imported as its exact outline.
+    /// Where it is in its mesh's grid (`[a b] /P`): a counts along edge 0, from corner 0 to 1;
+    /// b along edge 3 backwards, from corner 0 to 3.
+    std::array<std::size_t, 2> place{};
 };
 
 struct Mesh
 {
+    std::array<std::size_t, 2> size{}; ///< How many patches along a and b (`[a b] /Size`).
     std::vector<MeshPatch> patches;
     /// Checked only after envelopes have discarded their non-art mesh.
     bool unread = false;

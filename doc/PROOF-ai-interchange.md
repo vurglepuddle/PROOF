@@ -2440,3 +2440,66 @@ document, RGB in an RGB one), and the inks after `%AI3_ColorUsage` in
 - Reading an RGB page's `/MultiChannelPaint` (overprint in the page check and
   PDF import).
 - The canvas blends gradients of CMYK documents in RGB.
+
+### Editable mesh patches written (2026-10-22)
+
+The modern writer now writes supported RGB and CMYK Coons meshes. Corners,
+handles, channel values and corner opacity remain editable. Each SVG patch
+becomes a one-patch Illustrator mesh; multiple patches are grouped so the
+object's opacity, blend mode and supported opacity mask apply once. A shape
+whose boundary differs from its mesh becomes a clipping group, including
+compound holes. Placement includes item/gradient transforms, reflection and
+object-bounding-box units. A complete control-polygon comparison decides
+whether the original outline can be omitted; uncertain boundaries keep a clip.
+
+**Why separate patches:** Illustrator smooths colour across the lines of a
+multi-patch grid. A saturated RGB control with identical native corner records
+drew differently from SVG/Cairo. Independent patches retain SVG's interpolation
+in Illustrator. This preserves editable corners and handles, but not one
+connected grid on export. The working SVG retains that grid. Import keeps a
+compatible Illustrator grid together on its outer outline, cutting full mesh
+lines at additional boundary anchors; it marks imported mesh paths as mesh
+objects so subsequent mesh edits also move their outlines. Incompatible grids
+still come in patch by patch with a note. Original corners retain their own
+colour models; only newly interpolated corners require one model.
+
+Refusals are explicit: Illustrator 7 meshes; bicubic smoothing; moved tensor
+points; mixed or unsupported corner colour models; strokes on mesh-filled
+objects; meshes used as strokes, in patterns or in opacity-mask art; mesh fill
+overprint; nonfinite/singular placement; and more than 4096 patches in a mesh.
+An ordinary supported mask attached to a mesh object is retained.
+
+**Shared PDF fixes (collaborator take note):** mesh coordinate encoding now
+bounds the control polygons in mesh space, rather than translated objects'
+bounds. Mesh patterns use each object's bounds and gradient transform, including
+object-sized units, and use the same built array as the canvas for references.
+A gradient transparency mask paints only its own object in local coordinates,
+instead of every object sharing that gradient. Illustrator's mesh transparency
+written after `/End` is now attached to that mesh before its style marker;
+previously a patch could inherit the preceding object's opacity.
+
+Illustrator 29.2.1 opens both synthetic controls as 21 editable patch meshes.
+Its saved RGB control keeps the corner/handle data within 3e-8; CMYK keeps them
+exactly, including each colour model and corner opacity. The RGB drawing agrees
+within the control's 2% colour tolerance (two outer pixels excluded for clipping
+antialiasing). Both saved controls reopen natively after the post-mesh opacity
+fix. **CMYK preview remains limited:** Illustrator blends CMYK channels, while
+PROOF's canvas blends RGB previews. This is not a CMYK screen-match claim.
+Poppler's Splash and Cairo backends also differ on translucent mesh soft masks;
+the check uses Cairo for these, and independently checks opaque untransformed
+RGB meshes with Splash. Full diagnostics remain local.
+
+The 15 copied Illustrator controls and the owner's mesh-only document
+`ca830635ef` write and reopen natively; the other two mesh documents still
+contain type. The final census is recorded in the round's workspace handoff.
+The synthetic `ai-mesh-output-smoke.py` joins the focused runner and checks
+editable patch counts, models, clipping, masks, repeated saves, PDF pages,
+source integrity and Illustrator 7's named refusal. Import's visual gates are
+unchanged.
+
+Final census: **862 NATIVE of 871, nine PAGE; modern 802/862** (was 801),
+Illustrator 7 **100**. No lost import/writer acceptances, unread streams or
+changed copy hashes. Remaining modern refusals are type 60 (54 alone) and
+missing links six (all also type). **13 focused unit suites, zero failures;
+30 export groups, 927 checks**, including the mesh control **25/25**.
+Existing opt-in/GUI skips remain; no editing-UI acceptance is claimed.

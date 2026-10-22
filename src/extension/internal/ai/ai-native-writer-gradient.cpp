@@ -94,6 +94,8 @@ std::shared_ptr<Colors::CMS::Profile> classic_srgb_profile()
     return Colors::CMS::Profile::create(handle);
 }
 
+} // namespace
+
 /// Compare the two supported sRGB encodings by colour data, not name/profile ID.
 /// Creation dates and descriptions vary; extra colour/LUT tags fail closed.
 bool standard_rgb_profile(Colors::CMS::Profile const &profile)
@@ -146,6 +148,8 @@ bool standard_rgb_profile(Colors::CMS::Profile const &profile)
     }
     return false;
 }
+
+namespace {
 
 std::string num(double v)
 {
@@ -518,7 +522,8 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
         return refused("gradient transparency");
     }
     auto const *server = paint.isPaintserver() && paint.href ? paint.href->getObject() : nullptr;
-    if (is<SPMeshGradient>(server)) return refused("mesh gradients");
+    // A mesh is an object of its own in Illustrator (ai-native-writer-mesh.h), which has no stroke.
+    if (is<SPMeshGradient>(server)) return refused(stroke ? "mesh gradients on strokes" : "mesh gradients");
     auto const *linear = cast<SPLinearGradient>(server);
     auto const *radial = cast<SPRadialGradient>(server);
     SPGradient const *gradient = linear;

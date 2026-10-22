@@ -140,3 +140,18 @@ Checks: `test_sp-gradient` 17/17, with
 check `tools/mesh-object-check.py` adds three Direct Selection steps: a drag
 from inside a corner leaves the outline and adds no Live Corners record; a
 mesh corner drag moves the outline; one Undo restores it.
+
+### Editable mesh patches written (2026-10-22)
+
+Native Illustrator import now marks each reconstructed mesh path as a mesh
+object. Compatible grids stay one grid on their outside boundary, so Mesh and
+Direct Selection edits synchronize that boundary through the existing mesh
+object behaviour. Uniform patches imported as ordinary outlines stay ordinary
+paths. This changes the importer, not the collaborator's editing code.
+
+The modern writer exports each SVG patch as a separate editable Illustrator
+mesh, grouped with the object's transparency and mask. Illustrator interpolates
+across a connected grid differently from SVG; keeping the patches independent
+preserves RGB appearance. The working SVG retains its connected grid. CMYK
+corner channels are retained, with the existing RGB canvas-blending limitation.
+[Writer qualification and refusals](PROOF-ai-interchange.md#editable-mesh-patches-written-2026-10-22).

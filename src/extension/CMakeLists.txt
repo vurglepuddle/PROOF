@@ -30,6 +30,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-writer.cpp
 	internal/ai/ai-native-writer-gradient.cpp
 	internal/ai/ai-native-writer-ink.cpp
+	internal/ai/ai-native-writer-mesh.cpp
 	internal/ai/ai-native-writer-picture.cpp
 	internal/bluredge.cpp
 	internal/cairo-ps-out.cpp
@@ -116,6 +117,7 @@ target_sources(inkscape_base PRIVATE
 	internal/ai/ai-native-writer.h
 	internal/ai/ai-native-writer-gradient.h
 	internal/ai/ai-native-writer-ink.h
+	internal/ai/ai-native-writer-mesh.h
 	internal/ai/ai-native-writer-picture.h
 	internal/ai/ai-native-writer-string.h
 	internal/bluredge.h

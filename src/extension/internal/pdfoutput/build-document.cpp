@@ -220,41 +220,17 @@ std::optional<CapyPDF_TransparencyGroupId> Document::mask_to_transparency_group(
 std::optional<CapyPDF_TransparencyGroupId> Document::style_to_transparency_mask(SPStyle const *style,
                                                                                 SPStyle const *context_style)
 {
-    Geom::OptRect bbox;
-    std::vector<SPObject *> objects;
-    if (style->fill.set && style->fill.href) {
-        if (auto gradient = cast<SPGradient>(style->fill.href->getObject())) {
-            if (gradient_has_transparency(gradient)) {
-                gradient->getLinkedRecursive(objects, SPObject::LinkedObjectNature::DEPENDENT);
-                bbox.unionWith(gradient->getAllItemsBox());
-            }
-        }
-    }
-    if (style->stroke.set && style->stroke.href) {
-        if (auto gradient = cast<SPGradient>(style->stroke.href->getObject())) {
-            if (gradient_has_transparency(gradient)) {
-                gradient->getLinkedRecursive(objects, SPObject::LinkedObjectNature::DEPENDENT);
-                bbox.unionWith(gradient->getAllItemsBox());
-            }
-        }
-    }
-
-    if (!objects.empty() && bbox) {
-        auto gradient_mask = PdfBuilder::GroupContext(*this, *bbox, true);
-        bool painted = false;
-        for (auto obj : objects) {
-            if (auto item = cast<SPItem>(obj)) {
-                auto style_map = _paint_memory.get_ifset(item->style);
-                gradient_mask.set_paint_style(style_map, item->style, context_style);
-                gradient_mask.paint_item(item, Geom::identity(), context_style);
-                painted = true;
-            }
-        }
-        if (painted) {
-            return _gen.add_transparency_group(gradient_mask._ctx);
-        }
-    }
-    return {};
+    // The mask is painted in this object's own user space, as is its colour group. A shared
+    // gradient's other users have different transforms and must not contribute to this mask.
+    auto const *item = cast<SPItem>(style->object);
+    if (!item || !style_has_gradient_transparency(style)) return {};
+    auto const bbox = item->visualBounds(Geom::identity(), true, false, true);
+    if (!bbox) return {};
+    auto gradient_mask = PdfBuilder::GroupContext(*this, *bbox, true);
+    auto const style_map = _paint_memory.get_ifset(style);
+    gradient_mask.set_paint_style(style_map, style, context_style);
+    gradient_mask.paint_item(item, Geom::identity(), context_style);
+    return _gen.add_transparency_group(gradient_mask._ctx);
 }
 
 /**

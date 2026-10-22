@@ -13,6 +13,10 @@
 
 class SPShape;
 
+namespace Inkscape::Colors::CMS {
+class Profile;
+}
+
 namespace Inkscape::Extension::Internal::AiNative {
 
 /** An opaque process linear or radial fill or stroke, prepared independently for one shape.
@@ -58,6 +62,11 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
                                std::string const &unique_name, bool legacy = false,
                                Geom::Point const &canvas = {}, bool stroke = false, bool after_gradient_fill = false,
                                bool coverage = false);
+
+/// Whether an RGB profile is standard sRGB, in either of its two encodings (the current one, or
+/// the classic IEC one Illustrator's files carry), compared by colour data: what gradient stops
+/// and mesh corners in such a profile are written as, plain RGB.
+bool standard_rgb_profile(Colors::CMS::Profile const &profile);
 
 /// The grey a colour is as PROOF draws it in an opacity mask, from 0 (black) to 1 (white): its
 /// luminance, as the canvas takes a mask's coverage, or none for a colour that isn't neutral within

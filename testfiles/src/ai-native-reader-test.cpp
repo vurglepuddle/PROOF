@@ -1489,6 +1489,23 @@ TEST(AiNativeReader, MeshCornersKeepGeometryColorAndOpacity)
     EXPECT_EQ(ink.layers[0].children[0].mesh.patches[0].corners[0].color, Color::cmyk(0.1, 0.2, 0.3, 0.4));
 }
 
+TEST(AiNativeReader, MeshOwnTransparencyCanFollowItsRecords)
+{
+    auto const mesh = square_mesh();
+    auto const marker = "0 0 Xd\n6 () XW\n";
+    auto doc = read_ok(records(layer("L", "0 0.6 0 0 0 Xy\n" + mesh + "0 1 0 0 0 Xy\n" + marker +
+                                         mesh + "0 0.4 0 0 0 Xy\n" + marker)));
+    auto const &children = doc.layers[0].children;
+    ASSERT_EQ(children.size(), 2u);
+    EXPECT_DOUBLE_EQ(children[0].transparency.opacity, 1);
+    EXPECT_DOUBLE_EQ(children[1].transparency.opacity, .4);
+    // Once the style marker settles the object, the next Xy belongs to following artwork.
+    auto settled = read_ok(records(layer("L", mesh + marker + "0 0.3 0 0 0 Xy\n" + mesh + marker)));
+    ASSERT_EQ(settled.layers[0].children.size(), 2u);
+    EXPECT_DOUBLE_EQ(settled.layers[0].children[0].transparency.opacity, 1);
+    EXPECT_DOUBLE_EQ(settled.layers[0].children[1].transparency.opacity, .3);
+}
+
 TEST(AiNativeReader, MeshExtraBoundaryNodesOutlineAUniformPatchAndCutAChangingOne)
 {
     auto mesh = square_mesh();
@@ -1619,7 +1636,12 @@ TEST(AiNativeReader, MeshGridMustBeCompleteAndHaveUniquePatchPositions)
     auto patch = changed(mesh.substr(begin, end - begin), "[0 0] /P", "[1 0] /P");
     mesh.insert(end, patch);
     auto doc = read_ok(records(layer("L", mesh)));
-    ASSERT_EQ(doc.layers[0].children[0].mesh.patches.size(), 2u);
+    auto const &read = doc.layers[0].children[0].mesh;
+    ASSERT_EQ(read.patches.size(), 2u);
+    // Each patch keeps its place, [a b], and the mesh its size, for the import to put it in one grid.
+    EXPECT_EQ(read.size, (std::array<std::size_t, 2>{2, 1}));
+    EXPECT_EQ(read.patches[0].place, (std::array<std::size_t, 2>{0, 0}));
+    EXPECT_EQ(read.patches[1].place, (std::array<std::size_t, 2>{1, 0}));
     auto duplicate = changed(mesh, "[1 0] /P", "[0 0] /P");
     EXPECT_NE(read_error(records(layer("L", duplicate))).find("gradient meshes"), std::string::npos);
     EXPECT_NE(read_error(records(layer("L", "") + square_mesh())).find("gradient meshes"), std::string::npos);

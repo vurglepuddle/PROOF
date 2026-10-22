@@ -1818,6 +1818,7 @@ bool Reader::mesh_marker(Values const &vals, bool hidden)
         return true;
     }
     auto n = new_node(Node::Kind::Mesh, _gs);
+    m.mesh.size = {m.rows, m.columns};
     n.mesh = std::move(m.mesh);
     n.transparency = _gs.transparency;
     add(std::move(n), m.commented || hidden);
@@ -1992,6 +1993,7 @@ void Reader::mesh_entry(Values const &vals)
         if (vals.size() != 1 || !m.place || m.corners.size() != 4 ||
             m.mesh.patches.size() >= _limits.max_mesh_patches) { bad(); return; }
         MeshPatch p;
+        p.place = {m.place->first, m.place->second};
         std::copy(m.corners.begin(), m.corners.end(), p.corners.begin());
         // The corners run from the lower left with the patch's turn. An edge's anchors follow
         // the corner it starts from, the last edge's come before the first corner, and they
@@ -2361,10 +2363,13 @@ void Reader::transparency(Values const &vals)
     int const ko = n.size() > 3 ? static_cast<int>(n[3]) : 0;
     t.knockout = (ko == 1 || ko == 2) ? ko : 0;
     t.knockout_shape = n.size() > 4 && n[4] != 0.0;
-    // Straight after a group closes, it is the group's. A compound path has the transparency
+    // Straight after a group or mesh closes, it is that object's. Illustrator writes a mesh's
+    // own opacity both before its records and after /End, before its style marker.
+    // A compound path has the transparency
     // of its paths, set inside it, and no state of its own after it: what follows its end is
     // the next object's.
-    if (auto *obj = last_object(); obj && !_marked && obj->kind == Node::Kind::Group) obj->transparency = t;
+    if (auto *obj = last_object(); obj && !_marked &&
+        (obj->kind == Node::Kind::Group || obj->kind == Node::Kind::Mesh)) obj->transparency = t;
 }
 
 /// Remove the children read from %_ lines.

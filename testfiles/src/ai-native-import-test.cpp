@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <functional>
 #include <iomanip>
 #include <iterator>
 #include <map>
@@ -18,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 #include <GlobalParams.h>
@@ -432,6 +434,39 @@ std::string mesh_art(std::string const &space, std::array<std::string, 4> const 
            "[" + colors[2] + " 1 70 80 70 60 1 50 80 1] /N X#\n"
            "[" + colors[3] + " 1 70 20 50 20 1 70 40 1] /N X#\n/E X#\n/End X!\n";
 }
+
+/// A mesh of `across` by `up` square patches of 30 pt from 0,0, as Illustrator writes one: patch
+/// [a b] from its lower left corner around, each corner's colour `colour(i, j)` at grid point
+/// i, j and straight sides; `anchors(a, b)` goes after its first corner (anchors on side 0).
+std::string grid_mesh(std::size_t across, std::size_t up, std::function<std::string(std::size_t, std::size_t)> const &colour,
+                      std::function<std::string(std::size_t, std::size_t)> const &anchors = {})
+{
+    std::string s = std::format("/Mesh X!\n2 /Version X#\n/Cartesian /Type X#\n[{} {}] /Size X#\n/Data X#\n", across, up);
+    for (std::size_t a = 0; a < across; ++a) {
+        for (std::size_t b = 0; b < up; ++b) {
+            double const r = b == 0 ? double(a) / across : a == 0 ? double(b) / up : -1;
+            s += std::format("[{} {}] /P X#\n[{}] /R X#\n", a, b, r);
+            if (a == 0 && b == 0) s += "/DeviceCMYK /CS X#\n";
+            double const x0 = 30.0 * a, x1 = x0 + 30, y0 = 30.0 * b, y1 = y0 + 30;
+            auto corner = [&](std::size_t i, std::size_t j, double x, double y, double nx, double ny, double px, double py) {
+                s += std::format("[{} 1 {} {} {} {} 1 {} {} 1] /N X#\n", colour(i, j), x, y, nx, ny, px, py);
+            };
+            corner(a, b, x0, y0, x0 + 10, y0, x0, y0 + 10);
+            if (anchors) s += anchors(a, b);
+            corner(a + 1, b, x1, y0, x1, y0 + 10, x1 - 10, y0);
+            corner(a + 1, b + 1, x1, y1, x1 - 10, y1, x1, y1 - 10);
+            corner(a, b + 1, x0, y1, x0, y1 - 10, x0 + 10, y1);
+            s += "/E X#\n";
+        }
+    }
+    return s + "/End X!\n";
+}
+
+/// Grid point i, j of a mesh's corners in CMYK, each different.
+std::string grid_colour(std::size_t i, std::size_t j)
+{
+    return std::format("{} {} {} 0", 0.1 * i, 0.1 * j, 0.05 * (i + j));
+}
 }
 
 TEST_F(AiNativeImportTest, MeshKeepsEditableCornersAndHandlesAfterReopen)
@@ -442,6 +477,9 @@ TEST_F(AiNativeImportTest, MeshKeepsEditableCornersAndHandlesAfterReopen)
         doc->ensureUpToDate();
         auto gradients = elements(doc->getDefs()->getRepr(), "svg:meshgradient");
         ASSERT_EQ(gradients.size(), 1u);
+        auto const paths = elements(doc->getReprRoot(), "svg:path");
+        ASSERT_EQ(paths.size(), 1u);
+        EXPECT_EQ(attr(paths[0], "proof:mesh-object"), "true");
         auto *gradient = dynamic_cast<SPMeshGradient *>(doc->getObjectByRepr(gradients[0]));
         ASSERT_TRUE(gradient);
         gradient->ensureArray();
@@ -491,6 +529,27 @@ TEST_F(AiNativeImportTest, MeshCmykChannelsAndOpacitySurviveReopen)
     ASSERT_GE(v.size(), 4u);
     for (unsigned i = 0; i < 4; ++i) EXPECT_NEAR(v[i], 0.1 * (i + 1), 1e-5);
     EXPECT_NE(attr(stops[0], "style").find("stop-opacity:0.25"), std::string::npos);
+}
+
+TEST_F(AiNativeImportTest, UncutMeshCornersKeepTheirOwnColourModels)
+{
+    auto art = mesh_art("DeviceRGB", {"1 0 0", "0 1 0", "0 0 1", "1 1 1"});
+    auto const at = art.find("[0 1 0 1 10 80");
+    ASSERT_NE(at, std::string::npos);
+    art.insert(at, "/DeviceCMYK /CS X#\n");
+    art.replace(art.find("[0 1 0 1 10 80"), 7, "[1 0 1 0 ");
+    auto const next = art.find("[0 0 1 1 70 80");
+    ASSERT_NE(next, std::string::npos);
+    art.insert(next, "/DeviceRGB /CS X#\n");
+    auto b = make(records(layer(art), {}, false));
+    ASSERT_TRUE(b);
+    auto stops = elements(b->document->getDefs()->getRepr(), "svg:stop");
+    ASSERT_EQ(stops.size(), 4u);
+    auto const rgb = b->document->getObjectByRepr(stops[0])->style->stop_color.getColor();
+    auto const cmyk = b->document->getObjectByRepr(stops[1])->style->stop_color.getColor();
+    EXPECT_EQ(rgb.getSpace()->getComponentType(), Type::RGB);
+    EXPECT_EQ(cmyk.getSpace()->getComponentType(), Type::CMYK);
+    EXPECT_EQ(cmyk.getValues(), (std::vector<double>{1, 0, 1, 0}));
 }
 
 TEST_F(AiNativeImportTest, ABentMeshPatchIsCutAtItsAnchorsWithTheSharesIllustratorGives)
@@ -547,6 +606,89 @@ TEST_F(AiNativeImportTest, UniformMeshKeepsEveryBoundaryNodeAndSaysItIsOutlined)
     EXPECT_EQ(pv[0].size(), 6u);
     EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](std::string const &s) {
         return s.find("mesh editing is not kept") != s.npos;
+    }));
+}
+
+TEST_F(AiNativeImportTest, AMeshComesInAsOneGridOnItsOutline)
+{
+    // Illustrator edits a mesh as one grid; patch [a b] is the SVG mesh's row b, column a, its
+    // corners numbered alike (the page is 100 pt high: art y 30 is 70 down).
+    auto b = make(records(layer(grid_mesh(2, 2, grid_colour))));
+    ASSERT_TRUE(b);
+    auto *doc = b->document.get();
+    doc->ensureUpToDate();
+    auto paths = elements(doc->getReprRoot(), "svg:path");
+    ASSERT_EQ(paths.size(), 1u);
+    EXPECT_EQ(attr(paths[0], "proof:ai-mesh"), "true");
+    EXPECT_EQ(attr(paths[0], "proof:mesh-object"), "true");
+    EXPECT_TRUE(elements(doc->getReprRoot(), "svg:g").size() == 1u) << "only the layer";
+    auto pv = sp_svg_read_pathv(attr(paths[0], "d").c_str());
+    ASSERT_EQ(pv.size(), 1u);
+    EXPECT_EQ(pv[0].size_default(), 8u);
+    auto gradients = elements(doc->getDefs()->getRepr(), "svg:meshgradient");
+    ASSERT_EQ(gradients.size(), 1u);
+    auto *gradient = dynamic_cast<SPMeshGradient *>(doc->getObjectByRepr(gradients[0]));
+    ASSERT_TRUE(gradient);
+    gradient->ensureArray();
+    ASSERT_EQ(gradient->array.patch_rows(), 2u);
+    ASSERT_EQ(gradient->array.patch_columns(), 2u);
+    SPMeshPatchI p(&gradient->array.nodes, 1, 1);
+    EXPECT_TRUE(Geom::are_near(p.getPoint(0, 0), Geom::Point(30, 70), 1e-6));
+    EXPECT_TRUE(Geom::are_near(p.getPoint(0, 1), Geom::Point(40, 70), 1e-6));
+    EXPECT_TRUE(Geom::are_near(p.getPoint(2, 0), Geom::Point(60, 40), 1e-6));
+    auto const color = p.getColor(2);
+    ASSERT_TRUE(color);
+    auto const v = color->getValues();
+    ASSERT_GE(v.size(), 4u);
+    EXPECT_NEAR(v[0], 0.2, 1e-3);
+    EXPECT_NEAR(v[1], 0.2, 1e-3);
+    EXPECT_NEAR(v[2], 0.2, 1e-3);
+
+    // Neighbours that don't share a corner's colour aren't one grid: patch by patch, said so.
+    auto split = grid_mesh(2, 1, grid_colour);
+    split.replace(split.rfind("[0.1 0 0.05 0 1 30 0"), 20, "[0.9 0 0.05 0 1 30 0");
+    auto c = make(records(layer(split)));
+    ASSERT_TRUE(c);
+    EXPECT_EQ(elements(c->document->getReprRoot(), "svg:path").size(), 2u);
+    EXPECT_EQ(elements(c->document->getDefs()->getRepr(), "svg:meshgradient").size(), 2u);
+    EXPECT_TRUE(std::any_of(c->notes.begin(), c->notes.end(), [](std::string const &s) {
+        return s.find("came in patch by patch") != s.npos;
+    }));
+}
+
+TEST_F(AiNativeImportTest, AnAnchorCutsItsColumnThroughTheWholeGrid)
+{
+    // An anchor halfway along patch [0 0]'s first side: column 0 is cut there, in both rows, so
+    // the grid stays one mesh, the anchor a mesh point with the colour halfway.
+    auto anchors = [](std::size_t a, std::size_t b) {
+        return a == 0 && b == 0 ? std::string("[15 0 10 0 20 0 1] /A X#\n") : std::string();
+    };
+    auto art = grid_mesh(2, 2, grid_colour, anchors);
+    // The first corner's handle and the second's along the cut side move to the anchor's sides.
+    art.replace(art.find("[0 0 0 0 1 0 0 10 0 1 0 10 1]"), 29, "[0 0 0 0 1 0 0 5 0 1 0 10 1]");
+    auto const second = art.find("[0.1 0 0.05 0 1 30 0 30 10 1 20 0 1]");
+    ASSERT_NE(second, std::string::npos);
+    art.replace(second, 36, "[0.1 0 0.05 0 1 30 0 30 10 1 25 0 1]");
+    auto b = make(records(layer(art)));
+    ASSERT_TRUE(b);
+    auto *doc = b->document.get();
+    doc->ensureUpToDate();
+    ASSERT_EQ(elements(doc->getReprRoot(), "svg:path").size(), 1u);
+    auto gradients = elements(doc->getDefs()->getRepr(), "svg:meshgradient");
+    ASSERT_EQ(gradients.size(), 1u);
+    auto *gradient = dynamic_cast<SPMeshGradient *>(doc->getObjectByRepr(gradients[0]));
+    ASSERT_TRUE(gradient);
+    gradient->ensureArray();
+    ASSERT_EQ(gradient->array.patch_rows(), 2u);
+    ASSERT_EQ(gradient->array.patch_columns(), 3u);
+    SPMeshPatchI first(&gradient->array.nodes, 0, 0), above(&gradient->array.nodes, 1, 0);
+    EXPECT_TRUE(Geom::are_near(first.getPoint(1, 0), Geom::Point(15, 100), 1e-6));
+    EXPECT_TRUE(Geom::are_near(above.getPoint(1, 0), Geom::Point(15, 70), 1e-6));
+    auto const color = first.getColor(1);
+    ASSERT_TRUE(color);
+    EXPECT_NEAR(color->getValues()[0], 0.05, 1e-3);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](std::string const &s) {
+        return s.find("on a mesh line across its mesh") != s.npos;
     }));
 }
 
@@ -6497,6 +6639,11 @@ TEST_F(AiNativeImportTest, LegacyWriterRefusesFeaturesThatNeedTheModernFormat)
          R"x(</linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x", "gradient transparency"},
         {R"(<defs><pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="5" height="5"/></pattern></defs>)"
          R"x(<rect width="50" height="50" fill="url(#p)"/>)x", "patterns (Illustrator 7)"},
+        // Gradient meshes came with Illustrator 8.
+        {R"(<defs><meshgradient id="g" x="0" y="0" gradientUnits="userSpaceOnUse"><meshrow><meshpatch>)"
+         R"(<stop path="c 10,0 20,0 30,0" style="stop-color:#ff0000"/><stop path="c 0,10 0,20 0,30" style="stop-color:#00ff00"/>)"
+         R"(<stop path="c -10,0 -20,0 -30,0" style="stop-color:#0000ff"/><stop path="c 0,-10 0,-20 0,-30" style="stop-color:#ffff00"/>)"
+         R"x(</meshpatch></meshrow></meshgradient></defs><rect width="30" height="30" fill="url(#g)"/>)x", "mesh gradients (Illustrator 7)"},
     };
     for (auto const &[body, reason] : cases) {
         SCOPED_TRACE(reason);
@@ -6685,6 +6832,221 @@ TEST_F(AiNativeImportTest, WrittenRecordsRefuseUnsupportedEffectsOnLayersAndTheR
     }
 }
 
+namespace {
+/// A mesh gradient of 2 by 2 patches as Inkscape writes one, from 10,10, each patch 30 by 20 user
+/// units: RGB corners, one at half opacity. `extra` goes on the element.
+std::string svg_mesh(std::string const &extra = {})
+{
+    return R"(<meshgradient id="m" x="10" y="10" gradientUnits="userSpaceOnUse")" + extra + R"(><meshrow><meshpatch>)"
+           R"(<stop path="l 30,0" style="stop-color:#ff0000"/><stop path="l 0,20" style="stop-color:#00ff00"/>)"
+           R"(<stop path="l -30,0" style="stop-color:#0000ff;stop-opacity:0.5"/><stop path="l 0,-20" style="stop-color:#ffffff"/>)"
+           R"(</meshpatch><meshpatch>)"
+           R"(<stop path="l 30,0"/><stop path="l 0,20" style="stop-color:#ffff00"/><stop path="l -30,0" style="stop-color:#00ffff"/>)"
+           R"(</meshpatch></meshrow><meshrow><meshpatch>)"
+           R"(<stop path="l 0,20"/><stop path="l -30,0" style="stop-color:#ff00ff"/><stop path="l 0,-20" style="stop-color:#808080"/>)"
+           R"(</meshpatch><meshpatch>)"
+           R"(<stop path="l 0,20"/><stop path="l -30,0" style="stop-color:#000000"/>)"
+           R"(</meshpatch></meshrow></meshgradient>)";
+}
+
+/// The first SVG mesh gradient of a document, its array built.
+SPMeshGradient *first_mesh(SPDocument *doc)
+{
+    doc->ensureUpToDate();
+    auto gradients = elements(doc->getDefs()->getRepr(), "svg:meshgradient");
+    auto *mesh = gradients.empty() ? nullptr : dynamic_cast<SPMeshGradient *>(doc->getObjectByRepr(gradients[0]));
+    if (mesh) mesh->ensureArray();
+    return mesh;
+}
+
+/// Every corner and handle of two meshes' patches the same within `tolerance`, and their colours.
+void expect_same_mesh_patches(SPMeshGradient *a, SPDocument *doc_b, Geom::Affine const &b_to_a, double tolerance)
+{
+    ASSERT_TRUE(a && doc_b);
+    doc_b->ensureUpToDate();
+    auto const gradients = elements(doc_b->getDefs()->getRepr(), "svg:meshgradient");
+    ASSERT_EQ(a->array.patch_rows() * a->array.patch_columns(), gradients.size());
+    for (unsigned c = 0; c < a->array.patch_columns(); ++c) {
+        for (unsigned r = 0; r < a->array.patch_rows(); ++r) {
+            auto *b = dynamic_cast<SPMeshGradient *>(doc_b->getObjectByRepr(gradients[c * a->array.patch_rows() + r]));
+            ASSERT_TRUE(b);
+            b->ensureArray();
+            ASSERT_EQ(b->array.patch_rows(), 1u);
+            ASSERT_EQ(b->array.patch_columns(), 1u);
+            SPMeshPatchI p(&a->array.nodes, r, c), q(&b->array.nodes, 0, 0);
+            for (unsigned k = 0; k < 4; ++k) {
+                for (unsigned i = 0; i < 4; ++i) {
+                    EXPECT_TRUE(Geom::are_near(p.getPoint(k, i), q.getPoint(k, i) * b_to_a, tolerance))
+                        << r << ' ' << c << ' ' << k << ' ' << i;
+                }
+                auto const x = p.getColor(k), y = q.getColor(k);
+                ASSERT_TRUE(x && y);
+                auto const u = x->converted(Type::RGB), v = y->converted(Type::RGB);
+                ASSERT_TRUE(u && v);
+                for (unsigned i = 0; i < 3; ++i) EXPECT_NEAR((*u)[i], (*v)[i], 2e-3);
+                EXPECT_NEAR(x->getOpacity(), y->getOpacity(), 1e-3);
+            }
+        }
+    }
+}
+} // namespace
+
+TEST_F(AiNativeImportTest, AMeshGradientIsWrittenAsIllustratorsMeshAndReadBack)
+{
+    // On its own outline: editable patch objects in a group, no clipping group. The page is 200 by 100 user
+    // units, 150 by 75 pt; art space has y up from the artboard's top-left corner.
+    auto doc = svg_document("<defs>" + svg_mesh() + R"mesh(</defs><path d="M 10,10 H 70 V 50 H 10 Z" style="fill:url(#m)"/>)mesh");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &records = written.records;
+    EXPECT_NE(records.find("0 g\n/Mesh X!\n%_2 /Version X#\n%_/Cartesian /Type X#\n%_[1 1] /Size X#\n%_/Data X#\n"
+                           "%_[0 0] /P X#\n%_[0] /R X#\n%_/DeviceRGB /CS X#\n"
+                           "%_[1 0 0 1 7.5 -7.5 15 -7.5 1 7.5 -12.5 1] /N X#\n"),
+              std::string::npos)
+        << records.substr(records.find("/Mesh"), 600);
+    // Independent patches preserve SVG's colour interpolation in Illustrator.
+    EXPECT_NE(records.find("%_[0 0 1 0.5 30 -22.5 22.5 -22.5 1 30 -17.5 1] /N X#\n"), std::string::npos);
+    EXPECT_NE(records.find("%_/E X#\n/End X!\n\n0 0 Xd\n6 () XW\n"), std::string::npos);
+    EXPECT_EQ(records.find("W\nn\n"), std::string::npos);
+    EXPECT_NE(records.find("/Mesh X!"), records.rfind("/Mesh X!"));
+
+    // Read back: four editable patches, every corner, handle and colour as it was; written again,
+    // the same records.
+    auto b = make(records);
+    ASSERT_TRUE(b);
+    EXPECT_EQ(elements(b->document->getReprRoot(), "svg:path").size(), 4u);
+    // The import's user unit is the point: 0.75 of this document's.
+    expect_same_mesh_patches(first_mesh(doc.get()), b->document.get(), Geom::Scale(1 / 0.75), 1e-3);
+    auto const again = AN::write_records(b->document.get());
+    ASSERT_TRUE(again.refused.empty()) << again.refused.front();
+    auto mesh_of = [](std::string const &r) { return r.substr(r.find("/Mesh X!"), r.find("6 () XW\n", r.find("/Mesh X!")) - r.find("/Mesh X!")); };
+    EXPECT_EQ(mesh_of(again.records), mesh_of(records));
+}
+
+TEST_F(AiNativeImportTest, AMeshOnAnotherOutlineIsClippedToIt)
+{
+    // Inkscape's mesh tool fills a shape's box and the shape clips it: the shape's outline is a
+    // clipping group about the mesh, which takes the object's opacity.
+    auto doc = svg_document("<defs>" + svg_mesh() + R"(</defs><ellipse cx="40" cy="30" rx="30" ry="20" style="fill:url(#m);opacity:0.5"/>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &records = written.records;
+    auto const clip = records.find("q\n");
+    auto const mesh = records.find("/Mesh X!");
+    ASSERT_NE(clip, std::string::npos);
+    ASSERT_NE(mesh, std::string::npos);
+    EXPECT_LT(clip, mesh);
+    EXPECT_LT(records.find("h\nW\nn\n", clip), mesh);
+    EXPECT_NE(records.find("6 () XW\nQ\n0 0.5 0 0 0 Xy\n0 0 Xd\n6 () XW\n"), std::string::npos)
+        << records.substr(mesh, 1200);
+    auto b = make(records);
+    ASSERT_TRUE(b);
+    auto *doc_b = b->document.get();
+    doc_b->ensureUpToDate();
+    std::vector<XML::Node *> paths;
+    for (auto *path : elements(doc_b->getReprRoot(), "svg:path")) {
+        if (attr(path, "proof:ai-mesh") == "true") paths.push_back(path);
+    }
+    ASSERT_EQ(paths.size(), 4u);
+    auto *item = dynamic_cast<SPItem *>(doc_b->getObjectByRepr(paths[0]->parent()));
+    ASSERT_TRUE(item);
+    EXPECT_TRUE(item->getClipObject());
+    expect_same_mesh_patches(first_mesh(doc.get()), doc_b, Geom::Scale(1 / 0.75), 1e-3);
+}
+
+TEST_F(AiNativeImportTest, AnIllustratorMeshGoesBackAsItCame)
+{
+    // Read, written, read again: the same grid, cut where its anchors were, the same corners.
+    auto anchors = [](std::size_t a, std::size_t b) {
+        return a == 1 && b == 0 ? std::string("[45 0 40 0 50 0 1] /A X#\n") : std::string();
+    };
+    auto art = grid_mesh(2, 2, grid_colour, anchors);
+    auto const first = art.find("[0.1 0 0.05 0 1 30 0 40 0 1 30 10 1]");
+    ASSERT_NE(first, std::string::npos);
+    art.replace(first, 36, "[0.1 0 0.05 0 1 30 0 35 0 1 30 10 1]");
+    auto const second = art.find("[0.2 0 0.1 0 1 60 0 60 10 1 50 0 1]");
+    ASSERT_NE(second, std::string::npos);
+    art.replace(second, 35, "[0.2 0 0.1 0 1 60 0 60 10 1 55 0 1]");
+    auto a = make(records(layer(art)));
+    ASSERT_TRUE(a);
+    auto const written = AN::write_records(a->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_EQ(written.records.find("%_[3 2] /Size X#\n"), std::string::npos);
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    // The writer's art space has its origin at the artboard's top-left corner, the records' at
+    // its bottom-left: the same document units.
+    expect_same_mesh_patches(first_mesh(a->document.get()), b->document.get(), Geom::identity(), 1e-3);
+}
+
+TEST_F(AiNativeImportTest, MeshBoundaryAndTensorChecksDoNotDependOnTranslation)
+{
+    for (auto const &translation : {"0", "10000000"}) {
+        SCOPED_TRACE(translation);
+        auto const transform = std::string("<g transform=\"translate(") + translation + " 0)\">";
+        // A small but real outline change must keep its clip even far from the origin.
+        auto doc = svg_document("<defs>" + svg_mesh() + "</defs>" + transform +
+            R"mesh(<path d="M 10,10 C 20,10.005 30,10.005 40,10 H 70 V 50 H 10 Z" fill="url(#m)"/></g>)mesh");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        EXPECT_NE(written.records.find("h\nW\nn\n"), std::string::npos);
+
+        auto mesh = svg_mesh();
+        mesh.replace(mesh.find("<meshpatch>"), 11, R"(<meshpatch tensor="5,5 -5,5 -5,-5 5,-4">)");
+        doc = svg_document("<defs>" + mesh + "</defs>" + transform +
+            R"mesh(<path d="M 10,10 H 70 V 50 H 10 Z" fill="url(#m)"/></g>)mesh");
+        ASSERT_TRUE(doc);
+        auto const refused = AN::write_records(doc.get());
+        EXPECT_TRUE(refused.records.empty());
+        EXPECT_NE(std::find(refused.refused.begin(), refused.refused.end(), "mesh gradients with tensor points"),
+                  refused.refused.end());
+    }
+}
+
+TEST_F(AiNativeImportTest, MeshFormsTheWriterCannotWriteAreNamed)
+{
+    auto const stroke_mesh = "<defs>" + svg_mesh() + R"(</defs><path d="M 10,10 H 70 V 50 H 10 Z" style="fill:none;stroke:url(#m);stroke-width:2"/>)";
+    std::vector<std::pair<std::string, std::string>> const cases{
+        {"<defs>" + svg_mesh(R"( type="bicubic")") + R"mesh(</defs><path d="M 10,10 H 70 V 50 H 10 Z" style="fill:url(#m)"/>)mesh",
+         "smoothed mesh gradients"},
+        {"<defs>" + svg_mesh() + R"(</defs><path d="M 10,10 H 70 V 50 H 10 Z" style="fill:url(#m);stroke:#000000"/>)",
+         "strokes on mesh-filled objects"},
+        {stroke_mesh, "mesh gradients on strokes"},
+        {"<defs>" + svg_mesh() + R"mesh(</defs><path d="M 10,10 H 70 V 50 H 10 Z" fill="url(#m)" proof:overprint="fill"/>)mesh",
+         "overprint on mesh gradients"},
+    };
+    for (auto const &[body, reason] : cases) {
+        SCOPED_TRACE(reason);
+        auto doc = svg_document(body);
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
+            << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+    }
+    // A tensor point moved from where the Coons patch has it; corners in RGB and CMYK.
+    for (auto const &[from, to, reason] :
+         {std::tuple{std::string(R"(<meshpatch><stop path="l 30,0" style="stop-color:#ff0000"/>)"),
+                     std::string(R"(<meshpatch tensor="5,5 -5,5 -5,-5 5,-4"><stop path="l 30,0" style="stop-color:#ff0000"/>)"),
+                     "mesh gradients with tensor points"},
+          std::tuple{std::string("stop-color:#00ffff"), std::string("stop-color:device-cmyk(1 0 0 0)"),
+                     "mesh gradients of more than one colour model"}}) {
+        SCOPED_TRACE(reason);
+        auto mesh = svg_mesh();
+        ASSERT_NE(mesh.find(from), std::string::npos);
+        mesh.replace(mesh.find(from), from.size(), to);
+        auto doc = svg_document("<defs>" + mesh + R"mesh(</defs><path d="M 10,10 H 70 V 50 H 10 Z" style="fill:url(#m)"/>)mesh");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
+            << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+    }
+}
+
 TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
 {
     // The refusals no other test reaches, in both forms: the list the interchange document
@@ -6698,10 +7060,6 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
         {R"x(<path d="M10 10 L50 50" style="stroke:#000000" transform="skewX(20)"/>)x", "strokes on stretched or skewed objects"},
         {R"(<defs><clipPath id="c"><rect width="10" height="10"/><rect x="20" width="10" height="10"/></clipPath></defs>)"
          R"x(<g clip-path="url(#c)"><rect width="50" height="50"/></g>)x", "clipping paths other than one path"},
-        {R"(<defs><meshgradient id="g" x="0" y="0" gradientUnits="userSpaceOnUse"><meshrow><meshpatch>)"
-         R"(<stop path="c 10,0 20,0 30,0" style="stop-color:#ff0000"/><stop path="c 0,10 0,20 0,30" style="stop-color:#00ff00"/>)"
-         R"(<stop path="c -10,0 -20,0 -30,0" style="stop-color:#0000ff"/><stop path="c 0,-10 0,-20 0,-30" style="stop-color:#ffff00"/>)"
-         R"x(</meshpatch></meshrow></meshgradient></defs><rect width="30" height="30" fill="url(#g)"/>)x", "mesh gradients"},
         {R"(<defs><linearGradient id="g" spreadMethod="reflect" x2="0.5"><stop stop-color="#ff0000"/>)"
          R"x(<stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x",
          "repeating or reflected gradients"},
