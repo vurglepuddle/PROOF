@@ -21,8 +21,15 @@ class SPGradient;
 
 namespace Inkscape::GradientRendering {
 
-/// The gradient's stops as the screen and the gradient previews draw them.
+/// The gradient's stops as the screen and the gradient previews draw them. An ink beside process
+/// colour overprints it, as Illustrator draws it (gradient-rendering.cpp, `ink_blend`).
 SPGradientVector canvas_vector(SPGradient const *gradient);
+
+/// The stops PDF output draws a gradient with, so that its page looks as the canvas does: a
+/// Perceptual gradient's Oklab samples; an ink beside process colour overprinted, in process
+/// colour (the ink on its own plate is the separations work); otherwise the stops themselves, a
+/// CMYK shading blending in CMYK by itself.
+SPGradientVector pdf_vector(SPGradient const *gradient);
 
 /// In a CMYK document, the stops with samples between them blended in CMYK, every one a colour
 /// of the document's CMYK (its profile's, or the working CMYK profile's when it has none). The

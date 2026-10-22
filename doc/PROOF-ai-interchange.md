@@ -2437,12 +2437,15 @@ document, RGB in an RGB one), and the inks after `%AI3_ColorUsage` in
 #### Still open
 
 - Drawing an ink beside process colour as Illustrator does (the ink
-  overprinting the process ramp) on the canvas and in PDF output; PROOF's PDF
-  still prints spot gradients in process (DeviceN is separate work). Spot and
-  CMYK stops, written since the spot-ink rounds, are the same case.
+  overprinting the process ramp) on the canvas and in PDF output: **done
+  2026-10-22** (`PROOF-document-colors.md`, "An ink beside process colour").
+  PROOF's PDF still prints spot gradients in process (DeviceN is separate
+  work). Spot and CMYK stops, written since the spot-ink rounds, are the same
+  case.
 - Reading an RGB page's `/MultiChannelPaint` (overprint in the page check and
   PDF import).
-- The canvas blends gradients of CMYK documents in RGB.
+- The canvas blends gradients of CMYK documents in RGB: **done 2026-10-22**,
+  meshes too (`PROOF-document-colors.md`).
 
 ### Editable mesh patches written (2026-10-22)
 

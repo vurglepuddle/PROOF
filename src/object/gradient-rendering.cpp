@@ -5,7 +5,9 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <optional>
+#include <string>
 
 #include "colors/color.h"
 #include "colors/document-colors.h"
@@ -14,6 +16,8 @@
 #include "colors/spaces/cms.h"
 #include "gradient-perceptual.h"
 #include "sp-gradient.h"
+#include "sp-stop.h"
+#include "spot-ink.h"
 
 namespace Inkscape::GradientRendering {
 namespace {
@@ -64,6 +68,194 @@ Colors::Color ink_color(std::shared_ptr<Colors::Space::AnySpace> const &target, 
     color.setOpacity(opacity);
     return color;
 }
+
+/// The ink on each stop of the vector, read from its stop element. The vector holds the stop
+/// elements of the gradient that has them, in order, with a copy of the first at 0 and of the last
+/// at 1 when they don't reach the ends (SPGradient::rebuildVector).
+std::vector<std::optional<SpotInk::Ink>> stop_inks(SPGradient const *gradient, SPGradientVector const &vector)
+{
+    std::vector<std::optional<SpotInk::Ink>> result(vector.stops.size());
+    auto const *source = gradient->getVector();
+    std::vector<SPStop const *> stops;
+    for (auto const &child : source->children) {
+        if (auto const stop = cast<SPStop>(&child)) {
+            stops.push_back(stop);
+        }
+    }
+    if (stops.empty()) {
+        return result;
+    }
+    std::size_t const lead = std::clamp<double>(stops.front()->offset, 0, 1) > 0 ? 1 : 0;
+    if (vector.stops.size() < stops.size() + lead || vector.stops.size() > stops.size() + lead + 1) {
+        return result; // Not the vector of these stops.
+    }
+    for (std::size_t i = 0; i < vector.stops.size(); ++i) {
+        auto const k = std::min<std::size_t>(i < lead ? 0 : i - lead, stops.size() - 1);
+        result[i] = SpotInk::read(stops[k]->getRepr());
+    }
+    return result;
+}
+
+/// Whether an ink stands beside process colour (or beside another ink) in the vector: what
+/// Illustrator draws overprinting.
+bool ink_beside_process(std::vector<std::optional<SpotInk::Ink>> const &inks)
+{
+    std::optional<std::string> name;
+    bool process = false, other_ink = false;
+    for (auto const &ink : inks) {
+        if (!ink) {
+            process = true;
+        } else if (!name) {
+            name = ink->name;
+        } else if (*name != ink->name) {
+            other_ink = true;
+        }
+    }
+    return name && (process || other_ink);
+}
+
+/// Colour as amounts of colorant: the inks themselves in a CMYK document, 1 - each channel in an
+/// RGB one (what a channel takes away from white paper).
+using Amounts = std::array<double, 4>;
+
+/// What a stop holds as Illustrator paints it: the tints of its inks and its process colour.
+struct Channels
+{
+    std::map<std::string, double> tints;
+    Amounts process{};
+};
+
+} // namespace
+
+/**
+ * PROOF: an ink beside process colour, as Illustrator draws it. A CMYK document's page paints such
+ * a gradient in DeviceN, its tint transform giving each CMYK channel 1 - (1 - tint x the ink's
+ * CMYK)(1 - process), the tints and process channels blended linearly: the ink overprinting the
+ * process ramp. An RGB document's page paints the ink's Separation shading and the RGB shading
+ * over it with overprint on (`/MultiChannelPaint`), which Illustrator shows as the ink's tint
+ * ramp multiplied over the process ramp, each against white: the same rule in what each channel
+ * takes away from white. The Separation's tints are the ink's own: its inks scaled for a CMYK
+ * definition, blended towards white in Lab or RGB (SpotInk::display_color). A blend of the
+ * stops' colours is up to 26 levels from Illustrator's renders, darker mid-ramp
+ * (PROOF-document-colors.md, "An ink beside process colour").
+ */
+static SPGradientVector ink_blend(SPDocument *document, SPGradientVector const &vector,
+                                  std::vector<std::optional<SpotInk::Ink>> const &stop_ink)
+{
+    bool const cmyk = Colors::DocumentColors::mode(document) == Type::CMYK;
+    auto const target = cmyk ? document_cmyk(document) : Colors::Manager::get().find(Type::RGB);
+    if (!target) {
+        return vector;
+    }
+    unsigned const count = cmyk ? 4 : 3;
+    auto const amounts = [&](Colors::Color const &color) -> std::optional<Amounts> {
+        if (cmyk) {
+            return inks(document, target, color);
+        }
+        auto const rgb = color.converted(Type::RGB);
+        if (!rgb || rgb->getValues().size() < 3) {
+            return {};
+        }
+        auto const &v = rgb->getValues();
+        return Amounts{1 - v[0], 1 - v[1], 1 - v[2], 0};
+    };
+
+    // Each ink's definition, and what it takes away at a tint: in a CMYK document the tint times
+    // its inks at full strength, as the DeviceN tint transform has it; in an RGB document the
+    // Separation's own tint (SpotInk::display_color).
+    std::map<std::string, Colors::Color> definition;
+    std::map<std::string, Amounts> full;
+    auto const at_tint = [&](std::string const &name, double tint) -> Amounts {
+        if (cmyk) {
+            auto const &f = full.at(name);
+            return {f[0] * tint, f[1] * tint, f[2] * tint, f[3] * tint};
+        }
+        return amounts(SpotInk::display_color(definition.at(name), tint)).value_or(Amounts{});
+    };
+    std::vector<Channels> channels;
+    for (std::size_t i = 0; i < vector.stops.size(); ++i) {
+        Channels c;
+        if (auto const &ink = stop_ink[i]) {
+            if (!full.contains(ink->name)) {
+                auto const strength = amounts(ink->alternate);
+                if (!strength) {
+                    return vector;
+                }
+                full[ink->name] = *strength;
+                definition.emplace(ink->name, ink->alternate);
+            }
+            c.tints[ink->name] = ink->tint;
+        } else {
+            auto const process = vector.stops[i].color ? amounts(*vector.stops[i].color) : std::nullopt;
+            if (!process) {
+                return vector;
+            }
+            c.process = *process;
+        }
+        channels.push_back(std::move(c));
+    }
+
+    auto const shown = [&](Channels const &c, double opacity) {
+        Amounts paper;
+        for (unsigned j = 0; j < 4; ++j) {
+            paper[j] = 1 - c.process[j];
+        }
+        for (auto const &[name, tint] : c.tints) {
+            auto const taken = at_tint(name, tint);
+            for (unsigned j = 0; j < 4; ++j) {
+                paper[j] *= 1 - taken[j];
+            }
+        }
+        std::vector<double> values(count);
+        for (unsigned j = 0; j < count; ++j) {
+            values[j] = cmyk ? 1 - paper[j] : paper[j];
+        }
+        auto color = Colors::Color(target, std::move(values));
+        color.setOpacity(opacity);
+        return color;
+    };
+    auto const between = [](Channels const &a, Channels const &b, double t) {
+        Channels mix;
+        for (unsigned j = 0; j < 4; ++j) {
+            mix.process[j] = a.process[j] + (b.process[j] - a.process[j]) * t;
+        }
+        for (auto const &[name, tint] : a.tints) {
+            mix.tints[name] += tint * (1 - t);
+        }
+        for (auto const &[name, tint] : b.tints) {
+            mix.tints[name] += tint * t;
+        }
+        return mix;
+    };
+
+    double const most = std::clamp(SAMPLE_BUDGET / vector.stops.size(), 1.0, MOST_SAMPLES);
+    auto result = vector;
+    result.stops.clear();
+    for (std::size_t i = 0; i < vector.stops.size(); ++i) {
+        auto const &a = vector.stops[i];
+        double const opacity_a = a.color ? a.color->getOpacity() : 1;
+        result.stops.push_back({shown(channels[i], opacity_a), a.offset});
+        if (i + 1 == vector.stops.size()) {
+            break;
+        }
+        auto const &b = vector.stops[i + 1];
+        if (b.offset <= a.offset) {
+            continue; // A hard edge.
+        }
+        double const opacity_b = b.color ? b.color->getOpacity() : 1;
+        auto const &ca = channels[i], &cb = channels[i + 1];
+        bool const same = ca.process == cb.process && ca.tints == cb.tints;
+        auto const divisions = same ? 1u : static_cast<unsigned>(most);
+        for (unsigned d = 1; d < divisions; ++d) {
+            double const t = double(d) / divisions;
+            result.stops.push_back({shown(between(channels[i], channels[i + 1], t), opacity_a + (opacity_b - opacity_a) * t),
+                                    a.offset + (b.offset - a.offset) * t});
+        }
+    }
+    return result;
+}
+
+namespace {
 
 using Cubic = std::array<Geom::Point, 4>;
 using Grid = std::array<Cubic, 4>; ///< A tensor patch's control points, [row][column].
@@ -158,7 +350,25 @@ SPGradientVector canvas_vector(SPGradient const *gradient)
     if (PerceptualGradient::enabled(gradient)) {
         return PerceptualGradient::rendering_vector(gradient);
     }
-    return cmyk_blend(gradient->document, *gradient->getGradientVector());
+    auto const &vector = *gradient->getGradientVector();
+    auto const inks = stop_inks(gradient, vector);
+    if (ink_beside_process(inks)) {
+        return ink_blend(gradient->document, vector, inks);
+    }
+    return cmyk_blend(gradient->document, vector);
+}
+
+SPGradientVector pdf_vector(SPGradient const *gradient)
+{
+    if (PerceptualGradient::enabled(gradient)) {
+        return PerceptualGradient::rendering_vector(gradient);
+    }
+    auto const &vector = *gradient->getGradientVector();
+    auto const inks = stop_inks(gradient, vector);
+    if (ink_beside_process(inks)) {
+        return ink_blend(gradient->document, vector, inks);
+    }
+    return vector;
 }
 
 SPGradientVector cmyk_blend(SPDocument *document, SPGradientVector const &vector)

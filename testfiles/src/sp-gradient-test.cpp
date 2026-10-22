@@ -11,6 +11,9 @@
  */
 
 #include <gtest/gtest.h>
+#include <cmath>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <glibmm/i18n.h>
 #include <doc-per-case-test.h>
@@ -645,4 +648,111 @@ TEST_F(GradientRenderingTest, ACutMeshKeepsItsCurvedSides)
         EXPECT_TRUE(Geom::are_near(patches[j].points[0][0], at(j / 8.0), 1e-9)) << j;
         EXPECT_TRUE(Geom::are_near(patches[j].points[0][3], at((j + 1) / 8.0), 1e-9)) << j;
     }
+}
+
+namespace {
+
+std::string ink_stop(char const *offset, char const *name, char const *alternate, char const *tint = nullptr)
+{
+    return std::string(R"S(<stop offset=")S") + offset + R"S(" style="stop-color:)S" + alternate +
+           R"S(" proof:ink=")S" + name + R"S(" proof:ink-alternate=")S" + alternate + R"S(")S" +
+           (tint ? std::string(R"S( proof:ink-tint=")S") + tint + R"S(")S" : std::string()) + "/>";
+}
+
+/// The sample of the vector at this offset.
+Colors::Color const &at(SPGradientVector const &vector, double offset)
+{
+    for (auto const &stop : vector.stops) {
+        if (std::abs(stop.offset - offset) < 1e-6) return *stop.color; // Stop offsets are floats.
+    }
+    throw std::runtime_error("no sample at that offset");
+}
+
+} // namespace
+
+TEST_F(GradientRenderingTest, AnInkBesideProcessOverprintsItInACmykDocument)
+{
+    auto const stops = ink_stop("0", "Leaf", "device-cmyk(0.306 0 0.6 0)") +
+                       R"S(<stop offset="1" style="stop-color:device-cmyk(0 0.666 0.743 0.321)"/>)S";
+    auto document = blend_document("CMYK", stops.c_str());
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    ASSERT_EQ(vector.stops.size(), 65u);
+    // Halfway: the ink at half its tint over half the process colour, each channel
+    // 1 - (1 - 0.5 x ink)(1 - 0.5 x process), as Illustrator's DeviceN tint transform has it.
+    auto const &middle = at(vector, 0.5);
+    EXPECT_EQ(middle.getSpace()->getComponentType(), Colors::Space::Type::CMYK);
+    auto const &v = middle.getValues();
+    EXPECT_NEAR(v[0], 0.153, 1e-6);
+    EXPECT_NEAR(v[1], 0.333, 1e-6);
+    EXPECT_NEAR(v[2], 1 - (1 - 0.3) * (1 - 0.3715), 1e-6); // 0.560, where a blend has 0.672.
+    EXPECT_NEAR(v[3], 0.1605, 1e-6);
+    // The ends are the ink at its tint and the process colour.
+    EXPECT_NEAR(at(vector, 0).getValues()[2], 0.6, 1e-6);
+    EXPECT_NEAR(at(vector, 1).getValues()[1], 0.666, 1e-6);
+}
+
+TEST_F(GradientRenderingTest, AnInkBesideProcessMultipliesOverItInAnRgbDocument)
+{
+    auto const stops = ink_stop("0", "Green", "#33cc66") +
+                       R"S(<stop offset="1" style="stop-color:#808080;stop-opacity:0.5"/>)S";
+    auto document = blend_document("RGB", stops.c_str());
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    ASSERT_EQ(vector.stops.size(), 65u);
+    // The ink's tint ramp multiplied over the process ramp, each against white.
+    auto const &middle = at(vector, 0.5);
+    double const grey = 128 / 255.0;
+    double const expected[3] = {0.2, 0.8, 0.4};
+    for (unsigned j = 0; j < 3; ++j) {
+        double const ink = 1 - 0.5 * (1 - expected[j]), process = 1 - 0.5 * (1 - grey);
+        EXPECT_NEAR(middle.getValues()[j], ink * process, 1e-6) << j;
+    }
+    EXPECT_NEAR(middle.getOpacity(), 0.75, 1e-9);
+}
+
+TEST_F(GradientRenderingTest, OneInksTintsAreBlendedAsBefore)
+{
+    // No process colour and no second ink: nothing overprints.
+    auto const stops = ink_stop("0", "Leaf", "device-cmyk(0.306 0 0.6 0)") +
+                       ink_stop("1", "Leaf", "device-cmyk(0.153 0 0.3 0)", "0.5");
+    auto rgb = blend_document("RGB", stops.c_str());
+    ASSERT_TRUE(rgb);
+    EXPECT_EQ(Inkscape::GradientRendering::canvas_vector(blend_gradient(*rgb)).stops.size(), 2u);
+}
+
+TEST_F(GradientRenderingTest, InksAreFoundWhenTheStopsDoNotReachTheEnds)
+{
+    // The vector adds a copy of the first stop at 0 and of the last at 1.
+    auto const stops = ink_stop("0.2", "Leaf", "device-cmyk(0.306 0 0.6 0)") +
+                       R"S(<stop offset="0.8" style="stop-color:device-cmyk(0 1 0 0)"/>)S";
+    auto document = blend_document("CMYK", stops.c_str());
+    ASSERT_TRUE(document);
+    auto const vector = Inkscape::GradientRendering::canvas_vector(blend_gradient(*document));
+    // Overprinted only between the two stops: 0 to 0.2 and 0.8 to 1 are flat.
+    auto const &middle = at(vector, 0.5).getValues();
+    EXPECT_NEAR(middle[1], 0.5, 1e-6);
+    EXPECT_NEAR(middle[2], 0.3, 1e-6);
+    EXPECT_NEAR(at(vector, 0).getValues()[2], 0.6, 1e-6);
+    EXPECT_NEAR(at(vector, 1).getValues()[1], 1, 1e-6);
+}
+
+TEST_F(GradientRenderingTest, PdfOutputDrawsAnInkBesideProcessAsTheCanvasDoes)
+{
+    // An ink beside process colour: the same overprinted samples, so the page looks as the
+    // canvas does (in process colour; the ink's own plate is the separations work).
+    auto const stops = ink_stop("0", "Leaf", "device-cmyk(0.306 0 0.6 0)") +
+                       R"S(<stop offset="1" style="stop-color:device-cmyk(0 0.666 0.743 0.321)"/>)S";
+    auto document = blend_document("CMYK", stops.c_str());
+    ASSERT_TRUE(document);
+    auto const gradient = blend_gradient(*document);
+    auto const pdf = Inkscape::GradientRendering::pdf_vector(gradient);
+    auto const canvas = Inkscape::GradientRendering::canvas_vector(gradient);
+    ASSERT_EQ(pdf.stops.size(), canvas.stops.size());
+    EXPECT_NEAR(at(pdf, 0.5).getValues()[2], at(canvas, 0.5).getValues()[2], 1e-12);
+
+    // Process stops alone: the stops themselves; a CMYK shading blends in CMYK by itself.
+    auto plain = blend_document("CMYK", PROCESS_STOPS);
+    ASSERT_TRUE(plain);
+    EXPECT_EQ(Inkscape::GradientRendering::pdf_vector(blend_gradient(*plain)).stops.size(), 2u);
 }

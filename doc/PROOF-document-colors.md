@@ -341,7 +341,7 @@ art in Gray, which Illustrator blends in black ink alone.
 **Still differs from Illustrator:** an ink beside process colour, which
 Illustrator draws overprinting the process ramp (its DeviceN tint transform:
 each channel 1 - (1 - tint x ink)(1 - process)), lighter mid-ramp than a CMYK
-blend; the next step. Grey (Gray) stops blended in black alone. Transparency
+blend; done the same day, "An ink beside process colour" below. Grey (Gray) stops blended in black alone. Transparency
 composited in CMYK (the canvas composites in RGB).
 
 **PDF readers differ here.** A CMYK mesh shading in the PDF is unchanged, and
@@ -364,3 +364,62 @@ export groups, 361 checks; the lite gradient and mesh cases, 6 of 6, no
 regression. Exporting a CMYK document of 2,000 gradients and 40 sixteen-patch
 meshes takes 6.2 s instead of 5.5 s, start-up included; the same document in
 RGB is unchanged.
+
+## An ink beside process colour (2026-10-22)
+
+The owner, 2026-10-22: "yes, let's follow illustrator in spot ink next to
+process colour". Illustrator doesn't blend an ink stop and a process stop as
+two colours. It keeps the ink an ink and overprints it on the process ramp,
+and the canvas now draws such gradients that way (`ink_blend` in
+`src/object/gradient-rendering.cpp`), read from Illustrator 29.2.1's own pages
+of the mixed-stops controls:
+
+- **CMYK document.** The page paints the gradient in DeviceN (the ink and the
+  process channels it uses, `/NChannel`). The shading blends the ink's tint
+  and the process channels linearly, and the tint transform gives each CMYK
+  channel `1 - (1 - tint x the ink's CMYK)(1 - process)`: the ink printed over
+  the process colour. The ink's CMYK is its definition in the document's CMYK
+  (a CMYK-defined ink's own numbers, a Lab or RGB one converted).
+- **RGB document.** The page paints the ink's Separation shading, then the RGB
+  shading over it with overprint on, marked `/MultiChannelPaint`. Illustrator
+  shows the ink's tint ramp multiplied over the process ramp, each against
+  white: the same rule, in what each channel takes away from white. The
+  Separation's tints are the ink's own (`SpotInk::display_color`): a
+  CMYK-defined ink's inks scaled, a Lab or RGB one blended towards white in
+  its own space, as Illustrator's page declares the Lab ink's Separation.
+
+So mid-ramp the result is lighter than a blend of the two colours, by the
+product of what each takes away. It applies wherever a stop's ink stands
+beside a process stop or beside another ink; a gradient of one ink's tints is
+blended as before, and Perceptual gradients keep Oklab. The stops and the
+`.ai` writers are unchanged: Illustrator reads the inks and draws them its way.
+
+**PDF output draws such a gradient as the canvas does** (`pdf_vector`, the same
+samples), so PROOF's own pages, the PDF viewers and the check of a written
+`.ai` against its page all agree. It **still prints in process colour**:
+writing it as DeviceN (CMYK) or `/MultiChannelPaint` (RGB), with the ink on
+its own plate, belongs to the separations work. Before this, the page blended
+the ink's alternate linearly; with the canvas alone changed, PROOF's own `.ai`
+with such a gradient fell back to its page on reopening (the gate saw the
+difference), which this keeps from happening. Poppler, which doesn't simulate
+overprint, shows Illustrator's RGB pages of such gradients with one of the
+two shadings alone; those documents still open through their page.
+
+**Against Illustrator's renders** of the mixed-stops control (cells on white;
+before is the canvas of that round): RGB document, a CMYK-defined ink to RGB
+18 to 3 levels at most, an ink at 90% with an off-centre midpoint 15 to 4,
+an RGB-defined ink to CMYK 26 to 3, RGB to a Lab ink 24 to 13 at most (one
+pixel; mean 3.2, and along the radius 3.8 against 6.1 for a tint ramp linear
+in RGB); CMYK document, those cells 18 to 4, 18 to 5, 22 to 10 and 63 to 11,
+the rest within the colour engines' differences at the ink's own colour.
+
+Illustrator's own saved copies of the control: the CMYK one still opens
+natively; the RGB one still opens through its page (15.3% by lightness, was
+16.6%), because Poppler doesn't simulate the overprint of `/MultiChannelPaint`.
+
+**Checks:** `test_sp-gradient` 30 (five new: the CMYK rule worked by hand, the
+RGB rule, one ink's tints left to the blend, inks found when the stops don't
+reach the ends, PDF output's vector the canvas's); `test_ai-native-import`
+181; 15 export groups, 361 checks (with only the canvas changed, the
+gradient-paint control's written `.ai` fell back to its page: the reason PDF
+output follows); the lite gradient, non-CMYK spot and mesh cases 7 of 7.
