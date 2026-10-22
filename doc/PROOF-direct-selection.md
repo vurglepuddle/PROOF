@@ -37,6 +37,12 @@ its mouse behaviour closer to Illustrator's Direct Selection tool.
 - **Presentation:** Direct Selection shows the path and anchors without the
   dashed object bounding box. Stationary anchors from the selected path are
   supplied to snapping during a direct anchor drag.
+- **A path that paints nothing** (`paints_nothing` in `box-frame.h`: no fill
+  or stroke that shows, fully transparent, or set invisible) shows its outline
+  as a 1 px line in the selection box's blue, whatever the outline preference,
+  and loses it when it shows again. Inkscape showed only its anchors, and the
+  path itself was hard to find (the owner, 2026-10-22, reporting it for masks,
+  whose objects are invisible). The Selection tool outlines it the same way.
 - **No box around selected anchors:** Inkscape's transformation handles for
   selected nodes (scale, then rotate and skew) are not part of Direct Selection.
   While they showed, a click on a selected anchor switched their mode where it

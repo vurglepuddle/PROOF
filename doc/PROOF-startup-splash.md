@@ -12,6 +12,20 @@ the launch monitor's DPI and fits within its work area. The editable picture is
 message and an animated, indeterminate blue bar. There is no artificial wait
 or claimed progress percentage.
 
+## Which monitor
+
+The splash opens where the editor will. GTK leaves a new window's place to
+Windows, which puts it on the monitor the program was launched from: Explorer,
+the taskbar and Start name it in the program's startup information
+(`STARTF_HASSHELLDATA`, the monitor in `hStdOutput`), and without it (a
+terminal, a script) the primary monitor. The splash reads the same
+(`launch_monitor` in `src/ui/startup-splash.cpp`). It used the monitor under
+the pointer, so it showed on another screen whenever the pointer had moved
+there while PROOF loaded (the owner, 2026-10-22: "It should be on the screen
+where the app will launch"). Checked by launching on each of two monitors with
+the pointer on the other, and with no monitor named: the splash and the editor
+on the same one each time.
+
 ## When it appears
 
 It starts in `InkscapeApplication::on_startup`, after command-line parsing and

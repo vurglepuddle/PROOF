@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <2geom/affine.h>
+#include <2geom/pathvector.h>
 #include <2geom/point.h>
 #include <2geom/rect.h>
 
@@ -63,6 +64,17 @@ bool reset_box_angle(SPItem &item);
 /// among these objects and in their groups, in desktop coordinates. Empty when there are more
 /// than `limit` of them.
 std::vector<Geom::Point> shape_centers(std::vector<SPItem *> const &items, std::size_t limit);
+
+/// Whether the object can't be seen however it is drawn: a shape with neither a fill nor a
+/// stroke that shows (none, fully transparent, or a stroke without width) and no markers, or
+/// any object that is fully transparent or set invisible, itself or in a group. Illustrator
+/// outlines every selected path in its layer's colour; PROOF outlines these, which would show
+/// nothing of themselves when selected but a box or anchors.
+bool paints_nothing(SPItem const &item);
+
+/// The outlines of the shapes that paint nothing among these objects and in their groups and
+/// clones, in desktop coordinates. Empty when there are more than `limit` of them.
+std::vector<Geom::PathVector> invisible_outlines(std::vector<SPItem *> const &items, std::size_t limit);
 
 } // namespace Inkscape
 

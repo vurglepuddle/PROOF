@@ -15,8 +15,10 @@
 #include "object/sp-ellipse.h"
 #include "object/sp-item-group.h"
 #include "object/sp-rect.h"
+#include "object/sp-shape.h"
 #include "object/sp-star.h"
 #include "object/sp-use.h"
+#include "style.h"
 #include "xml/node.h"
 
 namespace Inkscape {
@@ -273,6 +275,49 @@ std::vector<Geom::Point> shape_centers(std::vector<SPItem *> const &items, std::
         }
     }
     return centers;
+}
+
+bool paints_nothing(SPItem const &item)
+{
+    // Visibility is inherited, and a child may show again in an invisible group; opacity is not.
+    if (item.style && item.style->visibility.computed != SP_CSS_VISIBILITY_VISIBLE) {
+        return true;
+    }
+    for (auto object = static_cast<SPObject const *>(&item); object; object = object->parent) {
+        if (cast<SPItem>(object) && object->style && object->style->opacity.value == 0) {
+            return true;
+        }
+    }
+    auto const shape = cast<SPShape>(&item);
+    if (!shape || shape->hasMarkers()) {
+        return false;
+    }
+    auto const style = shape->style;
+    bool const fill = !style->fill.isNone() && style->fill_opacity.value > 0;
+    bool const stroke = !style->stroke.isNone() && style->stroke_opacity.value > 0 && style->stroke_width.computed > 0;
+    return !fill && !stroke;
+}
+
+std::vector<Geom::PathVector> invisible_outlines(std::vector<SPItem *> const &items, std::size_t limit)
+{
+    std::vector<Geom::PathVector> outlines;
+    bool too_many = false;
+    for (auto item : items) {
+        visit_objects(*item, item->i2dt_affine(), true, [&](SPItem &object, Geom::Affine const &i2dt) {
+            auto const shape = cast<SPShape>(&object);
+            if (shape && shape->curve() && paints_nothing(object)) {
+                too_many = outlines.size() >= limit;
+                if (!too_many) {
+                    outlines.push_back(*shape->curve() * i2dt);
+                }
+            }
+            return !too_many;
+        });
+        if (too_many) {
+            return {};
+        }
+    }
+    return outlines;
 }
 
 } // namespace Inkscape

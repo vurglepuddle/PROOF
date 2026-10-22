@@ -109,6 +109,9 @@ public:
     void rotateHandle(Node *n, int which, int dir, bool pixel);
 
     void showOutline(bool show);
+    /// PROOF: outline the path in the box's colour while it paints nothing, whatever the
+    /// outline preference, as the Selection tool does (box-frame.h, paints_nothing).
+    void outlineWhenInvisible();
     void showHandles(bool show);
     void showPathDirection(bool show);
     void setLiveOutline(bool set);
@@ -201,6 +204,9 @@ private:
     Geom::Affine _edit_transform; ///< additional transform to apply to editing controls
     bool _show_handles = true;
     bool _show_outline = false;
+    bool _invisible = false; ///< PROOF: the path paints nothing, so its outline shows.
+    uint32_t _outline_color;
+    sigc::scoped_connection _invisible_watch;
     bool _show_path_direction = false;
     bool _live_outline = true;
     bool _live_objects = true;

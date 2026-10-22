@@ -11,6 +11,7 @@
  * Released under GNU GPL v2+, read the file 'COPYING' for more information.
  */
 
+#include "box-frame.h"
 #include "display/control/canvas-item-bpath.h"
 #include "display/drawing-shape.h"
 #include "document.h"
@@ -130,6 +131,7 @@ PathManipulator::PathManipulator(MultiPathManipulator &mpm, SPObject *path,
     , _dragpoint(new CurveDragPoint(*this))
     , /* XML Tree being used here directly while it shouldn't be*/_observer(new PathManipulatorObserver(this, path->getRepr()))
     , _edit_transform(et)
+    , _outline_color(outline_color)
     , _lpe_key(std::move(lpe_key))
 {
     auto lpeobj = cast<LivePathEffectObject>(_path);
@@ -189,7 +191,7 @@ void PathManipulator::previewCorners(Geom::PathVector const &geometry)
         if (auto drawing = cast<Inkscape::DrawingShape>(shape->get_arenaitem(_desktop->dkey))) {
             drawing->setPath(std::make_shared<Geom::PathVector const>(geometry));
         }
-        if (_show_outline) _outline->set_bpath(geometry * _getTransform());
+        if (_show_outline || _invisible) _outline->set_bpath(geometry * _getTransform());
     }
 }
 
@@ -1395,6 +1397,23 @@ void PathManipulator::showOutline(bool show)
     _updateOutline();
 }
 
+void PathManipulator::outlineWhenInvisible()
+{
+    auto item = cast<SPItem>(_path);
+    if (!item || _invisible_watch.connected()) return;
+    // A change of style reaches the path as a modification, its groups' changes too.
+    auto update = [this] {
+        auto item = cast<SPItem>(_path);
+        bool const invisible = item && paints_nothing(*item);
+        if (invisible == _invisible) return;
+        _invisible = invisible;
+        _outline->set_stroke(invisible ? 0x277fffff : _outline_color);
+        _updateOutline();
+    };
+    _invisible_watch = item->connectModified([update](SPObject *, unsigned) { update(); });
+    update();
+}
+
 void PathManipulator::showPathDirection(bool show)
 {
     if (show == _show_path_direction) return;
@@ -1951,7 +1970,7 @@ void PathManipulator::_updateSegmentHighlights()
 
 void PathManipulator::_updateOutline()
 {
-    if (!_show_outline) {
+    if (!_show_outline && !_invisible) {
         _outline->set_visible(false);
         return;
     }

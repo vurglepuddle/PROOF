@@ -73,6 +73,7 @@ private:
     void _newItemLines();
     void _newTextBaselines();
     void _newItemCenters();
+    void _newItemOutlines();
     bool _setItemBox(CanvasItem &canvas_item, SPItem &item, int prefs_bbox) const;
     void _boundingBoxPrefsChanged(int prefs_bbox);
 
@@ -88,6 +89,7 @@ private:
     std::vector<CanvasItemPtr<CanvasItem>> _text_baselines;
     std::vector<CanvasItemPtr<CanvasItem>> _item_lines;
     std::vector<CanvasItemPtr<CanvasItem>> _item_centers; ///< PROOF: centres of shapes in the selection
+    std::vector<CanvasItemPtr<CanvasItem>> _item_outlines; ///< PROOF: outlines of shapes that paint nothing
 
     BoundingBoxPrefsObserver _bounding_box_prefs_observer;
 };

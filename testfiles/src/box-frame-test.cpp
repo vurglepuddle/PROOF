@@ -385,6 +385,52 @@ TEST_F(BoxFrameTest, RotationFollowsThePreferredBoundsAndHandlesEmptySelections)
     EXPECT_TRUE(Geom::are_near(*box_middle(selection.items_vector(), SPItem::VISUAL_BBOX), *visual, 1e-4));
 }
 
+TEST_F(BoxFrameTest, ShapesThatPaintNothingAreOutlined)
+{
+    auto const invisible = SPDocument::createNewDocFromMem(R"SVG(<svg xmlns="http://www.w3.org/2000/svg"
+      xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="400">
+  <defs><marker id="dot"><circle r="2"/></marker></defs>
+  <path id="none" d="M 0,0 h 10 v 10 z" fill="none"/>
+  <path id="filled" d="M 0,0 h 10 v 10 z"/>
+  <path id="stroked" d="M 0,0 h 10 v 10 z" fill="none" stroke="blue"/>
+  <path id="clear" d="M 0,0 h 10 v 10 z" fill="red" fill-opacity="0" stroke="blue" stroke-opacity="0"/>
+  <path id="thin" d="M 0,0 h 10 v 10 z" fill="none" stroke="blue" stroke-width="0"/>
+  <path id="marked" d="M 0,0 h 10 v 10 z" fill="none" marker-start="url(#dot)"/>
+  <g id="faded" opacity="0"><rect id="inside" x="0" y="0" width="5" height="5" fill="red"/></g>
+  <g id="unseen" visibility="hidden">
+    <rect id="shown" x="0" y="0" width="5" height="5" fill="red" visibility="visible"/>
+    <rect id="hidden" x="0" y="0" width="5" height="5" fill="red"/>
+  </g>
+  <g id="mixed" transform="translate(100 0)">
+    <rect id="m-fill" x="0" y="0" width="20" height="20" fill="red"/>
+    <rect id="m-none" x="0" y="0" width="10" height="10" fill="none"/>
+  </g>
+  <use id="clone" xlink:href="#none" x="50" y="0"/>
+</svg>)SVG"sv);
+    ASSERT_TRUE(invisible);
+    invisible->ensureUpToDate();
+    auto object = [&](char const *id) { return cast<SPItem>(invisible->getObjectById(id)); };
+
+    for (auto id : {"none", "clear", "thin", "faded", "inside", "hidden", "m-none"}) {
+        EXPECT_TRUE(paints_nothing(*object(id))) << id;
+    }
+    for (auto id : {"filled", "stroked", "marked", "shown", "m-fill", "mixed"}) {
+        EXPECT_FALSE(paints_nothing(*object(id))) << id;
+    }
+
+    // A group's shapes that paint nothing, where they are on the desktop, and clones of them.
+    auto const outlines = invisible_outlines({object("mixed"), object("clone")}, 10);
+    ASSERT_EQ(outlines.size(), 2u);
+    auto const first = object("m-none")->desktopGeometricBounds();
+    auto const second = object("none")->desktopGeometricBounds();
+    ASSERT_TRUE(first && second);
+    EXPECT_TRUE(Geom::are_near(outlines[0].boundsExact()->min(), first->min(), EPSILON));
+    EXPECT_TRUE(Geom::are_near(outlines[0].boundsExact()->max(), first->max(), EPSILON));
+    EXPECT_TRUE(Geom::are_near(outlines[1].boundsExact()->min(), second->min() + Geom::Point(50, 0), EPSILON));
+    EXPECT_TRUE(invisible_outlines({object("filled"), object("stroked")}, 10).empty());
+    EXPECT_TRUE(invisible_outlines({object("mixed"), object("clone")}, 1).empty()); // Over the limit.
+}
+
 /*
   Local Variables:
   mode:c++

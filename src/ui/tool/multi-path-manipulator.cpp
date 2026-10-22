@@ -188,6 +188,9 @@ void MultiPathManipulator::setItems(std::set<ShapeRecord> const &s)
         newpm->showHandles(_show_handles);
         // always show outlines for clips and masks
         newpm->showOutline(_show_outline || r.role != SHAPE_ROLE_NORMAL);
+        if (r.role == SHAPE_ROLE_NORMAL) {
+            newpm->outlineWhenInvisible();
+        }
         newpm->showPathDirection(_show_path_direction);
         newpm->setLiveOutline(_live_outline);
         newpm->setLiveObjects(_live_objects);

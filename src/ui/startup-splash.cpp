@@ -21,6 +21,25 @@
 
 namespace Inkscape::UI {
 
+/// The monitor Windows puts the editor on. GTK leaves a new window's place to Windows
+/// (CW_USEDEFAULT), and Windows takes the monitor the shell launched us from, which the
+/// shell names in our startup information, else the primary one; never the pointer's.
+/// The owner, 2026-10-22: the splash followed the pointer to the other screen while the
+/// editor opened where they had launched it.
+static HMONITOR launch_monitor()
+{
+    constexpr DWORD HAS_SHELL_DATA = 0x400; // STARTF_HASSHELLDATA, missing from MinGW's headers.
+    STARTUPINFOW startup{sizeof(STARTUPINFOW)};
+    GetStartupInfoW(&startup);
+    if ((startup.dwFlags & HAS_SHELL_DATA) && !(startup.dwFlags & STARTF_USESTDHANDLES)) {
+        // Then hStdOutput holds the shell's monitor, not a handle.
+        auto monitor = reinterpret_cast<HMONITOR>(startup.hStdOutput);
+        MONITORINFO probe{sizeof(MONITORINFO)};
+        if (GetMonitorInfoW(monitor, &probe)) return monitor;
+    }
+    return MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+}
+
 struct StartupSplash::Impl
 {
     static constexpr int WIDTH = 680;
@@ -51,12 +70,10 @@ struct StartupSplash::Impl
                 std::fclose(file);
             }
 
-            // Match GTK's logical size on the monitor where the person launched us.
+            // Match GTK's logical size on the monitor where the editor will open.
             SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            POINT pointer;
-            GetCursorPos(&pointer);
             MONITORINFO monitor{sizeof(MONITORINFO)};
-            GetMonitorInfoW(MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST), &monitor);
+            GetMonitorInfoW(launch_monitor(), &monitor);
 
             auto instance = GetModuleHandleW(nullptr);
             WNDCLASSW klass{};

@@ -90,7 +90,7 @@ void SelCue::_updateItemBboxes(gint mode, int prefs_bbox)
     // PROOF: nothing shows while the selection is dragged, and the cue is drawn again at the
     // result, so don't follow every step of the drag.
     if (_transform_box && _transforming) {
-        for (auto *items : {&_item_bboxes, &_item_lines, &_text_baselines, &_item_centers}) {
+        for (auto *items : {&_item_bboxes, &_item_lines, &_text_baselines, &_item_centers, &_item_outlines}) {
             for (auto &canvas_item : *items) {
                 canvas_item->set_visible(false);
             }
@@ -135,6 +135,7 @@ void SelCue::_updateItemBboxes(gint mode, int prefs_bbox)
     _newItemLines();
     _newTextBaselines();
     _newItemCenters();
+    _newItemOutlines();
 }
 
 /**
@@ -177,6 +178,7 @@ void SelCue::_newItemBboxes()
 {
     _item_bboxes.clear();
     _item_centers.clear();
+    _item_outlines.clear();
 
     Preferences *prefs = Preferences::get();
     gint mode = prefs->getInt("/options/selcue/value", MARK);
@@ -235,6 +237,29 @@ void SelCue::_newItemBboxes()
     _newItemLines();
     _newTextBaselines();
     _newItemCenters();
+    _newItemOutlines();
+}
+
+/**
+ * PROOF: the outline of each selected shape that paints nothing, groups' shapes too, thin and in
+ * the box's colour, as Illustrator outlines a selected path; otherwise only a box would show
+ * where it is. The owner, 2026-10-22: "Most often used to adjust masks (the mask object is
+ * invisible)".
+ */
+void SelCue::_newItemOutlines()
+{
+    _item_outlines.clear();
+    // Too many outlines would only clutter the canvas and slow selection down.
+    constexpr std::size_t MAX_OUTLINES = 200;
+    for (auto &outline : invisible_outlines(_selection->items_vector(), MAX_OUTLINES)) {
+        auto path = make_canvasitem<CanvasItemBpath>(_desktop->getCanvasControls(), std::move(outline));
+        path->set_stroke(0x277fffff);
+        path->set_fill(0x0, SP_WIND_RULE_NONZERO);
+        path->set_pickable(false);
+        path->lower_to_bottom();
+        path->set_visible(_visible());
+        _item_outlines.emplace_back(std::move(path));
+    }
 }
 
 /**

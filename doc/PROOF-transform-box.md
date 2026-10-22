@@ -31,6 +31,13 @@ its click-again rotate/skew mode.
   on screen.
 - **Several objects:** one box around the whole selection, and a thin solid
   outline around each object. A single object has no separate outline.
+- **Objects that paint nothing** (no fill or stroke that shows, fully
+  transparent, or set invisible), selected or in a selected group, show their
+  path as a thin line in the box's blue, as Illustrator outlines a selected
+  path (up to 200 of them). Otherwise only the box showed where such an object
+  is. The owner, 2026-10-22: "Most often used to adjust masks (the mask object
+  is invisible)". Unselected, they stay invisible. Direct Selection outlines
+  them too ([Direct Selection](PROOF-direct-selection.md)).
 - **Clicks:** a click without a drag in an invisible zone acts as a click on
   the canvas there. It selects what is under the pointer, or deselects over
   empty canvas. A click on a corner square or the centre dot does nothing, as
