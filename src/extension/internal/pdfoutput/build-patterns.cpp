@@ -12,12 +12,16 @@
 
 #include "build-patterns.h"
 
+#include <algorithm>
 #include <array>
 #include <iomanip>
 #include <limits>
 #include <locale>
 #include <sstream>
 
+#include "colors/document-colors.h"
+#include "colors/manager.h"
+#include "colors/spaces/base.h"
 #include "object/sp-gradient.h"
 #include "object/sp-linear-gradient.h"
 #include "object/sp-mesh-gradient.h"
@@ -184,7 +188,7 @@ std::optional<CapyPDF_PatternId> Document::get_linear_pattern(SPLinearGradient c
         cm *= to_userspace;
     }
 
-    if (auto func = get_gradient_function(*linear->getGradientVector(), opacity, &color_space)) {
+    if (auto func = get_gradient_function(*linear->getGradientVector(), opacity, &color_space, linear->document)) {
         auto d1 = 0.0;
         auto d2 = 1.0;
 
@@ -254,7 +258,7 @@ std::optional<CapyPDF_PatternId> Document::get_radial_pattern(SPRadialGradient c
         cm *= to_userspace;
     }
 
-    if (auto func = get_gradient_function(*radial->getGradientVector(), opacity, &color_space)) {
+    if (auto func = get_gradient_function(*radial->getGradientVector(), opacity, &color_space, radial->document)) {
         double d1 = 0.0;
         double d2 = 1.0;
 
@@ -420,7 +424,8 @@ std::optional<CapyPDF_PatternId> Document::get_tiling_pattern(SPPattern const *p
  */
 std::optional<CapyPDF_FunctionId> Document::get_gradient_function(SPGradientVector const &vector,
                                                                   std::optional<double> opacity,
-                                                                  CapyPDF_Device_Colorspace *pdf_space)
+                                                                  CapyPDF_Device_Colorspace *pdf_space,
+                                                                  SPDocument *document)
 {
     static auto domain = std::to_array({0.0, 1.0});
     unsigned int stops = vector.stops.size();
@@ -428,6 +433,24 @@ std::optional<CapyPDF_FunctionId> Document::get_gradient_function(SPGradientVect
         return {};
     }
     auto color_space = vector.stops[0].color->getSpace();
+    // PROOF: stops of more than one colour model (CMYK or a spot ink's Lab beside RGB: an .ai
+    // gradient's stops each have a model of their own) blend in the document's colour mode, as
+    // Illustrator 29.2.1 blends process colours of two models (in an RGB document within 1 level of
+    // the canvas, which blends every gradient in RGB). The space is the first stop's in that mode,
+    // whose numbers stay as they are (a CMYK stop in the document's profile); otherwise the first
+    // stop's space, as before. Illustrator prints an ink beside process colour on its own plate;
+    // here it is its alternate (PROOF-ai-interchange.md, "Gradient stops of different colour models").
+    auto const model = [](SPGradientStop const &stop) {
+        auto const space = stop.color ? stop.color->getSpace() : nullptr;
+        return space ? space->getComponentType() : Colors::Space::Type::NONE;
+    };
+    if (std::any_of(vector.stops.begin(), vector.stops.end(),
+                    [&](SPGradientStop const &stop) { return model(stop) != model(vector.stops.front()); })) {
+        auto const mode = Colors::DocumentColors::mode(document);
+        auto const first = std::find_if(vector.stops.begin(), vector.stops.end(),
+                                        [&](SPGradientStop const &stop) { return model(stop) == mode; });
+        color_space = first != vector.stops.end() ? first->color->getSpace() : Colors::Manager::get().find(mode);
+    }
 
     // Update the caller on what the color space should be for this gradient
     if (!opacity) {

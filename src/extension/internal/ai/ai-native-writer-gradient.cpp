@@ -658,11 +658,12 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
                                              space->getType() != Type::CMYK))) {
             return refused("gradient colours other than standard RGB or CMYK");
         }
-        // A CSS colour name is standard sRGB with different spelling, not a named ink. A spot
-        // ink defined in CMYK goes with CMYK stops, as its tints blend in the canvas and PDF.
+        // A CSS colour name is standard sRGB with different spelling, not a named ink. Each stop
+        // has a colour style of its own, so RGB stops go beside CMYK or spot ones as Illustrator
+        // writes them (the owner's one such gradient: a spot ink, style 3, then RGB, style 2).
         auto const stop_model = ink || icc_cmyk ? Type::CMYK
                                 : icc_rgb || space->getType() == Type::CSSNAME ? Type::RGB : space->getType();
-        if (model && *model != stop_model) return refused("mixed gradient colour spaces");
+        if (legacy && model && *model != stop_model) return refused("mixed gradient colour spaces (Illustrator 7)");
         model = stop_model;
         if (interpolation && interpolation->getType() != stop_model) {
             return refused("gradient interpolation different from its stop colour space");
@@ -714,18 +715,18 @@ WrittenGradient write_gradient(SPShape const *shape, Geom::Affine const &item_to
             out.inks.emplace_back(ink->name, defined);
             continue;
         }
-        auto const count = *model == Type::CMYK ? 4u : 3u;
+        auto const count = stop_model == Type::CMYK ? 4u : 3u;
         for (unsigned i = 0; i < count; ++i) {
             if (!std::isfinite(color[i]) || color[i] < 0 || color[i] > 1) return refused("out-of-range gradient colours");
         }
         std::ostringstream line;
-        if (*model == Type::RGB) {
+        if (stop_model == Type::RGB) {
             auto const alternate = color.converted(Type::CMYK);
             if (!alternate) return refused("RGB gradient colours without a CMYK alternate");
             for (unsigned i = 0; i < 4; ++i) line << num((*alternate)[i]) << ' ';
         }
         for (unsigned i = 0; i < count; ++i) line << num(color[i]) << ' ';
-        line << (*model == Type::CMYK ? 1 : 2) << tail;
+        line << (stop_model == Type::CMYK ? 1 : 2) << tail;
         stops.push_back(line.str());
     }
 

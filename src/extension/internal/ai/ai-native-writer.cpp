@@ -1289,10 +1289,13 @@ WrittenRecords Writer::write()
          << "%%Canvassize: 16383\n"
          << std::format("%%BoundingBox: 0 {} {} 0\n%%HiResBoundingBox: 0 {} {} 0\n", num(std::floor(-h)),
                         num(std::ceil(w)), num(-h), num(w))
-         << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n";
+         << "%%DocumentProcessColors: Cyan Magenta Yellow Black\n"
+         << "%AI5_FileFormat 14.0\n%AI12_BuildNumber: 116\n%AI3_ColorUsage: Color\n";
+    // The inks after the format, as Illustrator writes them in all 92 of the owner's documents
+    // with inks of both kinds. Before it, two or more (a `%%+` line) left every radial gradient's
+    // Bm misread in Illustrator 29.2.1, its centre far off the art (2026-10-22); one didn't.
     ink_comments(head);
-    head << "%AI5_FileFormat 14.0\n%AI12_BuildNumber: 116\n%AI3_ColorUsage: Color\n"
-         << std::format("%AI3_Cropmarks: 0 {} {} 0\n", num(-h), num(w))
+    head << std::format("%AI3_Cropmarks: 0 {} {} 0\n", num(-h), num(w))
          << std::format("%AI3_TemplateBox: {} {} {} {}\n", num(cx), num(cy), num(cx), num(cy))
          << std::format("%AI3_TileBox: 0 {} {} 0\n", num(-h), num(w))
          << "%AI3_DocumentPreview: None\n%AI5_ArtSize: 14400 14400\n%AI5_RulerUnits: 2\n"

@@ -296,7 +296,6 @@ TEST_F(AiNativeWriterGradientTest, UnsupportedPaintAndOpacityAreRefusedWithoutRe
         {geometry + R"( spreadMethod="repeat")", rgb_stops, "", "linearGradient", "repeating or reflected gradients"},
         {geometry + R"( spreadMethod="reflect")", rgb_stops, "", "linearGradient", "repeating or reflected gradients"},
         {geometry + R"( color-interpolation="linearRGB")", rgb_stops, "", "linearGradient", "gradient interpolation other than RGB or CMYK"},
-        {geometry, R"x(<stop offset="0" stop-color="red"/><stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x", "", "linearGradient", "mixed gradient colour spaces"},
         {geometry, R"(<stop offset="0" stop-color="red" proof:ink="Ink"/><stop offset="1" stop-color="blue"/>)", "", "linearGradient", "spot ink stops without a definition"},
         {geometry, "", "", "linearGradient", "gradients without stops"},
         {R"(gradientUnits="userSpaceOnUse" cx="50" cy="50" r="40" fr="5")", rgb_stops, "", "radialGradient", "radial gradients with a focal radius"},
@@ -1044,6 +1043,38 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsAreWrittenAsTintsOfTheirInk)
     }
 }
 
+TEST_F(AiNativeWriterGradientTest, StopsOfDifferentModelsKeepTheirOwnColourStyles)
+{
+    // Each stop has a colour style of its own: a spot ink (3) and CMYK (1) beside RGB (2), as
+    // Illustrator writes the owner's one such gradient. Illustrator 7's reading of it is unqualified.
+    auto doc = spotted(R"x(<stop offset="0" style="stop-color:device-cmyk(0 1 0.8 0.1)" )x" + brand + "/>" +
+                       R"x(<stop offset="0.4" stop-color="#ff0000"/>)x"
+                       R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x");
+    ASSERT_TRUE(doc);
+    auto const legacy = AN::write_records(doc.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_TRUE(legacy.records.empty());
+    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "mixed gradient colour spaces (Illustrator 7)"),
+              legacy.refused.end());
+    auto const result = AN::write_records(doc.get());
+    ASSERT_TRUE(result.refused.empty()) << result.refused.front();
+    EXPECT_NE(result.records.find("0 1 0.8 0.1 (Brand Red) 0 3 50 0 %_Bs\n"), std::string::npos);
+    // RGB after the CMYK Illustrator shows it as.
+    EXPECT_NE(result.records.find(" 1 0 0 2 50 40 %_Bs\n"), std::string::npos);
+    EXPECT_NE(result.records.find("1 0 0 0 1 50 100 %_Bs\n"), std::string::npos);
+    std::string error;
+    auto ai = AN::read(result.records, error);
+    ASSERT_TRUE(ai) << error;
+    ASSERT_EQ(ai->gradients.size(), 1u);
+    auto const &stops = ai->gradients[0].stops;
+    ASSERT_EQ(stops.size(), 3u);
+    EXPECT_GE(stops[0].ink, 0);
+    EXPECT_EQ(stops[1].ink, -1);
+    EXPECT_EQ(stops[1].color, AN::Color::rgb(1, 0, 0));
+    EXPECT_NEAR(stops[1].offset, 0.4, 1e-6);
+    EXPECT_EQ(stops[2].ink, -1);
+    EXPECT_EQ(stops[2].color, AN::Color::cmyk(1, 0, 0, 0));
+}
+
 namespace {
 
 std::string fixed4(double v)
@@ -1233,7 +1264,8 @@ TEST_F(AiNativeWriterGradientTest, SpotStopsThatCannotBeWrittenAreRefusedByName)
     std::string const process_end = R"x(<stop offset="1" style="stop-color:device-cmyk(1 0 0 0)"/>)x";
     std::string const cmyk_swatch = "device-cmyk(0 1 0.8 0.1)";
     std::vector<Case> const cases{
-        {ink(brand, "0") + R"(<stop offset="1" stop-color="#00ff00"/>)", cmyk_swatch, "mixed gradient colour spaces"},
+        {ink(brand, "0") + R"(<stop offset="1" stop-color="#00ff00"/>)", cmyk_swatch,
+         "mixed gradient colour spaces (Illustrator 7)", true},
         {ink(R"(proof:ink="Web Red" proof:ink-alternate="#ff0000")", "0") + process_end, cmyk_swatch,
          "spot inks defined in RGB or Lab (Illustrator 7)", true},
         {ink(R"x(proof:ink="Deep Ink" proof:ink-alternate="xyz(0.2 0.1 0.3)")x", "0") + process_end, cmyk_swatch,

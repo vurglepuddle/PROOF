@@ -174,7 +174,7 @@ private:
                                                         Geom::OptRect const &bbox);
     std::optional<CapyPDF_FunctionId> get_gradient_function(SPGradientVector const &vector,
                                                             std::optional<double> opacity,
-                                                            CapyPDF_Device_Colorspace *space);
+                                                            CapyPDF_Device_Colorspace *space, SPDocument *document);
     std::optional<CapyPDF_FunctionId> get_repeat_function(CapyPDF_FunctionId gradient, bool reflected, int from,
                                                           int to);
 

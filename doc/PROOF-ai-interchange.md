@@ -660,8 +660,9 @@ its own records; before, it opened from its page.
   tint taken from 1 and colour style 3: `0 1 0.8 0.1 (Brand Red) 0.8 3 50 50
   %_Bs` is a 20% tint at the ramp's middle. The ink is declared with the solid
   spots (`%%DocumentCustomColors`, `%%CMYKCustomColor`), one name one
-  definition. Spot and CMYK stops mix; spot and RGB stops don't ("mixed
-  gradient colour spaces"). Refused by name: an ink defined in RGB or Lab,
+  definition. Spot and CMYK stops mix; spot and RGB stops didn't ("mixed
+  gradient colour spaces") until 2026-10-22 ("Gradient stops of different
+  colour models"). Refused by name: an ink defined in RGB or Lab,
   Registration, a stop that names an ink without a definition, and in
   Illustrator 7 an ink name outside Windows-1252.
 - **CMYK stops in a profile**, `icc-color()` in the document's profile, as the
@@ -2327,3 +2328,115 @@ Checks: **13 unit suites, zero failures; 28 export groups, 882 checks**.
 Reader 76 cases (one opt-in skip), importer 171 (two), gradient writer 36.
 Next: inspect the one mixed-gradient-space document, then the remaining mesh
 subset; type stays last (60 documents, 52 held by nothing else).
+
+### Gradient stops of different colour models, and inks after the format (2026-10-22, after hard stops)
+
+The one document the census held for "mixed gradient colour spaces" alone
+(`c0a2cebfb7`) is an RGB document from Illustrator CS5 with one such gradient,
+used once, on art beside the artboard (its page leaves it out): radial, a spot
+ink defined in CMYK at 0 (colour style 3), RGB at 90% opacity at 68 (style 2),
+the midpoint at 68.7. Illustrator gives every stop a colour style of its own.
+Its ramp cache for the gradient (`%_Br` type 4, C, M, Y, K, R, G and B sampled)
+follows one curve in R, G and B (0.08, 0.28, 0.59 and 0.83 at the quarters) and
+none in C, M, Y and K (K stays 0 to 40%): blended in RGB, the CMYK derived from
+that. The import already sampled the midpoint in RGB; the writer refused any
+gradient whose stops had more than one model.
+
+**Written as Illustrator writes them.** Each stop keeps its own style: RGB (2)
+beside CMYK (1) and spot inks (3, with the exact stop, 4, of an ink defined in
+Lab or RGB). A `color-interpolation`, when set, must still match every stop.
+Illustrator 7 refuses them by name (`mixed gradient colour spaces (Illustrator
+7)`); its reading is unqualified.
+
+**PDF output (shared code; the collaborator should know).** A shading took the
+first stop's space, so the owner's gradient would have blended in CMYK. Stops
+of more than one colour model now blend in the document's mode, in the space of
+its first stop of that mode (a CMYK stop in the document's profile keeps its
+numbers); gradients of one model are unchanged (`pdfoutput/build-patterns.cpp`).
+
+**Import.** Midpoint samples between stops of different models (an ink and a
+process colour, RGB and CMYK) blend in the document's mode: a CMYK document's
+in CMYK, into its profile. Before, they were RGB in any document, which itself
+made a CMYK document's gradient mixed. RGB documents read as before.
+
+In a CMYK document with a profile PROOF reads RGB paint as CMYK in it
+(`DocumentColors::interpret`), so stops are mixed only in one without; a CMYK
+`.ai` reopens with the working CMYK profile, its RGB stops then CMYK.
+
+#### Found on the way, and fixed: the inks before the format
+
+Illustrator 29.2.1 drew every radial gradient of the first control flat, in its
+last colour; its saved copy had each centre at y 8594 instead of -135
+(`37.5 0 0 37.5 60 8594 Bm`). Eight small controls isolated it. Plain RGB
+radials drew in place alone, beside an ink defined in CMYK, Lab or RGB in a
+linear or a radial gradient, and beside one ink's fill; beside two inks' fills,
+every radial was flat. The modern writer put the ink declarations
+(`%%DocumentCustomColors`, `%%CMYKCustomColor`, `%%RGBCustomColor`, the
+Registration process colour) before `%AI5_FileFormat`, and with two or more
+inks the `%%+` line there leaves Illustrator misreading every radial's `Bm`.
+Illustrator writes them after `%AI5_FileFormat`, `%AI12_BuildNumber`,
+`%AI3_ColorUsage` and `%AI7_ImageSettings` in all 92 of the owner's documents
+with inks of both kinds; the modern writer now writes them after
+`%AI3_ColorUsage`, and the same art draws every radial in place. This dates
+from the spot-ink rounds, whose control had linear gradients only: 9 of the
+documents the modern form writes declare two or more inks and define radial
+gradients.
+The Illustrator 7 header is unchanged.
+
+#### The control in Illustrator
+
+`ai-mixed-gradient-output-smoke.py`: six cells (CMYK to RGB, a CMYK ink to RGB,
+RGB-CMYK-RGB, RGB to a Lab ink, the owner's gradient with its samples, an RGB
+ink to 60% black), in an RGB and a CMYK document. Illustrator 29.2.1 (one
+operation at a time, ten seconds after each open, export, save and close;
+closed without saving; idle after) read every stop as written and kept the
+inks; in the RGB document it saved the process CMYK stops as RGB.
+
+- **RGB document.** CMYK to RGB within 1 level of PROOF's canvas: Illustrator
+  blends process stops of different models in RGB. Every gradient's ends match
+  within 4. Between an ink and a process colour Illustrator draws the ink
+  overprinting the process ramp, as the plates print: its page has a DeviceRGB
+  shading of the process part and the ink's Separation shading overprinted on
+  it (`/MultiChannelPaint`). Mid-ramp that is lighter than PROOF's linear
+  blend: 18, 24 and 20 levels at most in the ink cells, the RGB ink to grey
+  2.8% of its cell above 24.
+- **CMYK document.** Illustrator blends in CMYK (an ink with process colour as
+  DeviceN), as PROOF's PDF output now does; PROOF's canvas blends every
+  gradient in RGB: CMYK to RGB 31 levels at most mid-ramp (11% above 24),
+  yellow to a Lab ink 63 (31%), the others within 22.
+- **Illustrator's saved copies.** The CMYK one reopens in PROOF natively,
+  within 4 of PROOF's canvas. The RGB one opens through its page (16.6% by
+  lightness, 18.5% by colour): Poppler, which PROOF's page check and PDF import
+  draw with, doesn't simulate overprint, so the ink cells show the ink's ramp
+  alone. That is the cause of the existing "spot-gradient preview
+  disagreement". Not a qualified native return for RGB documents with an ink
+  beside process colour.
+
+#### Real documents and the census
+
+`c0a2cebfb7` now writes; saved and reopened, it opens natively and draws as
+the original import but for 7 isolated pixels of 3.3 million at the tips of
+two hairline spikes (coordinate rounding); the copy is unchanged. The census,
+the same 871 copies (12 minutes, nothing else running): import unchanged at
+862 native and nine pages; **the modern form writes 801 of 862** (was 800),
+exactly that document, none lost, no other outcome or reason changed, every
+accepted stream read back; Illustrator 7 stays 100. Left for the modern form:
+type 60 (52 alone), missing links 6 (0), meshes 3 (1).
+
+Checks: **13 unit suites, 0 failures** (importer 172 with two opt-in skips,
+reader 76 with one, gradient writer 37); **29 export groups, 902 checks**,
+the new control 20/20. Unit: `StopsOfDifferentModelsKeepTheirOwnColourStyles`
+(styles 3, 2 and 1 written and read back; Illustrator 7 refuses),
+`MidpointBetweenModelsBlendsInTheDocumentsMode` (CMYK samples in a CMYK
+document, RGB in an RGB one), and the inks after `%AI3_ColorUsage` in
+`WrittenRecordsKeepInksDefinedInLabAndRgb`.
+
+#### Still open
+
+- Drawing an ink beside process colour as Illustrator does (the ink
+  overprinting the process ramp) on the canvas and in PDF output; PROOF's PDF
+  still prints spot gradients in process (DeviceN is separate work). Spot and
+  CMYK stops, written since the spot-ink rounds, are the same case.
+- Reading an RGB page's `/MultiChannelPaint` (overprint in the page check and
+  PDF import).
+- The canvas blends gradients of CMYK documents in RGB.
