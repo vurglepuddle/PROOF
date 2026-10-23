@@ -3027,3 +3027,22 @@ separate cached instances. It installs no fonts. Illustrator 29.2.1 controls
 cover 11 stories in four installed families; drawings agree within two pixels
 at 144 dpi, native Save As retains the axes, and PROOF's return/PDF drawings
 meet the same tolerance. This is not pixel identity or every variable font.
+
+### Area paragraph indents retained (2026-10-23)
+
+Paragraph features `/1`, `/2`, `/3` are first-line, start and end indents,
+respectively, in points. Illustrator 29.2.1's control records confirm fractional
+positive margins and a negative hanging first line. Resolve them through the
+same paragraph-style/default layers as alignment. The reader compensates a
+common horizontal character scale, retaining local lengths on every visible
+line as `proof:paragraph-indents="12.5 21.25 13.5"`. Explicit SVG positions
+already include the margins; the attribute does not move the glyphs again.
+The writer joins wrapped lines and emits one margin declaration per paragraph,
+scaled to its output points. Invalid, conflicting or currently unrepresentable
+hidden margins are refused. Point/path indents are not qualified.
+
+The 15 synthetic controls also cover centred/right end spaces at paragraph
+breaks, forced breaks, soft wraps and their mixtures. PROOF/Illustrator native
+saves and returns retain stories, margins and drawing within the documented
+two-pixel ink tolerance at 144 dpi. Evidence stays local under
+`artifacts/v1-cleanup-20261023/`.

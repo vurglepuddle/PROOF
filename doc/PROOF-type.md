@@ -1,5 +1,12 @@
 # PROOF type controls
 
+Area imports retain paragraph margins as `proof:paragraph-indents`: first-line,
+start and end lengths in the text's local coordinates. Positioned lines already
+include these margins; native AI output uses them when Illustrator flows the
+story back into its frame. There is no paragraph-indent editing UI in this
+change. Native roundtrips/scaling and Illustrator 29.2.1 controls cover fractional
+and hanging margins, centred/right trailing spaces, wraps and forced breaks.
+
 Fonts that aren't installed, and Illustrator's four Character options: all
 caps, small caps, superscript and subscript. First slice: 2026-10-11.
 

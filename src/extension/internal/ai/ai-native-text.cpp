@@ -816,7 +816,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
-    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool world_ready; bool justified; bool hyphenate; StyleLayers characters, features; };
+    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool world_ready; bool justified; bool hyphenate;
+        std::array<double, 3> indents; StyleLayers characters, features; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0, layer_budget = MAX_VALUES;
     auto add_paragraph = [&](Value const *declaration, std::size_t count) {
@@ -853,10 +854,17 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         // Whether it is hyphenated (9) where area type wraps it: Illustrator then draws a hyphen
         // that isn't typed, and lays it out again so.
         auto const hyphenate = layer_value(layers, "9");
+        std::array<double, 3> indents{};
+        for (unsigned i = 0; i < indents.size(); ++i) {
+            auto const *value = layer_value(layers, std::to_string(i + 1).c_str());
+            if (!value) continue;
+            indents[i] = value->num();
+            if (!std::isfinite(indents[i]) || std::abs(indents[i]) > 1e6) throw Bad("invalid paragraph indent");
+        }
         if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
         paragraph_units += count;
         paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, composer == 1, justified,
-                              hyphenate && hyphenate->kind == Value::Boolean && hyphenate->boolean, std::move(characters), layers});
+                              hyphenate && hyphenate->kind == Value::Boolean && hyphenate->boolean, indents, std::move(characters), layers});
     };
     if (s.get("0").dict.count("5")) {
         for (auto const &paragraph : s.get("0").get("5").get("0").list) {
@@ -992,6 +1000,12 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
                 if (++line < out.lines.size()) line_end += line_units[line];
             }
             if (line == out.lines.size()) {
+                // The hidden suffix currently retains text, rather than individual paragraph
+                // declarations. Don't silently assign another paragraph's margins to it.
+                if (!out.lines.empty()) for (unsigned i = 0; i < 3; ++i) {
+                    if (paragraphs[paragraph].indents[i] / hscale != out.lines.back().indents[i])
+                        throw Bad("hidden paragraphs with different indents aren't supported yet");
+                }
                 // What the frame is too small to show: kept, not drawn.
                 if (cp == '\r' || cp == 3 || cp == '\n') out.overflow.push_back('\n'); else if (cp) out.overflow.append(at, next - at);
                 at_units += count; at = next;
@@ -1005,6 +1019,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             auto &l = out.lines[line];
             l.paragraph_alignment = paragraphs[paragraph].alignment;
             l.hyphenate = paragraphs[paragraph].hyphenate;
+            for (unsigned i = 0; i < 3; ++i) l.indents[i] = paragraphs[paragraph].indents[i] / hscale;
             if (cp == '\r' || cp == '\n') l.end = TextLine::End::Paragraph;
             else if (cp == 3) l.end = TextLine::End::Break;
         }
@@ -1258,7 +1273,7 @@ bool same_drawing(PointText const &a, PointText const &b)
     if (!Geom::are_near(a.to_art.withoutTranslation(), b.to_art.withoutTranslation(), 1e-6)) return false;
     for (std::size_t i = 0; i < a.lines.size(); ++i) {
         auto const &la = a.lines[i], &lb = b.lines[i];
-        if (la.runs.size() != lb.runs.size() || la.alignment != lb.alignment || la.tabs != lb.tabs) return false;
+        if (la.runs.size() != lb.runs.size() || la.alignment != lb.alignment || la.tabs != lb.tabs || la.indents != lb.indents) return false;
         if (!la.runs.empty() && !Geom::are_near(la.origin * a.to_art, lb.origin * b.to_art, 0.01)) return false;
         for (std::size_t r = 0; r < la.runs.size(); ++r) {
             if (la.runs[r].text != lb.runs[r].text || !same_style(la.runs[r].style, lb.runs[r].style)) return false;

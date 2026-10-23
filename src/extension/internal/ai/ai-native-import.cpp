@@ -980,6 +980,10 @@ XML::Node *Builder::text(Node const &n)
             span->setAttribute("x", num(line.origin.x())); span->setAttribute("y", num(line.origin.y()));
         }
         if (line.tabs) line.tabs->write(span);
+        if (line.indents != std::array<double, 3>{}) {
+            span->setAttribute(PARAGRAPH_INDENTS_ATTRIBUTE,
+                               num(line.indents[0]) + " " + num(line.indents[1]) + " " + num(line.indents[2]));
+        }
         // The line's origin is its left end, its right end or its middle. Which of those a
         // line starts at depends on the way it reads.
         char const *const anchor = line.alignment == 2 ? "middle" : (line.alignment == 1) != story.rtl ? "end" : "start";

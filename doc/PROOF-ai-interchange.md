@@ -248,6 +248,11 @@ lays it out again in the frame. Two sources:
   (`proof:first-baseline`). The writer joins wrapped lines back into their
   paragraphs and writes what the frame was too small to show
   (`proof:text-overflow`) after them.
+  Paragraph indents are retained as `proof:paragraph-indents` on the positioned
+  lines (first-line, start and end, in local text units), then written back to
+  paragraph features 1–3. They scale with the text. A wrapped paragraph with
+  conflicting margins, malformed metadata, point/path indents or hidden
+  paragraphs requiring different margins is refused rather than changed.
 - **Type Inkscape flows into one shape** (`shape-inside`): the shape's outline is
   the frame, the layout's paragraphs and its typed line feeds end paragraphs,
   and the lines Inkscape wrapped are joined. Its first baseline is written fixed
@@ -274,6 +279,17 @@ within 59 levels of the original file, no block moved. Of the 11 documents that
 area type held, the 4 it held alone now write; the rest wait on right-to-left
 type, tabs, variable fonts and missing links.
 [Records and keys](PROOF-ai-native-records.md#area-type-written-2026-10-23).
+
+**Correctness control, 2026-10-23:** Illustrator 29.2.1 generated 15 frames:
+left/centre/right alignment, unequal fractional margins and hanging first
+lines, end spaces before paragraph/forced breaks and wrapping, and mixed line
+ends. Imports, PROOF's complete native save in Illustrator, and Illustrator's
+returned save in PROOF agree within the existing 99% ink/two-pixel tolerance
+at 144 dpi. Every editable story and the indent settings return unchanged.
+This confirms that the positioned-line representation already handles these
+area end spaces; no change to shared text layout was needed. Permanent units
+cover native margins/scaling, invalid settings, wrap/break distinctions and
+each character's retained position.
 
 ### Path type written (2026-10-23)
 

@@ -11,6 +11,7 @@
 #include "ai-native-import.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -246,6 +247,32 @@ bool says(SPObject const *owner, SPText const *text, char const *name, std::stri
         if (auto const *v = o->getAttribute(name)) return value == v;
     }
     return false;
+}
+
+/// An import's paragraph margins are metadata: explicit SVG lines already include them.
+std::array<double, 3> paragraph_indents(SPObject const *owner, SPText const *text, std::set<std::string> &why)
+{
+    std::array<double, 3> result{};
+    for (auto const *o = owner; o; o = o == text ? nullptr : o->parent) {
+        auto const *value = o->getAttribute(PARAGRAPH_INDENTS_ATTRIBUTE);
+        if (!value) continue;
+        auto const *at = value;
+        for (auto &v : result) {
+            while (g_ascii_isspace(*at)) ++at;
+            char *end = nullptr;
+            v = g_ascii_strtod(at, &end);
+            if (end == at || !std::isfinite(v) || std::abs(v) > 1e6) {
+                why.insert("invalid paragraph indents on type");
+                return {};
+            }
+            at = end;
+            if (*at && !g_ascii_isspace(*at)) break;
+        }
+        while (g_ascii_isspace(*at)) ++at;
+        if (*at) why.insert("invalid paragraph indents on type");
+        break;
+    }
+    return result;
 }
 
 /// How an import's area type aligns a paragraph: it keeps that in text-align, which Inkscape
@@ -502,6 +529,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         double extent_left = 0, extent_right = 0; ///< Physical advance bounds, including reordered runs.
         bool ordered_rtl = false; ///< Contains script characters resolved by the bidi algorithm.
         std::optional<Text::LeftTabStops> tabs; ///< The stops its tabs step to.
+        std::array<double, 3> indents{};
         std::vector<Char> chars;
     };
     std::map<unsigned, Line> lines;
@@ -582,6 +610,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             line.tabs = stops;
         }
         if (fresh) {
+            line.indents = paragraph_indents(string->parent, text, why);
+            if (!area && line.indents != std::array<double, 3>{}) why.insert("indents on point or path type");
             line.anchor = layout.chunkPlacement(it);
             line.left = layout.characterAnchorPoint(it)[Geom::X];
             line.extent_left = layout.characterBoundingBox(it).left();
@@ -603,6 +633,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             }
             line.alignment = *alignment;
         }
+        if (line.indents != paragraph_indents(string->parent, text, why)) why.insert("different paragraph indents within one line");
         gchar bytes[8];
         auto const n = g_unichar_to_utf8(c, bytes);
         line.chars.push_back({std::string(bytes, n), c > 0xffff ? 2u : 1u, string->parent});
@@ -705,6 +736,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         Line const *line; ///< Nothing for an empty line between two others.
         double y;
         End end = End::Paragraph;
+        SPObject const *owner = nullptr; ///< An explicitly positioned empty line.
     };
     std::vector<Row> rows;
     // Illustrator aligns a line of point type by its width with the spaces at its end and
@@ -757,7 +789,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (typed || !y.read(child.getAttribute("y"))) continue;
         auto const at = std::find_if(rows.begin(), rows.end(), [&](Row const &r) { return r.y > y.computed; });
         if (at != rows.begin() && at != rows.end() && (at - 1)->y < y.computed) {
-            rows.insert(at, {nullptr, y.computed, says(&child, text, LINE_END_ATTRIBUTE, "break") ? End::Break : End::Paragraph});
+            rows.insert(at, {nullptr, y.computed, says(&child, text, LINE_END_ATTRIBUTE, "break") ? End::Break : End::Paragraph, &child});
         }
     }
     // How each line ends. The layout's paragraphs, and lines that end with a line feed, end with
@@ -957,6 +989,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     std::size_t run_units = 0, paragraph_units = 0;
     std::optional<Row const *> paragraph_start;
     std::optional<Text::LeftTabStops> paragraph_tabs;
+    std::optional<std::array<double, 3>> indents;
     auto flush = [&] {
         if (run_units) style_runs += std::format(" << /0 << /0 << /0 {} /5 0 /6 {} >> >> /1 {} >>", utf16(""), *run_features, run_units);
         run_units = 0;
@@ -973,13 +1006,16 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         auto const physical_alignment = row->line ? row->line->alignment : 0u;
         auto const alignment = rtl && physical_alignment != 2 ? 1u - physical_alignment : physical_alignment;
         bool const hyphenate = area && !flowed && row->line && says(row->line->chars.front().owner, text, HYPHENATE_ATTRIBUTE, "true");
-        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {} /33 {} /35 {}{}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
+        std::string margins;
+        if (indents) for (unsigned i = 0; i < 3; ++i) margins += std::format(" /{} {}", i + 1, real((*indents)[i] * s));
+        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {} /33 {} /35 {}{}{}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
                                       rtl ? 1 : 0, world_ready ? 1 : 0,
-                                      hyphenate ? " /9 true" : "", paragraph_tabs ? ruler(*paragraph_tabs, s) : "",
+                                      hyphenate ? " /9 true" : "", paragraph_tabs ? ruler(*paragraph_tabs, s) : "", margins,
                                       paragraph_units);
         paragraph_units = 0;
         paragraph_start.reset();
         paragraph_tabs.reset();
+        indents.reset();
     };
     // Where the layout PROOF's reader reads starts: point type's anchor, area type's frame's
     // top-left corner. Lines are placed down and across from it.
@@ -988,6 +1024,12 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     for (std::size_t i = 0; i < rows.size(); ++i) {
         auto const &p = rows[i];
         if (!paragraph_start) paragraph_start = &p;
+        auto const margins = p.line ? p.line->indents : paragraph_indents(p.owner, text, why);
+        if (indents && *indents != margins) {
+            why.insert("different paragraph indents within one paragraph");
+            return finish();
+        }
+        indents = margins;
         // A paragraph has one ruler, from the anchor (point type) or the frame's left
         // (area type), as Illustrator's does; PROOF's stops are left-aligned only.
         if (p.line && p.line->tabs) {

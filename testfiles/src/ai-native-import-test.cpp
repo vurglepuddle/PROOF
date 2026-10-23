@@ -5882,6 +5882,39 @@ TEST_F(AiNativeImportTest, Corpus)
                 std::printf("AI_WRITE\t%s\t%zu\t%s\t%s\n", version == AN::RecordsVersion::Modern ? "modern" : "legacy7",
                             written.records.size(), written.refused.empty() ? (reads ? "reads" : "unread") : "refused",
                             written.refused.empty() ? error.c_str() : refused.c_str());
+#if defined(WITH_CAPYPDF)
+                // Opt-in qualification: exercise the complete PDF/native save and the ordinary
+                // native reopen gate, for every page. Reuse the already imported source above.
+                if (auto const *saved = g_getenv("PROOF_AI_SAVE"); saved && accepted && reads && version == AN::RecordsVersion::Modern) {
+                    try {
+                        if (!Extension::db.get("org.inkscape.output.pdf.capypdf")) Extension::Internal::PdfOutput::init();
+                        if (!Extension::db.get("org.inkscape.output.ai.native")) Extension::Internal::AiNativeOutput::init();
+                        auto *output = dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.ai.native"));
+                        if (!output) throw std::runtime_error("native output unavailable");
+                        output->set_gui(false);
+                        output->save(result->document.get(), saved);
+                        std::string why;
+                        auto reopened = Extension::Internal::open_ai_native(saved, why, Extension::Internal::AiKeepDiffering::All);
+                        double l = 0, c = 0;
+                        if (reopened) for (auto const &d : reopened->differences) {
+                            l = std::max(l, d.lightness); c = std::max(c, d.colour);
+                        }
+                        bool const native = reopened && l <= Extension::Internal::AI_NATIVE_MAX_LIGHTNESS &&
+                                                         c <= Extension::Internal::AI_NATIVE_MAX_COLOUR;
+                        bool const resources = reopened && reopened->missing_links.size() <= result->missing_links.size() &&
+                            std::all_of(reopened->missing_fonts.begin(), reopened->missing_fonts.end(), [&](auto const &name) {
+                                return std::find(result->missing_fonts.begin(), result->missing_fonts.end(), name) != result->missing_fonts.end();
+                            });
+                        if (reopened && !resources) why = "the saved document introduces missing fonts or links";
+                        auto const pages = result->document->getPageManager().getPageCount();
+                        auto const returned_pages = reopened ? reopened->document->getPageManager().getPageCount() : 0;
+                        std::printf("AI_SAVE\t%s\t%u\t%u\t%.6f\t%.6f\t%s\n",
+                                    native && resources && pages == returned_pages ? "NATIVE" : "PAGE", pages, returned_pages, l, c, why.c_str());
+                    } catch (std::exception const &e) {
+                        std::printf("AI_SAVE\tERROR\t0\t0\t0\t0\t%s\n", e.what());
+                    }
+                }
+#endif
             }
         }
         std::fflush(stdout);
@@ -7990,6 +8023,97 @@ TEST_F(AiNativeImportTest, WrittenRtlAreaTypeKeepsPhysicalParagraphAlignment)
         auto const after = set_characters(again->document.get(), elements(again->document->getReprRoot(), "svg:text").at(0));
         ASSERT_EQ(before.size(), after.size());
         for (std::size_t i = 0; i < before.size(); ++i) {
+            EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02);
+            EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02);
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, AreaParagraphIndentsSurviveNativeSaveAndScaling)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP();
+    auto const paragraphs = " /5 << /0 [ << /1 12 /0 << /0 << /5 << /1 -3.25 /2 12.5 /3 7.75 >> >> >> >> "
+                            "<< /1 4 /0 << /0 << /5 << /1 4.5 /2 2.25 /3 9.5 >> >> >> >> ] >>";
+    // The first paragraph wraps; its three margins must remain one declaration.
+    auto const source = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+        text_setup(area_text_document("(Hello world\\rEnd\\r)", 16, {{0, 12, 6}, {0, 26, 6}, {0, 40, 4}}, font, {}, paragraphs)));
+    auto imported = make(source);
+    ASSERT_TRUE(imported);
+    auto const texts = elements(imported->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    auto const spans = elements(texts[0], "svg:tspan");
+    ASSERT_EQ(spans.size(), 3u);
+    EXPECT_EQ(attr(spans[0], AN::PARAGRAPH_INDENTS_ATTRIBUTE), "-3.25 12.5 7.75");
+    EXPECT_EQ(attr(spans[1], AN::PARAGRAPH_INDENTS_ATTRIBUTE), "-3.25 12.5 7.75");
+    EXPECT_EQ(attr(spans[2], AN::PARAGRAPH_INDENTS_ATTRIBUTE), "4.5 2.25 9.5");
+    for (auto const scale : {1.0, 2.0}) {
+        texts[0]->setAttribute("transform", scale == 1 ? "" : "scale(2)");
+        imported->document->ensureUpToDate();
+        auto const written = AN::write_records(imported->document.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const parsed = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+        auto const &lines = parsed->stories[0]->lines;
+        ASSERT_EQ(lines.size(), 3u);
+        for (unsigned i = 0; i < 3; ++i) {
+            auto const expected = i < 2 ? std::array{-3.25, 12.5, 7.75} : std::array{4.5, 2.25, 9.5};
+            for (unsigned k = 0; k < 3; ++k) EXPECT_NEAR(lines[i].indents[k], expected[k] * scale, 1e-4);
+        }
+        auto returned = make(written.records);
+        ASSERT_TRUE(returned);
+        auto const before = set_characters(imported->document.get(), texts[0]);
+        auto const after = set_characters(returned->document.get(), elements(returned->document->getReprRoot(), "svg:text")[0]);
+        ASSERT_EQ(before.size(), after.size());
+        for (unsigned i = 0; i < before.size(); ++i) {
+            EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02);
+            EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02);
+        }
+    }
+    // Inconsistent metadata in one wrapped paragraph must not silently choose a margin.
+    spans[1]->setAttribute(AN::PARAGRAPH_INDENTS_ATTRIBUTE, "0 0 0");
+    EXPECT_FALSE(AN::write_records(imported->document.get()).refused.empty());
+}
+
+TEST_F(AiNativeImportTest, MalformedParagraphIndentsAreRefused)
+{
+    for (auto const *value : {"1 2", "1 2 3 4", "nan 0 0", "0 0 inf", "1x 2 3", "1000001 0 0"}) {
+        auto doc = svg_document(std::string("<text proof:text-frame='M0 0 H100 V100 H0 Z' proof:paragraph-indents='") +
+            value + "' x='10' y='30' style='font-family:Arial;font-size:12px'>Text</text>");
+        ASSERT_TRUE(doc);
+        EXPECT_FALSE(AN::write_records(doc.get()).refused.empty()) << value;
+    }
+    auto const invalid = " /5 << /0 [ << /1 6 /0 << /0 << /5 << /1 (bad) >> >> >> >> ] >>";
+    auto parsed = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 6}}, "ArialMT", {}, invalid)),
+                                         Geom::Point(100, 50));
+    EXPECT_FALSE(parsed->stories.at(0));
+}
+
+TEST_F(AiNativeImportTest, AreaTrailingSpacesKeepAlignmentAndTypedBreaks)
+{
+    for (auto const *alignment : {"left", "center", "right"}) {
+        auto doc = svg_document(std::string("<text id='t' xml:space='preserve' proof:text-frame='M10 5 H190 V95 H10 Z' ") +
+            "style='font-family:Arial;font-size:12px;text-align:" + alignment + "'>"
+            "<tspan x='20' y='25' proof:line-end='wrap'>Alpha   </tspan>"
+            "<tspan x='20' y='43' proof:line-end='break'>Beta   </tspan>"
+            "<tspan x='20' y='61'>Gamma   </tspan></text>");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const parsed = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+        auto const &lines = parsed->stories[0]->lines;
+        ASSERT_EQ(lines.size(), 3u);
+        EXPECT_EQ(lines[0].end, AN::TextLine::End::Wrap);
+        EXPECT_EQ(lines[1].end, AN::TextLine::End::Break);
+        EXPECT_EQ(lines[2].end, AN::TextLine::End::Paragraph);
+        auto returned = make(written.records);
+        ASSERT_TRUE(returned);
+        auto const before = set_characters(doc.get(), doc->getObjectById("t")->getRepr());
+        auto const after = set_characters(returned->document.get(), elements(returned->document->getReprRoot(), "svg:text")[0]);
+        ASSERT_EQ(before.size(), after.size());
+        for (unsigned i = 0; i < before.size(); ++i) {
+            EXPECT_EQ(before[i].first, after[i].first);
             EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02);
             EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02);
         }

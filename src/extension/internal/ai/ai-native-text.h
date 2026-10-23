@@ -13,6 +13,8 @@
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
 
+#include <array>
+
 #include "ai-native-reader.h"
 #include "type-settings.h"
 #include "libnrtype/tab-stops.h"
@@ -85,6 +87,8 @@ struct TextLine
     /// How its paragraph is aligned, 0 left, 1 right, 2 centred, whichever end `origin` is.
     unsigned paragraph_alignment = 0;
     bool hyphenate = false; ///< Its paragraph is hyphenated where area type wraps it.
+    /// Paragraph features 1, 2, 3, in text layout units: first-line, start and end indents.
+    std::array<double, 3> indents{};
 };
 
 /// Ordinary path type retains its full geometry and active text interval.
