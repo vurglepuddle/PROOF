@@ -18,14 +18,18 @@ namespace Inkscape::Extension::Internal::AiNative {
  * `[0 0] /P`, `[0] /R`, its device colour space, four `/N` corners and `/E`, on hidden lines.
  * Each corner holds colour, opacity, position, the outgoing handle and weight 1, then the
  * incoming handle and weight 1. Illustrator smooths colour across a multi-patch mesh's lines;
- * SVG/Cairo blends each patch independently. Separate editable meshes preserve that surface.
+ * SVG/Cairo blends each patch independently. Separate editable meshes preserve that surface
+ * for the qualified geometry. With translucent corners, the writer also conservatively proves
+ * non-overlap using the complete grid's Coons control-point derivative directions; folded or
+ * unproved translucent geometry is refused. The existing opaque subset is unchanged; opaque
+ * folded surfaces have no new qualification. Object alpha applies once to the complete group.
  * The caller groups multiple patches so object transparency and a mask apply exactly once.
  *
  * With one patch, the caller adds its dictionary and `0 0 Xd`, `6 () XW`; with several,
  * `records` includes those ending markers for every patch. `outlined` says whether the shape's
  * complete outline is the mesh's; otherwise the caller clips the patches to the shape.
  * Smoothed (bicubic) meshes, moved tensor points, corners in more than one colour model or
- * other than standard RGB or CMYK, and
+ * other than standard RGB or CMYK, translucent geometry outside the non-overlapping subset, and
  * nonfinite or singular placement are refused by name, and `records` is empty.
  */
 struct WrittenMesh

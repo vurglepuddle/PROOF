@@ -2379,6 +2379,14 @@ The new reader regression covers post-record opacity and the settled marker.
 The writer emits separate `[1 1]` Cartesian meshes for SVG patches because
 Illustrator smooths colours across a larger grid's lines. Its saved controls
 retain all 21 patches, corners, handles, opacity and device colour models.
+Since 2026-10-23, meshes with translucent corners need a conservative
+non-overlap proof using all Coons control-point derivative directions across
+the complete grid. Folded, degenerate or unproved translucent geometry refuses
+by name before output is replaced; some valid strongly bent grids also refuse.
+Opaque meshes keep their prior writing bounds; object/group opacity applies
+once to the complete object. Qualified curved/reflected/translated controls
+still save. This is a writer guard, not connected/folded-grid export support
+or a reader change.
 [Interchange details and limits](PROOF-ai-interchange.md#editable-mesh-patches-written-2026-10-22).
 
 ### Perceptual gradient settings are recognised (2026-10-22)

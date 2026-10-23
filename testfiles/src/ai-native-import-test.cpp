@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -7292,6 +7293,24 @@ std::string svg_mesh(std::string const &extra = {})
            R"(</meshpatch></meshrow></meshgradient>)";
 }
 
+/// Four regular trapezoids form a square ring; a fifth repeats the first, overlapping it.
+std::string svg_mesh_ring(unsigned patches, double alpha)
+{
+    std::array<Geom::Point, 6> const top{{{0, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 0}, {100, 0}}};
+    std::array<Geom::Point, 6> const bottom{{{25, 25}, {75, 25}, {75, 75}, {25, 75}, {25, 25}, {75, 25}}};
+    std::string mesh = R"(<meshgradient id="m" gradientUnits="userSpaceOnUse"><meshrow>)";
+    auto stop = [alpha](Geom::Point d) {
+        return std::format(R"(<stop path="l {},{}" stop-color="#ff0000" stop-opacity="{}"/>)", d.x(), d.y(), alpha);
+    };
+    for (unsigned i = 0; i < patches; ++i) {
+        mesh += "<meshpatch>" + stop(top[i + 1] - top[i]) + stop(bottom[i + 1] - top[i + 1]) +
+                stop(bottom[i] - bottom[i + 1]);
+        if (!i) mesh += stop(top[0] - bottom[0]);
+        mesh += "</meshpatch>";
+    }
+    return mesh + "</meshrow></meshgradient>";
+}
+
 /// The first SVG mesh gradient of a document, its array built.
 SPMeshGradient *first_mesh(SPDocument *doc)
 {
@@ -7487,6 +7506,96 @@ TEST_F(AiNativeImportTest, MeshFormsTheWriterCannotWriteAreNamed)
         EXPECT_TRUE(written.records.empty());
         EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
             << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+    }
+}
+
+TEST_F(AiNativeImportTest, MeshWriterRefusesFoldedAndDegenerateGeometry)
+{
+    // A translucent grid doubles back over itself. Independent patches would paint the
+    // overlap repeatedly, unlike the original single mesh. Also test a curved side that
+    // reverses inside a patch although all its corners still form a normal rectangle.
+    for (auto const &transform : {"", "translate(10000000 10000000)", "matrix(-1 .2 .3 1 100 0)"}) {
+        for (auto const &kind : {"grid fold", "curved fold", "collapsed"}) {
+            SCOPED_TRACE(std::string(kind) + " " + transform);
+            auto mesh = svg_mesh();
+            if (std::string(kind) == "grid fold") {
+                auto const start = mesh.find("</meshpatch><meshpatch>");
+                auto const top = mesh.find("l 30,0", start);
+                mesh.replace(top, 6, "l -30,0");
+                auto const bottom = mesh.find("l -30,0", top + 8);
+                mesh.replace(bottom, 7, "l 30,0");
+            } else if (std::string(kind) == "curved fold") {
+                mesh.replace(mesh.find("l 30,0"), 6, "C -20,10 30,10 40,10");
+            } else {
+                // All four patches have zero height.
+                for (auto const &side : {"l 0,20", "l 0,-20"}) {
+                    for (auto pos = mesh.find(side); pos != std::string::npos; pos = mesh.find(side)) {
+                        mesh.replace(pos, std::strlen(side), "l 0,0");
+                    }
+                }
+            }
+            auto doc = svg_document("<defs>" + mesh + "</defs><g transform=\"" + transform +
+                                    R"mesh("><rect width="100" height="100" fill="url(#m)"/></g>)mesh");
+            ASSERT_TRUE(doc);
+            auto const written = AN::write_records(doc.get());
+            EXPECT_TRUE(written.records.empty());
+            EXPECT_NE(std::find(written.refused.begin(), written.refused.end(),
+                                "translucent mesh gradients outside the non-overlapping patch subset"), written.refused.end());
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, MeshWriterChecksTheWholeGridForOverlap)
+{
+    // Five individually regular trapezoids turn once round a square and repeat the first.
+    // Every patch has the same orientation and no local fold; a per-patch test misses this.
+    auto doc = svg_document("<defs>" + svg_mesh_ring(5, .5) + R"mesh(</defs><rect width="100" height="100" fill="url(#m)"/>)mesh");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    EXPECT_TRUE(written.records.empty());
+    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(),
+                        "translucent mesh gradients outside the non-overlapping patch subset"), written.refused.end());
+}
+
+TEST_F(AiNativeImportTest, MeshWriterKeepsTheOpaqueSubsetWithGroupOpacity)
+{
+    // This valid ring cannot fit the conservative global direction cones. Its opaque corners
+    // should keep the existing writing route. Object alpha applies to the group just once.
+    auto doc = svg_document("<defs>" + svg_mesh_ring(4, 1) +
+                            R"mesh(</defs><rect width="100" height="100" fill="url(#m)" opacity=".5"/>)mesh");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto reopened = make(written.records);
+    ASSERT_TRUE(reopened);
+    EXPECT_EQ(elements(reopened->document->getDefs()->getRepr(), "svg:meshgradient").size(), 4u);
+    auto const before = page_pixels(doc.get()), after = page_pixels(reopened->document.get());
+    ASSERT_EQ(before.size(), 200u * 100u);
+    ASSERT_EQ(after.size(), before.size());
+    for (auto const &point : {Geom::Point(50, 10), Geom::Point(10, 50), Geom::Point(90, 50)}) {
+        auto const i = unsigned(point.y()) * 200 + unsigned(point.x());
+        EXPECT_NEAR(before[i] >> 24, 128u, 1);
+        EXPECT_EQ(after[i], before[i]);
+    }
+    EXPECT_EQ(after[50 * 200 + 50], 0u); // The ring's hole remains transparent.
+}
+
+TEST_F(AiNativeImportTest, MeshWriterKeepsCurvedAndReflectedGeometry)
+{
+    std::string const mesh = R"(<meshgradient id="m" gradientUnits="userSpaceOnUse"><meshrow><meshpatch>)"
+        R"(<stop path="C30,-8 70,8 100,0" stop-color="#ff0000"/>)"
+        R"(<stop path="C95,30 105,70 100,100" stop-color="#00ff00"/>)"
+        R"(<stop path="C70,95 30,105 0,100" stop-color="#0000ff" stop-opacity=".5"/>)"
+        R"(<stop path="C-5,70 5,30 0,0" stop-color="#ffffff"/>)"
+        R"(</meshpatch></meshrow></meshgradient>)";
+    for (auto const &transform : {"", "translate(10000000 10000000)", "rotate(137)", "matrix(-1 .2 .3 1 100 0)"}) {
+        SCOPED_TRACE(transform);
+        auto doc = svg_document("<defs>" + mesh + "</defs><g transform=\"" + transform +
+                                R"mesh("><rect width="100" height="100" fill="url(#m)"/></g>)mesh");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        EXPECT_NE(written.records.find("/Mesh X!"), std::string::npos);
     }
 }
 

@@ -16,8 +16,10 @@
 #include <format>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <sstream>
+#include <tuple>
 
 #include <2geom/bezier-curve.h>
 #include <2geom/path.h>
@@ -36,6 +38,50 @@ namespace {
 using Type = Colors::Space::Type;
 /// The reader's default limit of patches in one mesh.
 constexpr std::size_t MAX_PATCHES = 4096;
+
+/// A sufficient, conservative check that the complete grid is one-to-one. Each Coons patch
+/// is a bicubic tensor surface; its u/v derivatives are nonnegative weighted sums of adjacent
+/// control-point differences. Require every u direction and every v direction, across the
+/// whole grid, to lie in two cones whose pairwise cross products have the same strict sign.
+/// Integrating along a horizontal then a vertical parameter line cannot then return to the
+/// same point. Unlike testing patch corners or sampling, this also bounds curved interiors
+/// and different patches. Some valid, strongly bent grids cannot pass this check.
+class MeshDirections
+{
+public:
+    bool add(Geom::Point direction, bool u)
+    {
+        auto const length = std::hypot(direction.x(), direction.y());
+        if (!std::isfinite(length) || length == 0) return false;
+        direction /= length;
+        if (!_reference) _reference = direction; // The caller supplies u directions first.
+        auto const angle = std::atan2(Geom::cross(*_reference, direction), Geom::dot(*_reference, direction));
+        auto &range = u ? _u : _v;
+        if (!range) range = {angle, angle};
+        range->first = std::min(range->first, angle);
+        range->second = std::max(range->second, angle);
+        if (!u && !_orientation) _orientation = angle < 0 ? -1 : 1;
+        return true;
+    }
+
+    bool non_overlapping() const
+    {
+        if (!_u || !_v) return false;
+        auto [umin, umax] = *_u;
+        auto [vmin, vmax] = *_v;
+        if (_orientation < 0) { // A reflection is just as safe as the original surface.
+            std::tie(umin, umax) = std::pair{-umax, -umin};
+            std::tie(vmin, vmax) = std::pair{-vmax, -vmin};
+        }
+        constexpr double margin = 1e-9; // radians; exclude parallel/degenerate directions
+        return vmin > umax + margin && vmax < umin + std::numbers::pi - margin;
+    }
+
+private:
+    std::optional<Geom::Point> _reference;
+    std::optional<std::pair<double, double>> _u, _v;
+    int _orientation = 0;
+};
 
 std::string num(double v)
 {
@@ -132,6 +178,9 @@ WrittenMesh write_mesh(SPShape const *shape, SPMeshGradient const *mesh, Geom::A
     patches.reserve(rows * columns);
     std::optional<Type> model;
     std::map<Colors::CMS::Profile const *, bool> rgb_profiles;
+    MeshDirections directions;
+    bool translucent = false, regular_directions = true;
+    constexpr auto geometry_refusal = "translucent mesh gradients outside the non-overlapping patch subset";
     Geom::Affine const linear(matrix[0], matrix[1], matrix[2], matrix[3], 0, 0);
     for (unsigned r = 0; r < rows; ++r) {
         for (unsigned c = 0; c < columns; ++c) {
@@ -178,10 +227,40 @@ WrittenMesh write_mesh(SPShape const *shape, SPMeshGradient const *mesh, Geom::A
                     if (!std::isfinite(v) || v < 0 || v > 1) return refused("out-of-range mesh colours");
                 }
                 patch.colors[k] = *color;
+                translucent = translucent || color->getOpacity() < 1;
+            }
+            // Work relative to this patch, before the art translation. A distant object must
+            // get the same geometry decision. Include the Coons interior, not only its sides.
+            std::array<std::array<Geom::Point, 4>, 4> net;
+            auto const origin = p.getPoint(0, 0);
+            auto local = [&](Geom::Point q) { return (q - origin) * linear; };
+            for (unsigned i = 0; i < 4; ++i) {
+                net[0][i] = local(p.getPoint(0, i));
+                net[i][3] = local(p.getPoint(1, i));
+                net[3][3 - i] = local(p.getPoint(2, i));
+                net[3 - i][0] = local(p.getPoint(3, i));
+            }
+            net[1][1] = local(p.coonsTensorPoint(0));
+            net[1][2] = local(p.coonsTensorPoint(1));
+            net[2][2] = local(p.coonsTensorPoint(2));
+            net[2][1] = local(p.coonsTensorPoint(3));
+            for (unsigned v = 0; v < 4; ++v) {
+                for (unsigned u = 0; u < 3; ++u) {
+                    regular_directions &= directions.add(net[v][u + 1] - net[v][u], true);
+                }
+            }
+            for (unsigned v = 0; v < 3; ++v) {
+                for (unsigned u = 0; u < 4; ++u) {
+                    regular_directions &= directions.add(net[v + 1][u] - net[v][u], false);
+                }
             }
             patches.push_back(std::move(patch));
         }
     }
+    // Separate patches with translucent corners composite more than once where a folded
+    // grid overlaps. Object/group alpha is applied once by the caller and does not cause this.
+    // Keep the existing opaque subset; this is not new qualification of opaque folded art.
+    if (translucent && (!regular_directions || !directions.non_overlapping())) return refused(geometry_refusal);
     auto at = [&](std::size_t a, std::size_t b) -> Patch const & { return patches[b * columns + a]; };
 
     // The outline: the first row's side 0, the last column's side 1, the last row's side 2 and the

@@ -100,8 +100,15 @@ RGB `/MultiChannelPaint` ink/process pairs Illustrator writes, including on page
 with ordinary raster pictures and supported leaf Form objects beside the pairs.
 Inherited/shared states remain protected. The qualified RGB control returns
 natively; broader overprint and the optional Cairo-to-SVG import remain open. Unknown extended gradient settings still fail
-closed. Next are extended Oklab settings and additional mesh qualification;
-native type writing stays last in the agreed order.
+closed. Meshes with translucent corners need a conservative whole-grid
+non-overlap check before native saving; some valid strongly bent meshes also
+fall outside that subset. Opaque mesh writing retains its prior bounds;
+object/group opacity still applies once to the complete object.
+
+The v1 goal is the qualified interchange subset plus bounded editable type
+writing, which is the next implementation family. Advanced gradients/meshes,
+richer masks/patterns, symbols, packaging and broader overprint follow v1,
+one feature at a time.
 
 Native AI output retains supported spot names and tints, but PDF spot plates
 and PDF/X remain separate work. Full CMYK transparency/knockout appearance,

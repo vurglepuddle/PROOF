@@ -2736,3 +2736,42 @@ They check editable vectors, unchanged paint, retained image identity, independe
 PDF output and source integrity. Only affected controls ran; no artwork corpus,
 census, lite or new Illustrator session. General overprint, the optional
 Cairo-to-SVG route and foreign-PDF overprint remain outside this correction.
+
+## Non-overlapping mesh writing (2026-10-23)
+
+A synthetic four-patch, half-transparent mesh folds all patches onto the same
+square. Writing its patches as separate meshes changes coverage/colour; the
+pre-fix saved file fails the native visual gate (61.7% lightness, 27.6% colour).
+For meshes with translucent corners, native export now refuses geometry
+outside a conservatively proved non-overlapping subset, before producing
+records or changing the destination. Opaque-corner writing retains its prior
+bounds: object/group opacity is applied once and does not cause this repeated
+compositing. Opaque folded surfaces have no new qualification.
+
+The check includes each patch's complete bicubic Coons control net. All u
+derivative control directions and all v directions, over the whole grid, must
+lie in separate cones with a consistent strict cross-product sign. Derivatives
+are nonnegative weighted sums of those differences; integrating along the two
+parameter directions cannot return to the same point. This bounds curved
+interiors and overlap between otherwise individually regular patches, without
+sampling. Work is linear in the existing 4096-patch bound. Translation is
+removed before checking and a reflection remains supported. Degenerate or
+unproved geometry names its refusal; some valid strongly bent grids also
+fall outside the subset. This does not implement connected or folded export.
+
+Seventeen focused mesh units pass, including translucent corner folds,
+reversed curve handles, collapsed patches, globally overlapping regular
+patches, distant placement, curves and affine reflection. A valid opaque ring
+outside the direction-cone test retains its group opacity and transparent hole.
+The RGB/CMYK mesh smoke passes 29 checks: existing
+21-patch editable round trips, original colour models, clips/masks/curves and
+independent PDF output, plus named folded refusal, unchanged existing
+destination, no partial new file and unchanged synthetic source. No artwork
+corpus/census or new Illustrator session. One copied affected mesh case
+retains native import and modern writing. The prior Illustrator mesh
+qualification is reused for unchanged accepted records. No new broad count.
+
+The owner's clarified v1 plan closes correctness gaps in the current qualified
+subset, then adds bounded editable type as its final implementation family.
+Advanced features remain explicit later extensions rather than prerequisites
+for type; see the current interchange reference.

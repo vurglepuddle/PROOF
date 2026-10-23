@@ -1,6 +1,6 @@
 # PROOF AI interchange
 
-Current contract, 2026-10-22. PROOF reads supported editable Illustrator artwork
+Current contract, 2026-10-23. PROOF reads supported editable Illustrator artwork
 and writes a bounded native subset without Illustrator installed. Keep SVG as
 the working master when using features the native writer cannot yet represent.
 The [dated implementation history](PROOF-ai-interchange-history.md) contains
@@ -84,6 +84,11 @@ explicit refusals include:
   unsupported endpoint hard stops, and unknown extended gradient settings.
 - Bicubic or otherwise unsupported meshes, moved tensor points, mixed
   corner models, mesh strokes and mesh paint inside patterns or mask art.
+  With translucent corners, folded, degenerate or unproved non-overlapping
+  geometry refuses before saving; the conservative whole-grid check can also
+  refuse some valid bent meshes. Opaque writing retains its prior bounds;
+  opaque folded surfaces have no new qualification.
+  [Mesh geometry bounds](PROOF-ai-interchange-history.md#non-overlapping-mesh-writing-2026-10-23).
 - Missing/unreadable links, linked PDF/AI pages in native output, unsupported
   picture formats, native cached link previews and packaging.
 
@@ -215,10 +220,14 @@ and visual acceptance are separate from complete Illustrator editability.
 Subsequent changes use affected units, export controls and copied lite cases;
 a new full census waits for an agreed feature-family milestone.
 
-Next: controls for extended Oklab settings; additional connected/folded mesh
-qualification; then agree the native-type writing subset. Type remains last.
+The owner's v1 scope (2026-10-23) is the qualified interchange subset plus
+bounded editable type writing. After closing current-subset correctness gaps,
+native type is the next and final implementation family for v1. Extended
+Oklab settings/freeform/named-ink controls, connected/folded mesh export,
+richer masks/patterns, symbols, packaging and general overprint are later
+extensions, tackled separately with their present refusals retained.
 PDF spot separations, PDF/X, full press soft proofing and physical print matching
-are unfinished or unqualified.
+are unfinished or unqualified; this v1 plan does not certify press output.
 
 For detailed evidence, use the feature references and dated history:
 

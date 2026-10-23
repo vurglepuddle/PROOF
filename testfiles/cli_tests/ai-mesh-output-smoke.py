@@ -1,5 +1,6 @@
 """Editable mesh output: RGB and CMYK grids, alpha, curved boundaries, holes, transforms,
-and masks. Synthetic controls only; sends no desktop input. Illustrator qualification is separate.
+and masks; unsafe translucent overlaps refuse without replacing a destination.
+Synthetic controls only; sends no desktop input. Illustrator qualification is separate.
 """
 import argparse
 import hashlib
@@ -74,6 +75,31 @@ def compare(a_png, b_png):
     return {name: dict(max=int(d.max()), over24=float((d > 24).mean()))
             for name, (x0, y0, x1, y1) in regions.items()
             for d in [np.abs(a[y0:y1, x0:x1] - b[y0:y1, x0:x1]).max(axis=2)]}
+
+
+def folded_control():
+    # Four half-transparent patches cover the same square. Painting them independently
+    # changes both colour and coverage. This is intentionally outside the writer subset.
+    sides = [[['l 100,0', 'l 0,100', 'l -100,0', 'l 0,-100'],
+              ['l -100,0', 'l 0,100', 'l 100,0']],
+             [['l 0,-100', 'l -100,0', 'l 0,100'], ['l 0,-100', 'l 100,0']]]
+    colors = iter(['#ff0000', '#00ff00', '#0000ff', '#ffff00',
+                   '#00ffff', '#ff00ff', '#ff8000', '#808080', '#000000'])
+    rows = []
+    for r, row in enumerate(sides):
+        patches = []
+        for c, patch in enumerate(row):
+            stops = []
+            for i, path in enumerate(patch):
+                inherited = (r or c) and i == 0
+                style = '' if inherited else f' style="stop-color:{next(colors)};stop-opacity:.5"'
+                stops.append(f'<stop path="{path}"{style}/>')
+            patches.append('<meshpatch>' + ''.join(stops) + '</meshpatch>')
+        rows.append('<meshrow>' + ''.join(patches) + '</meshrow>')
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">'
+            '<defs><meshgradient id="m" x="10" y="10" gradientUnits="userSpaceOnUse">' +
+            ''.join(rows) + '</meshgradient></defs>'
+            '<rect x="10" y="10" width="100" height="100" fill="url(#m)"/></svg>')
 
 
 def main():
@@ -196,6 +222,23 @@ def main():
         check(f'{mode}: Illustrator 7 refuses meshes by name', p.returncode == 1 and not legacy.exists() and
               b'mesh gradients (Illustrator 7)' in p.stderr)
         check(f'{mode}: source unchanged', hashlib.sha256(source.read_bytes()).hexdigest() == digest)
+
+    source = out / 'folded.svg'
+    source.write_text(folded_control(), encoding='utf-8')
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    destination = out / 'folded.ai'
+    previous = b'Existing destination must survive a refused native save.\n'
+    destination.write_bytes(previous)
+    p = run('folded-existing', exe, source, f'--export-filename={destination}',
+            '--export-extension=org.inkscape.output.ai.native', ok=False)
+    check('folded: native save refuses by name', p.returncode == 1 and
+          b'translucent mesh gradients outside the non-overlapping patch subset' in p.stderr)
+    check('folded: existing destination is untouched', destination.read_bytes() == previous)
+    destination = out / 'folded-new.ai'
+    p = run('folded-new', exe, source, f'--export-filename={destination}',
+            '--export-extension=org.inkscape.output.ai.native', ok=False)
+    check('folded: no partial new output', p.returncode == 1 and not destination.exists())
+    check('folded: source unchanged', hashlib.sha256(source.read_bytes()).hexdigest() == digest)
 
     report = dict(checks=checks, passed=sum(c['passed'] for c in checks), total=len(checks))
     (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
