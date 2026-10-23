@@ -49,7 +49,7 @@ if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
         ${SRC}/colorconverter.cpp
         ${SRC}/fontsubsetter.cpp
         ${SRC}/ft_subsetter.cpp
-        ${SRC}/cffsubsetter.cpp
+        ${CAPYPDF_PROOF_DIR}/cffsubsetter.cpp
         ${SRC}/bitfiddling.cpp
         ${CAPYPDF_PROOF_DIR}/capi.cpp
         ${SRC}/errorhandling.cpp

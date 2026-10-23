@@ -184,6 +184,13 @@ add_unit_test(assertions-in-tests TEST_SOURCE "assertions-in-tests.cpp")
 add_unit_test(version-test TEST_SOURCE "version-test.cpp"
                                SOURCES "version.cpp")
 
+if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
+    add_unit_test(cff-subsetter-test TEST_SOURCE "cff-subsetter-test.cpp"
+                                    EXTRA_LIBS Inkscape::CapyPDF)
+    target_include_directories(cff-subsetter-test PRIVATE ${PROJECT_SOURCE_DIR}/src/3rdparty/capypdf/src)
+    set_property(TARGET cff-subsetter-test PROPERTY CXX_STANDARD 23)
+endif()
+
 # These all depend on each other as a single unit
 add_unit_tests(TEST_SOURCES "svg-length-test.cpp"
                             "svg-stringstream-test.cpp"

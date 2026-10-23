@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # PROOF's small overlay for the pinned CapyPDF: select PDF 1.7 per document, and
-# open and write files by their full Unicode names on Windows.
+# open and write files by their full Unicode names on Windows, and subset CFF
+# fonts without assuming optional metadata entries are present.
 # Keep the submodule untouched, and fail on an upstream change needing review.
 set(CAPYPDF_PROOF_DIR "${CMAKE_CURRENT_BINARY_DIR}/capypdf-proof")
 file(MAKE_DIRECTORY "${CAPYPDF_PROOF_DIR}")
@@ -170,3 +171,59 @@ proof_capypdf_overlay(document.cpp
     ttf.fontdata = std::move(std::get<TrueTypeFontFile>(fontdata));
 ]==]
     "")
+
+# CFF Top DICT metadata is optional. The pinned subsetter copies it conditionally
+# but then patches four offsets by fixed entry numbers, throwing or corrupting
+# the output when an entry is absent. Record each placeholder's byte position
+# as it is written instead. Input fonts and their glyph programs stay unchanged.
+proof_capypdf_overlay(cffsubsetter.cpp
+    [==[    create_topdict();]==]
+    [==[    ERCV(create_topdict());]==])
+proof_capypdf_overlay(cffsubsetter.cpp
+    [==[    if(source.is_cid) {
+        ERCV(copy_dict_item(topdict, DictOperator::CIDFontVersion));
+        ERCV(copy_dict_item(topdict, DictOperator::CIDCount));
+        ERCV(copy_dict_item(topdict, DictOperator::FDArray));  // offset needs to be fixed in post.
+        ERCV(copy_dict_item(topdict, DictOperator::FDSelect)); // offset needs to be fixed in post.
+    } else {
+        std::vector<int32_t> operand;
+        operand.push_back(-1);
+        topdict.append_command(operand, DictOperator::CIDFontVersion);
+        operand.clear();
+        operand.push_back(65535);
+        topdict.append_command(operand, DictOperator::CIDCount);
+        operand.clear();
+        operand.push_back(-1);
+        topdict.append_command(operand, DictOperator::FDArray);
+        topdict.append_command(operand, DictOperator::FDSelect);
+    }
+    ERCV(copy_dict_item(topdict, DictOperator::Charset)); // offset needs to be fixed in post.
+    ERCV(copy_dict_item(topdict,
+                        DictOperator::CharStrings)); // offset needs to be fixed in post.
+]==]
+    [==[    // These CID metadata entries also have defaults (CFF spec, Table 10).
+    if(source.is_cid) {
+        copy_dict_item_if_exists(topdict, DictOperator::CIDFontVersion);
+    }
+    // The output charset assigns consecutive CIDs to the subset's glyphs.
+    topdict.append_command({static_cast<int32_t>(sub.size())}, DictOperator::CIDCount);
+    auto placeholder = [&](DictOperator op) {
+        // CFFDictWriter writes a 29 byte followed by a four-byte integer.
+        auto const offset = topdict.current_size() + 1;
+        topdict.append_command({-1}, op);
+        return offset;
+    };
+    auto const fdarray_offset = placeholder(DictOperator::FDArray);
+    auto const fdselect_offset = placeholder(DictOperator::FDSelect);
+    auto const charset_offset = placeholder(DictOperator::Charset);
+    auto const charstrings_offset = placeholder(DictOperator::CharStrings);
+]==])
+proof_capypdf_overlay(cffsubsetter.cpp
+    [==[    fixups.fdarray.offset = serialization.offsets.at(8) + 1 + dict_start;
+    fixups.fdselect.offset = serialization.offsets.at(9) + 1 + dict_start;
+    fixups.charsets.offset = serialization.offsets.at(10) + 1 + dict_start;
+    fixups.charstrings.offset = serialization.offsets.at(11) + 1 + dict_start;]==]
+    [==[    fixups.fdarray.offset = fdarray_offset + dict_start;
+    fixups.fdselect.offset = fdselect_offset + dict_start;
+    fixups.charsets.offset = charset_offset + dict_start;
+    fixups.charstrings.offset = charstrings_offset + dict_start;]==])

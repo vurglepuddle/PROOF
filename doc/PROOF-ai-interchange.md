@@ -336,6 +336,35 @@ Type set right to left or vertically keeps Inkscape's layout, as do area type
 and type on a path, where Illustrator's rule for spaces at line ends isn't
 measured. Text that already exists in an SVG is laid out as before.
 
+## CFF fonts in PDF output (2026-10-23)
+
+Ordinary OpenType fonts with CFF outlines stay live, embedded subset fonts in
+PDF output, including the PDF pages of native `.ai` saves. PROOF's local
+CapyPDF overlay fixes the pinned 0.21 subsetter's assumption that optional
+Top DICT metadata is always present. It records each output table offset as
+it writes it, accepts defaulted CID version/count metadata, and propagates a
+required-entry error instead of continuing with a partial dictionary. Source
+fonts are not repaired or installed again; glyph programs and private hint
+data are retained in the subset. This adds no automatic outlining fallback.
+
+[CapyPDF issue 105](https://github.com/jpakkane/capypdf/issues/105) was the
+original CFF-in-OTF support, already included in the pinned version. Newer
+[upstream code](https://github.com/jpakkane/capypdf/blob/9a8a8b53f55debbfd97835aca2827b74c324608c/src/cffsubsetter.cpp)
+also tracks actual dictionary positions instead of hard-coded entry numbers.
+PROOF retains its pinned dependency and applies the correction through its
+existing exact-match overlay; review this overlay when updating that pin.
+
+Checks: three focused units cover all 32 combinations of the five metadata
+entries in ordinary and CID fonts (64 configurations), glyph removal/reordering,
+private-dictionary retention and a missing-required-entry error. Seven generated
+fonts pass 105 PDF/native-save checks: embedded CFF parsed independently with
+fontTools, text extraction, native text reopen and identical raster output
+between metadata variants. The failing installed-font reproducer and the
+two-page copied document `873a9cec8e` now save complete native files with live
+CFF text. The document reopens and its first-page 36 dpi comparison differs by
+at most 19 channel levels; this is not pixel identity or a full-document
+appearance qualification. No full census or whole lite set was run.
+
 ## Linked PDF/AI pages
 
 Native reading retains the one-based `AI11 PlacedPDFPageIndex` in
