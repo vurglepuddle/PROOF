@@ -327,6 +327,15 @@ dark ink of either drawing is more than a pixel from the other's at 144 dpi.
 The owner's tabbed document and one with a centred line ending in a space now
 write. [Records, rules and checks](PROOF-ai-native-records.md#tabs-and-line-alignment-written-2026-10-23).
 
+**New point type** (owner's decision, 2026-10-23: "otherwise the center
+aligned text would be broken forever - terrible!"). Point type made with the
+Text tool (a click) is laid out Illustrator's way from the start
+(`proof:line-alignment="illustrator"`), so its centred and right-aligned lines,
+tracked or ending in spaces, save where they are set instead of being refused.
+Type set right to left or vertically keeps Inkscape's layout, as do area type
+and type on a path, where Illustrator's rule for spaces at line ends isn't
+measured. Text that already exists in an SVG is laid out as before.
+
 ## Linked PDF/AI pages
 
 Native reading retains the one-based `AI11 PlacedPDFPageIndex` in

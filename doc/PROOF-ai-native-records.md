@@ -2915,3 +2915,16 @@ import natively and write. Their text lands where it did within 0.07 pt, but
 for substituted fonts (now centred on Illustrator's anchor with the stand-in's
 widths, as other centred lines already were) and tracked lines (moved by half
 the tracking to where Illustrator sets them).
+
+**New point type** (owner's decision, `494e56cfd4`). `create_text_at_position`,
+which the Text tool calls for a click, gives the new `<text>`
+`proof:line-alignment="illustrator"`, unless the style it's given sets it right
+to left (`direction:rtl`), vertically (a `writing-mode` other than horizontal)
+or wrapped (`inline-size`). The tool's area type (a drag or a shape), its type
+on a path and every other way of making text are unchanged; copies keep the
+attribute (`SPText::write`). Check: `NewPointTypeIsAlignedAsIllustratorAlignsIt`
+makes type as the tool makes it and types two centred tracked lines, the second
+ending in a space, as the tool types them. Without the attribute that type is
+refused (no one anchor for both lines); with it, it is written and reopens with
+the attribute and every character where it was. Right-to-left type gets no
+attribute. Importer 213 (two opt-in skips).
