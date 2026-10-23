@@ -2780,8 +2780,10 @@ for type; see the current interchange reference.
 
 The third type slice writes editable open/closed path type, including SVG's
 reversed side and intervals that wrap once. Its original implementation is
-2201404e36 on ai-interchange; shared vector-workspace remains at the
-owner-approved area-type commit de33ebdd0c pending another merge decision.
+2201404e36; the qualification follow-up is cd9817ffdd. The owner approved
+bringing this slice into shared vector-workspace after qualification. The
+installed/tested code is cd9817ffdd; the integration note changes documentation
+only and needs no rebuild or repeat of unchanged checks.
 The eight saved Illustrator 29.2.1 controls retain stories and exact brackets,
 reopen natively and qualify placement within the documented raster edge bounds.
 Source options survive as SVG provenance; native saving follows PROOF's current
