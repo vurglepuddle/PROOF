@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <optional>
 #include <string_view>
 
@@ -44,6 +45,7 @@
 #include "display/raster-pixels.h"
 #include "display/tiff-pixels.h"
 #include "document.h"
+#include "enums.h"
 #include "io/link-policy.h"
 #include "object/sp-image.h"
 #include "object/uri.h"
@@ -124,6 +126,9 @@ std::optional<std::string> data_of(char const *uri, Base64Data &type)
     return out;
 }
 
+/// The longest side of a preview that is written: what PROOF's reader keeps of one.
+constexpr int PREVIEW_SIDE = 2048;
+
 /// The samples as Illustrator keeps a raster's: 8 bits, colour interleaved, alpha apart.
 struct Samples
 {
@@ -180,6 +185,67 @@ Samples from_pixbuf(Inkscape::Pixbuf const &shown)
     return s;
 }
 
+/**
+ * A linked picture whose file isn't there, kept as Illustrator keeps one: the file's address,
+ * the box its pixels fill in their own space, and the small picture the document holds of it,
+ * which Illustrator shows in its place as PROOF does. Illustrator 29.2.1 saves a document whose
+ * link is missing with that record as it was (2026-10-23):
+ *
+ *   %AI5_BeginPlace ... %%IncludeFile:path
+ *   %AI17_Begin_Content_if_version_gt:24 5
+ *
+ *   %AI26_BeginPlacedObjectPreview
+ *   width height row-bytes 32 17 <rows, top first, each pixel its alpha, red, green, blue>
+ *   %AI26_EndPlacedObjectPreview
+ *   %AI17_End_Versioned_Content
+ *   ~
+ *   %AI5_EndPlace
+ *
+ * Only an import's are written: the small picture is the one Illustrator kept
+ * (SPImage::LINK_PREVIEW_ATTRIBUTE), and the pixels fill the picture's box whatever its shape
+ * (preserveAspectRatio="none"), anywhere else in it being a guess. Illustrator fits the file into
+ * that box when it finds it again, however PROOF has moved or scaled it (its layout of PROOF's
+ * control, a box made half as wide and high).
+ */
+WrittenPicture missing_link(SPImage const *image, std::string const &link, Geom::Affine const &item_to_art)
+{
+    auto const *kept = image->getRepr()->attribute(SPImage::LINK_PREVIEW_ATTRIBUTE);
+    if (!image->missing || !kept) return refused("missing or unreadable linked pictures");
+    if (!image->aspect_set || image->aspect_align != SP_ASPECT_NONE || !image->width._set || !image->height._set) {
+        return refused("missing linked pictures that don't fill their box");
+    }
+    double const x = image->x.computed, y = image->y.computed, w = image->width.computed, h = image->height.computed;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) || w <= 0 || h <= 0) {
+        return refused("pictures without a size");
+    }
+    for (int i = 0; i < 6; ++i) {
+        if (!std::isfinite(item_to_art[i])) return refused("singular or nonfinite picture transforms");
+    }
+    if (std::abs(item_to_art.det()) < 1e-12) return refused("singular or nonfinite picture transforms");
+    std::unique_ptr<Inkscape::Pixbuf> const shown(Inkscape::Pixbuf::create_from_data_uri(kept));
+    if (!shown || shown->width() < 1 || shown->height() < 1 || shown->width() > PREVIEW_SIDE ||
+        shown->height() > PREVIEW_SIDE) {
+        return refused("missing linked pictures whose preview can't be read");
+    }
+    auto const s = from_pixbuf(*shown);
+    std::size_t const pw = shown->width(), ph = shown->height();
+    auto preview = std::format("%AI17_Begin_Content_if_version_gt:24 5\n\n%AI26_BeginPlacedObjectPreview\n{} {} {} 32 17 ",
+                               pw, ph, pw * 4);
+    preview.reserve(preview.size() + pw * ph * 4 + 64);
+    for (std::size_t i = 0; i < pw * ph; ++i) {
+        preview += s.alpha[i];
+        preview.append(s.colour, i * 3, 3);
+    }
+    preview += "\n%AI26_EndPlacedObjectPreview\n%AI17_End_Versioned_Content\n";
+    auto const &a = item_to_art;
+    WrittenPicture out;
+    out.records = std::format("%AI5_BeginPlace\n%%FileType: 1\n[{} {} {} {} {} {}] {} {} {} {} 4 4 0\n"
+                              "{}`\n%%IncludeFile:{}\n{}~\n%AI5_EndPlace\n",
+                              fine(a[0]), fine(a[1]), fine(a[2]), fine(a[3]), fine(a[4]), fine(a[5]),
+                              fine(x), fine(y), fine(x + w), fine(y + h), ps_string(link), link, preview);
+    return out;
+}
+
 } // namespace
 
 WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy)
@@ -207,6 +273,7 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
         if (!Inkscape::IO::may_follow_link(link, image->document->getDocumentBase())) {
             return refused("linked pictures on another computer");
         }
+        if (!g_file_test(link.c_str(), G_FILE_TEST_EXISTS)) return missing_link(image, link, item_to_art);
         if (!g_file_test(link.c_str(), G_FILE_TEST_IS_REGULAR)) {
             return refused("missing or unreadable linked pictures");
         }

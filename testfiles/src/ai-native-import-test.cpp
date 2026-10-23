@@ -9255,6 +9255,73 @@ TEST_F(AiNativeImportTest, WrittenLinksRefuseFilesThatDisappear)
     g_free(dir);
 }
 
+TEST_F(AiNativeImportTest, AMissingLinkIsWrittenAsIllustratorKeepsIt)
+{
+    // Illustrator 29.2.1 saves a document whose linked picture is gone with its place record as it
+    // was: the file's address, the box, and the small picture it keeps of it. An import's is
+    // written so too; Illustrator shows that picture in its place, or fits the file into the box
+    // when it finds it, however PROOF moved or scaled it (its layout of PROOF's control).
+    auto const rows = argb(255, 255, 0, 0) + argb(255, 0, 255, 0) + argb(255, 0, 0, 255) + argb(128, 255, 255, 255) +
+                      argb(255, 0x33, 0x66, 0x99) + argb(255, 0x33, 0x66, 0x99) + argb(255, 0x33, 0x66, 0x99) +
+                      argb(0, 0, 0, 0);
+    auto const gone = std::string("Q:\\Jobs\\gone.png");
+    auto b = make(records(layer("0 g\n" + rect + linked(gone, {}, kept_preview(4, 2, rows)))));
+    ASSERT_TRUE(b);
+    auto const image = elements(b->document->getReprRoot(), "svg:image").at(0);
+    auto const where = drawn(b->document.get(), image);
+    ASSERT_TRUE(where);
+    auto const written = AN::write_records(b->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    EXPECT_NE(written.records.find("%%IncludeFile:" + gone + "\n%AI17_Begin_Content_if_version_gt:24 5\n\n"
+                                   "%AI26_BeginPlacedObjectPreview\n4 2 16 32 17 " + rows + "\n%AI26_EndPlacedObjectPreview\n"
+                                   "%AI17_End_Versioned_Content\n~\n%AI5_EndPlace\n"),
+              std::string::npos);
+
+    // Opened again: the same link, missing, its picture kept and shown where it was.
+    auto reopened = [&](AN::Built const &from) {
+        auto const again = AN::write_records(from.document.get());
+        EXPECT_TRUE(again.refused.empty());
+        return make(again.records);
+    };
+    auto again = reopened(*b);
+    ASSERT_TRUE(again);
+    ASSERT_EQ(again->missing_links.size(), 1u);
+    EXPECT_TRUE(again->missing_links[0].preview);
+    auto const back = elements(again->document->getReprRoot(), "svg:image").at(0);
+    EXPECT_EQ(attr(back, "sodipodi:absref"), gone);
+    EXPECT_EQ(attr(back, SPImage::LINK_PREVIEW_ATTRIBUTE), attr(image, SPImage::LINK_PREVIEW_ATTRIBUTE));
+    auto const now = drawn(again->document.get(), back);
+    ASSERT_TRUE(now);
+    EXPECT_TRUE(Geom::are_near(now->min(), where->min(), 1e-6)) << now->min();
+    EXPECT_TRUE(Geom::are_near(now->max(), where->max(), 1e-6)) << now->max();
+
+    // Moved and scaled in PROOF (the picture's own box changes, as SPImage::set_transform makes it):
+    // written in its new box.
+    auto *item = cast<SPItem>(b->document->getObjectByRepr(image));
+    ASSERT_TRUE(item);
+    item->set_i2d_affine(item->i2dt_affine() * Geom::Scale(0.5) * Geom::Translate(30, 5));
+    item->doWriteTransform(item->transform);
+    auto const scaled = drawn(b->document.get(), image);
+    ASSERT_TRUE(scaled);
+    EXPECT_NEAR(scaled->width(), where->width() / 2, 1e-6);
+    again = reopened(*b);
+    ASSERT_TRUE(again);
+    auto const moved = drawn(again->document.get(), elements(again->document->getReprRoot(), "svg:image").at(0));
+    ASSERT_TRUE(moved);
+    EXPECT_TRUE(Geom::are_near(moved->min(), scaled->min(), 1e-6)) << moved->min() << " " << scaled->min();
+    EXPECT_TRUE(Geom::are_near(moved->max(), scaled->max(), 1e-6)) << moved->max() << " " << scaled->max();
+
+    // Not without the picture Illustrator kept, nor filling the box some other way than whole.
+    auto plain = make(records(layer(linked(gone))));
+    ASSERT_TRUE(plain);
+    EXPECT_EQ(AN::write_records(plain->document.get()).refused, std::vector<std::string>{"missing or unreadable linked pictures"});
+    image->setAttribute("preserveAspectRatio", "xMidYMid");
+    EXPECT_EQ(AN::write_records(b->document.get()).refused, std::vector<std::string>{"missing linked pictures that don't fill their box"});
+    image->setAttribute("preserveAspectRatio", "none");
+    image->setAttribute(SPImage::LINK_PREVIEW_ATTRIBUTE, "data:image/png;base64,AAAA");
+    EXPECT_EQ(AN::write_records(b->document.get()).refused, std::vector<std::string>{"missing linked pictures whose preview can't be read"});
+}
+
 TEST_F(AiNativeImportTest, WrittenLinksRefuseAChangedFileUntilItIsReloaded)
 {
     gchar *dir = g_dir_make_tmp("proof-written-changed-XXXXXX", nullptr);
