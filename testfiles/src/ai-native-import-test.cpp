@@ -8120,6 +8120,83 @@ TEST_F(AiNativeImportTest, AreaTrailingSpacesKeepAlignmentAndTypedBreaks)
     }
 }
 
+TEST_F(AiNativeImportTest, AutomaticAreaHyphensDrawWithoutEnteringTheEditableStory)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP();
+    std::string const paragraphs = " /5 << /0 [ << /1 12 /0 << /0 << /5 << /9 true >> >> >> >> ] >>";
+    auto native = area_text_document("(firstsecond\\r)", 12, {{0, 12, 5}, {0, 26, 7}}, font, {}, paragraphs);
+    auto const at = native.find("/15 << /0 5 /2 0");
+    ASSERT_NE(at, std::string::npos);
+    native.replace(at, std::strlen("/15 << /0 5 /2 0"), "/15 << /0 5 /1 [ << /0 2 /1 4 /2 2 >> ] /2 1");
+    auto imported = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(native)));
+    ASSERT_TRUE(imported);
+    auto const texts = elements(imported->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 1u);
+    auto const spans = elements(texts[0], "svg:tspan");
+    auto const hyphen = std::find_if(spans.begin(), spans.end(), [](auto *span) {
+        return attr(span, AN::AUTOMATIC_HYPHEN_ATTRIBUTE) == "true";
+    });
+    ASSERT_NE(hyphen, spans.end());
+    EXPECT_STREQ((*hyphen)->firstChild()->content(), "-");
+    auto const written = AN::write_records(imported->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const parsed = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+    auto const &lines = parsed->stories[0]->lines;
+    ASSERT_EQ(lines.size(), 2u);
+    EXPECT_TRUE(lines[0].automatic_hyphen);
+    EXPECT_FALSE(lines[1].automatic_hyphen);
+    EXPECT_EQ(lines[0].runs[0].text, "first");
+    EXPECT_EQ(lines[1].runs[0].text, "second");
+    auto returned = make(written.records);
+    ASSERT_TRUE(returned);
+    auto const before = set_characters(imported->document.get(), texts[0]);
+    auto const after = set_characters(returned->document.get(), elements(returned->document->getReprRoot(), "svg:text")[0]);
+    ASSERT_EQ(before.size(), after.size());
+    EXPECT_EQ(before.size(), 12u); // Eleven typed letters and one display-only hyphen.
+    for (unsigned i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(before[i].first, after[i].first);
+        EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02);
+        EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02);
+    }
+    (*hyphen)->setAttribute("style", "fill:#ff0000");
+    EXPECT_FALSE(AN::write_records(imported->document.get()).refused.empty());
+    auto const where = native.find("/9 true");
+    native.replace(where, 7, "/9 false");
+    auto const invalid = AN::read_text_document(text_setup(native), Geom::Point(100, 50));
+    EXPECT_FALSE(invalid->stories.at(0));
+}
+
+TEST_F(AiNativeImportTest, WrittenPointTypeKeepsLeadingAndTrailingEmptyLines)
+{
+    auto doc = svg_document("<text id='t' style='font-family:Arial;font-size:12px;text-anchor:middle'>"
+        "<tspan x='100' y='10'/><tspan x='100' y='30' proof:line-end='break'>Hello</tspan>"
+        "<tspan x='100' y='50'/></text>");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const parsed = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+    auto const &lines = parsed->stories[0]->lines;
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_TRUE(lines[0].runs.empty());
+    EXPECT_TRUE(lines[2].runs.empty());
+    EXPECT_EQ(lines[1].end, AN::TextLine::End::Break);
+    EXPECT_EQ(lines[1].runs[0].text, "Hello");
+    EXPECT_EQ(lines[0].alignment, 2u);
+    auto returned = make(written.records);
+    ASSERT_TRUE(returned);
+    auto const before = set_characters(doc.get(), doc->getObjectById("t")->getRepr());
+    auto const after = set_characters(returned->document.get(), elements(returned->document->getReprRoot(), "svg:text")[0]);
+    ASSERT_EQ(before.size(), after.size());
+    for (unsigned i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(before[i].first, after[i].first);
+        EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02);
+        EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02);
+    }
+}
+
 TEST_F(AiNativeImportTest, WrittenTypeReadsBackWithEveryCharacterWhereItWas)
 {
     // Point type: lines that are paragraphs about one anchor, runs of fonts, colours, tracking,
@@ -9737,6 +9814,40 @@ Extension::Output *native_output_for_test()
     if (!Extension::db.get("org.inkscape.output.ai.native")) Extension::Internal::AiNativeOutput::init();
     return dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.ai.native"));
 }
+}
+
+TEST_F(AiNativeImportTest, NativeSaveKeepsIndividuallyHiddenArtworkOutOfItsPdf)
+{
+    if (!Extension::Internal::PdfOutput::supports_pdf17()) GTEST_SKIP();
+    auto *output = native_output_for_test();
+    ASSERT_TRUE(output);
+    output->set_gui(false);
+    auto const picture = png_uri(1, 1, {255, 0, 0, 255});
+    auto doc = svg_document("<rect x='10' y='10' width='20' height='20' fill='#008000'/>"
+        "<rect width='200' height='100' style='display:none;fill:#0000ff'/>"
+        "<image width='200' height='100' href='" + picture + "' style='display:none'/>"
+        "<text x='5' y='70' style='font-family:Arial;font-size:48px;display:none'>Hidden</text>");
+    ASSERT_TRUE(doc);
+    auto const before = sp_repr_save_buf(doc->getReprDoc());
+    auto const records = AN::write_records(doc.get());
+    ASSERT_TRUE(records.refused.empty()) << records.refused.front();
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), before);
+    gchar *dir = g_dir_make_tmp("proof-hidden-pdf-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const folder = dir, path = folder + "/hidden.ai";
+    g_free(dir);
+    auto cleanup = scope_exit([&] { g_unlink(path.c_str()); g_rmdir(folder.c_str()); });
+    output->save(doc.get(), path.c_str());
+    std::string reason;
+    auto const opened = Extension::Internal::open_ai_native(path, reason, Extension::Internal::AiKeepDiffering::All);
+    ASSERT_TRUE(opened) << reason;
+    ASSERT_EQ(opened->differences.size(), 1u);
+    EXPECT_LT(opened->differences[0].lightness, 0.002);
+    EXPECT_LT(opened->differences[0].colour, 0.002);
+    auto const images = elements(opened->document->getReprRoot(), "svg:image");
+    ASSERT_EQ(images.size(), 1u); // Hidden artwork remains editable in the native model.
+    EXPECT_NE(attr(images[0], "style").find("display:none"), std::string::npos);
+    EXPECT_EQ(elements(opened->document->getReprRoot(), "svg:text").size(), 1u);
 }
 
 TEST_F(AiNativeImportTest, NativeSaveAsRefusesWithoutChangingTheDocumentOrPreviousFile)

@@ -101,6 +101,8 @@ inline constexpr char const *LINE_END_ATTRIBUTE = "proof:line-end";
 inline constexpr char const *HYPHENATE_ATTRIBUTE = "proof:hyphenate";
 /// Paragraph features 1, 2, 3 as three lengths in the text's coordinates.
 inline constexpr char const *PARAGRAPH_INDENTS_ATTRIBUTE = "proof:paragraph-indents";
+/// A displayed automatic wrap hyphen, excluded from the native story on save.
+inline constexpr char const *AUTOMATIC_HYPHEN_ATTRIBUTE = "proof:automatic-hyphen";
 /// On area type whose frame says how it places its first baseline: the rule and the minimum
 /// (PointText::first_baseline), as "5 0".
 inline constexpr char const *FIRST_BASELINE_ATTRIBUTE = "proof:first-baseline";

@@ -291,6 +291,25 @@ area end spaces; no change to shared text layout was needed. Permanent units
 cover native margins/scaling, invalid settings, wrap/break distinctions and
 each character's retained position.
 
+**Further correctness cleanup, 2026-10-24:** automatic wrap hyphens are displayed
+as generated spans (`proof:automatic-hyphen`), excluded from the editable story
+and retained in the native line cache. Use Illustrator's terminal insertion map;
+ligatures can cancel the extra glyph in a simple glyph/character count. Seven
+hyphens in two copied documents (`5165c2ff0d`, `873a9cec8e`) now survive complete
+saves and native reopening. Leading/trailing empty positioned lines are kept too:
+six final forced breaks had otherwise vanished from the first document. Its
+editable stories now compare exactly with the imported originals.
+
+Illustrator 29.2.1 generated nine hyphenated lines across left/centre/right
+frames. PROOF's drawings and Illustrator's native Save As return meet the same
+144 dpi ink tolerance; the return retains all nine hyphens and exact editable
+stories. Whole hidden text is laid out on a temporary document and retained
+in the native records, preserving the original visibility and XML. Per-span
+hiding or nonempty text without a writable layout is refused instead of dropped.
+The PDF renderer now skips individually hidden items on its direct painting
+path as it already did for transparency groups. All five appearance mismatches
+found by the completed-family pass now save/reopen natively (six pages).
+
 ### Path type written (2026-10-23)
 
 Modern native output writes one line of type on one open or closed path as

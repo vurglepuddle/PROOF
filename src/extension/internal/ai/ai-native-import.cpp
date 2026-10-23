@@ -997,7 +997,10 @@ XML::Node *Builder::text(Node const &n)
             if (!plain.empty()) append(span, _xml->createTextNode(plain.c_str()));
             plain.clear();
         };
-        for (auto const &run : line.runs) {
+        for (std::size_t i = 0; i < line.runs.size() + std::size_t(line.automatic_hyphen); ++i) {
+            bool const automatic = i == line.runs.size();
+            auto const &run = line.runs[automatic ? i - 1 : i];
+            std::string const &contents = automatic ? std::string("-") : run.text;
             auto const own = parts(run.style);
             std::string style;
             // Another font, or another one that isn't installed, says its font again: the
@@ -1016,15 +1019,16 @@ XML::Node *Builder::text(Node const &n)
                          (run.style.underline && run.style.strikethrough ? " " : "") +
                          (run.style.strikethrough ? "line-through" : "") + ";";
             }
-            if (style.empty()) {
-                plain += run.text;
+            if (style.empty() && !automatic) {
+                plain += contents;
                 continue;
             }
             write_plain();
             auto piece = create("svg:tspan");
             piece->setAttribute("style", style);
+            if (automatic) piece->setAttribute(AUTOMATIC_HYPHEN_ATTRIBUTE, "true");
             if (font_differs) own.name(piece);
-            append(piece, _xml->createTextNode(run.text.c_str())); append(span, piece);
+            append(piece, _xml->createTextNode(contents.c_str())); append(span, piece);
         }
         write_plain();
         append(e, span);

@@ -138,6 +138,9 @@ GroupContext::GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_m
  */
 void DrawContext::paint_item(SPItem const *item, Geom::Affine const &tr, SPStyle const *context_style)
 {
+    // Directly painted shapes, images and text must honour visibility just as
+    // item_to_transparency_group does. Hidden native objects remain editable.
+    if (item->isHidden()) return;
     // Special exception, return without drawing anything when using LaTeX
     if (!_doc.get_text_enabled() && (is<SPText>(item) || is<SPFlowtext>(item))) {
         return;

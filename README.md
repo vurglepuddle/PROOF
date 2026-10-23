@@ -63,6 +63,8 @@ Overflow clips by whole letter/word, retaining the complete editable story.
 Bounded Arabic/Hebrew point and area type keeps direction and composer separately;
 mixed Latin/digit runs, Arabic vowel marks and lam–alef ligatures have targeted
 Illustrator checks. Nested overrides, bidi path type and bidi tracking stay guarded.
+Area paragraphs retain first-line and side indents, including hanging margins;
+centred/right end spaces, wrapping and typed breaks have Illustrator controls.
 Installed variable-font instances keep their editable axes in native AI. PDF
 embeds the chosen static instance with live text, including TrueType and CFF2 sources.
 The [current interchange reference](doc/PROOF-ai-interchange.md) gives each route's

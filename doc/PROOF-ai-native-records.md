@@ -3046,3 +3046,33 @@ breaks, forced breaks, soft wraps and their mixtures. PROOF/Illustrator native
 saves and returns retain stories, margins and drawing within the documented
 two-pixel ink tolerance at 144 dpi. Evidence stays local under
 `artifacts/v1-cleanup-20261023/`.
+
+### Generated hyphens and empty lines retained (2026-10-24)
+
+In an area line's segment `/15`, an automatic hyphen has `/2 1` plus an
+expansion in `/1`: `<< /0 2 /1 LAST_CHARACTER /2 2 >>`. Other cached layouts,
+especially bidi, also use `/2`; that scalar alone is not a hyphen flag. A
+ligature earlier in the line can balance the inserted glyph, so comparing
+total glyph and character counts misses genuine hyphens. The qualified form
+is an ordinary LTR hyphenated wrap. Other contexts remain guarded.
+
+The importer appends a styled generated `-` span without changing the source
+story. Native output excludes that span from typed characters, keeps its
+advance for layout, and writes the terminal insertion map. A modified glyph,
+changed styling, characters after it or a non-wrap ending is refused. Synthetic
+left/centre/right Illustrator controls retain nine generated hyphens and exact
+stories on Save As. A cached inventory of the historical 60 type cases found
+seven affected area lines, all in two documents; exact saves/returns retain them.
+
+Explicit empty spans before/after visible lines are also written. Point type's
+anchor includes its first empty baseline; paragraph alignment and indents use
+the empty span's metadata. This preserves six final U+0003 breaks in the exact
+copy `5165c2ff0d`; all visible character positions stay unchanged in the units.
+
+Whole hidden type needs a layout for its native story. A temporary document
+provides it without changing the source XML/visibility. Hidden character spans
+have no qualified native equivalent and are refused. The complete-save unit
+checks that hidden shapes/images/text stay out of the PDF while native images
+and text remain editable. The PDF's direct painting path now honours the same
+hidden-item test as its transparency-group path. Five exact copied mismatches
+from the full pass, including both pages of one document, now reopen natively.

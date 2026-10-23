@@ -7,6 +7,12 @@ story back into its frame. There is no paragraph-indent editing UI in this
 change. Native roundtrips/scaling and Illustrator 29.2.1 controls cover fractional
 and hanging margins, centred/right trailing spaces, wraps and forced breaks.
 
+Automatic area-wrap hyphens use generated spans (`proof:automatic-hyphen`):
+they draw in SVG/PDF and are excluded from the native editable story. Native
+saves preserve their insertion cache and explicit empty leading/trailing lines.
+Whole hidden text is laid out on a temporary document for saving, retaining its
+hidden state and contents. Hidden spans within text remain refused.
+
 Fonts that aren't installed, and Illustrator's four Character options: all
 caps, small caps, superscript and subscript. First slice: 2026-10-11.
 

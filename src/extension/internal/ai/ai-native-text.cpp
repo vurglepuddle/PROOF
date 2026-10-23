@@ -906,6 +906,18 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             // Where the frame wrapped it, unless a return or a line break ends it (below).
             out.lines.push_back({laid[i].at + offset_of(found), {}});
             out.lines.back().end = TextLine::End::Wrap;
+            auto const &counts = found.get("15");
+            auto const extra = counts.dict.find("2"), mappings = counts.dict.find("1");
+            // Other layouts also use /2 (notably bidi caches). An automatic hyphen
+            // has one extra glyph AND a one-to-two expansion of the last character.
+            if (extra != counts.dict.end() && extra->second.index() == 1 &&
+                mappings != counts.dict.end() && mappings->second.kind == Value::Array) {
+                for (auto const &map : mappings->second.list) {
+                    if (map.kind == Value::Dictionary && map.dict.count("0") && map.dict.count("1") && map.dict.count("2") &&
+                        map.get("0").index() == 2 && map.get("1").index() + 1 == counts.get("0").index() && map.get("2").index() == 2)
+                        out.lines.back().automatic_hyphen = true;
+                }
+            }
             line_units.push_back(found.get("15").get("0").index());
             continue;
         }
@@ -1094,6 +1106,10 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     // Paragraphs with nothing in them past the frame's end hold nothing to keep.
     if (out.overflow.find_first_not_of('\n') == std::string::npos) out.overflow.clear();
 
+    for (auto const &line : out.lines) {
+        if (line.automatic_hyphen && (line.end != TextLine::End::Wrap || !line.hyphenate || line.runs.empty() || out.rtl || in_order || as_typed))
+            throw Bad("unsupported automatic hyphen at an area line end");
+    }
     if (on_path) {
         if (out.lines.size() != 1 || paragraphs.size() != 1 || out.rtl || out.world_ready || paragraphs[0].justified)
             throw Bad("multiple or justified paragraphs on a path aren't supported yet");
@@ -1273,7 +1289,8 @@ bool same_drawing(PointText const &a, PointText const &b)
     if (!Geom::are_near(a.to_art.withoutTranslation(), b.to_art.withoutTranslation(), 1e-6)) return false;
     for (std::size_t i = 0; i < a.lines.size(); ++i) {
         auto const &la = a.lines[i], &lb = b.lines[i];
-        if (la.runs.size() != lb.runs.size() || la.alignment != lb.alignment || la.tabs != lb.tabs || la.indents != lb.indents) return false;
+        if (la.runs.size() != lb.runs.size() || la.alignment != lb.alignment || la.tabs != lb.tabs || la.indents != lb.indents ||
+            la.automatic_hyphen != lb.automatic_hyphen) return false;
         if (!la.runs.empty() && !Geom::are_near(la.origin * a.to_art, lb.origin * b.to_art, 0.01)) return false;
         for (std::size_t r = 0; r < la.runs.size(); ++r) {
             if (la.runs[r].text != lb.runs[r].text || !same_style(la.runs[r].style, lb.runs[r].style)) return false;

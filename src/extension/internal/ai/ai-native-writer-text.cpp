@@ -391,6 +391,34 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         out.frame.reset();
         return out;
     };
+    // A hidden text's normal SVG layout has no input. Lay it out on a temporary
+    // document; the scene writer still takes visibility from the original item.
+    // Per-span hiding has no supported character-level Illustrator equivalent.
+    std::function<bool(SPObject const *)> has_text = [&](SPObject const *o) {
+        bool typed = false;
+        if (auto const *string = cast<SPString>(o)) typed = !string->string.empty();
+        for (auto const &child : o->children) typed = has_text(&child) || typed;
+        if (typed && o != text && (is<SPTSpan>(o) || is<SPTextPath>(o)) && o->style &&
+            o->style->display.computed == SP_CSS_DISPLAY_NONE) why.insert("hidden spans inside type");
+        return typed;
+    };
+    bool const has_characters = has_text(text);
+    if (!why.empty()) return finish();
+    if (has_characters && text->style->display.computed == SP_CSS_DISPLAY_NONE) {
+        auto copy = _document->copy();
+        auto *shown = text->getId() ? cast<SPText>(copy->getObjectById(text->getId())) : nullptr;
+        if (!shown) {
+            why.insert("hidden type without a stable object identity");
+            return finish();
+        }
+        shown->setHidden(false);
+        copy->ensureUpToDate();
+        if (shown->isHidden()) {
+            why.insert("hidden type whose layout can't be computed");
+            return finish();
+        }
+        return add(shown, to_canvas);
+    }
     // Area type: the frame an import kept, or the one shape Inkscape flows the text into, in the
     // text's own coordinates. What an import's frame was too small to show comes after its lines.
     bool const flowed = text->has_shape_inside();
@@ -530,6 +558,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         bool ordered_rtl = false; ///< Contains script characters resolved by the bidi algorithm.
         std::optional<Text::LeftTabStops> tabs; ///< The stops its tabs step to.
         std::array<double, 3> indents{};
+        bool automatic_hyphen = false;
+        SPObject const *hyphen_owner = nullptr;
         std::vector<Char> chars;
     };
     std::map<unsigned, Line> lines;
@@ -636,7 +666,15 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (line.indents != paragraph_indents(string->parent, text, why)) why.insert("different paragraph indents within one line");
         gchar bytes[8];
         auto const n = g_unichar_to_utf8(c, bytes);
-        line.chars.push_back({std::string(bytes, n), c > 0xffff ? 2u : 1u, string->parent});
+        if (says(string->parent, text, AUTOMATIC_HYPHEN_ATTRIBUTE, "true")) {
+            if (!area || flowed || c != '-' || line.chars.empty() || line.automatic_hyphen || string->string != "-")
+                why.insert("an automatic hyphen that isn't a single area line ending");
+            line.automatic_hyphen = true;
+            line.hyphen_owner = string->parent;
+        } else {
+            if (line.automatic_hyphen) why.insert("text after an automatic wrap hyphen");
+            line.chars.push_back({std::string(bytes, n), c > 0xffff ? 2u : 1u, string->parent});
+        }
         line.right = layout.characterBoundingBox(it).right();
         line.extent_left = std::min(line.extent_left, layout.characterBoundingBox(it).left());
         line.extent_right = std::max(line.extent_right, layout.characterBoundingBox(it).right());
@@ -678,6 +716,10 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     }
     if (!why.empty()) return finish();
     if (lines.empty() && overflow.find_first_not_of('\n') == std::string::npos) {
+        if (has_characters) {
+            why.insert("nonempty type without a writable layout");
+            return finish();
+        }
         out.empty = true;
         return out;
     }
@@ -750,7 +792,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (!share || path) return l.anchor;
         return Geom::Point(l.left + share * (l.right - l.left - l.last_spacing), l.anchor.y());
     };
-    auto const first = lines.empty() ? Geom::Point() : aligned_at(lines.begin()->second);
+    auto first = lines.empty() ? Geom::Point() : aligned_at(lines.begin()->second);
     for (auto it = lines.begin(); it != lines.end(); ++it) {
         auto const &line = it->second;
         if (!area && std::abs(aligned_at(line).x() - first.x()) * s > 1e-3) {
@@ -788,10 +830,14 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         SVGLength y;
         if (typed || !y.read(child.getAttribute("y"))) continue;
         auto const at = std::find_if(rows.begin(), rows.end(), [&](Row const &r) { return r.y > y.computed; });
-        if (at != rows.begin() && at != rows.end() && (at - 1)->y < y.computed) {
+        if ((at == rows.begin() || (at - 1)->y < y.computed) &&
+            (at == rows.end() || y.computed < at->y)) {
             rows.insert(at, {nullptr, y.computed, says(&child, text, LINE_END_ATTRIBUTE, "break") ? End::Break : End::Paragraph, &child});
         }
     }
+    // Empty positioned lines still belong to the story. Point type's anchor is
+    // its first baseline, including an empty one before the first visible glyph.
+    if (!area && !rows.empty()) first.y() = rows.front().y;
     // How each line ends. The layout's paragraphs, and lines that end with a line feed, end with
     // a typed end. Inside one, Inkscape's own lines in a shape are where it wrapped them; an
     // import's lines say how they ended.
@@ -821,6 +867,14 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
                  : hidden && owner && says(owner, text, LINE_END_ATTRIBUTE, "break") ? End::Break
                                                                                        : End::Paragraph;
     }
+    for (auto const &row : rows) {
+        if (row.line && row.line->automatic_hyphen &&
+            (row.end != End::Wrap || row.line->chars.back().units != 1 ||
+             !says(row.line->chars.back().owner, text, HYPHENATE_ATTRIBUTE, "true"))) {
+            why.insert("an automatic hyphen outside a hyphenated area wrap");
+        }
+    }
+    if (!why.empty()) return finish();
 
     // Each owner's features, but for leading, which is the line's.
     auto const settings = TypeSettings::of(_document);
@@ -1003,7 +1057,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     };
     auto end_paragraph = [&] {
         auto const *row = *paragraph_start;
-        auto const physical_alignment = row->line ? row->line->alignment : 0u;
+        auto const physical_alignment = row->line ? row->line->alignment :
+            row->owner ? frame_alignment(row->owner, text).value_or(0) : 0u;
         auto const alignment = rtl && physical_alignment != 2 ? 1u - physical_alignment : physical_alignment;
         bool const hyphenate = area && !flowed && row->line && says(row->line->chars.front().owner, text, HYPHENATE_ATTRIBUTE, "true");
         std::string margins;
@@ -1048,8 +1103,12 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         std::optional<double> leading;
         if (i > 0) leading = (p.y - rows[i - 1].y) * s;
         else if (rows.size() > 1) leading = (rows[1].y - p.y) * s;
-        std::vector<Char> const empty{{"", 0, text}};
+        std::vector<Char> const empty{{"", 0, p.owner ? p.owner : text}};
         auto const &chars = p.line ? p.line->chars : empty;
+        if (p.line && p.line->automatic_hyphen && features_of(p.line->hyphen_owner) != features_of(chars.back().owner)) {
+            why.insert("an automatic hyphen styled differently from its word");
+            return finish();
+        }
         double largest = 0;
         for (auto const &c : chars) largest = std::max(largest, c.owner->style->font_size.computed * s);
         bool const automatic = !leading || std::abs(*leading - AUTO_LEADING * largest) < 1e-3;
@@ -1081,8 +1140,10 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         laid += "<< /99 /L";
         if (area || i > 0) laid += " /0 << /0 " + pair(0, (p.y - origin.y()) * s) + " >>";
         std::string const ordered = p.line && p.line->ordered_rtl ? std::format(" /7 << /0 {} >>", units) : "";
-        laid += std::format(" /6 [ << /99 /S /15 << /0 {} /2 0 /5 {}{} >> /0 << /0 {} >> >> ] >> ", units,
-                            ordered.empty() ? "false" : "true", ordered, pair(across, 0));
+        bool const hyphen = p.line && p.line->automatic_hyphen;
+        auto const extra = hyphen ? std::format(" /1 [ << /0 2 /1 {} /2 2 >> ]", units - 1) : "";
+        laid += std::format(" /6 [ << /99 /S /15 << /0 {}{} /2 {} /5 {}{} >> /0 << /0 {} >> >> ] >> ", units,
+                            extra, hyphen ? 1 : 0, ordered.empty() ? "false" : "true", ordered, pair(across, 0));
     }
     // What an import's frame was too small to show: its paragraphs, in the last character's features.
     Row const none{nullptr, 0};

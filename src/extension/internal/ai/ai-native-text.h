@@ -87,6 +87,7 @@ struct TextLine
     /// How its paragraph is aligned, 0 left, 1 right, 2 centred, whichever end `origin` is.
     unsigned paragraph_alignment = 0;
     bool hyphenate = false; ///< Its paragraph is hyphenated where area type wraps it.
+    bool automatic_hyphen = false; ///< A displayed wrap hyphen, absent from the editable story.
     /// Paragraph features 1, 2, 3, in text layout units: first-line, start and end indents.
     std::array<double, 3> indents{};
 };
