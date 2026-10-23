@@ -403,7 +403,7 @@ Inkscape::XML::Node* SPTextPath::write(Inkscape::XML::Document *xml_doc, Inkscap
 
     this->attributes.writeTo(repr);
     if (repr != getRepr()) {
-        for (auto const name : {"proof:path-start", "proof:path-end"}) {
+        for (auto const name : {"proof:path-start", "proof:path-end", "proof:path-spacing", "proof:ai-path-options"}) {
             repr->setAttribute(name, getRepr()->attribute(name));
         }
     }

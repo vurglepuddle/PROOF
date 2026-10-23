@@ -528,6 +528,18 @@ bool FontInstance::FontSlope(double &run, double &rise) const
     return true;
 }
 
+double FontInstance::GetCapHeight()
+{
+    hb_position_t height;
+    int x_scale, y_scale;
+    hb_font_get_scale(hb_font, &x_scale, &y_scale);
+    if (y_scale > 0 && hb_ot_metrics_get_position(hb_font, HB_OT_METRICS_TAG_CAP_HEIGHT, &height) && height > 0) {
+        return double(height) / y_scale;
+    }
+    auto const h = MapUnicodeChar('H');
+    return h ? BBoxExact(h).max()[Geom::Y] : GetXHeight();
+}
+
 Geom::Rect FontInstance::BBoxExact(unsigned int glyph_id)
 {
     auto g = LoadGlyph(glyph_id);

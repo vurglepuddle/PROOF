@@ -709,8 +709,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         PathText path;
         // Illustrator 29.2.1 recalculates 4/18 and drops 6/22 when supplied alone; their
         // recorded values are not an unsupported effect. Keep validated scalar options as
-        // provenance, but do not reproduce the tighter automatic spacing their presence can
-        // enable on curves. The visual gate still decides whether that approximation fits.
+        // provenance. Explicit /6 false enables automatic spacing; omitting /6 or setting it
+        // true does not. The visual gate still decides whether the approximation fits.
         // Actual flips, effects and non-baseline alignments remain unsupported.
         if (auto const it = carries.dict.find("11"); it != carries.dict.end()) {
             if (it->second.kind != Value::Dictionary) throw Bad("invalid path type options");
@@ -733,6 +733,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
                 }
             }
             if (!path.source_options.empty()) path.source_options.pop_back();
+            auto const automatic = it->second.dict.find("6");
+            path.automatic_spacing = automatic != it->second.dict.end() && !automatic->second.flag();
         }
         // Even a straight Illustrator segment retains cubic parameterisation:
         // t=0.25 is 15.625% along a cubic with handles at its endpoints.
@@ -761,6 +763,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         };
         if (geometry.closed() && std::isfinite(bounds[0]) && std::isfinite(bounds[1]) && bounds[0] != bounds[1] &&
             std::abs(bounds[1] - bounds[0]) <= n + 1e-6 && std::abs(bounds[0]) <= 2 * n && std::abs(bounds[1]) <= 2 * n) {
+            bool const whole_turn = std::abs(std::abs(bounds[1] - bounds[0]) - n) < 1e-8;
             // Round a closed path both brackets are places on the loop: the end can be written past
             // the last segment (the start plus the run) or before the start (VectorCraft
             // `1abc5d40`). The type runs on from the start, round past the path's own start when
@@ -768,7 +771,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             for (auto &b : bounds) b -= std::floor(b / n) * n;
             path.start = length_to(bounds[0]);
             path.end = length_to(bounds[1]);
-            if (path.end <= path.start) path.end += length_to(n);
+            if (whole_turn) path.end = path.start + length_to(n);
+            else if (path.end <= path.start) path.end += length_to(n);
         } else {
             if (bounds[0] < 0 || bounds[1] <= bounds[0] || bounds[1] > n) throw Bad("invalid or wrapped path type interval");
             path.start = length_to(bounds[0]);
@@ -784,20 +788,22 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         return out;
     }
     if (text.empty()) throw Bad("invalid or oversized story text");
-    if (anchors.size() != 1) throw Bad("text has an unsupported layout frame");
+    bool const unlaid_path = on_path && anchors.empty();
+    if (anchors.size() != 1 && !unlaid_path) throw Bad("text has an unsupported layout frame");
     auto const anchor = on_path ? std::vector<double>{0, 0} : anchors[0]->get("0").get("0").nums(2);
     std::vector<Value const *> lines;
     std::vector<Laid> laid;
     if (area) {
         laid_lines(*anchors[0], Geom::Point(anchor[0], anchor[1]), 0, laid);
         for (auto const &l : laid) lines.push_back(l.line);
-    } else {
+    } else if (!unlaid_path) {
         find_nodes(*anchors[0], "L", lines);
     }
-    if (lines.empty() || lines.size() > 65536) throw Bad("text has no supported lines");
+    if ((!unlaid_path && lines.empty()) || lines.size() > 65536) throw Bad("text has no supported lines");
+    if (unlaid_path) out.lines.push_back({Geom::Point(0, 0), {}}); // A wholly clipped story has no cached /F or /L.
     // Each run of glyphs says where it was set (8: left, top, right, bottom).
     std::vector<Value const *> glyph_runs;
-    find_nodes(*anchors[0], "G", glyph_runs);
+    if (!unlaid_path) find_nodes(*anchors[0], "G", glyph_runs);
     for (auto const *g : glyph_runs) {
         auto const box = g->dict.find("8");
         if (box == g->dict.end() || box->second.kind != Value::Array || box->second.list.size() != 4 || out.set.size() >= 65536) continue;
@@ -1213,6 +1219,7 @@ bool same_drawing(PointText const &a, PointText const &b)
     if (a.empty != b.empty || a.rtl != b.rtl || a.unordered != b.unordered || a.lines.size() != b.lines.size()) return false;
     if (bool(a.path) != bool(b.path)) return false;
     if (a.path && (a.path->start != b.path->start || a.path->end != b.path->end ||
+                   a.path->automatic_spacing != b.path->automatic_spacing ||
                    a.path->source_options != b.path->source_options ||
                    a.path->outline * a.to_art != b.path->outline * b.to_art)) return false;
     auto same_style = [](TextStyle const &s, TextStyle const &t) {

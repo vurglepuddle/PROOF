@@ -899,7 +899,10 @@ void SPText::rebuildLayout()
                     if (start && end && after_start != start && after_end != end && !*after_start && !*after_end &&
                         std::isfinite(a) && std::isfinite(b) && a >= 0 && b >= a) active = std::pair{a, b};
                 }
-                layout.fitToPathAlign(textpath->startOffset, *textpath->originalPath, active);
+                bool const automatic_spacing = g_strcmp0(textpath->getAttribute("proof:path-spacing"), "auto") == 0;
+                double const points_per_unit = std::sqrt(std::abs(i2doc_affine().det())) * 0.75;
+                layout.fitToPathAlign(textpath->startOffset, *textpath->originalPath, active,
+                                      automatic_spacing, points_per_unit);
             }
         }
     }

@@ -2745,7 +2745,10 @@ Existing short/invalid/end-edited intervals still hide the same glyphs in PDF.
 
 The frame's `/11` dictionary is bounded and validated. Keys 4 and 18 accept
 finite numbers (Illustrator recalculates them); 22 accepts a finite number and
-6 a Boolean. Illustrator 29.2.1 drops 6/22 when supplied without 4/18. False 0
+6 a Boolean. The later controls correct the earlier key inference: explicit
+`6 false` enables automatic spacing even alone; `6 true`, or omitting 6,
+does not. Illustrator drops bare 4/18 without 6 and recalculates caches when
+automatic spacing is requested. False 0
 and 7 and zero 1/2 are accepted defaults. Flip (`0 true`), nonzero effects (1),
 non-baseline alignment (2), `7 true`, malformed types and unknown keys retain
 explicit refusal. A changed cache number alone no longer rejects the story.
@@ -2754,17 +2757,36 @@ This is not a mapping of all type-on-path settings.
 Validated options survive SVG save/reopen on `textPath` as
 `proof:ai-path-options`, a canonical dictionary body of scalar values.
 Appearance-story comparisons conservatively distinguish different source
-options. Imports carrying them report that automatic curve spacing is
-approximated by arc-length spacing. Native AI output deliberately omits `/11`,
-including for imports: Illustrator then draws the same current layout as
-PROOF and its fresh PDF preview. The working SVG keeps the original metadata;
-native output does not retain the original automatic-spacing behaviour.
+options. New native imports also write `proof:path-spacing="auto"` for explicit
+`6 false`. Native output regenerates that supported mode as `/11 << /6 false >>`,
+with no stale cache numbers; Illustrator recomputes them. Older working SVGs
+with source provenance alone keep their existing arc-length layout.
 
-Illustrator's own option-bearing path type spaces more tightly around curves.
-The local Arial 12 pt spike fits an effective raised-path distance of about
-1.93 pt; this is an observation for that font/control, not a general rule or a
-shipped constant. Its dependence on font metrics, type size and other settings
-remains unqualified. The existing visual gate is unchanged. Adobe's public
+The bounded renderer uses the first run's live font: reference height in points
+is `round(size * (1 + cap-height/em) / 2)`, then converted to local coordinates.
+This matches eight independent Arial, Times New Roman, Courier New and Myriad
+Pro controls at 12/24 pt. A monotone sampled metric approximates spacing along
+an offset baseline: one fifth of the height on outward bends, half on inward
+bends. Selection, cursor placement and hit testing use the same inverse map.
+Straight paths retain their ordinary placement. These are empirical rules from
+Illustrator 29.2.1, not Adobe's published implementation or a universal 1.93 pt
+constant. The inward range is qualified only while height times curvature is
+at most .4; corners, tighter inward bends and collapsed/nonmonotone offsets
+refuse native saving and native import rather than pretending to match.
+
+Imported bracketed path type clips a whole cluster if its end does not fit.
+Overflow chooses a word break when possible; centre/right alignment uses the
+visible prefix, excluding its trailing space. The complete story remains in
+the SVG/native records. This corrects classic bracketed type too, while ordinary
+SVG type without imported brackets retains SVG midpoint clipping. A completely
+clipped path story may have only `/PC /5 0`, with no cached `/F` or `/L`: its
+geometry and style runs still make an editable hidden story. Extending its end
+bracket makes it visible. Decimal closed-loop brackets one turn apart are
+normalized as a full turn even when floating-point remainders differ by ulps.
+
+The original Arial 12 pt / 1.93 pt raised-path fit remains historical evidence,
+superseded by this font-metric approximation and its stated bounds. The visual
+gate is unchanged. Adobe's public
 [Type on a path reference](https://helpx.adobe.com/illustrator/using/creating-type-path.html)
 describes user-facing effects/alignment/spacing; the numbered keys above come
 from the independent saved controls, not from that guide.
@@ -2800,3 +2822,28 @@ No new artwork writer acceptance or lite case is claimed. Earlier importer
 202, reader 79, layout 2/2 and native smoke 37/37 remain the prior slice's
 evidence; they are not fresh reruns. No full corpus/census, whole lite set or
 new Illustrator session in this qualification follow-up.
+
+### Curve spacing follow-up (2026-10-23)
+
+The bounded spacing and clipping follow-up is qualified below. Fifty-one
+supported synthetic controls cover four fonts/two sizes, mixed runs, outward/
+inward/S curves, circles, alignment, option normalization, wrapped starts and
+overflow. At 144 dpi, more than 99% of dark ink is within two pixels of the
+saved Illustrator page in every supported control (no image registration).
+This is an approximation/edge bound, not pixel identity. Tight inward, cusp and
+corner controls remain guarded; six extreme single-glyph controls save in
+Illustrator with no visible glyphs. The owner's gauntlet was inspected only
+as a hash-verified copy; it has no live path type, so synthetic controls were
+used at the owner's request.
+
+Sixteen focused path units pass, including eight numeric Illustrator placement
+references and fully hidden story recovery; shared layout suites pass 2/2.
+Eleven canvas/PDF cases pass, checking extraction, font vectors and hidden
+glyphs. The three-file native Save As qualification covers 29 stories and 25
+automatic modes; its final report is recorded in the workspace handoff.
+
+Correctness tightening changes the four former partial imports 0b58f4b842,
+35e3486b58, 56dacaefaf and b6c58bcfdd to PDF fallback for their unqualified tight
+path spacing. This supersedes the preceding four-of-nine acceptance statement;
+their native writers were already blocked by missing links. No broad totals
+were recomputed. Illustrator 30.6 and tighter inward spacing remain open.

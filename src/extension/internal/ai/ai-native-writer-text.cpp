@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <format>
 #include <functional>
@@ -467,6 +468,14 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     std::map<unsigned, Line> lines;
     bool off_path = false;
     auto const &layout = text->layout;
+    if (on_path) {
+        auto const *spacing = on_path->getAttribute("proof:path-spacing");
+        if (spacing && std::strcmp(spacing, "auto") != 0) why.insert("type on a path with unknown curve spacing");
+        if (spacing && !layout.automaticPathSpacingSupported()) {
+            why.insert("automatic type spacing on a sharp, very tight or collapsed path");
+        }
+        if (!why.empty()) return finish();
+    }
     for (auto it = layout.begin(); it != layout.end() && why.empty(); it.nextCharacter()) {
         SPObject *source = nullptr;
         Glib::ustring::iterator at;
@@ -960,17 +969,17 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         out.frame = *outline;
     } else if (path) {
         // The path the same way; Illustrator's kind for path type (2), and its brackets.
-        // Do not re-emit proof:ai-path-options from imports: their automatic curve spacing
-        // differs from PROOF's current layout. Omitting /11 keeps Illustrator's editable
-        // text consistent with the fresh PDF preview. The original options stay in SVG.
+        // Only the supported spacing mode is an instruction. Source caches remain
+        // provenance in SVG; Illustrator recomputes its font-dependent values itself.
+        std::string const options = on_path->getAttribute("proof:path-spacing") ? " /11 << /6 false >>" : "";
         std::string points;
         for (auto const &c : segments) {
             for (unsigned k = 0; k < 4; ++k) points += " " + real(c[k].x() * s) + " " + real(c[k].y() * s);
         }
         double const last = to > path_length ? segments.size() + bracket(segments, to - path_length) : bracket(segments, to);
-        _frames.push_back(std::format("<< /1 << /0 [{} ] >> /2 << /0 2 /2 [ {} {} {} {} {} {} ] /6 [ {} {} ] >> >>", points,
+        _frames.push_back(std::format("<< /1 << /0 [{} ] >> /2 << /0 2 /2 [ {} {} {} {} {} {} ] /6 [ {} {} ]{} >> >>", points,
                                       real(matrix[0]), real(matrix[1]), real(matrix[2]), real(matrix[3]), real(matrix[4]),
-                                      real(matrix[5]), real(bracket(segments, from)), real(last)));
+                                      real(matrix[5]), real(bracket(segments, from)), real(last), options));
         out.frame = *path;
     } else {
         _frames.push_back(std::format("<< /0 {} /2 << /2 [ {} {} {} {} {} {} ] >> >>", pair(first.x() * s, first.y() * s),

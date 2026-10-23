@@ -2796,3 +2796,24 @@ linked frames). The historical broad checkpoint is not updated. No full corpus,
 whole lite set or new Illustrator session. Detailed records, exact bounds,
 refusals and remaining spacing work are in
 [Path type written](PROOF-ai-native-records.md#path-type-written-2026-10-23).
+
+## Bounded automatic curve spacing and bracket overflow (2026-10-23)
+
+This follow-up starts from fefe026184. New native imports retain the supported
+automatic Rainbow mode; the renderer recalculates a bounded spacing metric
+from the live font, and native output asks Illustrator to retain that mode.
+The old Arial-only offset was not shipped. Selection and cursor geometry share
+the glyph mapping. Very tight inward bends, corners and collapsed paths remain
+explicit refusals/fallbacks.
+
+The owner's request for adversarial controls exposed whole-letter/word clipping,
+centre/right alignment of an overflowing prefix, all-hidden stories without a
+cached layout frame, and floating-point normalization of a complete closed
+turn. Those are corrected, including classic imported bracketed path type.
+Source SVG stories stay complete and editable behind the end bracket.
+
+Targeted evidence: 16 path units, shared layout 2/2, 11 canvas/PDF cases, 51
+supported cross-application controls across four fonts and 29 native Save As
+stories. The four exact former partial imports now use PDF fallback for tight
+spacing; missing links already blocked their native writes. The older broad
+counts remain historical. No corpus census, whole lite set or live UI suite.

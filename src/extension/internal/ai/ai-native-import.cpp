@@ -61,6 +61,7 @@
 #include "object/sp-image.h"
 #include "object/sp-item.h"
 #include "object/sp-namedview.h"
+#include "object/sp-text.h"
 #include "spot-ink.h"
 #include "style.h"
 #include "svg/css-ostringstream.h"
@@ -562,6 +563,7 @@ public:
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
     std::size_t path_text = 0; ///< Parameter brackets expanded to editable path distances.
     std::size_t path_options = 0; ///< Source options retained; automatic curve spacing approximated.
+    std::vector<XML::Node *> automatic_path_text; ///< Must have a supported live spacing metric after layout.
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
     std::size_t mesh_cut = 0; ///< Mesh patches bent through anchors, cut into cells there.
@@ -722,11 +724,13 @@ void Builder::run()
         auto const images = images_left_out;
         auto const error = link_error;
         auto const foreign = foreign_error;
+        auto const auto_paths = automatic_path_text.size();
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
                                        gradient_text, paragraph_styled_text, path_text, path_options, mesh_outlines, mesh_cut, mesh_split,
                                        foreign_objects, hidden_foreign, unused_gradient_end_stops);
         auto const id = pattern_tile(int(i));
+        automatic_path_text.resize(auto_paths); // These definitions are not painted with.
         bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
         images_left_out = images;
         link_error = error;
@@ -960,6 +964,10 @@ XML::Node *Builder::text(Node const &n)
             span->setAttribute("startOffset", num(line.alignment == 2 ? (start + end) / 2 : line.alignment == 1 ? end : start));
             span->setAttribute("proof:path-start", num(start));
             span->setAttribute("proof:path-end", num(end));
+            if (story.path->automatic_spacing) {
+                span->setAttribute("proof:path-spacing", "auto");
+                automatic_path_text.push_back(e);
+            }
             if (!story.path->source_options.empty()) {
                 span->setAttribute("proof:ai-path-options", story.path->source_options);
             }
@@ -2395,6 +2403,13 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     }
     doc->ensureUpToDate();
     auto const curved = add_guides(doc.get(), b.guides);
+    for (auto *node : b.automatic_path_text) {
+        auto const *text = cast<SPText>(doc->getObjectByRepr(node));
+        if (!text || !text->layout.automaticPathSpacingSupported()) {
+            error = "automatic type spacing on a sharp, very tight or collapsed path";
+            return {};
+        }
+    }
 
     auto &notes = built.notes;
     auto count = [](std::size_t n, char const *one, char const *many) {
@@ -2450,7 +2465,7 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     }
     if (b.path_options) {
         notes.push_back(count(b.path_options, "path text object's", "path text objects'") +
-                        " source options are kept as metadata; automatic curve spacing is approximated with arc-length spacing");
+                        " source options are kept as metadata; requested automatic curve spacing uses a font-metric approximation");
     }
     if (b.overflowing_text) {
         notes.push_back(count(b.overflowing_text, "text frame holds", "text frames hold") +

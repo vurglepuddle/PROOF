@@ -1790,6 +1790,44 @@ TEST_F(AiNativeImportTest, PathTypeEndBracketHidesOverflowAndCanBeEdited)
     Inkscape::GC::release(fresh);
 }
 
+TEST_F(AiNativeImportTest, PathTypeWhollyClippedStorySurvivesAbsentLayoutAndReopens)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    for (auto const *options : {"", "/11 << /6 false >>"}) {
+        auto data = path_text_document("(WWWW\\r)", 5, font, {}, options, "0 0.1");
+        // Illustrator omits the entire layout frame when no whole letter fits. Keep its
+        // independent geometry, style runs and story, rather than needing a cached /F.
+        auto const at = data.find("/2 << /99 /F"); ASSERT_NE(at, std::string::npos);
+        std::size_t end = at + 3; int depth = 0;
+        do {
+            if (data.compare(end, 2, "<<") == 0) { ++depth; end += 2; }
+            else if (data.compare(end, 2, ">>") == 0) { --depth; end += 2; }
+            else ++end;
+        } while (depth && end < data.size());
+        ASSERT_EQ(depth, 0);
+        data.replace(at, end - at, "/2 [ << /99 /PC /5 0 >> ]");
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(data)));
+        ASSERT_TRUE(b);
+        auto *text = cast<SPText>(b->document->getObjectByRepr(elements(b->document->getReprRoot(), "svg:text").at(0)));
+        ASSERT_TRUE(text); b->document->ensureUpToDate();
+        EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 4u);
+        EXPECT_TRUE(text->layout.inputTruncated());
+        EXPECT_TRUE(text->layout.convertToCurves().empty());
+        auto const written = AN::write_records(b->document.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto again = make(written.records); ASSERT_TRUE(again);
+        auto *reopened = cast<SPText>(again->document->getObjectByRepr(elements(again->document->getReprRoot(), "svg:text").at(0)));
+        ASSERT_TRUE(reopened); again->document->ensureUpToDate();
+        EXPECT_EQ(reopened->layout.iteratorToCharIndex(reopened->layout.end()), 4u);
+        EXPECT_TRUE(reopened->layout.convertToCurves().empty());
+        auto span = elements(reopened->getRepr(), "svg:textPath").at(0);
+        span->setAttribute("proof:path-end", "199.9404"); again->document->ensureUpToDate();
+        EXPECT_FALSE(reopened->layout.inputTruncated());
+        EXPECT_FALSE(reopened->layout.convertToCurves().empty());
+    }
+}
+
 TEST_F(AiNativeImportTest, PathTypeClosedPathDoesNotRepeatOverflowAroundTheLoop)
 {
     std::string const svg =
@@ -1840,6 +1878,13 @@ TEST_F(AiNativeImportTest, PathTypeOnAClosedPathRunsOnPastItsStart)
         ASSERT_TRUE(text->stories.at(0)) << bounds << ": " << text->errors[0];
         EXPECT_NEAR(text->stories[0]->path->start, start, 0.001) << bounds;
         EXPECT_NEAR(text->stories[0]->path->end, end, 0.001) << bounds;
+    }
+    // Decimal brackets a full turn apart can differ by a few ulps after normalization.
+    // They must not become a zero-length interval (an Illustrator centre-on-loop return).
+    for (auto const *bounds : {"2.63949 6.63949", "0.63949 4.63949", "-1.36051 2.63949"}) {
+        auto text = read(bounds);
+        ASSERT_TRUE(text->stories.at(0)) << bounds << ": " << text->errors[0];
+        EXPECT_NEAR(text->stories[0]->path->end - text->stories[0]->path->start, 400, 1e-6);
     }
     for (auto bounds : {"1 1", "0 9", "-9 1", "1 9.5"}) {
         auto invalid = read(bounds);
@@ -8091,31 +8136,37 @@ TEST_F(AiNativeImportTest, WrittenPathTypeKeepsItsPathAndBrackets)
     }
 }
 
-TEST_F(AiNativeImportTest, PathTypeSourceOptionsSurviveSvgWithoutChangingNativeLayout)
+TEST_F(AiNativeImportTest, PathTypeSourceOptionsAndSpacingSurviveSvgAndNativeWrite)
 {
     auto const font = available_text_font();
     if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
-    auto const options = "/11 << /4 100 /18 112.5 /6 true /22 0.5 /0 false /1 0 /2 0 /7 false >>";
+    auto const options = "/11 << /4 100 /18 112.5 /6 false /22 0.5 /0 false /1 0 /2 0 /7 false >>";
     auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
                           text_setup(path_text_document("(ABCD\\r)", 5, font, {}, options))));
     ASSERT_TRUE(b);
     EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](auto const &note) {
-        return note.find("automatic curve spacing is approximated") != std::string::npos;
+        return note.find("automatic curve spacing uses a font-metric approximation") != std::string::npos;
     }));
     auto doc = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
     ASSERT_TRUE(doc);
     auto const spans = elements(doc->getReprRoot(), "svg:textPath");
     ASSERT_EQ(spans.size(), 1u);
-    EXPECT_EQ(attr(spans[0], "proof:ai-path-options"), "/0 false /1 0 /18 112.5 /2 0 /22 0.5 /4 100 /6 true /7 false");
+    EXPECT_EQ(attr(spans[0], "proof:ai-path-options"), "/0 false /1 0 /18 112.5 /2 0 /22 0.5 /4 100 /6 false /7 false");
+    EXPECT_EQ(attr(spans[0], "proof:path-spacing"), "auto");
+    auto fresh = doc->getObjectByRepr(spans[0])->updateRepr(doc->getReprDoc(), nullptr, SP_OBJECT_WRITE_BUILD | SP_OBJECT_WRITE_EXT);
+    ASSERT_TRUE(fresh);
+    EXPECT_EQ(attr(fresh, "proof:path-spacing"), "auto");
+    EXPECT_EQ(attr(fresh, "proof:ai-path-options"), attr(spans[0], "proof:ai-path-options"));
+    Inkscape::GC::release(fresh);
 
     auto const written = AN::write_records(doc.get());
     ASSERT_TRUE(written.refused.empty()) << written.refused.front();
     auto const texts = AN::read_text_document(written.records, {});
     ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
     ASSERT_TRUE(texts->stories[0]->path);
-    // Native output regenerates the current SVG layout. Restoring the source /11 would
-    // enable Illustrator's tighter automatic spacing and disagree with the fresh PDF page.
-    EXPECT_TRUE(texts->stories[0]->path->source_options.empty());
+    // Retain the live mode; Illustrator recomputes caches from the current font itself.
+    EXPECT_TRUE(texts->stories[0]->path->automatic_spacing);
+    EXPECT_EQ(texts->stories[0]->path->source_options, "/6 false");
     auto again = make(written.records);
     ASSERT_TRUE(again);
     expect_drawn_alike(doc.get(), elements(doc->getReprRoot(), "svg:text").at(0), again->document.get(),
@@ -8168,6 +8219,181 @@ TEST_F(AiNativeImportTest, InkscapesTypeOnAPathIsWrittenAsPathType)
         SCOPED_TRACE(ids[i]);
         expect_drawn_alike(doc.get(), doc->getObjectById(ids[i])->getRepr(), b->document.get(), now[i], 0.05);
     }
+}
+
+TEST_F(AiNativeImportTest, AutomaticPathSpacingMovesGlyphsCursorsAndSelectionTogether)
+{
+    auto doc = svg_document(
+        R"(<path id="p" d="M20,100 C70,30 170,30 220,100"/>)"
+        R"(<text id="t" style="font-family:Arial;font-size:12px"><textPath href="#p" proof:path-spacing="auto" startOffset="10">Variant abcdef</textPath></text>)");
+    ASSERT_TRUE(doc); doc->ensureUpToDate();
+    auto *text = cast<SPText>(doc->getObjectById("t")); ASSERT_TRUE(text);
+    ASSERT_TRUE(text->layout.automaticPathSpacingSupported());
+    EXPECT_GT(text->layout.automaticPathSpacingHeight(), 0);
+    for (auto it = text->layout.begin(); it != text->layout.end(); it.nextCharacter()) {
+        Geom::Point cursor; double height, rotation;
+        text->layout.queryCursorShape(it, cursor, height, rotation);
+        auto const nearest = text->layout.getNearestCursorPositionTo(cursor);
+        EXPECT_EQ(text->layout.iteratorToCharIndex(nearest), text->layout.iteratorToCharIndex(it));
+        auto after = it; after.nextCharacter();
+        auto const glyph = text->layout.convertToCurves(it, after).boundsFast();
+        if (!glyph) continue; // Space.
+        auto const box = text->layout.characterBoundingBox(it);
+        EXPECT_LT(Geom::L2(box.midpoint() - glyph->midpoint()), 12);
+        EXPECT_FALSE(text->layout.createSelectionShape(it, after, Geom::identity()).empty());
+    }
+    auto const original = text->layout.convertToCurves();
+    auto path = elements(text->getRepr(), "svg:textPath").at(0);
+    path->setAttribute("proof:path-spacing", nullptr); doc->ensureUpToDate();
+    auto const ordinary = text->layout.convertToCurves();
+    ASSERT_FALSE(original.empty()); ASSERT_FALSE(ordinary.empty());
+    EXPECT_GT(Geom::L2(original.back().finalPoint() - ordinary.back().finalPoint()), 0.2);
+    // On a straight path there is no curve spacing adjustment.
+    doc->getObjectById("p")->getRepr()->setAttribute("d", "M20,100 H220");
+    doc->ensureUpToDate(); auto const line = text->layout.convertToCurves();
+    path->setAttribute("proof:path-spacing", "auto"); doc->ensureUpToDate();
+    auto const automatic_line = text->layout.convertToCurves();
+    ASSERT_EQ(line.size(), automatic_line.size());
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        EXPECT_NEAR(Geom::L2(line[i].finalPoint() - automatic_line[i].finalPoint()), 0, 1e-5);
+    }
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto again = make(written.records); ASSERT_TRUE(again);
+    expect_drawn_alike(doc.get(), text->getRepr(), again->document.get(),
+                       elements(again->document->getReprRoot(), "svg:text").at(0), 0.02);
+}
+
+TEST_F(AiNativeImportTest, AutomaticPathTypeMatchesIllustratorFontControls)
+{
+    // Independent Illustrator 29.2.1 layout records, generated with four fonts at
+    // 12/24 pt (2026-10-23). Origins relative to the first glyph of "Variant ".
+    // The shape and start offset scale with the font size; the cache's rounding does not.
+    struct Sample { char const *postscript; char const *family; double size; std::array<Geom::Point, 8> points; };
+    Sample const samples[] = {
+        {"ArialMT", "Arial", 12, {{{0, 0}, {4.65130, -5.26355}, {9.26525, -9.94690}, {12.15203, -12.65541}, {14.05930, -14.41185}, {19.10997, -18.60829}, {24.41152, -22.51521}, {27.13976, -24.38188}}}},
+        {"ArialMT", "Arial", 24, {{{0, 0}, {9.28223, -10.50504}, {18.53052, -19.89382}, {24.28223, -25.29088}, {28.09650, -28.80437}, {38.19715, -37.19861}, {48.79950, -45.01384}, {54.20789, -48.71613}}}},
+        {"TimesNewRomanPSMT", "Times New Roman", 12, {{{0, 0}, {4.81946, -5.40537}, {8.48352, -9.16469}, {11.34302, -11.90033}, {13.74304, -14.09720}, {17.74780, -17.49480}, {22.44824, -21.08965}, {25.12146, -22.99486}}}},
+        {"TimesNewRomanPSMT", "Times New Roman", 24, {{{0, 0}, {9.63883, -10.81073}, {16.98805, -18.35037}, {22.66426, -23.78052}, {27.48580, -28.19440}, {35.47298, -34.97125}, {44.89649, -42.17929}, {50.24280, -45.98972}}}},
+        {"CourierNewPSMT", "Courier New", 12, {{{0, 0}, {4.70038, -5.34366}, {9.67841, -10.41162}, {14.92816, -15.19016}, {20.44269, -19.66519}, {26.18976, -23.80649}, {32.18274, -27.61868}, {38.38593, -31.07413}}}},
+        {"CourierNewPSMT", "Courier New", 24, {{{0, 0}, {9.38024, -10.66529}, {19.33557, -20.80268}, {29.83422, -30.36118}, {40.83923, -39.29523}, {52.35583, -47.59687}, {64.31665, -55.20825}, {76.69689, -62.10922}}}},
+        {"MyriadPro-Regular", "Myriad Pro", 12, {{{0, 0}, {4.10116, -4.67724}, {8.05832, -8.78094}, {10.88137, -11.50268}, {12.88169, -13.37384}, {17.18808, -17.08404}, {22.37045, -21.07067}, {25.56707, -23.33044}}}},
+        {"MyriadPro-Regular", "Myriad Pro", 24, {{{0, 0}, {8.18194, -9.33246}, {16.11658, -17.56213}, {21.76282, -23.00561}, {25.76343, -26.74786}, {34.37622, -34.16833}, {44.74090, -42.14160}, {51.13415, -46.66113}}}},
+    };
+    unsigned tested = 0;
+    for (auto const &sample : samples) {
+        auto *description = FontFactory::get().parsePostscriptName(sample.postscript, false);
+        if (!description) continue;
+        pango_font_description_free(description);
+        SCOPED_TRACE(std::string(sample.family) + " " + std::to_string(sample.size));
+        auto const k = sample.size / 12;
+        auto doc = SPDocument::createNewDocFromMem(
+            "<svg xmlns='http://www.w3.org/2000/svg' xmlns:proof='urn:x-proof:document:1' width='500pt' height='240pt' viewBox='0 0 500 240'>"
+            "<path id='p' d='M30,200 c" + std::to_string(50*k) + "," + std::to_string(-70*k) + " " + std::to_string(150*k) + "," +
+            std::to_string(-70*k) + " " + std::to_string(200*k) + ",0'/>"
+            "<text id='t' style='font-family:" + sample.family + ";font-size:" + std::to_string(sample.size) + "px'>"
+            "<textPath href='#p' startOffset='" + std::to_string(10*k) + "' proof:path-spacing='auto'>Variant abcdef</textPath></text></svg>");
+        ASSERT_TRUE(doc); doc->ensureUpToDate();
+        auto *text = cast<SPText>(doc->getObjectById("t")); ASSERT_TRUE(text);
+        auto const &glyphs = text->layout.glyphs(); ASSERT_GE(glyphs.size(), sample.points.size());
+        for (std::size_t i = 1; i < sample.points.size(); ++i) {
+            Geom::Point const relative(glyphs[i].x - glyphs[0].x, glyphs[i].y - glyphs[0].y);
+            EXPECT_LT(Geom::L2(relative - sample.points[i]), sample.size * 0.005) << i;
+        }
+        ++tested;
+    }
+    if (!tested) GTEST_SKIP() << "none of the independently measured fonts is installed";
+}
+
+TEST_F(AiNativeImportTest, AutomaticCircleSpacingClipsAfterOneTurnAndKeepsTheWholeStory)
+{
+    // A deliberately excessive story, starting near the closing point and wrapping once.
+    auto doc = svg_document(
+        R"(<defs><path id="p" d="M20,60 C20,48.9543 28.9543,40 40,40 C51.0457,40 60,48.9543 60,60 C60,71.0457 51.0457,80 40,80 C28.9543,80 20,71.0457 20,60 Z"/></defs>)"
+        R"(<text id="t" style="font-family:Arial;font-size:16px"><textPath href="#p" startOffset="120" proof:path-start="120" proof:path-end="245.68" proof:path-spacing="auto">WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW</textPath></text>)");
+    ASSERT_TRUE(doc); doc->ensureUpToDate();
+    auto *text = cast<SPText>(doc->getObjectById("t")); ASSERT_TRUE(text);
+    ASSERT_TRUE(text->layout.automaticPathSpacingSupported());
+    EXPECT_TRUE(text->layout.inputTruncated());
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), 40u);
+    unsigned visible = 0, hidden = 0;
+    bool saw_hidden = false;
+    for (auto const &glyph : text->layout.glyphs()) {
+        if (glyph.hidden) { ++hidden; saw_hidden = true; }
+        else { ++visible; EXPECT_FALSE(saw_hidden); }
+        EXPECT_TRUE(std::isfinite(glyph.x)); EXPECT_TRUE(std::isfinite(glyph.y));
+    }
+    EXPECT_GT(visible, 1u); EXPECT_LT(visible, 40u); EXPECT_GT(hidden, 0u);
+    // Clicks and selection still follow the visible text after it crossed the seam.
+    auto it = text->layout.begin(); it.nextCharacter();
+    Geom::Point cursor; double height, rotation;
+    text->layout.queryCursorShape(it, cursor, height, rotation);
+    EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.getNearestCursorPositionTo(cursor)), 1u);
+    EXPECT_EQ(text->layout.createSelectionShape(text->layout.begin(), text->layout.end(), Geom::identity()).size(), 4 * visible);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto again = make(written.records); ASSERT_TRUE(again);
+    auto *reopened = cast<SPText>(again->document->getObjectByRepr(elements(again->document->getReprRoot(), "svg:text").at(0)));
+    ASSERT_TRUE(reopened); again->document->ensureUpToDate();
+    EXPECT_EQ(reopened->layout.iteratorToCharIndex(reopened->layout.end()), 40u);
+    EXPECT_EQ(std::count_if(reopened->layout.glyphs().begin(), reopened->layout.glyphs().end(),
+                            [](auto const &g) { return !g.hidden; }), visible);
+}
+
+TEST_F(AiNativeImportTest, AutomaticPathSpacingRefusesSharpTightAndCollapsedNativeOutput)
+{
+    for (auto const *geometry : {"M20,50 H100 V100 H20 Z",
+         "M20,50 C20,48.89543 20.89543,48 22,48 C23.10457,48 24,48.89543 24,50 C24,51.10457 23.10457,52 22,52 C20.89543,52 20,51.10457 20,50 Z",
+         "M20,60 C20,48.9543 28.9543,40 40,40 C51.0457,40 60,48.9543 60,60 C60,71.0457 51.0457,80 40,80 C28.9543,80 20,71.0457 20,60 Z"}) {
+        // The inner side of a radius-2 loop collapses before the reference-height offset.
+        auto doc = svg_document(std::string("<path id='p' d='") + geometry + "'/>"
+            "<text id='t' style='font-family:Arial;font-size:16px'><textPath href='#p' side='right' proof:path-spacing='auto'>ABCDEFGHIJK</textPath></text>");
+        ASSERT_TRUE(doc); doc->ensureUpToDate();
+        auto *text = cast<SPText>(doc->getObjectById("t")); ASSERT_TRUE(text);
+        EXPECT_FALSE(text->layout.automaticPathSpacingSupported());
+        for (auto const &g : text->layout.glyphs()) { EXPECT_TRUE(std::isfinite(g.x)); EXPECT_TRUE(std::isfinite(g.y)); }
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(std::any_of(written.refused.begin(), written.refused.end(), [](auto const &why) {
+            return why.find("sharp, very tight or collapsed path") != std::string::npos;
+        }));
+    }
+}
+
+TEST_F(AiNativeImportTest, AutomaticPathTypeWordOverflowKeepsPrefixAtEveryAlignment)
+{
+    std::string const content = "Round the entire circle and then some " + std::string(40, 'W');
+    for (auto const &[alignment, offset] : {std::pair{"start", "0"}, std::pair{"middle", "125.68"}, std::pair{"end", "251.36"}}) {
+        SCOPED_TRACE(alignment);
+        auto doc = svg_document(
+            std::string(R"(<defs><path id="p" d="M20,60 C20,37.90861 37.90861,20 60,20 C82.09139,20 100,37.90861 100,60 C100,82.09139 82.09139,100 60,100 C37.90861,100 20,82.09139 20,60 Z"/></defs>)") +
+            "<text id='t' style='font-family:Arial;font-size:16px;text-anchor:" + alignment + "'><textPath href='#p' startOffset='" + offset +
+            "' proof:path-start='0' proof:path-end='251.36' proof:path-spacing='auto'>" + content + "</textPath></text>");
+        ASSERT_TRUE(doc); doc->ensureUpToDate();
+        auto *text = cast<SPText>(doc->getObjectById("t")); ASSERT_TRUE(text);
+        EXPECT_TRUE(text->layout.inputTruncated());
+        EXPECT_EQ(text->layout.iteratorToCharIndex(text->layout.end()), content.size());
+        // The word "some" does not fit. It must not become a partial word or replace the
+        // beginning with the story's tail when the visible prefix is centred/right aligned.
+        for (auto it = text->layout.begin(); it != text->layout.end(); it.nextCharacter()) {
+            auto const index = text->layout.iteratorToCharIndex(it);
+            if (content[index] == ' ') continue;
+            EXPECT_EQ(it.hasGlyph(), index < 33) << index;
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, AutomaticPathTypeSharpImportRemainsFailClosed)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto data = loop_text_document("(ABCD\\r)", 5, font, "0 4");
+    auto const at = data.find("/0 2 /6"); ASSERT_NE(at, std::string::npos);
+    data.insert(at + 4, " /11 << /6 false >>");
+    std::string error;
+    auto ai = AN::read(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(data)), error);
+    ASSERT_TRUE(ai) << error;
+    EXPECT_FALSE(AN::build(*ai, error));
+    EXPECT_NE(error.find("sharp, very tight or collapsed path"), std::string::npos) << error;
 }
 
 TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)

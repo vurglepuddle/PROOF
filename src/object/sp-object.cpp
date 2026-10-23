@@ -1199,7 +1199,8 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
         requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);
     }
     if (Inkscape::Text::LeftTabStops::is_attribute(key) ||
-        !std::strcmp(key, "proof:path-start") || !std::strcmp(key, "proof:path-end")) {
+        !std::strcmp(key, "proof:path-start") || !std::strcmp(key, "proof:path-end") ||
+        !std::strcmp(key, "proof:path-spacing")) {
         requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);
     }
     // PROOF: redraw the transform box when its angle changes, also on undo and redo.

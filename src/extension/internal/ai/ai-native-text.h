@@ -95,9 +95,10 @@ struct PathText
     /// the path's length: the type runs on round past the path's start.
     double start = 0, end = 0;
     /// Validated source /11 options, a dictionary body. Retained as proof:ai-path-options
-    /// in SVG, not interpreted as layout instructions. Illustrator's automatic spacing on
-    /// curves is not yet reproduced; native saving writes PROOF's current arc-length layout.
+    /// in SVG as provenance. The supported automatic mode is decoded separately; cached
+    /// font-dependent numbers are never reused to lay out edited text.
     std::string source_options;
+    bool automatic_spacing = false; ///< Explicit /11 /6 false: Illustrator's automatic Rainbow spacing.
 };
 
 /**

@@ -412,7 +412,12 @@ public:
     positioning functions. */
     // PROOF: an optional active interval keeps path type's end bracket live when edited.
     void fitToPathAlign(SVGLength const &startOffset, Path const &path,
-                        std::optional<std::pair<double, double>> const &active = std::nullopt);
+                        std::optional<std::pair<double, double>> const &active = std::nullopt,
+                        bool automatic_spacing = false, double points_per_unit = 1);
+
+    /// PROOF: whether the requested automatic Rainbow spacing has a monotone, smooth metric.
+    bool automaticPathSpacingSupported() const { return !_path_auto_requested || !_path_spacing.empty(); }
+    double automaticPathSpacingHeight() const { return _path_spacing_height; }
 
     /** Convert the specified range of characters into their bezier 
     outlines.
@@ -849,6 +854,15 @@ private:
         start, and so do the cursor and the boxes of its characters (PROOF, 2026-10-23). */
     bool _path_fitted_closed = false;
     double _path_fitted_length = 0;
+
+    // Pairs of baseline arc length and the distance used for automatic path spacing.
+    // Glyphs, hit testing, cursors and selection all use the same invertible map.
+    std::vector<std::pair<double, double>> _path_spacing;
+    bool _path_auto_requested = false;
+    double _path_spacing_height = 0;
+    void _buildPathSpacing(Path const &path, double points_per_unit);
+    double _pathDistance(double metric) const;
+    double _pathMetric(double distance) const;
 
     /** Where `offset` along the fitted path is, round a closed one: from `from`, less than its length on. */
     double _wrapOnFittedPath(double offset, double from = 0) const;

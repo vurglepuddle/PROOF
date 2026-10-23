@@ -140,6 +140,7 @@ Layout::iterator Layout::getNearestCursorPositionTo(double x, double y) const
     if (_path_fitted) {
         Path::cut_position position = const_cast<Path*>(_path_fitted)->PointToCurvilignPosition(Geom::Point(x, y));
         local_x = const_cast<Path*>(_path_fitted)->PositionToLength(position.piece, position.t);
+        local_x = _pathMetric(local_x);
         // Round a closed path, the place among the characters, which can run on past its start.
         if (!_spans.empty()) local_x = _wrapOnFittedPath(local_x, _spans.front().x_start);
         return _cursorXOnLineToIterator(0, local_x + _chunks.front().left_x);
@@ -402,7 +403,7 @@ Geom::Rect Layout::characterBoundingBox(iterator const &it, double *rotation) co
         }
         cluster_half_width *= 0.5;
 
-        double midpoint_offset = _wrapOnFittedPath(_characters[char_index].span(this).x_start + _characters[char_index].x + cluster_half_width);
+        double midpoint_offset = _pathDistance(_wrapOnFittedPath(_characters[char_index].span(this).x_start + _characters[char_index].x + cluster_half_width));
         int unused = 0;
         Path::cut_position *midpoint_otp = const_cast<Path*>(_path_fitted)->CurvilignToPosition(1, &midpoint_offset, unused);
         if (midpoint_offset >= 0.0 && midpoint_otp != nullptr && midpoint_otp[0].piece >= 0) {
@@ -556,6 +557,7 @@ void Layout::queryCursorShape(iterator const &it, Geom::Point &position, double 
             double path_length = const_cast<Path*>(_path_fitted)->Length();
             // Round a closed path the cursor wraps past its start, as the type does.
             if (_path_fitted_closed) x = _wrapOnFittedPath(x);
+            x = _pathDistance(x);
             double x_on_path = x;
             if (x_on_path < 0.0) x_on_path = 0.0;
 

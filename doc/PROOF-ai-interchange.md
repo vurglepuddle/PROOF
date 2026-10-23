@@ -284,10 +284,19 @@ levels. The returned file opens natively. Illustrator 30.6 remains untested.
 Source `/11` options are retained as `proof:ai-path-options` metadata in SVG.
 Finite numeric cache values and validated scalar flags no longer force fallback
 solely for differing from the original 12 pt control. Flip, effects and
-non-baseline alignment still refuse. Illustrator's automatic curve spacing is
-not yet reproduced: the import reports its arc-length approximation, and native
-saving omits `/11` so its editable text agrees with PROOF's fresh PDF preview.
-It does not restore the original automatic-spacing behaviour in Illustrator.
+non-baseline alignment still refuse. New native imports retain automatic curve
+spacing as `proof:path-spacing="auto"`: smooth paths use a bounded font-metric
+approximation, shared by glyphs, selection, hit testing and cursors. Native
+saving emits `/11 << /6 false >>`; Illustrator recalculates its font caches.
+Very tight inward bends, sharp corners and collapsed offsets remain explicit
+refusals/fallbacks. Older SVGs that hold only source-option provenance retain
+their existing arc-length layout.
+
+Illustrator brackets now require whole letters and wrap overflowing words at
+a break where possible. Alignment follows the fitted prefix, keeping the full
+story editable; this applies to imported classic and automatic path type.
+Ordinary SVG paths keep their SVG clipping semantics. A wholly clipped native
+story stays live even when Illustrator omitted its cached layout frame.
 [Records, limits and qualification](PROOF-ai-native-records.md#path-type-written-2026-10-23).
 
 ## Linked PDF/AI pages

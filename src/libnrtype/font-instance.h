@@ -90,6 +90,7 @@ public:
     double        GetTypoAscent()  const { return _ascent; }
     double        GetTypoDescent() const { return _descent; }
     double        GetXHeight()     const { return _xheight; }
+    double        GetCapHeight();
     double        GetMaxAscent()   const { return _ascent_max; }
     double        GetMaxDescent()  const { return _descent_max; }
     const double* GetBaselines()   const { return _baselines; }

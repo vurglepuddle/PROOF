@@ -11,6 +11,7 @@
  */
 
 #include "Layout-TNG.h"
+#include <limits>
 #include "style-attachments.h"
 #include "display/drawing-text.h"
 #include "print.h"
@@ -83,12 +84,115 @@ void Layout::_clearOutputObjects()
     _path_fitted = nullptr;
     _path_fitted_closed = false;
     _path_fitted_length = 0;
+    _path_spacing.clear();
+    _path_auto_requested = false;
+    _path_spacing_height = 0;
 }
 
 double Layout::_wrapOnFittedPath(double offset, double from) const
 {
-    if (!_path_fitted_closed || _path_fitted_length <= Geom::EPSILON) return offset;
-    return offset - std::floor((offset - from) / _path_fitted_length) * _path_fitted_length;
+    double const period = _path_spacing.empty() ? _path_fitted_length : _path_spacing.back().second;
+    if (!_path_fitted_closed || period <= Geom::EPSILON) return offset;
+    return offset - std::floor((offset - from) / period) * period;
+}
+
+namespace {
+// Extrapolate beyond an open path so that the ordinary overflow test still hides text.
+// A closed path maps whole turns before interpolation, including negative aligned starts.
+double path_metric_lookup(std::vector<std::pair<double, double>> const &map, double x, bool inverse, bool closed)
+{
+    if (map.empty()) return x;
+    auto from = [inverse](auto const &p) { return inverse ? p.second : p.first; };
+    auto to = [inverse](auto const &p) { return inverse ? p.first : p.second; };
+    double const period = from(map.back()), result_period = to(map.back());
+    double turns = 0;
+    if (closed && period > Geom::EPSILON) {
+        turns = std::floor(x / period);
+        x -= turns * period;
+    }
+    double y;
+    if (x <= 0) y = x;
+    else if (x >= period) y = result_period + x - period;
+    else {
+        auto const upper = std::upper_bound(map.begin(), map.end(), x,
+                                           [&](double a, auto const &p) { return a < from(p); });
+        auto const &a = *(upper - 1), &b = *upper;
+        y = to(a) + (x - from(a)) * (to(b) - to(a)) / (from(b) - from(a));
+    }
+    return y + turns * result_period;
+}
+}
+
+double Layout::_pathDistance(double metric) const
+{
+    return path_metric_lookup(_path_spacing, metric, true, _path_fitted_closed);
+}
+
+double Layout::_pathMetric(double distance) const
+{
+    return path_metric_lookup(_path_spacing, distance, false, _path_fitted_closed);
+}
+
+void Layout::_buildPathSpacing(Path const &path, double points_per_unit)
+{
+    _path_spacing.clear();
+    _path_spacing_height = 0;
+    if (_spans.empty() || !std::isfinite(points_per_unit) || points_per_unit <= 1e-9) return;
+    auto const &first = _spans.front();
+    if (!first.font) return;
+    // Illustrator 29.2.1's cache is round(size * (1 + cap-height/em) / 2), in points.
+    // It is the first run's font, not the largest font in a mixed-size story. Recompute
+    // from the live font; never use stale source cache numbers after a type edit.
+    double const height = std::round(first.font_size * (1 + first.font->GetCapHeight()) *
+                                     points_per_unit / 2) / points_per_unit;
+    if (!std::isfinite(height) || height <= 0 || height > 1e7 || _path_fitted_length <= Geom::EPSILON) return;
+    auto const paths = path.MakePathVector();
+    if (paths.size() != 1) return;
+    auto const &geometry = paths[0];
+    std::optional<Geom::Point> previous, initial;
+    for (auto const &curve : geometry) {
+        if (Geom::L2(curve.finalPoint() - curve.initialPoint()) < Geom::EPSILON && curve.isDegenerate()) continue;
+        auto const a = curve.unitTangentAt(0), b = curve.unitTangentAt(1);
+        if (Geom::L2(a) < 0.9 || Geom::L2(b) < 0.9 || (previous && Geom::L2(*previous - a) > 0.01)) return;
+        if (!initial) initial = a;
+        previous = b;
+    }
+    if (!previous || (_path_fitted_closed && initial && Geom::L2(*previous - *initial) > 0.01)) return;
+    unsigned const steps = unsigned(std::clamp(std::ceil(_path_fitted_length / (height * 0.025)), 64.0, 8192.0));
+    // Sample the endpoint directly: the polyline lookup can omit a request a few ulps
+    // past its accumulated length. A complete circle must not lose its final sample.
+    std::vector<double> distances(steps);
+    for (unsigned i = 0; i < steps; ++i) distances[i] = _path_fitted_length * i / steps;
+    int count = 0;
+    auto &editable = const_cast<Path &>(path);
+    auto *positions = editable.CurvilignToPosition(distances.size(), distances.data(), count);
+    if (!positions || count != int(distances.size())) { g_free(positions); return; }
+    double angle = 0, metric = 0;
+    for (unsigned i = 0; i <= steps; ++i) {
+        Geom::Point at, tangent;
+        if (i == steps) tangent = *previous;
+        else editable.PointAndTangentAt(positions[i].piece, positions[i].t, at, tangent);
+        double const distance = i == steps ? _path_fitted_length : distances[i];
+        double const next = std::atan2(tangent.y(), tangent.x());
+        if (Geom::L2(tangent) < 0.9 || !std::isfinite(next)) { _path_spacing.clear(); break; }
+        if (i) {
+            double const turn = std::remainder(next - angle, 2 * M_PI);
+            double const ds = distance - distances[i - 1];
+            // Outward bends space at one fifth of the reference height, inward bends
+            // at half. This is a bounded numerical approximation, not Adobe's engine.
+            double const advance = ds + height * (turn >= 0 ? 0.2 : 0.5) * turn;
+            if (std::abs(turn) > 0.15 || (turn < 0 && -height * turn > ds * 0.4) ||
+                advance <= ds * 0.1 || !std::isfinite(advance)) {
+                _path_spacing.clear();
+                break; // Very tight inward bends are outside the qualified approximation.
+            }
+            metric += advance;
+        }
+        _path_spacing.emplace_back(distance, metric);
+        angle = next;
+    }
+    g_free(positions);
+    if (!_path_spacing.empty()) _path_spacing_height = height;
 }
 
 void Layout::FontMetrics::set(FontInstance const *font)
@@ -683,8 +787,18 @@ Glib::ustring Layout::dumpAsText() const
 #endif //DEBUG_TEXTLAYOUT_DUMPASTEXT
 
 void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
-                            std::optional<std::pair<double, double>> const &active)
+                            std::optional<std::pair<double, double>> const &active,
+                            bool automatic_spacing, double points_per_unit)
 {
+    auto const pathv = path.MakePathVector();
+    if (pathv.empty()) return;
+    bool const closed = pathv[0].closed();
+    double const path_length = const_cast<Path &>(path).Length();
+    _path_fitted_closed = closed;
+    _path_fitted_length = path_length;
+    _path_auto_requested = automatic_spacing;
+    if (automatic_spacing) _buildPathSpacing(path, points_per_unit);
+    double const period = _path_spacing.empty() ? path_length : _path_spacing.back().second;
     double offset = 0.0;
 
     if (startOffset._set) {
@@ -693,14 +807,52 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
         else
             offset = startOffset.computed;
     }
+    offset = _pathMetric(offset);
 
+    double fitted_width = _getChunkWidth(0);
+    double prefix_limit = std::numeric_limits<double>::infinity();
+    if (active && !_characters.empty()) {
+        double const last = std::min(active->second, closed ? active->first + path_length : path_length);
+        double const available = std::max(0.0, _pathMetric(last) - _pathMetric(active->first));
+        if (fitted_width > available) {
+            // Illustrator aligns the prefix that fits, not the full overflowing story.
+            // Keep the story untouched, and let the normal visibility test hide its tail.
+            fitted_width = 0;
+            double last_break = 0, break_width = 0, ink_width = 0;
+            for (unsigned i = 0; i < _characters.size();) {
+                double const begin = _characters[i].span(this).x_start + _characters[i].x;
+                if (i && _characters[i].char_attributes.is_line_break) {
+                    last_break = begin;
+                    break_width = ink_width;
+                }
+                unsigned next = i + 1;
+                while (next < _characters.size() &&
+                       (_characters[next].in_glyph == -1 || !_characters[next].char_attributes.is_cursor_position)) ++next;
+                auto const first_glyph = _characters[i].in_glyph;
+                auto const last_glyph = next == _characters.size() ? _glyphs.size() : std::size_t(_characters[next].in_glyph);
+                double width = 0;
+                if (first_glyph >= 0) for (auto k = std::size_t(first_glyph); k < last_glyph; ++k) width += _glyphs[k].advance;
+                double const end = _characters[i].span(this).x_start + _characters[i].x + width;
+                if (end > available + 1e-6) {
+                    // Path type breaks at a word boundary when one exists. An unbroken
+                    // word still clips by cluster. Trailing spaces do not shift alignment.
+                    prefix_limit = last_break > 0 ? last_break : begin;
+                    if (last_break > 0) fitted_width = break_width;
+                    break;
+                }
+                fitted_width = std::max(fitted_width, end);
+                if (!g_unichar_isspace(_characters[i].the_char)) ink_width = fitted_width;
+                i = next;
+            }
+        }
+    }
     Alignment alignment = _paragraphs.empty() ? LEFT : _paragraphs.front().alignment;
     switch (alignment) {
         case CENTER:
-            offset -= _getChunkWidth(0) * 0.5;
+            offset -= fitted_width * 0.5;
             break;
         case RIGHT:
-            offset -= _getChunkWidth(0);
+            offset -= fitted_width;
             break;
         default:
             break;
@@ -708,8 +860,9 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
 
     if (_characters.empty()) {
         int unused = 0;
-        Path::cut_position *point_otp = const_cast<Path&>(path).CurvilignToPosition(1, &offset, unused);
-        if (offset >= 0.0 && point_otp != nullptr && point_otp[0].piece >= 0) {
+        double position = _pathDistance(offset);
+        Path::cut_position *point_otp = const_cast<Path&>(path).CurvilignToPosition(1, &position, unused);
+        if (position >= 0.0 && point_otp != nullptr && point_otp[0].piece >= 0) {
             Geom::Point point;
             Geom::Point tangent;
             const_cast<Path&>(path).PointAndTangentAt(point_otp[0].piece, point_otp[0].t, point, tangent);
@@ -720,13 +873,8 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
                 _empty_cursor_shape.rotation = atan2(tangent[Geom::Y], tangent[Geom::X]);
             }
         }
+        g_free(point_otp);
     }
-
-    // Geometry and length are shared by every cluster, including long edited stories.
-    auto const pathv = path.MakePathVector();
-    if (pathv.empty()) return;
-    bool const closed = pathv[0].closed();
-    double const path_length = const_cast<Path &>(path).Length();
 
     // A hidden cluster must not be undone by a later visible one on a closed path.
     bool truncated = false;
@@ -749,7 +897,7 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
         }
 
         double start_offset = offset + span.x_start + _characters[char_index].x;
-        if (closed) start_offset += path_length;
+        if (closed) start_offset += period;
 
         double cluster_width = 0.0;
         size_t const current_cluster_glyph_index = _characters[char_index].in_glyph;
@@ -765,21 +913,31 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
         double end_offset = start_offset + cluster_width;
 
         int unused = 0;
-        double midpoint_offset = (start_offset + end_offset) * 0.5;
+        double const unwrapped_midpoint = _pathDistance((start_offset + end_offset) * 0.5 -
+                                                       (closed ? period : 0));
+        double midpoint_offset = _pathDistance((start_offset + end_offset) * 0.5);
+        start_offset = _pathDistance(start_offset);
+        end_offset = _pathDistance(end_offset);
 
         if (closed && path_length > Geom::EPSILON) {
-            midpoint_offset = std::fmod((start_offset + end_offset) * 0.5, path_length);
+            midpoint_offset = std::fmod(midpoint_offset, path_length);
         }
 
         // as far as I know these functions are const, they're just not marked as such
         Path::cut_position *midpoint_otp = const_cast<Path&>(path).CurvilignToPosition(1, &midpoint_offset, unused);
-        double const unwrapped_midpoint = (start_offset + end_offset) * 0.5 -
-            (closed ? path_length : 0);
         // Round a closed path the active portion can run on past the path's start (PROOF,
         // 2026-10-23: Illustrator's brackets), but never a second time round.
-        bool const within_active = !active || (unwrapped_midpoint >= active->first &&
-                                               unwrapped_midpoint <= std::min(active->second, closed ? active->first + path_length : path_length));
-        if (within_active && midpoint_offset >= 0.0 && midpoint_otp != nullptr && midpoint_otp[0].piece >= 0) {
+        double const unwrapped_end = end_offset - (closed ? path_length : 0);
+        // The path's editable polyline is flattened at 0.01 units; brackets use exact
+        // cubic lengths. Do not hide the final right-aligned glyph for that tiny error.
+        double const end_tolerance = active ? std::min(0.01, double(span.font_size) * 0.001) : 0;
+        bool const within_active = active ? (unwrapped_midpoint >= active->first &&
+                                              unwrapped_end <=
+                                                  std::min(active->second, closed ? active->first + path_length : path_length) + end_tolerance) :
+                                   !automatic_spacing || !closed ||
+                                   (unwrapped_midpoint >= _pathDistance(offset) && unwrapped_midpoint <= _pathDistance(offset + period));
+        bool const in_prefix = span.x_start + _characters[char_index].x < prefix_limit;
+        if (within_active && in_prefix && !((automatic_spacing || active) && truncated) && midpoint_offset >= 0.0 && midpoint_otp != nullptr && midpoint_otp[0].piece >= 0) {
             Geom::Point midpoint;
             Geom::Point tangent;
             const_cast<Path&>(path).PointAndTangentAt(midpoint_otp[0].piece, midpoint_otp[0].t, midpoint, tangent);

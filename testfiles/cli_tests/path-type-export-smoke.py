@@ -49,23 +49,48 @@ def main():
     # Name, geometry, text, active-end metadata, expected visible/PDF text.
     cases = [
         ('full', 'M20,40 h200', 'ABCD', '199.9404', 'ABCD'),
-        ('short', 'M20,40 h10', 'WWWW', '9.997', 'W'),
-        ('closed', 'M20,40 h20 v20 h-20 z', 'W' * 20, '10', 'W'),
+        ('short', 'M20,40 h10', 'WWWW', '9.997', ''),
+        ('closed', 'M20,40 h20 v20 h-20 z', 'W' * 20, '10', ''),
         ('invalid-end', 'M20,40 h200', 'ABCD', 'bad', ''),
-        ('edited-end', 'M20,40 h200', 'WWWW', '10', 'W'),
+        ('edited-end', 'M20,40 h200', 'WWWW', '10', ''),
+        ('native-one-letter', 'M20,40 h20', 'WWWW', '16', 'W'),
         ('svg-default', 'M20,40 h10', 'WWWW', None, 'W'),
+        # Deliberately excessive stories: the whole text is in SVG, only one turn is drawn.
+        ('auto-full-circle',
+         'M20,60 C20,48.9543 28.9543,40 40,40 C51.0457,40 60,48.9543 60,60 '
+         'C60,71.0457 51.0457,80 40,80 C28.9543,80 20,71.0457 20,60 Z',
+         'W' * 40, '125.68', 'W' * 9, {'spacing': 'auto'}),
+        ('auto-wrap-and-clip',
+         'M20,60 C20,48.9543 28.9543,40 40,40 C51.0457,40 60,48.9543 60,60 '
+         'C60,71.0457 51.0457,80 40,80 C28.9543,80 20,71.0457 20,60 Z',
+         'W' * 40, '245.68', 'W' * 9, {'spacing': 'auto', 'start': '120'}),
+        ('auto-edited-bracket',
+         'M20,60 C20,48.9543 28.9543,40 40,40 C51.0457,40 60,48.9543 60,60 '
+         'C60,71.0457 51.0457,80 40,80 C28.9543,80 20,71.0457 20,60 Z',
+         'W' * 40, '132', '', {'spacing': 'auto', 'start': '120'}),
+        ('auto-room-for-one-letter',
+         'M20,60 C20,48.9543 28.9543,40 40,40 C51.0457,40 60,48.9543 60,60 '
+         'C60,71.0457 51.0457,80 40,80 C28.9543,80 20,71.0457 20,60 Z',
+         'W' * 40, '134', 'W', {'spacing': 'auto', 'start': '120'}),
     ]
     results = []
-    for name, geometry, text, end, expected in cases:
+    for case in cases:
+        name, geometry, text, end, expected = case[:5]
+        options = case[5] if len(case) > 5 else {}
         folder = args.output / name
         folder.mkdir(exist_ok=True)
         svg, png, pdf = (folder / ('input.svg'), folder / 'canvas.png', folder / 'output.pdf')
-        active = '' if end is None else f' proof:path-start="0" proof:path-end="{end}"'
+        start = options.get('start', '0')
+        active = '' if end is None else f' proof:path-start="{start}" proof:path-end="{end}"'
+        if 'start' in options:
+            active += f' startOffset="{start}"'
+        if options.get('spacing'):
+            active += f' proof:path-spacing="{options["spacing"]}"'
         svg.write_text(
             '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
             'xmlns:proof="urn:x-proof:document:1" width="260pt" height="100pt" viewBox="0 0 260 100">'
             f'<defs><path id="p" d="{geometry}"/></defs>'
-            '<text style="font-family:sans-serif;font-size:16px" xml:space="preserve">'
+            f'<text style="font-family:{"Arial" if options else "sans-serif"};font-size:16px" xml:space="preserve">'
             f'<textPath xlink:href="#p"{active}>{text}</textPath></text></svg>', encoding='utf-8')
         run([args.inkscape, svg, f'--export-filename={png}', '--export-dpi=144',
              '--export-background=white', '--export-background-opacity=1'], folder / 'canvas.log')
