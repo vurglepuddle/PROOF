@@ -1085,6 +1085,12 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     // offset from the story's anchor, area type by the middle or right end of its line's
     // box, when its glyphs' own extent agrees that that is where it sits (a line that keeps
     // a space at its end doesn't).
+    // Illustrator centres a line with the spaces at its end, as point type's offsets show
+    // (half the run's width, its space included), and so does the layout of type that says it
+    // is aligned as Illustrator aligns it (LINE_ALIGNMENT_ATTRIBUTE, which the importer gives
+    // such point type). That has no rule for letters read from the right, whose line ends are
+    // elsewhere.
+    bool const spaces_aligned = !area && !out.rtl && !in_order && !as_typed;
     std::optional<unsigned> common;
     bool together = true;
     bool const unsure = std::any_of(paragraphs.begin(), paragraphs.end(), [](Paragraph const &p) { return p.justified; });
@@ -1098,9 +1104,9 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     for (std::size_t i = 0; together && i < out.lines.size(); ++i) {
         if (out.lines[i].runs.empty()) continue;
         // A space at a line's end is part of what Illustrator centres, and not of what is
-        // centred here: such a line is only exact from its start.
+        // centred here unless it says so (above): such a line is only exact from its start.
         auto const &last = out.lines[i].runs.back().text;
-        if (!last.empty() && g_unichar_isspace(g_utf8_get_char(g_utf8_prev_char(last.data() + last.size())))) {
+        if (!spaces_aligned && !last.empty() && g_unichar_isspace(g_utf8_get_char(g_utf8_prev_char(last.data() + last.size())))) {
             together = false;
             break;
         }
@@ -1138,6 +1144,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         out.lines[i].alignment = together ? *common : 0u;
         if (together) out.lines[i].origin.x() += moves[i] / hscale;
     }
+    out.illustrator_alignment = together && spaces_aligned;
     return out;
 }
 } // namespace

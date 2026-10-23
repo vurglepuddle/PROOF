@@ -116,6 +116,10 @@ struct PointText
     /// one after another as they were typed: it shows them backwards, and so are they set
     /// here. Its paragraphs read from the left.
     bool unordered = false;
+    /// Point type whose lines are anchored at their middle or right end, laid out as Illustrator
+    /// aligns them: with the spaces at their ends, without the tracking after their last letter
+    /// (Text::LINE_ALIGNMENT_ATTRIBUTE).
+    bool illustrator_alignment = false;
     Geom::PathVector frame; ///< Area type: the frame's outline, in the layout's space.
     /// Area type: how the frame places its first baseline, when it says (its 10): the rule, 0
     /// fixed at the minimum, 1 Ascent (Illustrator's default), 2 cap height, 3 leading,

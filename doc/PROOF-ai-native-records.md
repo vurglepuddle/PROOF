@@ -2847,3 +2847,71 @@ Correctness tightening changes the four former partial imports 0b58f4b842,
 path spacing. This supersedes the preceding four-of-nine acceptance statement;
 their native writers were already blocked by missing links. No broad totals
 were recomputed. Illustrator 30.6 and tighter inward spacing remain open.
+
+## Tabs and line alignment written (2026-10-23)
+
+**Tabs.** Native saving writes a tab where PROOF's own left-aligned stops
+(`proof:tab-origin`, `proof:tab-interval`, `proof:tab-stops`: an import's)
+govern it, as its paragraph's ruler: feature **31** the default interval (left
+out at Illustrator's 36 pt) and **30** `<< /0 [ << /0 position /1 0 >> … ] >>`,
+the form Illustrator writes (in cached records of tabbed stories: `/0` and
+`/1 0`, some with an empty leader `/2 ()` and decimal character `/3 (.)`). The
+ruler's zero must be the type's anchor (point type) or its frame's left (area
+type), where Illustrator measures it from (`F`); a paragraph has one ruler.
+Refused by name: tabs without PROOF's stops (Inkscape's own, which Pango sets
+at a width of its own), tabs in type flowed into a shape (the layout uses no
+stops there), tabs on a path, tabs in type that isn't left-aligned, a ruler
+measured from elsewhere, two rulers in a line or a paragraph. Illustrator
+29.2.1 keeps both rulers of PROOF's control exactly and sets each glyph after a
+tab on them (letter-to-space kerning as in the reader's model above).
+
+**How Illustrator aligns a line.** Its width for centring or right alignment
+has the spaces at the line's end and not the tracking after its last letter, on
+every line (Illustrator 29.2.1's layout of PROOF's two controls, 2026-10-23:
+each line's segment offset to five decimals). The owner's `8b66153077` shows it
+too: a centred line's offset is minus half its glyph run's width, the space's
+glyph included (−326.358 for 652.716). Inkscape's layout leaves both out only at
+the end of a text's last line (`_buildChunksInScanRun`): earlier lines end at a
+break, or are later chunks of the first line, and keep both. So until now the
+reader set a centred or right-aligned story from each line's start, its
+alignment lost, when a line ended in a space (written as left-aligned type), and
+drew the earlier lines of tracked centred type half the tracking off.
+
+Now the reader anchors such point type at its lines' middle or end, and the
+importer marks it `proof:line-alignment="illustrator"`
+(`Text::LINE_ALIGNMENT_ATTRIBUTE`): its layout keeps the end spaces and leaves
+each chunk's last tracking out, as Illustrator does. Ordinary SVG text keeps
+Inkscape's layout. For Inkscape's own type the writer puts each line's anchor
+where Illustrator's width from the line's start puts it (the line's last
+character's box, less its tracking); lines that then don't share one anchor
+(a last line ending in a space after one that doesn't, or tracked lines) are
+refused: "centred or right-aligned lines that Illustrator would align apart
+(spaces or tracking at their ends)". Paragraphs read from the right keep the old
+start anchoring.
+
+**Qualification (Illustrator 29.2.1, two synthetic controls).** The first:
+Inkscape's centred line ending in a space, a right-aligned one ending in two,
+plain and tracked centred and right-aligned lines, an import's two centred
+lines ending in spaces, an import's point type with stops and with the default
+ruler (consecutive and trailing tabs), and an import's area type with a ruler in
+each paragraph. The second: two-line tracked centred and right-aligned type,
+Inkscape's own and an import's. Illustrator laid every story out again (its
+re-save has glyph runs, which PROOF doesn't write): every anchor and every
+line's segment offset equals PROOF's to five decimals, and both rulers come back
+as written. Before the tracking rule the second control's first lines were 1.2
+and 2.4 pt apart (half the 2.4 pt tracking, and all of it). At 144 dpi no dark
+ink of PROOF's drawing, or of its reopening of its own write, is more than one
+pixel from Illustrator's, or the other way round (an edge bound; anti-aliasing
+differs by up to 197 levels; PROOF's page is one column wider, as before).
+
+Checks: importer 212 (two opt-in skips), reader 79, shared layout 2/2, native
+output smoke 38/38 (new: tabs reopen with their ruler, a centred line with its
+space), path-type export 11/11, the whole lite set 26/26 (new case
+`writer-tabs`, `6724e115c1`). Copies, importer and both writers: the owner's
+`6724e115c1` (tabs) and `8b66153077` (a centred first line ending in a space)
+now write; `1f5ae17a34`, already written, keeps its centred line's alignment;
+six of the collaborator's type sample with centred lines ending in spaces all
+import natively and write. Their text lands where it did within 0.07 pt, but
+for substituted fonts (now centred on Illustrator's anchor with the stand-in's
+widths, as other centred lines already were) and tracked lines (moved by half
+the tracking to where Illustrator sets them).

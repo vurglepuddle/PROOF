@@ -18,6 +18,8 @@
 #define PANGO_ENABLE_ENGINE
 #endif
 
+#include <cstring>
+
 #include "Layout-TNG.h"
 #include "object/sp-object.h"
 #include "xml/node.h"
@@ -110,6 +112,15 @@ void Layout::appendText(Glib::ustring const &text,
         auto const *repr = holder->getRepr();
         if (repr && repr->attribute("proof:tab-interval")) {
             new_source->tabs = LeftTabStops::read(repr);
+            break;
+        }
+        if (holder != source && !is_part_of_text_subtree(holder)) break;
+    }
+    // So does whether its lines are aligned as Illustrator aligns them.
+    for (auto const *holder = source; holder; holder = holder->parent) {
+        auto const *repr = holder->getRepr();
+        if (auto const *how = repr ? repr->attribute(LINE_ALIGNMENT_ATTRIBUTE) : nullptr) {
+            new_source->illustrator_alignment = !std::strcmp(how, "illustrator");
             break;
         }
         if (holder != source && !is_part_of_text_subtree(holder)) break;

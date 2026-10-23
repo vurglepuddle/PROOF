@@ -1198,7 +1198,7 @@ void SPObject::notifyAttributeChanged(Inkscape::XML::Node &, GQuark key_, Util::
     if (document && document->getReprRoot() == getRepr() && Inkscape::TypeSettings::is_attribute(key)) {
         requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);
     }
-    if (Inkscape::Text::LeftTabStops::is_attribute(key) ||
+    if (Inkscape::Text::LeftTabStops::is_attribute(key) || !std::strcmp(key, "proof:line-alignment") ||
         !std::strcmp(key, "proof:path-start") || !std::strcmp(key, "proof:path-end") ||
         !std::strcmp(key, "proof:path-spacing")) {
         requestDisplayUpdate(SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG);

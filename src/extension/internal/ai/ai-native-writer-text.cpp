@@ -268,6 +268,30 @@ std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *tex
     return st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_END ? 1 : st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_MIDDLE ? 2 : 0;
 }
 
+/// The tab stops a character's tabs step to: the nearest element up to the text that has PROOF's
+/// (tab-stops.h), as the layout finds them. Nothing when none has, or they can't be read.
+std::optional<Text::LeftTabStops> tab_stops(SPObject const *owner, SPText const *text)
+{
+    for (auto const *o = owner; o; o = o == text ? nullptr : o->parent) {
+        if (auto const *repr = o->getRepr(); repr && repr->attribute("proof:tab-interval")) return Text::LeftTabStops::read(repr);
+    }
+    return {};
+}
+
+/// A paragraph's tab ruler as its features have one (31 the default interval, 30 the stops:
+/// each its position, left-aligned), in points; nothing for Illustrator's own defaults.
+std::string ruler(Text::LeftTabStops const &tabs, double scale)
+{
+    std::string out;
+    if (!tabs.positions.empty()) {
+        out += " /30 << /0 [";
+        for (auto const p : tabs.positions) out += " << /0 " + real(p * scale) + " /1 0 >>";
+        out += " ] >>";
+    }
+    if (std::abs(tabs.interval * scale - 36) > 1e-6) out += " /31 " + real(tabs.interval * scale);
+    return out;
+}
+
 /// A path as Illustrator's frames have one: each segment a cubic, a line's handles at its ends.
 /// Path type's brackets are places on these by each segment's own time, which for such a line
 /// isn't its share of the length.
@@ -463,6 +487,9 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         /// A line feed or a line separator typed at its end, which Inkscape's layout keeps as a
         /// character of the line inside its paragraph (white-space:pre, as for type in a shape).
         std::optional<bool> typed_break; ///< True for a line separator.
+        double right = 0;        ///< Where its last character's advance ends.
+        double last_spacing = 0; ///< The tracking after its last character.
+        std::optional<Text::LeftTabStops> tabs; ///< The stops its tabs step to.
         std::vector<Char> chars;
     };
     std::map<unsigned, Line> lines;
@@ -493,11 +520,19 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             if (auto const typed = lines.find(layout.chunkIndex(it)); typed != lines.end()) typed->second.typed_break = c == 0x2028;
             continue;
         }
+        // A tab steps to its paragraph's next stop. PROOF's stops (an import's) are Illustrator's,
+        // and the layout sets tabs by them only in type that doesn't flow into a shape.
+        std::optional<Text::LeftTabStops> stops;
         if (c == '\t') {
-            why.insert("tabs in type");
-            break;
-        }
-        if (c < 0x20 || c == 0x7f) {
+            if (on_path) {
+                why.insert("tabs on a path");
+            } else if (flowed) {
+                why.insert("tabs in type flowed into a shape");
+            } else if (!(stops = tab_stops(string->parent, text))) {
+                why.insert("tabs in type without tab stops");
+            }
+            if (!why.empty()) break;
+        } else if (c < 0x20 || c == 0x7f) {
             why.insert("control characters in type");
             break;
         }
@@ -517,6 +552,13 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         }
         auto [found, fresh] = lines.try_emplace(layout.chunkIndex(it));
         auto &line = found->second;
+        if (stops) {
+            if (line.tabs && *line.tabs != *stops) {
+                why.insert("lines of type with two tab rulers");
+                break;
+            }
+            line.tabs = stops;
+        }
         if (fresh) {
             line.anchor = layout.chunkPlacement(it);
             line.left = layout.characterAnchorPoint(it)[Geom::X];
@@ -540,6 +582,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         gchar bytes[8];
         auto const n = g_unichar_to_utf8(c, bytes);
         line.chars.push_back({std::string(bytes, n), c > 0xffff ? 2u : 1u, string->parent});
+        line.right = layout.characterBoundingBox(it).right();
+        line.last_spacing = string->parent->style->letter_spacing.computed;
     }
     if (!why.empty()) return finish();
     if (lines.empty() && overflow.find_first_not_of('\n') == std::string::npos) {
@@ -603,10 +647,24 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         End end = End::Paragraph;
     };
     std::vector<Row> rows;
-    auto const first = lines.empty() ? Geom::Point() : lines.begin()->second.anchor;
+    // Illustrator aligns a line of point type by its width with the spaces at its end and
+    // without the tracking after its last letter (Illustrator 29.2.1's own layout of PROOF's
+    // controls, 2026-10-23). The layout does so for type that says so (Text::
+    // LINE_ALIGNMENT_ATTRIBUTE); elsewhere the anchor Illustrator centres a line on, or ends it
+    // at, is where that width from the line's start puts it.
+    auto aligned_at = [&](Line const &l) {
+        double const share = l.alignment == 2 ? 0.5 : l.alignment == 1 ? 1.0 : 0.0;
+        if (!share || path) return l.anchor;
+        return Geom::Point(l.left + share * (l.right - l.left - l.last_spacing), l.anchor.y());
+    };
+    auto const first = lines.empty() ? Geom::Point() : aligned_at(lines.begin()->second);
     for (auto it = lines.begin(); it != lines.end(); ++it) {
         auto const &line = it->second;
-        if (!area && std::abs(line.anchor.x() - first.x()) * s > 1e-3) why.insert("lines of type that don't share one anchor");
+        if (!area && std::abs(aligned_at(line).x() - first.x()) * s > 1e-3) {
+            bool const set_alike = std::abs(line.anchor.x() - lines.begin()->second.anchor.x()) * s <= 1e-3;
+            why.insert(set_alike ? "centred or right-aligned lines that Illustrator would align apart (spaces or tracking at their ends)"
+                                 : "lines of type that don't share one anchor");
+        }
         if (it != lines.begin()) {
             auto const &before = std::prev(it)->second;
             double const down = (line.anchor.y() - before.anchor.y()) * s;
@@ -838,6 +896,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     std::optional<std::string> run_features;
     std::size_t run_units = 0, paragraph_units = 0;
     std::optional<Row const *> paragraph_start;
+    std::optional<Text::LeftTabStops> paragraph_tabs;
     auto flush = [&] {
         if (run_units) style_runs += std::format(" << /0 << /0 << /0 {} /5 0 /6 {} >> >> /1 {} >>", utf16(""), *run_features, run_units);
         run_units = 0;
@@ -853,10 +912,12 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         auto const *row = *paragraph_start;
         auto const alignment = row->line ? row->line->alignment : 0u;
         bool const hyphenate = area && !flowed && row->line && says(row->line->chars.front().owner, text, HYPHENATE_ATTRIBUTE, "true");
-        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
-                                      hyphenate ? " /9 true" : "", paragraph_units);
+        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {}{}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
+                                      hyphenate ? " /9 true" : "", paragraph_tabs ? ruler(*paragraph_tabs, s) : "",
+                                      paragraph_units);
         paragraph_units = 0;
         paragraph_start.reset();
+        paragraph_tabs.reset();
     };
     // Where the layout PROOF's reader reads starts: point type's anchor, area type's frame's
     // top-left corner. Lines are placed down and across from it.
@@ -865,6 +926,20 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     for (std::size_t i = 0; i < rows.size(); ++i) {
         auto const &p = rows[i];
         if (!paragraph_start) paragraph_start = &p;
+        // A paragraph has one ruler, from the anchor (point type) or the frame's left
+        // (area type), as Illustrator's does; PROOF's stops are left-aligned only.
+        if (p.line && p.line->tabs) {
+            auto const &tabs = *p.line->tabs;
+            if (paragraph_tabs && *paragraph_tabs != tabs) {
+                why.insert("paragraphs of type with two tab rulers");
+            } else if (p.line->alignment != 0) {
+                why.insert("tabs in type that isn't left-aligned");
+            } else if (std::abs(tabs.origin - origin.x()) * s > 1e-3) {
+                why.insert("tab stops measured from elsewhere than the type's anchor");
+            }
+            if (!why.empty()) return finish();
+            paragraph_tabs = tabs;
+        }
         // Its leading: down from the line before; the first takes the second's.
         std::optional<double> leading;
         if (i > 0) leading = (p.y - rows[i - 1].y) * s;

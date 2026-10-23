@@ -12,6 +12,7 @@
 
 #include "Layout-TNG-Compute.h"
 
+#include <algorithm>
 #include <iomanip>
 #include <limits>
 
@@ -1791,6 +1792,7 @@ bool Layout::Calculator::_buildChunksInScanRun(ParagraphInfo const &para,
     TRACE(("    begin _buildChunksInScanRun: chunks: %lu, em size: %f\n", chunk_info->size(), line_height->emSize() ));
 
     FontMetrics line_height_saved = *line_height; // Store for recalculating line height if chunks are backed out
+    auto const first_new_chunk = chunk_info->size(); // PROOF: those of this run start here.
 
     ChunkInfo new_chunk;
     new_chunk.text_width = 0.0;
@@ -1918,7 +1920,15 @@ bool Layout::Calculator::_buildChunksInScanRun(ParagraphInfo const &para,
     }
     TRACE(("      line_box_height: %f\n", line_height->emSize()));
 
-    if (!chunk_info->empty() && !chunk_info->back().broken_spans.empty() && chunk_info->back().broken_spans.back().ends_with_whitespace) {
+    // PROOF: type aligned as Illustrator aligns its lines (LINE_ALIGNMENT_ATTRIBUTE) keeps the
+    // spaces at a line's end in its width, and leaves the tracking after the last letter out of
+    // each of its chunks (below), not only out of the line's last one.
+    auto illustrator_aligned = [&](BrokenSpan const &span) {
+        auto const *item = _flow._input_stream[span.start.iter_span->input_index];
+        return item->Type() == TEXT_SOURCE && static_cast<InputStreamTextSource const *>(item)->illustrator_alignment;
+    };
+    if (!chunk_info->empty() && !chunk_info->back().broken_spans.empty() && chunk_info->back().broken_spans.back().ends_with_whitespace &&
+        !illustrator_aligned(chunk_info->back().broken_spans.back())) {
         // for justification we need to discard space occupied by the single whitespace at the end of the chunk
         TRACE(("      backing out whitespace\n"));
         chunk_info->back().broken_spans.back().ends_with_whitespace = false;
@@ -1928,11 +1938,21 @@ bool Layout::Calculator::_buildChunksInScanRun(ParagraphInfo const &para,
         chunk_info->back().whitespace_count--;
     }
 
-    if (!chunk_info->empty() && !chunk_info->back().broken_spans.empty() ) {
+    if (!chunk_info->empty() && !chunk_info->back().broken_spans.empty() && !illustrator_aligned(chunk_info->back().broken_spans.back())) {
         // for justification we need to discard line-spacing and word-spacing at end of the chunk
         chunk_info->back().broken_spans.back().width -= chunk_info->back().broken_spans.back().letter_spacing;
         chunk_info->back().text_width -= chunk_info->back().broken_spans.back().letter_spacing;
         TRACE(("      width after subtracting last letter_spacing: %f\n", chunk_info->back().broken_spans.back().width));
+    }
+    for (std::size_t i = first_new_chunk; i < chunk_info->size(); ++i) {
+        auto &chunk = (*chunk_info)[i];
+        // The span its last letter is in: a break that ends the chunk has none.
+        auto const last = std::find_if(chunk.broken_spans.rbegin(), chunk.broken_spans.rend(), [&](BrokenSpan const &span) {
+            return !(span.start == span.end) && _flow._input_stream[span.start.iter_span->input_index]->Type() == TEXT_SOURCE;
+        });
+        if (last == chunk.broken_spans.rend() || !illustrator_aligned(*last)) continue;
+        last->width -= last->letter_spacing;
+        chunk.text_width -= last->letter_spacing;
     }
 
     TRACE(("    end _buildChunksInScanRun: chunks: %lu\n", chunk_info->size()));

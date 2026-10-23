@@ -259,6 +259,9 @@ Inkscape::XML::Node *SPText::write(Inkscape::XML::Document *xml_doc, Inkscape::X
         }
 
         Inkscape::Text::LeftTabStops::copy_attributes(repr, getRepr());
+        if (repr != getRepr()) {
+            repr->setAttribute(Inkscape::Text::LINE_ALIGNMENT_ATTRIBUTE, getAttribute(Inkscape::Text::LINE_ALIGNMENT_ATTRIBUTE));
+        }
         std::vector<Inkscape::XML::Node *> l;
 
         for (auto& child: children) {

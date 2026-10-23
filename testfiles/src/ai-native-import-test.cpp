@@ -2420,14 +2420,22 @@ TEST_F(AiNativeImportTest, PointTextAlignedParagraphsKeepEditableAnchors)
         ASSERT_EQ(s.lines.size(), 1u); EXPECT_EQ(s.lines[0].alignment, align);
         EXPECT_EQ(s.lines[0].origin * s.to_art, Geom::Point(80, 60));
     }
-    // A space at the line's end is part of what Illustrator centred, and isn't of what is
-    // centred here: the line is set from where its glyphs start instead.
+    // A space at the line's end is part of what Illustrator centred, and of what is centred
+    // here when the story says so: the line stays anchored at its middle.
     auto spaced = aligned_text_document(2);
     spaced.replace(spaced.find("(HHH\\r)"), 7, "(HH \\r)");
     auto texts = AN::read_text_document(text_setup(spaced), Geom::Point(100, 50));
     ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_EQ(texts->stories[0]->lines.at(0).alignment, 2u);
+    EXPECT_TRUE(texts->stories[0]->illustrator_alignment);
+    EXPECT_TRUE(Geom::are_near(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(80, 60), 1e-9));
+    // Not in a paragraph read from the right, whose line ends are elsewhere: set from its start.
+    auto backwards = spaced;
+    backwards.replace(backwards.find("/5 << /0 2 >>"), 13, "/5 << /0 2 /35 1 >>");
+    texts = AN::read_text_document(text_setup(backwards), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
     EXPECT_EQ(texts->stories[0]->lines.at(0).alignment, 0u);
-    EXPECT_TRUE(Geom::are_near(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(51.2, 60), 1e-9));
+    EXPECT_FALSE(texts->stories[0]->illustrator_alignment);
     // A justified paragraph of point type has nothing to be justified to: its line is set
     // from its left end, where its glyphs start.
     auto justified = AN::read_text_document(text_setup(aligned_text_document(3)), Geom::Point(100, 50));
@@ -7983,6 +7991,127 @@ TEST_F(AiNativeImportTest, WrittenAreaTypeKeepsItsFrameParagraphsAndLines)
     EXPECT_EQ(broken->stories[0]->lines[1].end, End::Paragraph);
 }
 
+/// Each character of `repr`'s text where the layout sets it, as written and opened again.
+void expect_characters_where_they_were(SPDocument *was_doc, XML::Node *was, SPDocument *now_doc, XML::Node *now)
+{
+    auto const before = set_characters(was_doc, was), after = set_characters(now_doc, now);
+    ASSERT_EQ(after.size(), before.size());
+    ASSERT_FALSE(before.empty());
+    for (std::size_t c = 0; c < before.size(); ++c) {
+        EXPECT_EQ(after[c].first, before[c].first) << c;
+        EXPECT_NEAR(after[c].second.x(), before[c].second.x(), 0.02) << c;
+        EXPECT_NEAR(after[c].second.y(), before[c].second.y(), 0.02) << c;
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenTabsKeepTheirRulers)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // An import's point type with a stop and an interval of its own, and area type with a ruler
+    // in each of its two paragraphs.
+    auto const point = with_paragraphs(text_document("(A\\tB\\tC\\r)", 6, font, "/11 0"), {},
+        "<< /1 6 /0 << /0 << /5 << /31 40 /30 << /0 [ << /0 50 /1 0 >> ] >> >> >> >> >>");
+    auto const area = area_text_document("(A\\tB\\rC\\tD\\r)", 8, {{0, 10, 4}, {0, 24, 4}}, font, {},
+        "/5 << /0 [ << /1 4 /0 << /0 << /5 << /31 36 >> >> >> >> "
+        "<< /1 4 /0 << /0 << /5 << /31 72 >> >> >> >> ] >>");
+    for (bool const is_area : {false, true}) {
+        SCOPED_TRACE(is_area ? "area" : "point");
+        auto const &document = is_area ? area : point;
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(document)));
+        ASSERT_TRUE(b);
+        auto const written = AN::write_records(b->document.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const texts = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+        auto const &lines = texts->stories[0]->lines;
+        if (!is_area) {
+            ASSERT_EQ(lines.size(), 1u);
+            ASSERT_TRUE(lines[0].tabs);
+            EXPECT_DOUBLE_EQ(lines[0].tabs->interval, 40);
+            EXPECT_EQ(lines[0].tabs->positions, std::vector<double>{50});
+            EXPECT_EQ(lines[0].runs.at(0).text, "A\tB\tC");
+        } else {
+            ASSERT_EQ(lines.size(), 2u);
+            ASSERT_TRUE(lines[0].tabs && lines[1].tabs);
+            EXPECT_DOUBLE_EQ(lines[0].tabs->interval, 36);
+            EXPECT_DOUBLE_EQ(lines[1].tabs->interval, 72);
+        }
+        // Opened again, each tab steps to the stop it did.
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        expect_characters_where_they_were(b->document.get(), elements(b->document->getReprRoot(), "svg:text").at(0),
+                                          again->document.get(), elements(again->document->getReprRoot(), "svg:text").at(0));
+    }
+}
+
+TEST_F(AiNativeImportTest, CentredTypeWithSpacesAtItsLineEndsIsWrittenWhereItIsSet)
+{
+    // Illustrator aligns a line by its width with the spaces at its end and without the tracking
+    // after its last letter (its own layout of PROOF's controls). An import's point type is laid
+    // out so too (proof:line-alignment). Inkscape leaves both out only at the end of the text's
+    // last line: its own type is written with each anchor where Illustrator then sets the line
+    // where Inkscape set it.
+    std::string const type = "font-family:Arial;font-size:16px;text-anchor:middle;letter-spacing:1.6px";
+    auto doc = svg_document(
+        R"(<text id="centred" xml:space="preserve" x="100" y="30" style="font-family:Arial;font-size:20px;text-anchor:middle">Centred </text>)"
+        R"(<text id="right" xml:space="preserve" x="190" y="60" style="font-family:Arial;font-size:20px;text-anchor:end;letter-spacing:2px">Right  </text>)"
+        R"(<text id="import" xml:space="preserve" proof:line-alignment="illustrator" style=")" + type + R"(">)"
+        R"(<tspan x="100" y="80" style="text-anchor:middle">One </tspan><tspan x="100" y="96" style="text-anchor:middle">Two </tspan></text>)"
+        R"(<text id="plain" xml:space="preserve" style=")" + type + R"(">)"
+        R"(<tspan x="100" y="80">One </tspan><tspan x="100" y="96">Two </tspan></text>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto layout_of = [&](char const *id) -> Text::Layout const & { return cast<SPText>(doc->getObjectById(id))->layout; };
+    auto last_line = [](Text::Layout const &l) {
+        auto it = l.begin();
+        while (l.chunkIndex(it) == 0) it.nextCharacter();
+        return it;
+    };
+    auto start_of = [](Text::Layout const &l, Text::Layout::iterator const &it) { return l.characterAnchorPoint(it).x(); };
+    // The layout. Plain text keeps the first line's tracking after its last letter, and leaves
+    // the last line's space and tracking out; the import keeps the spaces and leaves the tracking out.
+    auto const &plain = layout_of("plain"), &aligned = layout_of("import");
+    auto space = plain.end();
+    space.prevCharacter();
+    double const space_width = plain.characterBoundingBox(space).width(); // with its tracking
+    EXPECT_GT(space_width, 2.6);
+    // The layout keeps its positions in single precision.
+    EXPECT_NEAR(start_of(aligned, aligned.begin()) - start_of(plain, plain.begin()), 1.6 / 2, 1e-5);
+    EXPECT_NEAR(start_of(plain, last_line(plain)) - start_of(aligned, last_line(aligned)), space_width / 2, 1e-5);
+    // Plain text: no one anchor sets both its lines in Illustrator where they are.
+    auto refused = AN::write_records(doc.get()).refused;
+    std::string const apart = "centred or right-aligned lines that Illustrator would align apart (spaces or tracking at their ends)";
+    EXPECT_NE(std::find(refused.begin(), refused.end(), apart), refused.end());
+    doc->getObjectById("plain")->deleteObject();
+    // Nor Inkscape's own lines with tracking: it keeps it after the first line's last letter.
+    auto own = svg_document(R"(<text xml:space="preserve" style=")" + type + R"(">)"
+                            R"(<tspan sodipodi:role="line" x="100" y="20">Tracked</tspan><tspan sodipodi:role="line" x="100" y="40">Tracked</tspan></text>)");
+    ASSERT_TRUE(own);
+    refused = AN::write_records(own.get()).refused;
+    EXPECT_NE(std::find(refused.begin(), refused.end(), apart), refused.end());
+
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_EQ(texts->stories.size(), 3u);
+    for (std::size_t i = 0; i < 3; ++i) {
+        ASSERT_TRUE(texts->stories[i]) << texts->errors[i];
+        EXPECT_TRUE(texts->stories[i]->illustrator_alignment) << i;
+        EXPECT_EQ(texts->stories[i]->lines.at(0).alignment, i == 1 ? 1u : 2u) << i;
+    }
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const reopened = elements(again->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(reopened.size(), 3u);
+    char const *const ids[] = {"centred", "right", "import"};
+    for (std::size_t i = 0; i < 3; ++i) {
+        SCOPED_TRACE(ids[i]);
+        EXPECT_EQ(attr(reopened[i], Text::LINE_ALIGNMENT_ATTRIBUTE), "illustrator");
+        expect_characters_where_they_were(doc.get(), doc->getObjectById(ids[i])->getRepr(), again->document.get(), reopened[i]);
+    }
+}
+
 TEST_F(AiNativeImportTest, TypeInAShapeIsWrittenAsAreaType)
 {
     // Inkscape's type in a shape: its paragraphs as typed, wrapped where the shape is full,
@@ -8446,8 +8575,26 @@ TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
         {R"(<text x="10" y="20" textLength="80">Hi</text>)", "type stretched to a length (textLength)"},
         {R"(<text x="10" y="20" style="direction:rtl">Hi</text>)", "type that reads from right to left"},
         {"<text x=\"10\" y=\"20\">\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d</text>", "letters of scripts read from right to left"},
-        {"<text x=\"10\" y=\"20\" xml:space=\"preserve\">A\tB</text>", "tabs in type"},
+        {"<text x=\"10\" y=\"20\" xml:space=\"preserve\">A\tB</text>", "tabs in type without tab stops"},
+        {"<defs><rect id=\"a\" width=\"200\" height=\"50\"/></defs><text xml:space=\"preserve\" proof:tab-origin=\"0\" "
+         "proof:tab-interval=\"36\" style=\"shape-inside:url(#a)\">A\tB</text>", "tabs in type flowed into a shape"},
+        {"<defs><path id=\"p\" d=\"M10 50 L190 50\"/></defs><text xml:space=\"preserve\" proof:tab-origin=\"0\" "
+         "proof:tab-interval=\"36\"><textPath href=\"#p\">A\tB</textPath></text>", "tabs on a path"},
+        {"<text x=\"100\" y=\"20\" xml:space=\"preserve\" proof:tab-origin=\"100\" proof:tab-interval=\"36\" "
+         "style=\"text-anchor:middle\">A\tB</text>", "tabs in type that isn't left-aligned"},
+        {"<text x=\"10\" y=\"20\" xml:space=\"preserve\" proof:tab-origin=\"0\" proof:tab-interval=\"36\">A\tB</text>",
+         "tab stops measured from elsewhere than the type's anchor"},
+        {"<text x=\"10\" y=\"20\" xml:space=\"preserve\"><tspan proof:tab-origin=\"10\" proof:tab-interval=\"36\">A\t</tspan>"
+         "<tspan proof:tab-origin=\"10\" proof:tab-interval=\"20\">B\tC</tspan></text>", "lines of type with two tab rulers"},
+        {"<text proof:text-frame=\"M0 0 H200 V100 H0 Z\" xml:space=\"preserve\"><tspan x=\"0\" y=\"20\" proof:line-end=\"wrap\" "
+         "proof:tab-origin=\"0\" proof:tab-interval=\"36\">A\t</tspan><tspan x=\"0\" y=\"40\" proof:tab-origin=\"0\" "
+         "proof:tab-interval=\"20\">B\tC</tspan></text>", "paragraphs of type with two tab rulers"},
         {R"(<text><tspan x="10" y="20">A</tspan><tspan x="50" y="40">B</tspan></text>)", "lines of type that don't share one anchor"},
+        // Inkscape leaves the space at the end of a text's last line out of its alignment, and
+        // Illustrator doesn't: that line is centred on another anchor than the one before.
+        {R"(<text xml:space="preserve" style="font-family:Arial;font-size:12px;text-anchor:middle">)"
+         R"(<tspan sodipodi:role="line" x="100" y="20">A</tspan><tspan sodipodi:role="line" x="100" y="40">B </tspan></text>)",
+         "centred or right-aligned lines that Illustrator would align apart (spaces or tracking at their ends)"},
         {R"(<text><tspan x="10" y="40">A</tspan><tspan x="10" y="20">B</tspan></text>)",
          "lines of type that don't each lie below the one before"},
         {R"(<text x="10" y="20">A<tspan x="50">B</tspan></text>)", "lines of type set in pieces"},

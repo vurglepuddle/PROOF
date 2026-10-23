@@ -50,6 +50,13 @@ class DrawingGroup;
 namespace Text {
 class StyleAttachments;
 
+/** PROOF: on a text, or an element in one: "illustrator" when its lines are aligned as
+Illustrator aligns them, by their width with the spaces at their ends and without the tracking
+after their last letter. Without it the layout leaves both out of a line's width, as Inkscape
+always has, but in type that doesn't flow into a shape only at the end of the text's last line
+(the others end at a break, or are chunks of a line before it), and keeps both elsewhere. */
+inline constexpr char const *LINE_ALIGNMENT_ATTRIBUTE = "proof:line-alignment";
+
 /** \brief Generates the layout for either wrapped or non-wrapped text and stores the result
 
 Use this class for all your text output needs. It takes text with formatting
@@ -748,6 +755,8 @@ public:
         int bidi_override = -1;
         /// PROOF paragraph tab settings, inherited from the nearest text element.
         std::optional<LeftTabStops> tabs;
+        /// PROOF: its lines are aligned as Illustrator aligns them (#LINE_ALIGNMENT_ATTRIBUTE).
+        bool illustrator_alignment = false;
         /// The size the character at this place in the source is set at, as a share of the style's.
         double sizeScale(unsigned char_index) const
         {

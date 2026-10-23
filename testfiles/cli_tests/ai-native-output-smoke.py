@@ -213,6 +213,29 @@ def main():
           on_paths[0].get("{urn:x-proof:document:1}path-end") is not None and
           "text-anchor:middle" in (on_paths[0].get("style") or ""))
 
+    # An import's tabs keep their ruler; a centred line ending in a space stays centred, as
+    # Illustrator centres it, with the space.
+    tabbed = out / "tabbed.svg"
+    tabbed.write_text(svg.replace("</svg>", '<text xml:space="preserve" style="font-family:Arial;font-size:12px">'
+                                           '<tspan x="10" y="30" proof:tab-origin="10" proof:tab-interval="40" '
+                                           'proof:tab-stops="25">A\tB\tC</tspan></text>'
+                                           '<text xml:space="preserve" x="70" y="60" style="font-family:Arial;font-size:12px;'
+                                           'text-anchor:middle">Centred </text></svg>'), encoding="utf-8")
+    tabbed_ai, tabbed_svg = out / "tabbed.ai", out / "tabbed-reopened.svg"
+    export("tabbed", tabbed, tabbed_ai, native)
+    export("tabbed-reopen", tabbed_ai, tabbed_svg)
+    reopened = [e for e in ET.parse(tabbed_svg).getroot().iter("{http://www.w3.org/2000/svg}text")
+                if e.get("{urn:x-proof:document:1}ai-story") is not None]
+    # The native file opens in points: 40 and 25 px are 30 and 18.75 pt.
+    ruled = [s for e in reopened for s in e.iter("{http://www.w3.org/2000/svg}tspan")
+             if abs(float(s.get("{urn:x-proof:document:1}tab-interval") or "nan") - 30) < 1e-6 and
+             abs(float(s.get("{urn:x-proof:document:1}tab-stops") or "nan") - 18.75) < 1e-6]
+    centred = [e for e in reopened if "".join(e.itertext()) == "Centred "]
+    check("tabs reopen with their ruler, a centred line with its space", len(reopened) == 2 and len(ruled) == 1 and
+          "".join(ruled[0].itertext()) == "A\tB\tC" and len(centred) == 1 and
+          centred[0].get("{urn:x-proof:document:1}line-alignment") == "illustrator" and
+          any("text-anchor:middle" in (s.get("style") or "") for s in centred[0].iter("{http://www.w3.org/2000/svg}tspan")))
+
     unsupported = out / "unsupported.svg"
     unsupported.write_text(svg.replace("</svg>", '<text x="10" y="30" style="writing-mode:vertical-rl">Live type</text></svg>'),
                            encoding="utf-8")

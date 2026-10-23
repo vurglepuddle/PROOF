@@ -67,13 +67,14 @@ opening-time guarantee. [Cache and comparison rules](PROOF-ai-native-records.md#
 | Masks | Linked, non-inverted greyscale vector opacity masks; Clip on/off, fills/strokes, linear/radial gradients and nested masks; Normal/Multiply blending |
 | Transparency | Object/group opacity, sixteen blend modes, isolated blending, knockout records, overprint and supported stroke styles |
 | Pictures | Supported embedded pictures and local PNG/JPEG/classic TIFF/PSD links; original process channels retained where supported |
-| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23). Ordinary type on one open or closed path, including wrapped intervals. [Path type written](#path-type-written-2026-10-23) |
+| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23). Ordinary type on one open or closed path, including wrapped intervals. [Path type written](#path-type-written-2026-10-23). Tabs on an import's left-aligned rulers; centred and right-aligned lines aligned as Illustrator aligns them, with the spaces at their ends and without their last tracking. [Tabs and line alignment written](#tabs-and-line-alignment-written-2026-10-23) |
 
 Supported does not mean arbitrary combinations of these forms. Important
 explicit refusals include:
 
 - Vertical type, type that reads from right to left or holds
-  such letters, tabs, justified type, auto-wrapped type (`inline-size`), type
+  such letters, tabs without PROOF's stops (Inkscape's own), in a shape or on a path,
+  centred or right-aligned lines Illustrator would align apart, justified type, auto-wrapped type (`inline-size`), type
   flowed into several shapes, around others or with padding, or past its shape's
   end, stretched or skewed area type, characters moved or turned one by one,
   spot inks, gradients or patterns on type, translucent character paint, variable
@@ -298,6 +299,33 @@ story editable; this applies to imported classic and automatic path type.
 Ordinary SVG paths keep their SVG clipping semantics. A wholly clipped native
 story stays live even when Illustrator omitted its cached layout frame.
 [Records, limits and qualification](PROOF-ai-native-records.md#path-type-written-2026-10-23).
+
+<a id="tabs-and-line-alignment-written-2026-10-23"></a>
+### Tabs and line alignment written (2026-10-23)
+
+Native saving writes the tabs of an import's left-aligned paragraph rulers as
+Illustrator's own paragraph tab settings, in point and area type. Inkscape's
+own tabs (which PROOF lays out without stops), tabs in a shape or on a path,
+tabs in lines that aren't left-aligned and a ruler not measured from the type's
+anchor or frame are refused by name.
+
+Illustrator aligns a centred or right-aligned line by its width with the spaces
+at its end and without the tracking after its last letter, on every line.
+Inkscape's layout leaves both out only at the end of a text's last line. An
+import's point type is now laid out Illustrator's way
+(`proof:line-alignment="illustrator"`): a centred story whose line ends in a
+space keeps its alignment (it came in left-aligned until now, and was written
+so), and tracked lines sit where Illustrator sets them. Inkscape's own type is
+written with the anchors Illustrator needs to set its lines where Inkscape did;
+lines that can't share one are refused. **Shared text layout (collaborator take
+note):** `libnrtype/Layout-TNG-Compute.cpp` and `Layout-TNG-Input.cpp` read the
+attribute; ordinary SVG text is laid out as before.
+
+Illustrator 29.2.1 lays out both of PROOF's synthetic controls with every anchor
+and line offset PROOF wrote (to five decimals) and both rulers as written; no
+dark ink of either drawing is more than a pixel from the other's at 144 dpi.
+The owner's tabbed document and one with a centred line ending in a space now
+write. [Records, rules and checks](PROOF-ai-native-records.md#tabs-and-line-alignment-written-2026-10-23).
 
 ## Linked PDF/AI pages
 
