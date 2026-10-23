@@ -826,10 +826,9 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             if ((repr && declares_font(repr)) || o == text) break;
         }
         if (!index) {
-            if (!st->font_variation_settings.normal) own.insert("variable font instances on type");
             std::string reason;
             if (auto const ps = postscript_font(st, reason)) {
-                index = font(ps->name, ps->truetype, {});
+                index = font(ps->name, ps->truetype, ps->design);
             } else {
                 own.insert(reason);
             }

@@ -51,7 +51,7 @@ std::optional<double> TextContext::get_softmask(double opacity) const
  */
 bool TextContext::set_text_style(std::shared_ptr<FontInstance> const &font, SPStyle *style)
 {
-    if (auto ret = _doc.get_font(font, style->font_variation_settings)) {
+    if (auto ret = _doc.get_font(font)) {
         auto &[key, font_id] = *ret;
         if (key != last_font) {
             // Transformation has consumed the font size

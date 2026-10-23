@@ -205,6 +205,8 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-patterns.cpp
 	    internal/pdfoutput/build-styles.cpp
         internal/pdfoutput/build-text.cpp
+        internal/pdfoutput/static-font.cpp
+        internal/pdfoutput/static-font.h
 	    internal/pdfoutput/pdf-output.cpp
 	    internal/pdfoutput/pdf-update.cpp
 	    internal/pdfoutput/placed-pages.cpp

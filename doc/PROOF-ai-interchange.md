@@ -85,8 +85,8 @@ explicit refusals include:
   centred or right-aligned lines Illustrator would align apart, justified type, auto-wrapped type (`inline-size`), type
   flowed into several shapes, around others or with padding, or past its shape's
   end, stretched or skewed area type, characters moved or turned one by one,
-  spot inks, gradients or patterns on type, translucent character paint, variable
-  fonts, fonts that aren't installed under the style's own name, and the
+  spot inks, gradients or patterns on type, translucent character paint,
+  unknown axis settings, fonts that aren't installed under the style's own name, and the
   remaining OpenType and decoration settings (the writer names each); type in
   patterns, opacity masks or the Illustrator 7 copy.
 - Unsupported appearances/filters; layer/root transparency;
@@ -479,3 +479,30 @@ levels. Other pages were not appearance-qualified in this targeted round.
 The historical type subset advances from 51/60 to **55/60 records acceptances**,
 not a fresh whole-corpus or 55-file complete-save qualification. The five left
 are variable-font cases. [Record details](PROOF-ai-native-records.md#direction-composer-and-bounded-bidi-output-2026-10-23).
+
+## Variable fonts written (2026-10-23)
+
+Installed TrueType and CFF2 variable-font instances retain editable axes in
+native Illustrator stories: defaults, named styles, arbitrary coordinates and
+custom axes. The working document remains variable. PDF embeds and subsets a
+static instance at the loaded axes, retaining live text and Unicode; it does
+not outline the text. This avoids CapyPDF's integer-axis truncation and CFF2
+source limitations. Building the PDF backend requires HarfBuzz Subset >=13.0.
+Unknown axes, axis declarations on static fonts and other unsupported type
+features still refuse by name. [Implementation and checks](PROOF-ai-native-records.md#variable-font-instances-written-and-printed-2026-10-23).
+
+Generated TrueType/CFF2/custom-only fonts pass 81 checks (54 plus the targeted
+27 custom-only follow-up). Eleven Illustrator 29.2.1 controls retain all stories
+and axes after native Save As. Source, PDF and returned drawings meet the 144 dpi
+99%-ink/two-pixel tolerance without image registration or scaling. A provably
+blank extra edge row from Illustrator's size rounding is excluded.
+
+The five remaining copied cases `531c38e241`, `96dedd9f17`, `afb1bd2f13`,
+`4263c1ce8a`, `5165c2ff0d` now pass the records writer and complete native saves.
+They reopen natively with editable type and matching PDF page counts: 13/2/2/8/8.
+First-page 36 dpi before/after comparisons have equal dimensions and maximum
+channel differences 2, 7, 7, 2 and 2 respectively; other pages were not appearance
+qualified in this targeted round. All copied input hashes are unchanged.
+The historical 60-case type subset is now **60/60 records accepted**, not a fresh
+whole-corpus or 60-file complete-save qualification. Remaining bounded type
+correctness work and the planned v1 qualification remain separate.

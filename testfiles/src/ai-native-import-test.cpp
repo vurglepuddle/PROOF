@@ -8179,6 +8179,44 @@ void expect_characters_where_they_were(SPDocument *was_doc, XML::Node *was, SPDo
     }
 }
 
+TEST_F(AiNativeImportTest, WrittenVariableFontInstancesRetainLoadedAxesAndShapes)
+{
+    if (!has_bahnschrift()) GTEST_SKIP() << "Bahnschrift isn't installed";
+    for (auto const &design : {std::vector<double>{400, 100}, {600, 75}, {350.25, 80.125}}) {
+        auto font = AN::find_font("Bahnschrift", design);
+        ASSERT_TRUE(font);
+        auto doc = svg_document("<text id='t' x='20' y='40' style=\"font-size:24px;" + font->css + "\">Variable 123</text>");
+        ASSERT_TRUE(doc);
+        std::string reason;
+        auto const ps = AN::postscript_font(doc->getObjectById("t")->style, reason);
+        ASSERT_TRUE(ps) << reason;
+        EXPECT_EQ(ps->design, design);
+        EXPECT_TRUE(ps->truetype);
+        EXPECT_FALSE(ps->name.empty());
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const parsed = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+        EXPECT_EQ(parsed->stories[0]->lines[0].runs[0].style.design, design);
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        auto *text = elements(again->document->getReprRoot(), "svg:text").at(0);
+        expect_characters_where_they_were(doc.get(), doc->getObjectById("t")->getRepr(), again->document.get(), text);
+    }
+}
+
+TEST_F(AiNativeImportTest, VariableFontSettingsThatCannotBeRepresentedStayRefused)
+{
+    for (auto const *style : {"font-family:Arial;font-variation-settings:'wght' 350",
+                            "font-family:Bahnschrift;font-variation-settings:'NOPE' 1"}) {
+        auto doc = svg_document(std::string("<text x='10' y='30' style=\"font-size:20px;") + style + "\">Axes</text>");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_FALSE(written.refused.empty());
+        EXPECT_TRUE(written.records.empty());
+    }
+}
+
 TEST_F(AiNativeImportTest, WrittenTabsKeepTheirRulers)
 {
     auto const font = available_text_font();

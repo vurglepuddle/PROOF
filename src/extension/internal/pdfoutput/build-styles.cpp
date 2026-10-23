@@ -13,6 +13,7 @@
 #include "build-drawing.h"
 
 #include <cmath>
+#include <hb-ot.h>
 
 #include "colors/cms/profile.h"
 #include "colors/color.h"
@@ -317,28 +318,39 @@ std::optional<CapyPDF_GraphicsStateId> Document::get_shape_graphics_state(SPStyl
  *
  * @returns the FontId in capypdf to use.
  */
-std::optional<std::pair<std::string, CapyPDF_FontId>> Document::get_font(std::shared_ptr<FontInstance> font, SPIFontVariationSettings &var)
+std::optional<std::pair<std::string, CapyPDF_FontId>> Document::get_font(std::shared_ptr<FontInstance> font)
 {
     auto filename = font->GetFilename();
     auto key = filename;
-    if (!var.axes.empty()) {
-        key += "-" + var.toString();
+    auto *hb = pango_font_get_hb_font(font->get_font());
+    auto *face = hb ? hb_font_get_face(hb) : nullptr;
+    bool const variable = face && hb_ot_var_has_data(face);
+    if (variable) {
+        // Cache actual loaded coordinates, including named instances and CSS defaults.
+        key += "#" + std::to_string(hb_face_get_index(face));
+        unsigned count = hb_ot_var_get_axis_count(face), set = 0;
+        std::vector<hb_ot_var_axis_info_t> axes(count);
+        hb_ot_var_get_axis_infos(face, 0, &count, axes.data());
+        auto const *coords = hb_font_get_var_coords_design(hb, &set);
+        if (set && (set != count || !coords)) return {};
+        for (unsigned i = 0; i < count; ++i) {
+            key += "/" + std::to_string(set ? coords[i] : axes[i].default_value);
+        }
     }
 
-    // TODO: It's possible for the font loading to fail but we don't know how yet.
     if (!_font_cache.contains(key)) {
         try {
             auto fontprops = capypdf::FontProperties();
-            auto axes = font->get_opentype_varaxes();
-            for (auto &axis : axes) {
-                auto iter = var.axes.find(axis.tag);
-                fontprops.set_variation(axis.tag, iter == var.axes.end()
-                        ? (int)axis.def
-                        : iter->second);
+            if (variable) {
+                auto frozen = static_font(*font);
+                auto const id = _gen.load_font(frozen->path.c_str(), fontprops);
+                _static_fonts.emplace(key, std::move(frozen));
+                _font_cache[key] = id;
+            } else {
+                _font_cache[key] = _gen.load_font(filename.c_str(), fontprops);
             }
-            _font_cache[key] = _gen.load_font(filename.c_str(), fontprops);
         } catch (std::exception const &err) {
-            std::cerr << "Can't load font: '" << filename.c_str() << "'\n";
+            std::cerr << "Can't load font: '" << filename.c_str() << "': " << err.what() << "\n";
             return {};
         }
     }

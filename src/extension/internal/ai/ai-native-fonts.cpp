@@ -16,6 +16,7 @@
 #include <fontconfig/fontconfig.h>
 #include <glib.h>
 #include <hb-ot.h>
+#include <hb-ft.h>
 #include <pango/pangofc-fontmap.h>
 
 #include "document.h"
@@ -170,7 +171,6 @@ std::vector<VariableFont> const &variable_fonts()
         // instance (numbered in the upper half of its index), and once more as a whole.
         struct Listed
         {
-            bool variable = false;
             FcPattern *itself = nullptr;
         };
         std::map<std::pair<std::string, int>, Listed> files;
@@ -182,14 +182,16 @@ std::vector<VariableFont> const &variable_fonts()
             FcBool whole = FcFalse;
             FcPatternGetBool(set->fonts[i], FC_VARIABLE, 0, &whole);
             auto &listed = files[{reinterpret_cast<char const *>(file), index & 0xffff}];
-            if (whole || (index >> 16)) {
-                listed.variable = true;
-            } else {
+            // A whole-variable entry can supply the family when no plain default
+            // is listed. Prefer a plain default when one exists.
+            if (!(index >> 16) && (!whole || !listed.itself)) {
                 listed.itself = set->fonts[i];
             }
         }
         for (auto const &[key, listed] : files) {
-            if (!listed.variable || !listed.itself) continue;
+            // Fontconfig can mark a custom-axis-only variable font as static.
+            // Inspect fvar once per distinct file/face rather than trusting that flag.
+            if (!listed.itself) continue;
             auto font = variable_font(key.first.c_str(), key.second);
             if (!font || font->prefix.empty()) continue;
             auto *desc = pango_fc_font_description_from_pattern(listed.itself, false);
@@ -526,8 +528,40 @@ std::optional<PostScriptFont> postscript_font(SPStyle const *style, std::string 
         auto *hb_face = hb_font_get_face(hb);
         auto const name = name_of(hb_face, HB_OT_NAME_ID_POSTSCRIPT_NAME);
         if (hb_ot_var_has_data(hb_face)) {
-            // Which of its instances Illustrator would take for the name isn't qualified.
-            why = "type in a variable font (" + first + ")";
+            unsigned count = hb_ot_var_get_axis_count(hb_face), set = 0;
+            std::vector<hb_ot_var_axis_info_t> axes(count);
+            hb_ot_var_get_axis_infos(hb_face, 0, &count, axes.data());
+            auto const *coords = hb_font_get_var_coords_design(hb, &set);
+            bool valid = count > 0 && count <= 64 && (!set || (set == count && coords));
+            for (auto const &[tag, value] : style->font_variation_settings.axes) {
+                valid = valid && std::isfinite(value) && std::any_of(axes.begin(), axes.end(), [&](auto const &axis) {
+                    return axis.tag == hb_tag_from_string(tag.c_str(), -1);
+                });
+            }
+            std::vector<double> design;
+            for (unsigned i = 0; valid && i < count; ++i) {
+                double const value = set ? coords[i] : axes[i].default_value;
+                valid = std::isfinite(value) && value >= axes[i].min_value && value <= axes[i].max_value;
+                design.push_back(std::round(value * 65536) / 65536);
+            }
+            // FreeType implements Adobe TN 5902, including named instances and long
+            // names. Use a private mutable HB font, as FontInstance does; Pango's is immutable.
+            auto *copy = hb_font_create_sub_font(hb);
+            hb_ft_font_set_funcs(copy);
+            auto *ft = hb_ft_font_lock_face(copy);
+            auto const *instance_name = ft ? FT_Get_Postscript_Name(ft) : nullptr;
+            std::string ps = instance_name ? instance_name : "";
+            if (ft) hb_ft_font_unlock_face(copy);
+            hb_font_destroy(copy);
+            if (!valid || ps.empty()) {
+                why = "type with unsupported variable-font axes or instance name (" + first + ")";
+            } else {
+                auto *outlines = hb_face_reference_table(hb_face, HB_TAG('g', 'l', 'y', 'f'));
+                out = PostScriptFont{std::move(ps), hb_blob_get_length(outlines) > 0, std::move(design)};
+                hb_blob_destroy(outlines);
+            }
+        } else if (!style->font_variation_settings.normal) {
+            why = "variation settings on a non-variable font (" + first + ")";
         } else if (name.empty()) {
             why = "type in a font without a PostScript name (" + first + ")";
         } else {

@@ -72,6 +72,7 @@ struct PostScriptFont
 {
     std::string name;      ///< Its PostScript name.
     bool truetype = false; ///< Its outlines are TrueType's (a text document says 1), else 0.
+    std::vector<double> design; ///< Actual loaded coordinates in font axis order; empty for static fonts.
 };
 
 /**
@@ -79,7 +80,8 @@ struct PostScriptFont
  *
  * @return nothing, with `why` saying so, when the font is not the one the style names (that
  *         family isn't installed and Pango stood another in, or Pango made up its bold or its
- *         slant), is a variable font, or has no PostScript name.
+ *         slant), has unsupported axis settings, or has no PostScript name. Variable
+ *         instances carry their actual loaded coordinates and FreeType's instance name.
  */
 std::optional<PostScriptFont> postscript_font(SPStyle const *style, std::string &why);
 

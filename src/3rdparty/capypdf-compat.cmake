@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # PROOF's small overlay for the pinned CapyPDF: select PDF 1.7 per document, and
 # open and write files by their full Unicode names on Windows, and subset CFF
-# fonts without assuming optional metadata entries are present.
+# fonts without assuming optional metadata entries are present. Serialize the
+# TrueType maxp payload without the C++ variant's discriminator/padding.
 # Keep the submodule untouched, and fail on an upstream change needing review.
 set(CAPYPDF_PROOF_DIR "${CMAKE_CURRENT_BINARY_DIR}/capypdf-proof")
 file(MAKE_DIRECTORY "${CAPYPDF_PROOF_DIR}")
@@ -27,6 +28,29 @@ function(proof_capypdf_overlay name needle replacement)
     string(REPLACE "${needle}" "${replacement}" text "${text}")
     file(CONFIGURE OUTPUT "${CAPYPDF_PROOF_DIR}/${name}" CONTENT "${text}" @ONLY)
 endfunction()
+
+proof_capypdf_overlay(ft_subsetter.hpp
+    [==[    void set_num_glyphs(uint16_t glyph_count);
+    void swap_endian();]==]
+    [==[    void set_num_glyphs(uint16_t glyph_count);
+    void swap_endian();
+    std::span<const std::byte> serialized_data() const;]==])
+proof_capypdf_overlay(ft_subsetter.cpp
+    [==[void TTMaxp::swap_endian() {
+    std::visit([](auto &d) { d.swap_endian(); }, data);
+}]==]
+    [==[void TTMaxp::swap_endian() {
+    std::visit([](auto &d) { d.swap_endian(); }, data);
+}
+
+std::span<const std::byte> TTMaxp::serialized_data() const {
+    return std::visit([](auto const &d) {
+        return std::span<const std::byte>(reinterpret_cast<const std::byte *>(&d), sizeof(d));
+    }, data);
+}]==])
+proof_capypdf_overlay(ft_subsetter.cpp
+    [==[odata, "maxp", std::span<const std::byte>((const std::byte *)&tf.maxp, sizeof(tf.maxp)))]==]
+    [==[odata, "maxp", tf.maxp.serialized_data())]==])
 
 proof_capypdf_overlay(document.hpp
     "std::variant<std::monostate, CapyPDF_PDFX_Type, CapyPDF_PDFA_Type> subtype;"

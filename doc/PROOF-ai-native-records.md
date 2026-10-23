@@ -2577,8 +2577,8 @@ n /StoryIndex ,
 Illustrator 29.2.1 writes 11 and opens 14):
 resources `/0` hold the fonts (`/1`: MyriadPro-Regular for the normal style,
 AdobeInvisFont, then each font used, `<< /0 << /99 /CoolTypeFont /0 << /0 (name)
-/2 truetype? >> >> >>`, with `/4 [16.16 axis values]` for a missing variable
-instance), the `[Normal Character Style]` (`/5`) and `[Normal Paragraph Style]`
+/2 truetype? >> >> >>`, with `/4 [16.16 axis values]` for installed or missing
+variable instances), the `[Normal Character Style]` (`/5`) and `[Normal Paragraph Style]`
 (`/6`) with every feature as Illustrator 30.6 saves them, and the frames (`/8`):
 `<< /0 [anchor] /2 << /2 [a b c d e f] >> >>`, the anchor in the story's own
 space and the matrix to the canvas. The main dictionary `/1` holds the
@@ -2981,3 +2981,49 @@ Keep the current bounded refusals: bidi path type, nested directions/overrides,
 isolates/explicit bidi controls, bidi tracking/trailing spaces/tabs, hidden RTL
 overflow, mixed LTR script text flowed into a shape, and unqualified character
 features. This does not implement all Middle Eastern typography settings.
+
+## Variable-font instances written and printed (2026-10-23)
+
+The writer's font entry now carries the actual Pango/HarfBuzz-loaded design
+coordinates, in fvar order, as `/4 [16.16 values]`. Its font name is FreeType's
+instance PostScript name, using Adobe's
+[Technical Note 5902](https://adobe-type-tools.github.io/font-tech-notes/pdfs/5902.AdobePSNameGeneration.pdf).
+This covers defaults, named styles and arbitrary coordinates, including custom
+axes. Query the loaded face, not only explicit CSS: a weight/stretch can select
+a named instance without any font-variation-settings declaration. TrueType/CFF
+outline kind follows the actual font. Unknown axes and variations on a static
+font remain refused; existing missing-font provenance keeps its separate path.
+
+The reader's one-time installed-variable-font index now checks fvar in each
+distinct file/face. Fontconfig reports some custom-axis-only variable fonts as
+static and lists no separate whole-variable entry. Trusting FC_VARIABLE omitted
+those fonts from prefix lookup: a non-default YEAR instance drawn correctly in
+Illustrator became a missing font after its re-save. A generated custom-only
+font now covers this independently of installed/proprietary fonts.
+
+**PDF is a static font instance, with live text.** CapyPDF's integer variation
+API truncated fractional settings, and its CFF2 source path could fail with
+missing glyphs. `pdfoutput/static-font` pins every actual loaded axis through
+HarfBuzz Subset, retaining every glyph ID and converting CFF2 to CFF1. CapyPDF
+then subsets the used glyphs normally. No text outlines, installed-font changes
+or working-document axis changes. The per-document cache keys actual face/axes;
+private temporary files outlive the generator's FreeType faces and are removed
+when it closes. Conversion failures fail the save. Building WITH_CAPYPDF now
+requires harfbuzz-subset >=13.0; the current toolchain/install use 14.5.0.
+
+**Additional CapyPDF correction:** its TrueType serializer wrote the entire
+TTMaxp C++ variant, including discriminator/padding, into the maxp table (33
+bytes here, instead of the v1.0 format's 32). The exact-match overlay now writes
+the active packed payload. It does not edit the pinned submodule. Independent
+fontTools parsing of the actual embedded PDF font exercises this correction.
+The 0.5 and 1.0 payload layouts remain distinct; no wrapper bytes are serialized.
+
+Checks: 223 importer tests (221 pass, two opt-in skips), three existing CFF
+subsetter units, 54 generated TrueType/CFF2 export checks plus 27 custom-only
+checks, and the prior Arabic/Hebrew export regression 23/23. The variable smoke
+independently instantiates reference glyphs with fontTools, verifies embedded
+static fonts and live Unicode, checks PDF/canvas drawing, editable axes and
+separate cached instances. It installs no fonts. Illustrator 29.2.1 controls
+cover 11 stories in four installed families; drawings agree within two pixels
+at 144 dpi, native Save As retains the axes, and PROOF's return/PDF drawings
+meet the same tolerance. This is not pixel identity or every variable font.

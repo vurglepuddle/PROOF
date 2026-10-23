@@ -197,6 +197,9 @@ if(NOT WITH_INTERNAL_ADAPTAGRAMS)
 endif()
 
 if(WITH_CAPYPDF)
+    # PDF embeds a static instance at the loaded axes; CFF2 downgrade needs HB 13.
+    pkg_check_modules(HARFBUZZ_SUBSET REQUIRED IMPORTED_TARGET harfbuzz-subset>=13.0)
+    list(APPEND INKSCAPE_LIBS PkgConfig::HARFBUZZ_SUBSET)
     if(NOT WITH_INTERNAL_CAPYPDF)
         pkg_check_modules(CAPYPDF QUIET IMPORTED_TARGET capypdf>=0.21)
         if(CAPYPDF_FOUND)

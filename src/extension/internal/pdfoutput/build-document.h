@@ -24,6 +24,7 @@
 #include "capypdf.hpp"
 #include "placed-pages.h"
 #include "remember-styles.h"
+#include "static-font.h"
 #include "style-enums.h"
 
 class FontInstance;
@@ -143,7 +144,7 @@ public:
     std::optional<CapyPDF_GraphicsStateId> get_group_graphics_state(SPStyle const *style,
                                                                     std::optional<CapyPDF_TransparencyGroupId> sm);
     std::optional<CapyPDF_GraphicsStateId> get_shape_graphics_state(SPStyle const *style);
-    std::optional<std::pair<std::string, CapyPDF_FontId>> get_font(std::shared_ptr<FontInstance> font, SPIFontVariationSettings &var);
+    std::optional<std::pair<std::string, CapyPDF_FontId>> get_font(std::shared_ptr<FontInstance> font);
 
     std::optional<capypdf::Color> get_paint(SPIPaint const &paint, SPStyle const *context_style,
                                             std::optional<double> opacity, Geom::OptRect const &bbox = {});
@@ -199,6 +200,8 @@ protected:
     std::vector<CapyPDF_AnnotationId> get_anchors_for_page(SPPage const *page);
 
 private:
+    // Outlive the generator, whose FreeType faces may keep these files open on Windows.
+    std::map<std::string, std::unique_ptr<StaticFont>> _static_fonts;
     DocumentGenerator _gen;
 
     StyleMemory _paint_memory;
