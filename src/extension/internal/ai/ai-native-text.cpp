@@ -816,7 +816,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
-    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool justified; bool hyphenate; StyleLayers characters, features; };
+    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool world_ready; bool justified; bool hyphenate; StyleLayers characters, features; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0, layer_budget = MAX_VALUES;
     auto add_paragraph = [&](Value const *declaration, std::size_t count) {
@@ -841,15 +841,21 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         // line of its paragraph would be, and one justified too from its left end.
         if (justified && area) throw Bad("justified paragraph alignment isn't supported yet");
         if (justified) align = align == 4 ? 1 : align == 5 ? 2 : 0;
-        // The way it reads (35): 0 from the left, 1 from the right.
-        auto const direction = number("35");
+        // Direction (33) and composer (35) are independent. The Middle Eastern composer
+        // reorders/shapes scripts in LTR paragraphs too; it is not a paragraph direction.
+        auto const direction = number("33");
         if (direction > 1) throw Bad("text has an unsupported paragraph direction");
+        auto const composer = number("35");
+        if (composer > 1) throw Bad("text has an unsupported paragraph composer");
+        // Illustrator's alignment is relative to the paragraph's reading direction.
+        // TextLine keeps physical left/right anchors, independently of that direction.
+        if (direction == 1 && align != 2) align = 1 - align;
         // Whether it is hyphenated (9) where area type wraps it: Illustrator then draws a hyphen
         // that isn't typed, and lays it out again so.
         auto const hyphenate = layer_value(layers, "9");
         if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
         paragraph_units += count;
-        paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, justified,
+        paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, composer == 1, justified,
                               hyphenate && hyphenate->kind == Value::Boolean && hyphenate->boolean, std::move(characters), layers});
     };
     if (s.get("0").dict.count("5")) {
@@ -866,8 +872,10 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     }
     // A text object reads one way: its paragraphs are one to what sets them.
     out.rtl = paragraphs.front().rtl;
+    out.world_ready = paragraphs.front().world_ready;
     for (auto const &p : paragraphs) {
         if (p.rtl != out.rtl) throw Bad("paragraphs that read both ways in one story aren't supported yet");
+        if (p.world_ready != out.world_ready) throw Bad("paragraphs with different composers in one story aren't supported yet");
     }
     // Area type: how many characters Illustrator put in each line, their ends included.
     std::vector<std::size_t> line_units;
@@ -1010,6 +1018,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
             if (cp == '\t') {
                 if (line >= out.lines.size()) throw Bad("tab line layout ends early");
                 auto const &p = paragraphs[paragraph];
+                if (p.world_ready) throw Bad("tab stops with the Middle Eastern composer aren't supported yet");
                 if (p.rtl || p.alignment || p.justified) throw Bad("tab stops in non-left-aligned paragraphs aren't supported yet");
                 Text::LeftTabStops tabs;
                 tabs.origin = anchor[0] / hscale;
@@ -1071,7 +1080,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     if (out.overflow.find_first_not_of('\n') == std::string::npos) out.overflow.clear();
 
     if (on_path) {
-        if (out.lines.size() != 1 || paragraphs.size() != 1 || out.rtl || paragraphs[0].justified)
+        if (out.lines.size() != 1 || paragraphs.size() != 1 || out.rtl || out.world_ready || paragraphs[0].justified)
             throw Bad("multiple or justified paragraphs on a path aren't supported yet");
         out.lines[0].alignment = paragraphs[0].alignment;
         return out;
@@ -1100,7 +1109,11 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         common = l.alignment;
     }
     std::vector<double> moves(out.lines.size(), 0.0); // From each line's start to its anchor.
-    together = together && common && *common != 0;
+    // RTL point type's return has an advance before the visible text, even when
+    // physically left-aligned. Its segment starts before the paragraph anchor;
+    // use that anchor just as for centred/right-aligned point type. The return's
+    // width is a font metric, not a fixed correction to apply to the glyphs.
+    together = together && common && (*common != 0 || (!area && out.rtl));
     for (std::size_t i = 0; together && i < out.lines.size(); ++i) {
         if (out.lines[i].runs.empty()) continue;
         // A space at a line's end is part of what Illustrator centres, and not of what is
@@ -1113,6 +1126,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         auto const &found = segment_of(*lines[i]);
         if (!area) {
             if (!found.dict.count("0")) {
+                if (*common == 0) continue;
                 // What says a justified paragraph's lines end at the right or the middle
                 // doesn't say where a line of point type starts: it stays at its start.
                 if (unsure) {
@@ -1223,7 +1237,8 @@ std::shared_ptr<TextDocument const> read_text_document(std::string_view records,
 
 bool same_drawing(PointText const &a, PointText const &b)
 {
-    if (a.empty != b.empty || a.rtl != b.rtl || a.unordered != b.unordered || a.lines.size() != b.lines.size()) return false;
+    if (a.empty != b.empty || a.rtl != b.rtl || a.world_ready != b.world_ready ||
+        a.unordered != b.unordered || a.lines.size() != b.lines.size()) return false;
     if (bool(a.path) != bool(b.path)) return false;
     if (a.path && (a.path->start != b.path->start || a.path->end != b.path->end ||
                    a.path->automatic_spacing != b.path->automatic_spacing ||

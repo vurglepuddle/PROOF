@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <limits>
+#include <numeric>
 
 #include "Layout-TNG-Scanline-Maker.h"
 #include "font-factory.h"
@@ -450,6 +451,50 @@ void Layout::Calculator::_outputLine(ParagraphInfo const &para,
             }
         }
 
+        // A nested LTR run (for example digits following Hebrew in an LTR paragraph)
+        // needs the full embedding levels, not just their parity. Resolve UAX #9 L2
+        // positions first, while keeping output characters and glyphs in logical order
+        // for editing. The legacy placement remains for vertical/wrapped/positioned text.
+        std::vector<double> bidi_starts;
+        if (para.direction == LEFT_TO_RIGHT && _block_progression == TOP_TO_BOTTOM &&
+            _flow._input_wrap_shapes.empty()) {
+            auto const &spans = it_chunk->broken_spans;
+            std::vector<unsigned> levels;
+            unsigned maximum = 0, minimum_odd = std::numeric_limits<unsigned>::max();
+            bool usable = true;
+            for (auto const &span : spans) {
+                auto const &unbroken = *span.start.iter_span;
+                if (unbroken.pango_item_index < 0 || unbroken.tab ||
+                    (unbroken.dx._set && unbroken.dx.computed != 0) || span.width < 0) {
+                    usable = false;
+                    break;
+                }
+                unsigned const level = para.pango_items[unbroken.pango_item_index].item->analysis.level;
+                levels.push_back(level);
+                maximum = std::max(maximum, level);
+                if (level & 1) minimum_odd = std::min(minimum_odd, level);
+            }
+            if (usable && maximum >= 2 && minimum_odd <= maximum) {
+                std::vector<std::size_t> visual(spans.size());
+                std::iota(visual.begin(), visual.end(), 0);
+                for (unsigned level = maximum; level >= minimum_odd; --level) {
+                    for (std::size_t i = 0; i < visual.size();) {
+                        if (levels[visual[i]] < level) { ++i; continue; }
+                        auto const start = i;
+                        while (i < visual.size() && levels[visual[i]] >= level) ++i;
+                        std::reverse(visual.begin() + start, visual.begin() + i);
+                    }
+                }
+                bidi_starts.resize(spans.size());
+                double x = 0;
+                for (auto const i : visual) {
+                    double const width = spans[i].width + spans[i].whitespace_count * add_to_each_whitespace;
+                    bidi_starts[i] = x + ((levels[i] & 1) ? width : 0);
+                    x += width;
+                }
+            }
+        }
+
         // Loop over broken spans; a broken span is part of no more than one PangoItem.
         for (std::vector<BrokenSpan>::const_iterator it_span = it_chunk->broken_spans.begin() ; it_span != it_chunk->broken_spans.end() ; it_span++) {
 
@@ -494,7 +539,10 @@ void Layout::Calculator::_outputLine(ParagraphInfo const &para,
                 new_span.direction = para.direction;
             }
 
-            if (new_span.direction == para.direction) {
+            if (!bidi_starts.empty()) {
+                current_x = bidi_starts[std::distance(it_chunk->broken_spans.cbegin(), it_span)];
+                counter_directional_width_remaining = 0;
+            } else if (new_span.direction == para.direction) {
                 current_x -= counter_directional_width_remaining;
                 counter_directional_width_remaining = 0.0;
             } else if (new_span.direction != previous_direction) {

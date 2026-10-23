@@ -904,7 +904,8 @@ the line's last letter in Illustrator; the layout drew it on through the
 letter-spacing that follows that letter (or stopped short of the letter when
 the spacing was negative), and now stops where Illustrator does.
 
-**Paragraphs read from the right** (paragraph feature 35 is 1) get
+**Paragraphs read from the right** (paragraph feature **33** is 1, corrected
+2026-10-23; feature 35 selects the composer) get
 `direction:rtl`. Their lines start at the same end as before: a line's origin
 is its left end, its right end or its middle whichever way it reads, and only
 the name of that end changes (left is the end of a line read from the right).
@@ -1007,7 +1008,8 @@ says where that is, and from where its glyphs start otherwise. Justified area
 type is still refused: its lines are stretched to the frame.
 
 **Hebrew that isn't set up for its direction.** The sample is four Hebrew
-letters in a paragraph that reads from the left (feature 35 is 0), and its
+letters in a paragraph that reads from the left (feature 33 is 0), with the
+Latin composer (feature 35 is 0), and its
 line's segment has a character count (key 15) with `/5 false` and no key 7:
 Illustrator's other composer set it, letter after letter from the left as
 typed, which shows the word backwards. The story is marked for it and comes in
@@ -2928,3 +2930,54 @@ ending in a space, as the tool types them. Without the attribute that type is
 refused (no one anchor for both lines); with it, it is written and reopens with
 the attribute and every character where it was. Right-to-left type gets no
 attribute. Importer 213 (two opt-in skips).
+
+## Direction, composer and bounded bidi output (2026-10-23)
+
+**Correction to older notes:** paragraph feature **33** is the direction
+(0 LTR, 1 RTL); **35** is the composer (0 Latin, 1 Middle Eastern). They are
+independent. Native controls saved by Illustrator 29.2.1 prove this distinction;
+the old reader incorrectly used 35 as the direction. The imported SVG keeps
+`proof:ai-text-composer="latin|middle-eastern"` explicitly, independently of
+`direction:rtl`. A missing attribute lets the writer choose the Middle Eastern
+composer for normal bidi script text; an explicit Latin value stays Latin.
+Unknown or mixed paragraph composers refuse. Adobe's
+[composer documentation](https://helpx.adobe.com/illustrator/desktop/design-with-text/fonts-and-scripts/about-adobe-asian-composers.html)
+describes their shaping roles; numeric keys above come from the controlled records.
+
+Paragraph alignment 0/1 is relative to direction: the reader converts it to
+physical left/right, the writer converts back. In RTL point type the return
+can have an invisible advance before the visible glyphs. Its segment offset
+therefore is not a physically left-aligned line's editable anchor. Use the
+frame/line anchor for that case too, without a font-size-specific correction.
+Centred/right point anchors retain their existing offset cancellation. Area
+lines keep their separate measured-box rules.
+
+Ordered RTL script segments retain `/15 << /0 units /2 0 /5 true
+/7 << /0 units >> >>` in PROOF's generated layout; ordinary Latin/typed-order
+segments keep `/5 false`. Illustrator regenerates the cache on opening. The
+writer keeps the full logical story, character runs and uniform direction.
+LTR `unicode-bidi:bidi-override` is the bounded legacy Hebrew typed-order case;
+Arabic forced into that mode remains refused.
+
+Shared `Layout-TNG-Compute` now positions nested horizontal unwrapped LTR bidi
+runs by the complete Pango embedding levels, following
+[UAX #9 L2](https://www.unicode.org/reports/tr9/#L2). It retains logical
+character/glyph storage for editing. This fixes digits/punctuation positioned
+on the wrong side of a Hebrew/Arabic run. Wrapped/vertical/tabbed/explicit-dx
+spans retain the previous placement; mixed LTR script type flowed into a shape
+is refused by the writer pending qualification.
+
+Qualified controls cover Latin/RTL anchors, Hebrew, mixed Latin/digits and
+punctuation, Arabic words/phrases, vowel marks, Arabic-Indic digits, lam–alef,
+LTR/RTL paragraphs, legacy typed order, and Hebrew/Arabic area type. Permanent
+units compare visual run order with an independent PangoLayout, then native
+roundtrips retain characters and anchors. The CLI smoke writes complete PDF
+and native AI, checks editable reopen and emitted Unicode, including the
+ligature's logical two-character ToUnicode mapping. Poppler raw text extraction
+avoids pypdf's mixed-direction prefix-dropping heuristic; extraction display
+order is not a semantic guarantee of this change.
+
+Keep the current bounded refusals: bidi path type, nested directions/overrides,
+isolates/explicit bidi controls, bidi tracking/trailing spaces/tabs, hidden RTL
+overflow, mixed LTR script text flowed into a shape, and unqualified character
+features. This does not implement all Middle Eastern typography settings.

@@ -47,9 +47,12 @@ struct WrittenStory
  * that font's name), process colour fills and strokes, tracking, baseline shift, kerning on or
  * off, standard and contextual ligatures, all caps, small caps, superscript and subscript,
  * underline and strikethrough (the last four and baseline shift not on a path). The frame's
- * matrix places it; a uniform scale goes into the sizes. Vertical type, type that reads from
- * right to left, tabs, justified or auto-wrapped type, characters moved or turned one by one and
- * other features are refused by name.
+ * matrix places it; a uniform scale goes into the sizes. Bounded horizontal Arabic/Hebrew,
+ * uniform paragraph direction and LTR typed-order overrides are supported, with the Latin or
+ * Middle Eastern composer kept independently. Imported LTR left-tab rulers are supported.
+ * Vertical type, bidi path type, nested overrides, bidi tracking/trailing spaces/tabs, mixed
+ * LTR type flowed into a shape, justified type and individually positioned characters remain
+ * refused by name; hidden RTL overflow also needs separate qualification.
  */
 class TextStories
 {

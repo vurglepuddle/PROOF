@@ -940,6 +940,7 @@ XML::Node *Builder::text(Node const &n)
     // Which only lines laid out in a frame follow: the lines here are placed by their anchors.
     if (story.area && one_alignment && !story.lines.empty()) common_style += std::string("text-align:") + align_of(story.lines.front()) + ";";
     if (story.illustrator_alignment) e->setAttribute(Text::LINE_ALIGNMENT_ATTRIBUTE, "illustrator");
+    e->setAttribute("proof:ai-text-composer", story.world_ready ? "middle-eastern" : "latin");
     if (story.rtl) common_style += "direction:rtl;";
     // Letters read from the right that Illustrator set from the left, as typed: the same here.
     if (story.unordered) {

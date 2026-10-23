@@ -59,8 +59,11 @@ Point/area type and ordinary type on one open or closed path now save as
 editable Illustrator stories. Imported automatic curve spacing uses a qualified
 font-metric approximation on smooth paths and retains its mode in native output.
 Very tight inward bends, corners and collapsed spacing paths remain guarded.
-Overflow clips by whole letter/word, retaining the complete editable story. The
-[current interchange reference](doc/PROOF-ai-interchange.md) gives each route's
+Overflow clips by whole letter/word, retaining the complete editable story.
+Bounded Arabic/Hebrew point and area type keeps direction and composer separately;
+mixed Latin/digit runs, Arabic vowel marks and lam–alef ligatures have targeted
+Illustrator checks. Nested overrides, bidi path type and bidi tracking stay guarded.
+The [current interchange reference](doc/PROOF-ai-interchange.md) gives each route's
 limits and CLI selection; the [implementation history](doc/PROOF-ai-interchange-history.md)
 retains the detailed recipes and Illustrator qualification.
 

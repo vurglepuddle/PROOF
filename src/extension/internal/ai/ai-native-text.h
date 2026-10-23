@@ -112,6 +112,7 @@ struct PointText
     std::optional<PathText> path; ///< Ordinary baseline-aligned type on a path.
     bool area = false;      ///< Area type.
     bool rtl = false;       ///< Its paragraphs read from right to left (Hebrew, Arabic).
+    bool world_ready = false; ///< Middle Eastern composer (paragraph feature 35), independently of direction (33).
     /// It has letters of a script read from the right that Illustrator set from the left,
     /// one after another as they were typed: it shows them backwards, and so are they set
     /// here. Its paragraphs read from the left.

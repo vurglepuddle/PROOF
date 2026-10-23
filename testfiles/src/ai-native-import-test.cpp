@@ -29,6 +29,7 @@
 #undef far
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib.h>
+#include <pango/pangocairo.h>
 #include <gtest/gtest.h>
 #include <tiffio.h>
 #include <zlib.h>
@@ -2044,10 +2045,10 @@ TEST_F(AiNativeImportTest, NamedParagraphStylesKeepAlignmentAndDrawing)
 TEST_F(AiNativeImportTest, ParagraphStylesInheritSparseCharacterDefaultsAndOverrides)
 {
     std::string const definitions =
-        "<< /0 << /5 << /35 1 /32 << /1 18 /8 100 /16 1 /18 false "
+        "<< /0 << /5 << /33 1 /35 1 /32 << /1 18 /8 100 /16 1 /18 false "
         "/53 << /0 << /0 0 /1 [1 0] >> >> >> >> >> >> "
         "<< /0 << /6 0 /5 << /32 << /1 24 >> >> >> >> "
-        "<< /0 << /6 1 /5 << /35 0 /32 << /8 150 >> >> >> >>";
+        "<< /0 << /6 1 /5 << /33 0 /35 0 /32 << /8 150 >> >> >> >>";
     std::string const runs = "<< /1 6 /0 << /0 2 >> >>";
     auto document = with_paragraphs(without_character_runs(text_document()), definitions, runs);
     auto inherited = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
@@ -2058,6 +2059,7 @@ TEST_F(AiNativeImportTest, ParagraphStylesInheritSparseCharacterDefaultsAndOverr
     EXPECT_TRUE(s.underline); EXPECT_FALSE(s.ligatures);
     EXPECT_EQ(s.fill->model, AN::Color::Model::Gray); EXPECT_EQ(s.fill->v[0], 0);
     EXPECT_FALSE(inherited->stories[0]->rtl); // Explicit child zero overrides parent one.
+    EXPECT_FALSE(inherited->stories[0]->world_ready);
     document = with_paragraphs(text_document("(Hello\\r)", 6, "ArialMT",
         "/1 30 /8 0 /16 0 /18 true"), definitions, runs);
     auto overridden = AN::read_text_document(text_setup(document), Geom::Point(100, 50));
@@ -2432,7 +2434,7 @@ TEST_F(AiNativeImportTest, PointTextAlignedParagraphsKeepEditableAnchors)
     EXPECT_TRUE(Geom::are_near(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(80, 60), 1e-9));
     // Not in a paragraph read from the right, whose line ends are elsewhere: set from its start.
     auto backwards = spaced;
-    backwards.replace(backwards.find("/5 << /0 2 >>"), 13, "/5 << /0 2 /35 1 >>");
+    backwards.replace(backwards.find("/5 << /0 2 >>"), 13, "/5 << /0 2 /33 1 >>");
     texts = AN::read_text_document(text_setup(backwards), Geom::Point(100, 50));
     ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
     EXPECT_EQ(texts->stories[0]->lines.at(0).alignment, 0u);
@@ -3806,15 +3808,16 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
     // end: 10 points in, 40 from the top.
     auto hebrew = [](std::string const &direction, int alignment = 0, bool ordered = true) {
         auto data = text_document("(\\376\\377\\005\\342\\005\\321\\005\\350\\005\\331\\000\\015)", 5, "ArialMT", "/1 32");
+        int const physical = direction == " /33 1" && alignment < 2 ? 1 - alignment : alignment;
         auto at = data.find(" /6 << /0 [");
-        data.insert(at, " /5 << /0 [ << /1 5 /0 << /0 << /5 << /0 " + std::to_string(alignment) + direction + " >> >> >> >> ] >>");
+        data.insert(at, " /5 << /0 [ << /1 5 /0 << /0 << /5 << /0 " + std::to_string(physical) + direction + " /35 " + (ordered ? "1" : "0") + " >> >> >> >> ] >>");
         // What Illustrator's composer for these scripts leaves with the segment.
         std::string const segment = "<< /99 /S >>";
         at = data.find(segment);
         if (ordered) data.replace(at, segment.size(), "<< /99 /S /15 << /0 5 /2 5 /5 true /7 << /0 5 >> >> >>");
         return data;
     };
-    auto read = AN::read_text_document(text_setup(hebrew(" /35 1")), Geom::Point(100, 50));
+    auto read = AN::read_text_document(text_setup(hebrew(" /33 1")), Geom::Point(100, 50));
     ASSERT_TRUE(read->stories.at(0)) << read->errors.at(0);
     EXPECT_TRUE(read->stories[0]->rtl);
     EXPECT_EQ(read->stories[0]->lines.at(0).alignment, 0u);
@@ -3831,10 +3834,10 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
         return drawn(b->document.get(), texts[0]);
     };
     std::string text_style, span_style;
-    auto rtl = build(" /35 1", &text_style, &span_style);
+    auto rtl = build(" /33 1", &text_style, &span_style);
     EXPECT_NE(text_style.find("direction:rtl;"), std::string::npos) << text_style;
     EXPECT_EQ(span_style, "text-anchor:end;");
-    auto ltr = build(" /35 0", &text_style, &span_style);
+    auto ltr = build(" /33 0", &text_style, &span_style);
     EXPECT_EQ(text_style.find("direction"), std::string::npos) << text_style;
     EXPECT_EQ(span_style, "text-anchor:start;");
     // Either way the line lies to the right of where it starts, in the same place: these
@@ -3845,12 +3848,12 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
     EXPECT_NEAR(rtl->left(), ltr->left(), 0.01);
     EXPECT_NEAR(rtl->width(), ltr->width(), 0.01);
     // A direction that isn't known refuses the story.
-    auto bad = AN::read_text_document(text_setup(hebrew(" /35 2")), Geom::Point(100, 50));
+    auto bad = AN::read_text_document(text_setup(hebrew(" /33 2")), Geom::Point(100, 50));
     ASSERT_EQ(bad->stories.size(), 1u);
     EXPECT_FALSE(bad->stories[0]);
     // Where Illustrator didn't put such letters in order it shows them backwards, set from
     // the left as they were typed. The story says so, and they are set that way here.
-    auto backwards = AN::read_text_document(text_setup(hebrew(" /35 0", 0, false)), Geom::Point(100, 50));
+    auto backwards = AN::read_text_document(text_setup(hebrew(" /33 0", 0, false)), Geom::Point(100, 50));
     ASSERT_EQ(backwards->stories.size(), 1u);
     ASSERT_TRUE(backwards->stories[0]) << backwards->errors.at(0);
     EXPECT_TRUE(backwards->stories[0]->unordered);
@@ -3858,7 +3861,7 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
     EXPECT_FALSE(read->stories[0]->unordered);
     EXPECT_FALSE(AN::same_drawing(*backwards->stories[0], *read->stories[0]));
     // Nothing says how a paragraph read from the right sets them unordered.
-    auto odd = AN::read_text_document(text_setup(hebrew(" /35 1", 0, false)), Geom::Point(100, 50));
+    auto odd = AN::read_text_document(text_setup(hebrew(" /33 1", 0, false)), Geom::Point(100, 50));
     ASSERT_EQ(odd->stories.size(), 1u);
     EXPECT_FALSE(odd->stories[0]);
     EXPECT_NE(odd->errors.at(0).find("read from the right"), std::string::npos) << odd->errors.at(0);
@@ -3882,14 +3885,14 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
         return out;
     };
     std::vector<std::string> notes;
-    auto const as_typed = places(hebrew(" /35 0", 0, false), &text_style, &notes);
+    auto const as_typed = places(hebrew(" /33 0", 0, false), &text_style, &notes);
     EXPECT_NE(text_style.find("direction:ltr;unicode-bidi:bidi-override;"), std::string::npos) << text_style;
     ASSERT_EQ(as_typed.size(), 4u);
     // The first letter typed is the leftmost, and so on.
     EXPECT_TRUE(std::is_sorted(as_typed.begin(), as_typed.end())) << as_typed[0] << " " << as_typed[3];
     EXPECT_TRUE(std::any_of(notes.begin(), notes.end(), [](std::string const &n) { return n.find("show backwards") != std::string::npos; }));
     // In order, it is the rightmost; and nothing is said.
-    auto const in_order = places(hebrew(" /35 0"), &text_style, &notes);
+    auto const in_order = places(hebrew(" /33 0"), &text_style, &notes);
     EXPECT_EQ(text_style.find("unicode-bidi"), std::string::npos) << text_style;
     ASSERT_EQ(in_order.size(), 4u);
     EXPECT_TRUE(std::is_sorted(in_order.rbegin(), in_order.rend())) << in_order[0] << " " << in_order[3];
@@ -3901,8 +3904,8 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
     // is set as its paragraph's last one is: from the left (3, and 6, justified all through),
     // from the right (4) or about its middle (5). These letters lie where they lay.
     for (auto const &[alignment, anchor] : {std::pair{3, "start"}, std::pair{6, "start"}}) {
-        auto const reference = build(" /35 0", &text_style, &span_style);
-        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(hebrew(" /35 0", alignment))));
+        auto const reference = build(" /33 0", &text_style, &span_style);
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(hebrew(" /33 0", alignment))));
         ASSERT_TRUE(b) << alignment;
         auto texts = elements(b->document->getReprRoot(), "svg:text");
         ASSERT_EQ(texts.size(), 1u);
@@ -3912,9 +3915,9 @@ TEST_F(AiNativeImportTest, ParagraphsReadFromTheRightKeepTheirEnds)
         EXPECT_NEAR(drawn_here->left(), reference->left(), 0.01) << alignment;
     }
     // Justified area type is another matter: its lines are stretched to its frame.
-    auto justified_point = AN::read_text_document(text_setup(hebrew(" /35 0", 4)), Geom::Point(100, 50));
+    auto justified_point = AN::read_text_document(text_setup(hebrew(" /33 0", 4)), Geom::Point(100, 50));
     ASSERT_TRUE(justified_point->stories.at(0)) << justified_point->errors.at(0);
-    auto unknown = AN::read_text_document(text_setup(hebrew(" /35 0", 7)), Geom::Point(100, 50));
+    auto unknown = AN::read_text_document(text_setup(hebrew(" /33 0", 7)), Geom::Point(100, 50));
     EXPECT_FALSE(unknown->stories.at(0));
 }
 
@@ -7822,6 +7825,177 @@ std::vector<std::pair<gunichar, Geom::Point>> set_characters(SPDocument *doc, XM
     return out;
 }
 
+TEST_F(AiNativeImportTest, MixedLtrBidiRunOrderMatchesPangoReferenceLayout)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial, which has Hebrew and Arabic, isn't installed";
+    for (auto const *contents : {"ABC אבגד 123", "ABC אבגד 123 (45)", "ABC العربية 123 (45)",
+                                 "123 אבגד ABC 456", "אבגד 123 ABC 456", "ABC لا 123"}) {
+        SCOPED_TRACE(contents);
+        auto *context = pango_font_map_create_context(pango_cairo_font_map_get_default());
+        pango_context_set_base_dir(context, PANGO_DIRECTION_LTR);
+        auto *reference = pango_layout_new(context);
+        pango_layout_set_auto_dir(reference, false);
+        auto *font = pango_font_description_from_string("Arial");
+        pango_font_description_set_absolute_size(font, 18 * PANGO_SCALE);
+        pango_layout_set_font_description(reference, font);
+        pango_layout_set_text(reference, contents, -1);
+        std::vector<std::pair<double, gunichar>> expected, actual;
+        for (auto const *at = contents; *at; at = g_utf8_next_char(at)) {
+            PangoRectangle position;
+            pango_layout_index_to_pos(reference, at - contents, &position);
+            expected.emplace_back(position.x + position.width / 2.0, g_utf8_get_char(at));
+        }
+        pango_font_description_free(font);
+        g_object_unref(reference);
+        g_object_unref(context);
+        auto doc = svg_document(std::string("<text id='t' x='20' y='40' style='font-family:Arial;"
+            "font-size:18px;direction:ltr'>") + contents + "</text>");
+        ASSERT_TRUE(doc);
+        doc->ensureUpToDate();
+        auto *text = cast<SPText>(doc->getObjectById("t"));
+        for (auto it = text->layout.begin(); it != text->layout.end(); it.nextCharacter()) {
+            actual.emplace_back(text->layout.characterBoundingBox(it).midpoint().x(), text->layout.characterAt(it));
+        }
+        auto visual_order = [](auto positions) {
+            std::stable_sort(positions.begin(), positions.end(), [](auto const &a, auto const &b) { return a.first < b.first; });
+            Glib::ustring result;
+            for (auto const &[position, character] : positions) result += character;
+            return result.raw();
+        };
+        EXPECT_EQ(visual_order(actual), visual_order(expected));
+    }
+}
+
+TEST_F(AiNativeImportTest, ParagraphDirectionIsIndependentOfComposer)
+{
+    for (unsigned direction = 0; direction < 2; ++direction) {
+        for (unsigned composer = 0; composer < 2; ++composer) {
+            auto source = aligned_text_document(2);
+            auto const at = source.find("/5 << /0 2 >>");
+            ASSERT_NE(at, std::string::npos);
+            source.replace(at, 13, "/5 << /0 2 /33 " + std::to_string(direction) + " /35 " + std::to_string(composer) + " >>");
+            auto const parsed = AN::read_text_document(text_setup(source), Geom::Point(100, 50));
+            ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+            EXPECT_EQ(parsed->stories[0]->rtl, direction != 0);
+            EXPECT_EQ(parsed->stories[0]->world_ready, composer != 0);
+            auto built = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(source)));
+            ASSERT_TRUE(built);
+            auto *repr = elements(built->document->getReprRoot(), "svg:text").at(0);
+            EXPECT_EQ(attr(repr, "style").find("direction:rtl") != std::string::npos, direction != 0);
+            EXPECT_EQ(attr(repr, "proof:ai-text-composer"), composer ? "middle-eastern" : "latin");
+            auto const written = AN::write_records(built->document.get());
+            ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+            auto const reread = AN::read_text_document(written.records, {});
+            ASSERT_TRUE(reread->stories.at(0)) << reread->errors.at(0);
+            EXPECT_EQ(reread->stories[0]->world_ready, composer != 0);
+            EXPECT_EQ(reread->stories[0]->rtl, direction != 0);
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, RtlPointTextLeftAnchorExcludesTheReturnsLayoutAdvance)
+{
+    // Illustrator's ME composer places the return before visible RTL text. Even
+    // a physically left-aligned line has a negative segment offset for that
+    // advance. Its editable anchor remains the frame/line anchor, at any size.
+    for (auto const *offset : {"-5.00098", "-2.3", "0"}) {
+        auto source = aligned_text_document(1);
+        auto at = source.find("/5 << /0 1 >>");
+        ASSERT_NE(at, std::string::npos);
+        source.replace(at, 13, "/5 << /0 1 /33 1 /35 1 >>");
+        at = source.find("[-57.6 0]");
+        ASSERT_NE(at, std::string::npos);
+        source.replace(at, 9, std::string("[") + offset + " 0]");
+        auto parsed = AN::read_text_document(text_setup(source), Geom::Point(100, 50));
+        ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+        auto const &story = *parsed->stories[0];
+        EXPECT_EQ(story.lines.at(0).alignment, 0u);
+        EXPECT_TRUE(Geom::are_near(story.lines[0].origin * story.to_art, Geom::Point(80, 60), 1e-9));
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenBidirectionalTypeRetainsDirectionOrderAndAnchors)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial, which has Hebrew, isn't installed";
+    struct Case { char const *direction; char const *anchor; char const *contents; bool unordered = false; };
+    Case const cases[] = {
+        {"rtl", "start", "Latin text 123"},
+        {"rtl", "middle", "Latin text 123"},
+        {"rtl", "end", "Latin text 123"},
+        {"rtl", "start", "אבגד"},
+        {"rtl", "middle", "אבגד"},
+        {"rtl", "end", "אבגד"},
+        {"ltr", "start", "אבגד"},
+        {"ltr", "middle", "ABC אבגד 123"},
+        {"rtl", "middle", "ABC אבגד 123"},
+        {"rtl", "start", "العربية"},
+        {"rtl", "middle", "العَرَبِيَّة"},
+        {"rtl", "middle", "لا"},
+        {"rtl", "end", "السلام عليكم"},
+        {"rtl", "end", "ABC العربية 123"},
+        {"ltr", "end", "<tspan fill='#ff0000'>אב</tspan>גד"},
+        {"ltr", "start", "ABC ב 123", true},
+        {"ltr", "middle", "אבגד", true},
+        {"rtl", "start", "<tspan sodipodi:role='line' x='140' y='30'>אבגד</tspan>"
+                         "<tspan sodipodi:role='line' x='140' y='55'>אב</tspan>"},
+    };
+    for (auto const &c : cases) {
+        SCOPED_TRACE(::testing::Message() << c.direction << "/" << c.anchor << "/" << c.contents);
+        auto doc = svg_document(std::string("<text id='t' x='140' y='30' xml:space='preserve' "
+            "style='font-family:Arial;font-size:16px;direction:") + c.direction + ";text-anchor:" + c.anchor +
+            (c.unordered ? ";unicode-bidi:bidi-override" : "") + "'>" + c.contents + "</text>");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const parsed = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+        EXPECT_EQ(parsed->stories[0]->rtl, std::string(c.direction) == "rtl");
+        EXPECT_EQ(parsed->stories[0]->unordered, c.unordered);
+        EXPECT_EQ(parsed->stories[0]->world_ready, !c.unordered);
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        auto const before = set_characters(doc.get(), doc->getObjectById("t")->getRepr());
+        auto const after = set_characters(again->document.get(), elements(again->document->getReprRoot(), "svg:text").at(0));
+        ASSERT_EQ(before.size(), after.size());
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            EXPECT_EQ(before[i].first, after[i].first);
+            EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02) << i;
+            EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02) << i;
+        }
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenRtlAreaTypeKeepsPhysicalParagraphAlignment)
+{
+    if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial, which has Hebrew, isn't installed";
+    for (auto const *alignment : {"start", "end", "center", "left", "right"}) {
+        SCOPED_TRACE(alignment);
+        auto doc = svg_document(std::string("<text id='t' proof:text-frame='M20 10 H180 V80 H20 Z' "
+            "style='font-family:Arial;font-size:16px;direction:rtl;text-align:") + alignment + "'>"
+            "<tspan x='30' y='40' style='text-anchor:end'>אבגד</tspan></text>");
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const parsed = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(parsed->stories.at(0)) << parsed->errors.at(0);
+        auto const &story = *parsed->stories[0];
+        EXPECT_TRUE(story.rtl);
+        EXPECT_TRUE(story.area);
+        unsigned const expected = std::string(alignment) == "center" ? 2 :
+            (std::string(alignment) == "start" || std::string(alignment) == "right") ? 1 : 0;
+        EXPECT_EQ(story.lines.at(0).paragraph_alignment, expected);
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        auto const before = set_characters(doc.get(), doc->getObjectById("t")->getRepr());
+        auto const after = set_characters(again->document.get(), elements(again->document->getReprRoot(), "svg:text").at(0));
+        ASSERT_EQ(before.size(), after.size());
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            EXPECT_NEAR(before[i].second.x(), after[i].second.x(), 0.02);
+            EXPECT_NEAR(before[i].second.y(), after[i].second.y(), 0.02);
+        }
+    }
+}
+
 TEST_F(AiNativeImportTest, WrittenTypeReadsBackWithEveryCharacterWhereItWas)
 {
     // Point type: lines that are paragraphs about one anchor, runs of fonts, colours, tracking,
@@ -8629,8 +8803,16 @@ TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
         {R"(<text x="10" y="20" dx="0 3">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
         {R"(<text x="10" y="20" rotate="0 15">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
         {R"(<text x="10" y="20" textLength="80">Hi</text>)", "type stretched to a length (textLength)"},
-        {R"(<text x="10" y="20" style="direction:rtl">Hi</text>)", "type that reads from right to left"},
-        {"<text x=\"10\" y=\"20\">\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d</text>", "letters of scripts read from right to left"},
+        {R"(<text x="10" y="20" style="direction:rtl">Hi<tspan direction="ltr">there</tspan></text>)",
+         "type with mixed character directions or reading-order overrides"},
+        {R"(<text x="10" y="20" style="unicode-bidi:isolate">Hi</text>)", "type with unsupported reading-order overrides"},
+        {R"(<text x="10" y="20" style="direction:rtl;unicode-bidi:bidi-override">Hi</text>)",
+         "type with unsupported reading-order overrides"},
+        {R"(<text x="10" y="20" proof:ai-text-composer="unknown">Hi</text>)", "type with an unknown paragraph composer"},
+        {"<text x=\"10\" y=\"20\" proof:ai-text-composer=\"middle-eastern\" proof:tab-origin=\"10\" "
+         "proof:tab-interval=\"36\" xml:space=\"preserve\">A\tB</text>", "tabs with a Middle Eastern composer"},
+        {"<text x=\"10\" y=\"20\" style=\"letter-spacing:1px\">\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d</text>",
+         "bidirectional type with tracking or trailing spaces"},
         {"<text x=\"10\" y=\"20\" xml:space=\"preserve\">A\tB</text>", "tabs in type without tab stops"},
         {"<defs><rect id=\"a\" width=\"200\" height=\"50\"/></defs><text xml:space=\"preserve\" proof:tab-origin=\"0\" "
          "proof:tab-interval=\"36\" style=\"shape-inside:url(#a)\">A\tB</text>", "tabs in type flowed into a shape"},

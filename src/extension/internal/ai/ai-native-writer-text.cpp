@@ -256,16 +256,19 @@ std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *tex
     bool aligned = false;
     for (auto const *o = owner; o && !aligned; o = o == text ? nullptr : o->parent) aligned = o->style->text_align.set;
     auto const *st = owner->style;
+    bool const rtl = st->direction.computed == SP_CSS_DIRECTION_RTL;
     if (aligned) {
         switch (st->text_align.computed) {
             case SP_CSS_TEXT_ALIGN_JUSTIFY: return {};
-            case SP_CSS_TEXT_ALIGN_END:
             case SP_CSS_TEXT_ALIGN_RIGHT: return 1;
+            case SP_CSS_TEXT_ALIGN_LEFT: return 0;
+            case SP_CSS_TEXT_ALIGN_END: return rtl ? 0 : 1;
             case SP_CSS_TEXT_ALIGN_CENTER: return 2;
-            default: return 0;
+            default: return rtl ? 1 : 0;
         }
     }
-    return st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_END ? 1 : st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_MIDDLE ? 2 : 0;
+    return st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_MIDDLE ? 2 :
+           (st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_END) != rtl ? 1 : 0;
 }
 
 /// The tab stops a character's tabs step to: the nearest element up to the text that has PROOF's
@@ -420,6 +423,11 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (area || flowed) why.insert("type on a path in a frame");
     }
     if (!text->is_horizontal()) why.insert("vertical type");
+    bool const rtl = text->style->direction.computed == SP_CSS_DIRECTION_RTL;
+    auto const bidi = text->style->unicode_bidi.computed;
+    bool const unordered = !rtl && bidi == SP_CSS_UNICODE_BIDI_OVERRIDE;
+    if (bidi != SP_CSS_UNICODE_BIDI_NORMAL && !unordered) why.insert("type with unsupported reading-order overrides");
+    if (on_path && (rtl || unordered)) why.insert("bidirectional type on a path");
     // What the layout doesn't keep of each character: pieces moved, turned or stretched.
     std::function<void(SPObject const *)> look = [&](SPObject const *o) {
         if (on_path && o != text && o != on_path && (o->getAttribute("x") || o->getAttribute("y"))) {
@@ -430,8 +438,10 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         }
         if (o->getAttribute("textLength")) why.insert("type stretched to a length (textLength)");
         if (auto const *style = o->style) {
-            if (style->direction.computed == SP_CSS_DIRECTION_RTL) why.insert("type that reads from right to left");
-            if (style->unicode_bidi.computed != SP_CSS_UNICODE_BIDI_NORMAL) why.insert("type with its reading order overridden");
+            if ((style->direction.computed == SP_CSS_DIRECTION_RTL) != rtl ||
+                (style->unicode_bidi.set && style->unicode_bidi.computed != bidi)) {
+                why.insert("type with mixed character directions or reading-order overrides");
+            }
         }
         for (auto const &child : o->children) look(&child);
     };
@@ -489,6 +499,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         std::optional<bool> typed_break; ///< True for a line separator.
         double right = 0;        ///< Where its last character's advance ends.
         double last_spacing = 0; ///< The tracking after its last character.
+        double extent_left = 0, extent_right = 0; ///< Physical advance bounds, including reordered runs.
+        bool ordered_rtl = false; ///< Contains script characters resolved by the bidi algorithm.
         std::optional<Text::LeftTabStops> tabs; ///< The stops its tabs step to.
         std::vector<Char> chars;
     };
@@ -536,8 +548,17 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             why.insert("control characters in type");
             break;
         }
-        if (reads_from_the_right(c)) {
-            why.insert("letters of scripts read from right to left");
+        if ((c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) {
+            why.insert("explicit directional controls on type");
+            break;
+        }
+        bool const right_script = reads_from_the_right(c);
+        if (right_script && on_path) {
+            why.insert("bidirectional type on a path");
+            break;
+        }
+        if (right_script && unordered && g_unichar_get_script(c) == G_UNICODE_SCRIPT_ARABIC) {
+            why.insert("Arabic shaping in type with its reading order overridden");
             break;
         }
         if (on_path) {
@@ -552,6 +573,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         }
         auto [found, fresh] = lines.try_emplace(layout.chunkIndex(it));
         auto &line = found->second;
+        line.ordered_rtl |= right_script && !unordered;
         if (stops) {
             if (line.tabs && *line.tabs != *stops) {
                 why.insert("lines of type with two tab rulers");
@@ -562,6 +584,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (fresh) {
             line.anchor = layout.chunkPlacement(it);
             line.left = layout.characterAnchorPoint(it)[Geom::X];
+            line.extent_left = layout.characterBoundingBox(it).left();
+            line.extent_right = layout.characterBoundingBox(it).right();
             line.layout_line = layout.lineIndex(it);
             line.paragraph = layout.paragraphIndex(it);
             // Inkscape aligns the lines it flows into a shape by their paragraph. An import's area
@@ -583,7 +607,43 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         auto const n = g_unichar_to_utf8(c, bytes);
         line.chars.push_back({std::string(bytes, n), c > 0xffff ? 2u : 1u, string->parent});
         line.right = layout.characterBoundingBox(it).right();
+        line.extent_left = std::min(line.extent_left, layout.characterBoundingBox(it).left());
+        line.extent_right = std::max(line.extent_right, layout.characterBoundingBox(it).right());
         line.last_spacing = string->parent->style->letter_spacing.computed;
+    }
+    for (auto &[index, line] : lines) {
+        if (line.ordered_rtl) {
+            line.left = line.extent_left;
+            line.right = line.extent_right;
+            // The logical last character need not be the physical rightmost one.
+            // Qualify tracking and end-space alignment separately before widening this.
+            bool const tracked = std::any_of(line.chars.begin(), line.chars.end(), [](auto const &c) {
+                return std::abs(c.owner->style->letter_spacing.computed) > 1e-9;
+            });
+            auto const &last = line.chars.back().utf8;
+            if (tracked || g_unichar_isspace(g_utf8_get_char(last.c_str()))) {
+                why.insert("bidirectional type with tracking or trailing spaces");
+            }
+        }
+        if (line.tabs && (rtl || unordered || line.ordered_rtl)) why.insert("tabs with bidirectional type");
+    }
+    if (!why.empty()) return finish();
+    auto const *composer = text->getAttribute("proof:ai-text-composer");
+    if (composer && std::strcmp(composer, "middle-eastern") != 0 && std::strcmp(composer, "latin") != 0) {
+        why.insert("type with an unknown paragraph composer");
+    }
+    bool const ordered_script = std::any_of(lines.begin(), lines.end(), [](auto const &entry) {
+        return entry.second.ordered_rtl;
+    });
+    bool const world_ready = composer ? std::strcmp(composer, "middle-eastern") == 0 : !unordered && (rtl || ordered_script);
+    if (world_ready && unordered) why.insert("a Middle Eastern composer with forced typed-order text");
+    if (!world_ready && ordered_script) why.insert("right-to-left script ordered by a Latin composer");
+    if (on_path && world_ready) why.insert("a Middle Eastern composer on a path");
+    if (world_ready && std::any_of(lines.begin(), lines.end(), [](auto const &entry) { return bool(entry.second.tabs); })) {
+        why.insert("tabs with a Middle Eastern composer");
+    }
+    if (flowed && !rtl && std::any_of(lines.begin(), lines.end(), [](auto const &entry) { return entry.second.ordered_rtl; })) {
+        why.insert("mixed-direction type flowed into a shape");
     }
     if (!why.empty()) return finish();
     if (lines.empty() && overflow.find_first_not_of('\n') == std::string::npos) {
@@ -653,6 +713,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     // LINE_ALIGNMENT_ATTRIBUTE); elsewhere the anchor Illustrator centres a line on, or ends it
     // at, is where that width from the line's start puts it.
     auto aligned_at = [&](Line const &l) {
+        if (l.ordered_rtl) return l.anchor;
         double const share = l.alignment == 2 ? 0.5 : l.alignment == 1 ? 1.0 : 0.0;
         if (!share || path) return l.anchor;
         return Geom::Point(l.left + share * (l.right - l.left - l.last_spacing), l.anchor.y());
@@ -910,9 +971,11 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     };
     auto end_paragraph = [&] {
         auto const *row = *paragraph_start;
-        auto const alignment = row->line ? row->line->alignment : 0u;
+        auto const physical_alignment = row->line ? row->line->alignment : 0u;
+        auto const alignment = rtl && physical_alignment != 2 ? 1u - physical_alignment : physical_alignment;
         bool const hyphenate = area && !flowed && row->line && says(row->line->chars.front().owner, text, HYPHENATE_ATTRIBUTE, "true");
-        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {}{}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
+        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {} /33 {} /35 {}{}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
+                                      rtl ? 1 : 0, world_ready ? 1 : 0,
                                       hyphenate ? " /9 true" : "", paragraph_tabs ? ruler(*paragraph_tabs, s) : "",
                                       paragraph_units);
         paragraph_units = 0;
@@ -976,7 +1039,9 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         double const across = p.line && !path ? (p.line->left - origin.x()) * s : 0.0;
         laid += "<< /99 /L";
         if (area || i > 0) laid += " /0 << /0 " + pair(0, (p.y - origin.y()) * s) + " >>";
-        laid += std::format(" /6 [ << /99 /S /15 << /0 {} /2 0 /5 false >> /0 << /0 {} >> >> ] >> ", units, pair(across, 0));
+        std::string const ordered = p.line && p.line->ordered_rtl ? std::format(" /7 << /0 {} >>", units) : "";
+        laid += std::format(" /6 [ << /99 /S /15 << /0 {} /2 0 /5 {}{} >> /0 << /0 {} >> >> ] >> ", units,
+                            ordered.empty() ? "false" : "true", ordered, pair(across, 0));
     }
     // What an import's frame was too small to show: its paragraphs, in the last character's features.
     Row const none{nullptr, 0};
