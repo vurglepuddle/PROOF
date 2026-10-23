@@ -2775,3 +2775,22 @@ The owner's clarified v1 plan closes correctness gaps in the current qualified
 subset, then adds bounded editable type as its final implementation family.
 Advanced features remain explicit later extensions rather than prerequisites
 for type; see the current interchange reference.
+
+## Path type writing qualification (2026-10-23)
+
+The third type slice writes editable open/closed path type, including SVG's
+reversed side and intervals that wrap once. Its original implementation is
+2201404e36 on ai-interchange; shared vector-workspace remains at the
+owner-approved area-type commit de33ebdd0c pending another merge decision.
+The eight saved Illustrator 29.2.1 controls retain stories and exact brackets,
+reopen natively and qualify placement within the documented raster edge bounds.
+Source options survive as SVG provenance; native saving follows PROOF's current
+arc-length layout and omits Illustrator's unimplemented automatic spacing.
+
+Nine focused units and six PDF export controls pass in the follow-up. Four of
+nine targeted copied fallback cases now import natively; their writers still
+refuse unavailable picture links. Five remain guarded (Flip, character scaling,
+linked frames). The historical broad checkpoint is not updated. No full corpus,
+whole lite set or new Illustrator session. Detailed records, exact bounds,
+refusals and remaining spacing work are in
+[Path type written](PROOF-ai-native-records.md#path-type-written-2026-10-23).

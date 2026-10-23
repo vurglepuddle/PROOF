@@ -561,6 +561,7 @@ public:
     std::size_t unused_gradient_end_stops = 0;
     std::size_t glyphs_missing_text = 0; ///< Text objects with characters their font lacks.
     std::size_t path_text = 0; ///< Parameter brackets expanded to editable path distances.
+    std::size_t path_options = 0; ///< Source options retained; automatic curve spacing approximated.
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
     std::size_t mesh_cut = 0; ///< Mesh patches bent through anchors, cut into cells there.
@@ -723,7 +724,7 @@ void Builder::run()
         auto const foreign = foreign_error;
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
-                                       gradient_text, paragraph_styled_text, path_text, mesh_outlines, mesh_cut, mesh_split,
+                                       gradient_text, paragraph_styled_text, path_text, path_options, mesh_outlines, mesh_cut, mesh_split,
                                        foreign_objects, hidden_foreign, unused_gradient_end_stops);
         auto const id = pattern_tile(int(i));
         bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
@@ -731,7 +732,7 @@ void Builder::run()
         link_error = error;
         foreign_error = foreign;
         std::tie(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts, hidden_links_missing,
-                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, path_text, mesh_outlines,
+                 substituted_text, glyphs_missing_text, unordered_text, gradient_text, paragraph_styled_text, path_text, path_options, mesh_outlines,
                  mesh_cut, mesh_split, foreign_objects, hidden_foreign, unused_gradient_end_stops) = counts;
         if (placed) continue;
         for (auto *child = _defs->firstChild(); child; child = child->next()) {
@@ -804,6 +805,7 @@ XML::Node *Builder::text(Node const &n)
     auto e = create("svg:text");
     if (story.paragraph_styles_expanded) ++paragraph_styled_text;
     if (story.path) ++path_text;
+    if (story.path && !story.path->source_options.empty()) ++path_options;
     e->setAttribute("xml:space", "preserve");
     // Type an appearance drew isn't the object's own text: its story is told apart.
     e->setAttribute(n.text_proxy ? "proof:ai-drawn-story" : "proof:ai-story", std::to_string(*n.story));
@@ -958,6 +960,9 @@ XML::Node *Builder::text(Node const &n)
             span->setAttribute("startOffset", num(line.alignment == 2 ? (start + end) / 2 : line.alignment == 1 ? end : start));
             span->setAttribute("proof:path-start", num(start));
             span->setAttribute("proof:path-end", num(end));
+            if (!story.path->source_options.empty()) {
+                span->setAttribute("proof:ai-path-options", story.path->source_options);
+            }
         }
         // Explicit ATE line positions must remain SVG positions. role="line"
         // asks Inkscape to reflow the line and discard a single x/y pair.
@@ -2442,6 +2447,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
     if (b.path_text) {
         notes.push_back(count(b.path_text, "path text object's", "path text objects'") +
                         " start and end brackets are kept as distances along the editable path; Illustrator's parameter brackets were left out");
+    }
+    if (b.path_options) {
+        notes.push_back(count(b.path_options, "path text object's", "path text objects'") +
+                        " source options are kept as metadata; automatic curve spacing is approximated with arc-length spacing");
     }
     if (b.overflowing_text) {
         notes.push_back(count(b.overflowing_text, "text frame holds", "text frames hold") +

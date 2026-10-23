@@ -2715,3 +2715,88 @@ it, though it draws it with none: a centred or right-aligned line before one
 was set off its anchor by that width (3.2 pt for 14 pt Arial). It is measured
 with none now (`Layout-TNG-Compute.cpp`, `_measureUnbrokenSpan`), and the line
 sits where Illustrator sets it.
+
+## Path type written (2026-10-23)
+
+The third bounded type-writing slice follows point and area type. A text object
+holding one `textPath` becomes Illustrator path type: frame kind `/0 2`, its
+matrix `/2`, cubic path points in `/1 /0` and brackets `/6 [start end]`.
+Its `/AI11Text` object also carries that path as `/Art` before `/ConfiningPath`.
+Original stories, Unicode and supported character runs stay editable.
+
+The referenced shape's transform is included and `side="right"` reverses its
+path. Each segment is cubic; a line's handles lie on its endpoints. Brackets
+are segment index plus cubic time, found from arc length. Imported
+`proof:path-start/end` must agree with `startOffset`. Ordinary SVG type derives
+its interval from start offset and start/middle/end alignment; it must fit.
+Closed paths can run once beyond their own start. The reader accepts an end
+past the final segment or normalized before the start, within one turn; a
+nonzero whole-turn range can normalize to equal places. Identical raw brackets
+remain invalid. An import's hidden overflow stays in the story and remains
+hidden on canvas/PDF; native saving keeps its active interval.
+
+The reader measures distances on the original cubics before `Path::close()`
+can replace an endpoint-handled closing cubic with a line. This fixes timing
+on a closed path's final straight side. Layout fitting, character bounds,
+nearest-cursor lookup and cursor shape wrap round a closed path consistently.
+Existing short/invalid/end-edited intervals still hide the same glyphs in PDF.
+
+### Source path options and spacing
+
+The frame's `/11` dictionary is bounded and validated. Keys 4 and 18 accept
+finite numbers (Illustrator recalculates them); 22 accepts a finite number and
+6 a Boolean. Illustrator 29.2.1 drops 6/22 when supplied without 4/18. False 0
+and 7 and zero 1/2 are accepted defaults. Flip (`0 true`), nonzero effects (1),
+non-baseline alignment (2), `7 true`, malformed types and unknown keys retain
+explicit refusal. A changed cache number alone no longer rejects the story.
+This is not a mapping of all type-on-path settings.
+
+Validated options survive SVG save/reopen on `textPath` as
+`proof:ai-path-options`, a canonical dictionary body of scalar values.
+Appearance-story comparisons conservatively distinguish different source
+options. Imports carrying them report that automatic curve spacing is
+approximated by arc-length spacing. Native AI output deliberately omits `/11`,
+including for imports: Illustrator then draws the same current layout as
+PROOF and its fresh PDF preview. The working SVG keeps the original metadata;
+native output does not retain the original automatic-spacing behaviour.
+
+Illustrator's own option-bearing path type spaces more tightly around curves.
+The local Arial 12 pt spike fits an effective raised-path distance of about
+1.93 pt; this is an observation for that font/control, not a general rule or a
+shipped constant. Its dependence on font metrics, type size and other settings
+remains unqualified. The existing visual gate is unchanged. Adobe's public
+[Type on a path reference](https://helpx.adobe.com/illustrator/using/creating-type-path.html)
+describes user-facing effects/alignment/spacing; the numbered keys above come
+from the independent saved controls, not from that guide.
+
+### Refusals and qualification
+
+Unsupported forms include several/partial paths, a missing or multi-piece
+path, invalid/moved brackets, several lines, overflow of ordinary SVG type,
+path type inside an area frame, stretched/skewed placement, shifted baselines,
+character x/y placement, underline/strikethrough and other unsupported type
+features. Modern saving names the actual limitation; Illustrator 7 still
+refuses all type.
+
+Illustrator 29.2.1 opens the eight-case control as editable path type: left,
+centre, right, reversed side, straight line, centred across a circle's start,
+a whole turn, and the final corner of a rectangle. Re-save preserves every
+story and bracket exactly, including `[0 4]`, `[2 6]` and
+`[3.32635 7.32635]`; its return opens natively. At 144 dpi, master/native/return
+have zero dark ink pixels farther than two pixels from Illustrator's drawing;
+page component mean difference is about .132, maximum 179 at edges. One extra
+PROOF column is provably white and excluded; images are neither shifted nor
+rescaled. These are placement/edge bounds for these controls, not pixel identity
+or automatic-spacing qualification, and not an Illustrator 30.6 check.
+
+Follow-up validation: nine focused path-type units (including metadata
+save/reopen, conservative refusals and native normalization), six path/PDF
+export controls, and the exact nine copied fallback cases. Four now pass the
+native gate (`0b58f4b842`, `35e3486b58`, `56dacaefaf`, `b6c58bcfdd`); all four
+native writes still refuse missing links. No companions were available beside
+the intake copies or in their recorded relative folders. The other five retain
+fallback for Flip (one), character scaling (three) or linked frames (one).
+No new artwork writer acceptance or lite case is claimed. Earlier importer
+202, reader 79, layout 2/2 and native smoke 37/37 remain the prior slice's
+evidence; they are not fresh reruns. No full corpus/census, whole lite set or
+new Illustrator session in this qualification follow-up.

@@ -30,7 +30,8 @@ file exchange.
 - **Illustrator interchange.** Read supported native `.ai` artwork, checked
   against its PDF pages. **Save As** writes native layers, smooth paths, inks,
   transparency and blend modes, supported linear/radial gradient fills and
-  strokes, patterns, supported editable mesh patches, greyscale opacity masks, embedded pictures and local
+  strokes, supported editable point/area/path type, patterns, mesh patches,
+  greyscale opacity masks, embedded pictures and local
   raster links; **Save a Copy** also
   offers Illustrator 7 records and PDF-based RGB interchange.
   SVG keeps features the native writer cannot write yet.
@@ -47,13 +48,17 @@ native pass can still carry explicit notes about reduced live editing controls.
 | Route | Current support |
 |---|---|
 | **Open native `.ai`** | Layers, paths/clips, process/spot colours, profiles, gradients, patterns, supported meshes/masks, pictures and supported editable type |
-| **Save As: Adobe Illustrator (native)** | Fresh editable records and PDF 1.7 pages: named artboards/layers, paths, inks/tints, supported linear/radial and Oklab gradients, patterns, independent editable mesh patches, grey vector opacity masks, object/group transparency and supported pictures/raster links |
+| **Save As: Adobe Illustrator (native)** | Fresh editable records and PDF 1.7 pages: named artboards/layers, paths, inks/tints, supported linear/radial and Oklab gradients, patterns, independent editable mesh patches, grey vector opacity masks, object/group transparency, supported pictures/raster links and editable point, area and ordinary path type |
 | **Save a Copy: Adobe Illustrator 7** | A qualified opaque subset on one artboard, with Windows-1252 names; no PDF preview or retained document ICC profile |
 | **Save a Copy: Illustrator interchange (PDF-based)** | Broader RGB PDF artwork; native layers and print-ink identity are not retained |
 
 Unsupported native output is refused by name, preserving the previous file.
 The modern writer requires PROOF's bundled PDF backend. Keep SVG as the working
-master for features it cannot write yet, including live type. The
+master for features it cannot write yet, including unsupported type layouts.
+Point/area type and ordinary type on one open or closed path now save as
+editable Illustrator stories. Imported automatic curve spacing is approximated
+with arc-length spacing; source options stay in SVG metadata, while native
+output follows PROOF's current drawing. The
 [current interchange reference](doc/PROOF-ai-interchange.md) gives each route's
 limits and CLI selection; the [implementation history](doc/PROOF-ai-interchange-history.md)
 retains the detailed recipes and Illustrator qualification.
@@ -106,7 +111,8 @@ fall outside that subset. Opaque mesh writing retains its prior bounds;
 object/group opacity still applies once to the complete object.
 
 The v1 goal is the qualified interchange subset plus bounded editable type
-writing, which is the next implementation family. Advanced gradients/meshes,
+writing. Point, area and ordinary path type are implemented; wider type
+features and the remaining qualification are still under way. Advanced gradients/meshes,
 richer masks/patterns, symbols, packaging and broader overprint follow v1,
 one feature at a time.
 

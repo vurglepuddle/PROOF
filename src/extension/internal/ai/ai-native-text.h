@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /** @file
- * Bounded reading of Illustrator point-type and area-type stories. The numeric key
+ * Bounded reading of Illustrator point, area and ordinary path-type stories. The numeric key
  * meanings follow VectorCraft's ate.rs at 4cf912f (MIT; LICENSES/MIT-VectorCraft.txt),
  * Copyright (c) 2026 ArtCraft Team and the VectorCraft contributors.
  * PROOF keeps explicit line origins and UTF-16 run lengths, reads area type's frames,
@@ -94,6 +94,10 @@ struct PathText
     /// Active portion, as distances along that path. Round a closed path the end can be past
     /// the path's length: the type runs on round past the path's start.
     double start = 0, end = 0;
+    /// Validated source /11 options, a dictionary body. Retained as proof:ai-path-options
+    /// in SVG, not interpreted as layout instructions. Illustrator's automatic spacing on
+    /// curves is not yet reproduced; native saving writes PROOF's current arc-length layout.
+    std::string source_options;
 };
 
 /**

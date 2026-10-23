@@ -706,18 +706,34 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
     }
     if (on_path) {
-        // Only the default option values saved by Illustrator's ordinary pathText
-        // control are understood. Unknown effects, flips and alignments fail closed.
+        PathText path;
+        // Illustrator 29.2.1 recalculates 4/18 and drops 6/22 when supplied alone; their
+        // recorded values are not an unsupported effect. Keep validated scalar options as
+        // provenance, but do not reproduce the tighter automatic spacing their presence can
+        // enable on curves. The visual gate still decides whether that approximation fits.
+        // Actual flips, effects and non-baseline alignments remain unsupported.
         if (auto const it = carries.dict.find("11"); it != carries.dict.end()) {
             if (it->second.kind != Value::Dictionary) throw Bad("invalid path type options");
             for (auto const &[key, value] : it->second.dict) {
-                bool const known_default = ((key == "4" || key == "18") && value.num() == 10) ||
-                    (key == "22" && value.num() == 0.025) ||
-                    ((key == "6" || key == "7") && !value.flag());
-                if (!known_default) throw Bad("nondefault path type options aren't supported yet");
+                bool const numeric = key == "4" || key == "18" || key == "22" || key == "1" || key == "2";
+                bool const flag = key == "0" || key == "6" || key == "7";
+                if (numeric) {
+                    auto const n = value.num(); // Includes type and finiteness checks.
+                    if ((key == "1" || key == "2") && n != 0) throw Bad("nondefault path type options aren't supported yet");
+                    char buffer[64];
+                    auto const converted = std::to_chars(buffer, buffer + sizeof(buffer), n);
+                    if (converted.ec != std::errc{}) throw Bad("invalid path type options");
+                    path.source_options += "/" + key + " " + std::string(buffer, converted.ptr) + " ";
+                } else if (flag) {
+                    auto const b = value.flag();
+                    if (key != "6" && b) throw Bad("nondefault path type options aren't supported yet");
+                    path.source_options += "/" + key + (b ? " true " : " false ");
+                } else {
+                    throw Bad("nondefault path type options aren't supported yet");
+                }
             }
+            if (!path.source_options.empty()) path.source_options.pop_back();
         }
-        PathText path;
         // Even a straight Illustrator segment retains cubic parameterisation:
         // t=0.25 is 15.625% along a cubic with handles at its endpoints.
         path.outline = frame_outline(frame.get("1").get("0"), true);
@@ -1197,6 +1213,7 @@ bool same_drawing(PointText const &a, PointText const &b)
     if (a.empty != b.empty || a.rtl != b.rtl || a.unordered != b.unordered || a.lines.size() != b.lines.size()) return false;
     if (bool(a.path) != bool(b.path)) return false;
     if (a.path && (a.path->start != b.path->start || a.path->end != b.path->end ||
+                   a.path->source_options != b.path->source_options ||
                    a.path->outline * a.to_art != b.path->outline * b.to_art)) return false;
     auto same_style = [](TextStyle const &s, TextStyle const &t) {
         return s.font == t.font && s.design == t.design && s.size == t.size && s.fill == t.fill && s.stroke == t.stroke &&

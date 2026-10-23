@@ -960,6 +960,9 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         out.frame = *outline;
     } else if (path) {
         // The path the same way; Illustrator's kind for path type (2), and its brackets.
+        // Do not re-emit proof:ai-path-options from imports: their automatic curve spacing
+        // differs from PROOF's current layout. Omitting /11 keeps Illustrator's editable
+        // text consistent with the fresh PDF preview. The original options stay in SVG.
         std::string points;
         for (auto const &c : segments) {
             for (unsigned k = 0; k < 4; ++k) points += " " + real(c[k].x() * s) + " " + real(c[k].y() * s);

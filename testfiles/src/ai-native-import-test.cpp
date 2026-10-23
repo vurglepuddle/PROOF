@@ -1693,8 +1693,17 @@ TEST_F(AiNativeImportTest, PathTypeRefusesUnverifiedOptionsAndCharacterSettings)
     };
     auto ordinary = read({}, "/11 << /4 10 /18 10 /22 0.025 /6 false /7 false >>");
     ASSERT_TRUE(ordinary->stories[0]) << ordinary->errors[0];
-    for (auto options : {"/11 << /0 true >>", "/11 << /4 12 >>", "/11 << /18 12 >>", "/11 << /22 0.05 >>",
-                         "/11 << /6 true >>", "/11 << /7 true >>", "/11 0", "/11 << /4 false >>", "/11 << /123 0 >>"}) {
+    for (auto options : {"/11 << /4 12 >>", "/11 << /18 -12.5 >>", "/11 << /22 0.05 >>", "/11 << /6 true >>",
+                         "/11 << /0 false /1 0 /2 0 /7 false >>", "/11 << /4 1e300 /18 -1e300 /22 0 >>"}) {
+        auto accepted = read({}, options);
+        ASSERT_EQ(accepted->stories.size(), 1u);
+        ASSERT_TRUE(accepted->stories[0]) << options << ": " << accepted->errors[0];
+        ASSERT_TRUE(accepted->stories[0]->path);
+        EXPECT_FALSE(accepted->stories[0]->path->source_options.empty());
+    }
+    for (auto options : {"/11 << /0 true >>", "/11 << /1 1 >>", "/11 << /2 1 >>", "/11 << /7 true >>", "/11 0",
+                         "/11 << /4 false >>", "/11 << /18 [] >>", "/11 << /22 false >>", "/11 << /6 1 >>",
+                         "/11 << /0 0 >>", "/11 << /1 (0) >>", "/11 << /123 0 >>"}) {
         auto invalid = read({}, options);
         ASSERT_EQ(invalid->stories.size(), 1u);
         EXPECT_FALSE(invalid->stories[0]) << options;
@@ -8080,6 +8089,38 @@ TEST_F(AiNativeImportTest, WrittenPathTypeKeepsItsPathAndBrackets)
         expect_drawn_alike(b->document.get(), elements(b->document->getReprRoot(), "svg:text").at(0), again->document.get(),
                            elements(again->document->getReprRoot(), "svg:text").at(0), 0.02);
     }
+}
+
+TEST_F(AiNativeImportTest, PathTypeSourceOptionsSurviveSvgWithoutChangingNativeLayout)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto const options = "/11 << /4 100 /18 112.5 /6 true /22 0.5 /0 false /1 0 /2 0 /7 false >>";
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(path_text_document("(ABCD\\r)", 5, font, {}, options))));
+    ASSERT_TRUE(b);
+    EXPECT_TRUE(std::any_of(b->notes.begin(), b->notes.end(), [](auto const &note) {
+        return note.find("automatic curve spacing is approximated") != std::string::npos;
+    }));
+    auto doc = SPDocument::createNewDocFromMem(sp_repr_save_buf(b->document->getReprDoc()).raw());
+    ASSERT_TRUE(doc);
+    auto const spans = elements(doc->getReprRoot(), "svg:textPath");
+    ASSERT_EQ(spans.size(), 1u);
+    EXPECT_EQ(attr(spans[0], "proof:ai-path-options"), "/0 false /1 0 /18 112.5 /2 0 /22 0.5 /4 100 /6 true /7 false");
+
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+    ASSERT_TRUE(texts->stories[0]->path);
+    // Native output regenerates the current SVG layout. Restoring the source /11 would
+    // enable Illustrator's tighter automatic spacing and disagree with the fresh PDF page.
+    EXPECT_TRUE(texts->stories[0]->path->source_options.empty());
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    expect_drawn_alike(doc.get(), elements(doc->getReprRoot(), "svg:text").at(0), again->document.get(),
+                       elements(again->document->getReprRoot(), "svg:text").at(0), 0.02);
+    EXPECT_FALSE(attr(spans[0], "proof:ai-path-options").empty()); // The working master still retains it.
 }
 
 TEST_F(AiNativeImportTest, InkscapesTypeOnAPathIsWrittenAsPathType)

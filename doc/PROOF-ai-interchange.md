@@ -67,12 +67,12 @@ opening-time guarantee. [Cache and comparison rules](PROOF-ai-native-records.md#
 | Masks | Linked, non-inverted greyscale vector opacity masks; Clip on/off, fills/strokes, linear/radial gradients and nested masks; Normal/Multiply blending |
 | Transparency | Object/group opacity, sixteen blend modes, isolated blending, knockout records, overprint and supported stroke styles |
 | Pictures | Supported embedded pictures and local PNG/JPEG/classic TIFF/PSD links; original process channels retained where supported |
-| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23) |
+| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23). Ordinary type on one open or closed path, including wrapped intervals. [Path type written](#path-type-written-2026-10-23) |
 
 Supported does not mean arbitrary combinations of these forms. Important
 explicit refusals include:
 
-- Type on a path, vertical type, type that reads from right to left or holds
+- Vertical type, type that reads from right to left or holds
   such letters, tabs, justified type, auto-wrapped type (`inline-size`), type
   flowed into several shapes, around others or with padding, or past its shape's
   end, stretched or skewed area type, characters moved or turned one by one,
@@ -265,6 +265,30 @@ within 59 levels of the original file, no block moved. Of the 11 documents that
 area type held, the 4 it held alone now write; the rest wait on right-to-left
 type, tabs, variable fonts and missing links.
 [Records and keys](PROOF-ai-native-records.md#area-type-written-2026-10-23).
+
+### Path type written (2026-10-23)
+
+Modern native output writes one line of type on one open or closed path as
+Illustrator's editable path type. It retains imported brackets or derives them
+from SVG's start offset/alignment, reverses the path for `side="right"`, and
+allows a closed path's interval to run past its start once. The reader, glyph
+bounds and cursor follow those wrapped intervals too. Unsupported shifts,
+decorations, character placement, multi-path or stretched forms refuse by name.
+
+Illustrator 29.2.1 retains all eight synthetic control stories and their exact
+brackets on re-save. PROOF's master, native write and Illustrator return agree
+in drawn placement: no dark ink beyond two pixels of the other drawing at
+144 dpi. Pixel identity is not asserted; maximum edge differences reach 179
+levels. The returned file opens natively. Illustrator 30.6 remains untested.
+
+Source `/11` options are retained as `proof:ai-path-options` metadata in SVG.
+Finite numeric cache values and validated scalar flags no longer force fallback
+solely for differing from the original 12 pt control. Flip, effects and
+non-baseline alignment still refuse. Illustrator's automatic curve spacing is
+not yet reproduced: the import reports its arc-length approximation, and native
+saving omits `/11` so its editable text agrees with PROOF's fresh PDF preview.
+It does not restore the original automatic-spacing behaviour in Illustrator.
+[Records, limits and qualification](PROOF-ai-native-records.md#path-type-written-2026-10-23).
 
 ## Linked PDF/AI pages
 
