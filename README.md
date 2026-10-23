@@ -94,16 +94,19 @@ a finer drawing concurrently after 3 s. The qualified heavy case improved from
 232 s to 137 s on first opening and takes 33.5 s subsequently.
 [Measurements and cache rules](doc/PROOF-ai-native-records.md#pages-slow-to-draw-weighed-once-and-kept-2026-10-22).
 
-The latest broad **historical** checkpoint, at `fb17863507` on 2026-10-22,
-was 862 native imports from 871 copied files, modern writing 802/862 and legacy
-writing 100. Those measure acceptance/readback, not complete Illustrator
-editability. Later changes use targeted tests and copied representative cases;
-the corpus is not rerun for each edit or agent round.
+**V1 interchange qualification, 2026-10-24:** 862 native imports from 871
+hash-verified copies; all 862 complete modern AI saves reopen natively,
+covering 1,330 PDF pages. The same nine inputs keep their existing PDF fallback.
+This is one full pass at `4a2fe20bbf` plus exact repairs at `bea629e857`, not a
+second full pass. Both 134/135-page stress cases pass in serial comparison mode.
+Legacy writing remains 100 records acceptances. These checks qualify PROOF's
+bounded subset; Illustrator editability has separate representative controls.
+Future edits use affected units and copied cases, not another census per round.
 
 ## Still in progress
 
-Full native `.ai` support remains unfinished. Main writing limits include live
-type, layer transparency, separate fill/stroke opacity, broader mask/pattern
+Full native `.ai` support remains unfinished. Main writing limits include
+advanced type forms, layer transparency, separate fill/stroke opacity, broader mask/pattern
 forms, advanced meshes and additional linked formats. Modern AI without usable
 PDF-compatible content is unsupported. Many imported live appearances retain
 their drawn result with an explicit note.
@@ -118,9 +121,10 @@ non-overlap check before native saving; some valid strongly bent meshes also
 fall outside that subset. Opaque mesh writing retains its prior bounds;
 object/group opacity still applies once to the complete object.
 
-The v1 goal is the qualified interchange subset plus bounded editable type
-writing. Point, area and ordinary path type are implemented; wider type
-features and the remaining qualification are still under way. Advanced gradients/meshes,
+The v1 interchange milestone is qualified, including bounded editable point,
+area and ordinary path type, Arabic/Hebrew and variable-font instances. Paragraph
+indents, generated hyphens, empty line ends and hidden artwork survive saving.
+Wider type forms remain explicit refusals. Advanced gradients/meshes,
 richer masks/patterns, symbols, packaging and broader overprint follow v1,
 one feature at a time.
 

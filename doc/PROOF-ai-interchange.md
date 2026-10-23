@@ -440,16 +440,34 @@ Illustrator 29.2.1 and back into PROOF; actual Illustrator 7 is untested.
 
 ## Qualification and next work
 
-The last broad checkpoint is **2026-10-22 at `fb17863507`**: 862 native imports
-from 871 copied files, modern writing 802/862, legacy writing 100. These are
-historical counts, not a census of later changes. Writer acceptance/readback
-and visual acceptance are separate from complete Illustrator editability.
-Subsequent changes use affected units, export controls and copied lite cases;
-a new full census waits for an agreed feature-family milestone.
+**V1 checkpoint, 2026-10-24:** 871 hash-verified historical copies, 862 native
+imports and 862 complete modern saves/native reopens, covering 1,330 PDF pages.
+The same nine source inputs retain their PDF fallback; no reader regression
+against `fb17863507`. Modern writing rises from that baseline's 802/862 to
+862/862; legacy remains 100 records acceptances. All 60 formerly type-refused
+cases are included in the complete-save qualification.
+
+One full pass at `4a2fe20bbf` found five saved-page mismatches, all caused by
+hidden artwork painted into PDF. Exact repeats at `bea629e857` pass on all six
+affected pages. The 134/135-page stress cases exceeded the broad pass's 600 s
+limit during reopening, then passed with 1,800 s limits and serial refinement
+(778/970 s). Their gate/thresholds are unchanged. There was no second full pass.
+All copied input hashes remain unchanged. Ordinary editor cold-open timings
+were not measured by these serial stress qualifications.
+
+Checks: importer 229 (227 pass, two opt-in skips), native output smoke 38/38,
+phase-accounting units 4/4; Illustrator 29.2.1 area/indent controls 15 and
+automatic-hyphen controls 9, native Save As and exact story returns. Drawings
+meet the documented 99%-ink/two-pixel tolerance at 144 dpi. Existing missing
+font/link regions retain the import gate's exclusions; resource checks guard
+the reopen. These results do not certify arbitrary Illustrator editability
+or press output. Evidence is local: `artifacts/v1-cleanup-20261023/`.
+Future edits use affected units/controls/copies; another broad run needs a new
+agreed completed-family milestone or evidenced broad regression.
 
 The owner's v1 scope (2026-10-23) is the qualified interchange subset plus
-bounded editable type writing. After closing current-subset correctness gaps,
-native type is the next and final implementation family for v1. Extended
+bounded editable type writing. That implementation and its correctness cleanup
+are now qualified. Extended
 Oklab settings/freeform/named-ink controls, connected/folded mesh export,
 richer masks/patterns, symbols, packaging and general overprint are later
 extensions, tackled separately with their present refusals retained.
