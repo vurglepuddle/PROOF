@@ -100,6 +100,7 @@
 #include "spot-ink.h"
 #include "style.h"
 #include "svg/svg.h"
+#include "text-editing.h"
 #include "type-settings.h"
 #include "util/units.h"
 #include "util/scope_exit.h"
@@ -8110,6 +8111,61 @@ TEST_F(AiNativeImportTest, CentredTypeWithSpacesAtItsLineEndsIsWrittenWhereItIsS
         EXPECT_EQ(attr(reopened[i], Text::LINE_ALIGNMENT_ATTRIBUTE), "illustrator");
         expect_characters_where_they_were(doc.get(), doc->getObjectById(ids[i])->getRepr(), again->document.get(), reopened[i]);
     }
+}
+
+TEST_F(AiNativeImportTest, NewPointTypeIsAlignedAsIllustratorAlignsIt)
+{
+    // The Text tool's point type (a click) lines up as Illustrator lines it up: two centred lines
+    // with tracking, which Inkscape's own layout couldn't write, are written where they are set.
+    // Type set right to left keeps Inkscape's way.
+    auto doc = svg_document("");
+    ASSERT_TRUE(doc);
+    auto new_type = [&](char const *direction, Geom::Point at) {
+        auto css = sp_repr_css_attr_new();
+        sp_repr_css_set_property(css, "font-family", "Arial");
+        sp_repr_css_set_property(css, "font-size", "16px");
+        sp_repr_css_set_property(css, "text-anchor", "middle");
+        sp_repr_css_set_property(css, "text-align", "center");
+        sp_repr_css_set_property(css, "letter-spacing", "1.6px");
+        sp_repr_css_set_property(css, "direction", direction);
+        auto text = create_text_at_position(doc->getRoot(), css, at);
+        sp_repr_css_attr_unref(css);
+        return text;
+    };
+    auto *centred = new_type("ltr", {100, 30});
+    auto *rtl = new_type("rtl", {100, 80});
+    EXPECT_EQ(attr(centred->getRepr(), Text::LINE_ALIGNMENT_ATTRIBUTE), "illustrator");
+    EXPECT_EQ(rtl->getRepr()->attribute(Text::LINE_ALIGNMENT_ATTRIBUTE), nullptr);
+    rtl->deleteObject();
+    // Typed as the tool types: a word, Enter, a word with a space after it.
+    doc->ensureUpToDate();
+    auto it = sp_te_insert(centred, centred->layout.end(), "Tracked");
+    doc->ensureUpToDate();
+    it = sp_te_insert_line(centred, it);
+    doc->ensureUpToDate();
+    sp_te_insert(centred, it, "Two ");
+    doc->ensureUpToDate();
+    ASSERT_EQ(elements(centred->getRepr(), "svg:tspan").size(), 2u);
+    // Laid out Inkscape's way, the same type has no one anchor for both its lines.
+    centred->removeAttribute(Text::LINE_ALIGNMENT_ATTRIBUTE);
+    doc->ensureUpToDate();
+    auto const refused = AN::write_records(doc.get()).refused;
+    EXPECT_NE(std::find(refused.begin(), refused.end(),
+                        "centred or right-aligned lines that Illustrator would align apart (spaces or tracking at their ends)"),
+              refused.end());
+    centred->setAttribute(Text::LINE_ALIGNMENT_ATTRIBUTE, "illustrator");
+    doc->ensureUpToDate();
+
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+    EXPECT_TRUE(texts->stories[0]->illustrator_alignment);
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const reopened = elements(again->document->getReprRoot(), "svg:text").at(0);
+    EXPECT_EQ(attr(reopened, Text::LINE_ALIGNMENT_ATTRIBUTE), "illustrator");
+    expect_characters_where_they_were(doc.get(), centred->getRepr(), again->document.get(), reopened);
 }
 
 TEST_F(AiNativeImportTest, TypeInAShapeIsWrittenAsAreaType)

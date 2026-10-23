@@ -1285,6 +1285,14 @@ SPText *create_text_at_position(SPGroup *parent, SPCSSAttr *css, Geom::Point doc
     if (inline_size) {
         sp_repr_css_set_property_double(css, "inline-size", *inline_size);
     }
+    // PROOF: new point type lines up as Illustrator lines it up (the spaces at a centred line's
+    // end count, the tracking after its last letter doesn't), so it saves to .ai where it is set.
+    // Type set right to left, vertically or wrapped keeps Inkscape's way: Illustrator's isn't measured.
+    auto const mode = sp_repr_css_property(css, Glib::ustring("writing-mode"), Glib::ustring());
+    if (!inline_size && sp_repr_css_property(css, Glib::ustring("direction"), Glib::ustring()) != "rtl" &&
+        (mode.empty() || mode == "horizontal-tb" || mode == "lr-tb" || mode == "lr")) {
+        text_repr->setAttribute(Inkscape::Text::LINE_ALIGNMENT_ATTRIBUTE, "illustrator");
+    }
     sp_repr_css_set(text_repr, css, "style");
     sp_repr_css_attr_unref(css);
 
