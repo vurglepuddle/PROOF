@@ -91,7 +91,9 @@ struct TextLine
 struct PathText
 {
     Geom::PathVector outline; ///< Full editable path, in text layout space.
-    double start = 0, end = 0; ///< Active portion, as distances along that path.
+    /// Active portion, as distances along that path. Round a closed path the end can be past
+    /// the path's length: the type runs on round past the path's start.
+    double start = 0, end = 0;
 };
 
 /**

@@ -845,6 +845,13 @@ private:
 
     /** as passed to fitToPathAlign() */
     Path const *_path_fitted = nullptr;
+    /** Whether that path is closed, and its length: round a closed path the type wraps past its
+        start, and so do the cursor and the boxes of its characters (PROOF, 2026-10-23). */
+    bool _path_fitted_closed = false;
+    double _path_fitted_length = 0;
+
+    /** Where `offset` along the fitted path is, round a closed one: from `from`, less than its length on. */
+    double _wrapOnFittedPath(double offset, double from = 0) const;
 
 public:
     struct Character;

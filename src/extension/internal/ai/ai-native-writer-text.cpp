@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <format>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string_view>
@@ -266,6 +267,39 @@ std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *tex
     return st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_END ? 1 : st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_MIDDLE ? 2 : 0;
 }
 
+/// A path as Illustrator's frames have one: each segment a cubic, a line's handles at its ends.
+/// Path type's brackets are places on these by each segment's own time, which for such a line
+/// isn't its share of the length.
+std::vector<Geom::CubicBezier> frame_segments(Geom::Path const &path)
+{
+    std::vector<Geom::CubicBezier> out;
+    for (auto const &c : path) {
+        auto const *cubic = dynamic_cast<Geom::CubicBezier const *>(&c);
+        out.emplace_back(c.initialPoint(), cubic ? (*cubic)[1] : c.initialPoint(), cubic ? (*cubic)[2] : c.finalPoint(),
+                         c.finalPoint());
+    }
+    return out;
+}
+
+/// The bracket `d` along `segments` is at: the segment's index and the time in it.
+double bracket(std::vector<Geom::CubicBezier> const &segments, double d)
+{
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        double const length = segments[i].length(1e-6);
+        if (d > length && i + 1 < segments.size()) {
+            d -= length;
+            continue;
+        }
+        double low = 0, high = 1;
+        for (int k = 0; k < 50 && d < length; ++k) {
+            double const t = (low + high) / 2;
+            (std::unique_ptr<Geom::Curve>(segments[i].portion(0, t))->length(1e-6) < d ? low : high) = t;
+        }
+        return i + (d < length ? (low + high) / 2 : 1.0);
+    }
+    return 0;
+}
+
 } // namespace
 
 TextStories::TextStories(SPDocument const *document)
@@ -334,10 +368,38 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (auto const *more = text->getAttribute(TEXT_OVERFLOW_ATTRIBUTE)) overflow = more;
     }
     bool const area = frame.has_value();
+    // Type on a path: one textPath that holds it all, along the path it names as Inkscape lays it
+    // out, with the path's own transform and turned round for the other side (side="right").
+    SPTextPath const *on_path = nullptr;
+    std::optional<Geom::Path> path;
+    for (auto const &child : text->children) {
+        auto const *tp = cast<SPTextPath>(&child);
+        if (!tp) continue;
+        if (on_path) why.insert("type on several paths");
+        on_path = tp;
+    }
+    if (on_path) {
+        auto *shape = cast<SPShape>(sp_textpath_get_path_item(on_path));
+        if (shape && !shape->curve()) shape->set_shape();
+        if (!shape || !shape->curve()) {
+            why.insert("type on a path that isn't there");
+        } else {
+            auto pv = pathv_to_linear_and_cubic_beziers(*shape->curve() * shape->transform);
+            if (on_path->side == SP_TEXT_PATH_SIDE_RIGHT) pv.reverse();
+            if (pv.size() != 1 || pv[0].empty() || pv[0].length() < 0.01) {
+                why.insert("type on a path of several pieces, or none");
+            } else {
+                path = pv[0];
+            }
+        }
+        if (area || flowed) why.insert("type on a path in a frame");
+    }
     if (!text->is_horizontal()) why.insert("vertical type");
     // What the layout doesn't keep of each character: pieces moved, turned or stretched.
     std::function<void(SPObject const *)> look = [&](SPObject const *o) {
-        if (is<SPTextPath>(o)) why.insert("type on a path");
+        if (on_path && o != text && o != on_path && (o->getAttribute("x") || o->getAttribute("y"))) {
+            why.insert("characters on a path placed by x or y");
+        }
         if (moves(o->getAttribute("dx")) || moves(o->getAttribute("dy")) || moves(o->getAttribute("rotate"))) {
             why.insert("characters moved or turned one by one (dx, dy, rotate)");
         }
@@ -360,12 +422,16 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     // Area type's frame is turned and moved, not stretched: Illustrator lays it out in the frame
     // as it is, at the type's own size.
     std::optional<Geom::Path> outline;
+    // So is type on a path.
+    bool const stretched = std::abs(matrix[0] * matrix[0] + matrix[1] * matrix[1] - 1) > 1e-4 ||
+                           std::abs(matrix[2] * matrix[2] + matrix[3] * matrix[3] - 1) > 1e-4 ||
+                           std::abs(matrix[0] * matrix[2] + matrix[1] * matrix[3]) > 1e-4;
+    if (path && stretched) {
+        why.insert("type on a path stretched or skewed");
+        return finish();
+    }
     if (area) {
-        if (std::abs(matrix[0] * matrix[0] + matrix[1] * matrix[1] - 1) > 1e-4 ||
-            std::abs(matrix[2] * matrix[2] + matrix[3] * matrix[3] - 1) > 1e-4 ||
-            std::abs(matrix[0] * matrix[2] + matrix[1] * matrix[3]) > 1e-4) {
-            why.insert("area type stretched or skewed");
-        }
+        if (stretched) why.insert("area type stretched or skewed");
         auto const pv = pathv_to_linear_and_cubic_beziers(*frame);
         auto const bounds = pv.size() == 1 ? pv.boundsExact() : Geom::OptRect();
         if (!bounds || bounds->width() * s < 0.01 || bounds->height() * s < 0.01) {
@@ -399,6 +465,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         std::vector<Char> chars;
     };
     std::map<unsigned, Line> lines;
+    bool off_path = false;
     auto const &layout = text->layout;
     for (auto it = layout.begin(); it != layout.end() && why.empty(); it.nextCharacter()) {
         SPObject *source = nullptr;
@@ -428,6 +495,16 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (reads_from_the_right(c)) {
             why.insert("letters of scripts read from right to left");
             break;
+        }
+        if (on_path) {
+            bool inside = false;
+            for (auto const *o = string->parent; o && o != text && !inside; o = o->parent) inside = o == on_path;
+            if (!inside) {
+                why.insert("type partly on a path");
+                break;
+            }
+            // What runs off the path isn't drawn.
+            if (!it.hasGlyph()) off_path = true;
         }
         auto [found, fresh] = lines.try_emplace(layout.chunkIndex(it));
         auto &line = found->second;
@@ -459,6 +536,53 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     if (lines.empty() && overflow.find_first_not_of('\n') == std::string::npos) {
         out.empty = true;
         return out;
+    }
+    // Path type's brackets, as lengths along its path: an import's, which say what Illustrator
+    // showed of it, or for Inkscape's type where its start offset puts it by its alignment, the
+    // path's whole length when it fits. Round a closed path the type runs on past the path's
+    // start, as Inkscape sets it, and the end bracket after it.
+    std::vector<Geom::CubicBezier> segments;
+    double path_length = 0, from = 0, to = 0;
+    if (path) {
+        if (lines.size() != 1 || lines.begin()->second.typed_break) {
+            why.insert("type in several lines on a path");
+            return finish();
+        }
+        segments = frame_segments(*path);
+        for (auto const &c : segments) path_length += c.length(1e-6);
+        bool const loop = path->closed();
+        auto const alignment = lines.begin()->second.alignment;
+        auto const &offset = on_path->startOffset;
+        double const at = !offset._set ? 0.0 : offset.unit == SVGLength::PERCENT ? offset.computed * path_length : offset.computed;
+        auto const *start = on_path->getAttribute("proof:path-start"), *end = on_path->getAttribute("proof:path-end");
+        if (start || end) {
+            char *after_start = nullptr, *after_end = nullptr;
+            double const a = start ? g_ascii_strtod(start, &after_start) : -1, b = end ? g_ascii_strtod(end, &after_end) : -1;
+            if (!start || !end || after_start == start || after_end == end || *after_start || *after_end || !std::isfinite(a) ||
+                !std::isfinite(b) || a < 0 || b <= a || a > path_length + 0.01 || b > (loop ? a : 0) + path_length + 0.01) {
+                why.insert("type on a path with brackets that can't be written");
+            } else if (std::abs((alignment == 2 ? (a + b) / 2 : alignment == 1 ? b : a) - at) > 0.01) {
+                why.insert("type on a path moved off its brackets");
+            }
+            from = a;
+            to = b;
+        } else if (loop) {
+            double const x = at - std::floor(at / path_length) * path_length;
+            from = alignment == 2 ? x - path_length / 2 : x;
+            if (from < 0) from += path_length;
+            to = from + path_length;
+        } else if (at < -0.01 || at > path_length + 0.01) {
+            why.insert("type that starts off its path");
+        } else {
+            double const x = std::clamp(at, 0.0, path_length), half = std::min(x, path_length - x);
+            from = alignment == 0 ? x : alignment == 1 ? 0 : x - half;
+            to = alignment == 0 ? path_length : alignment == 1 ? x : x + half;
+        }
+        // Inkscape's type that the path is too short for: Illustrator would leave out the rest. Its
+        // width from its first character's start to its last one's end, wherever the path put them.
+        double const width = layout.characterAnchorPoint(layout.end())[Geom::X] - layout.characterAnchorPoint(layout.begin())[Geom::X];
+        if (!start && !end && (off_path || width > to - from + 0.01)) why.insert("type that runs off its path");
+        if (!why.empty()) return finish();
     }
     // Point type has one anchor, its lines aligned to it, each its leading below the one before.
     // Area type's lines lie where the frame put them.
@@ -632,6 +756,9 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         f[9] = real(shift * s);
         f[15] = strikethrough ? "1" : "0";
         f[16] = underline ? "1" : "0";
+        // Not yet on a path: PROOF's reader doesn't read them there.
+        if (on_path && (shift != 0 || f[13] != "0")) own.insert("type on a path raised, lowered or shifted");
+        if (on_path && (underline || strikethrough)) own.insert("type on a path underlined or struck through");
         // Kerning by the font's own pairs, or none.
         std::string features = st->font_feature_settings.value() ? st->font_feature_settings.value() : "normal";
         std::erase_if(features, [](char c) { return c == ' ' || c == '\'' || c == '"'; });
@@ -762,7 +889,7 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (p.end != End::Wrap) end_paragraph();
         // The line where PROOF sets it, for PROOF's reader: down from where the layout starts,
         // and where it starts across from there.
-        double const across = p.line ? (p.line->left - origin.x()) * s : 0.0;
+        double const across = p.line && !path ? (p.line->left - origin.x()) * s : 0.0;
         laid += "<< /99 /L";
         if (area || i > 0) laid += " /0 << /0 " + pair(0, (p.y - origin.y()) * s) + " >>";
         laid += std::format(" /6 [ << /99 /S /15 << /0 {} /2 0 /5 false >> /0 << /0 {} >> >> ] >> ", units, pair(across, 0));
@@ -831,6 +958,17 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
                                       real(matrix[0]), real(matrix[1]), real(matrix[2]), real(matrix[3]), real(matrix[4]),
                                       real(matrix[5]), first_baseline));
         out.frame = *outline;
+    } else if (path) {
+        // The path the same way; Illustrator's kind for path type (2), and its brackets.
+        std::string points;
+        for (auto const &c : segments) {
+            for (unsigned k = 0; k < 4; ++k) points += " " + real(c[k].x() * s) + " " + real(c[k].y() * s);
+        }
+        double const last = to > path_length ? segments.size() + bracket(segments, to - path_length) : bracket(segments, to);
+        _frames.push_back(std::format("<< /1 << /0 [{} ] >> /2 << /0 2 /2 [ {} {} {} {} {} {} ] /6 [ {} {} ] >> >>", points,
+                                      real(matrix[0]), real(matrix[1]), real(matrix[2]), real(matrix[3]), real(matrix[4]),
+                                      real(matrix[5]), real(bracket(segments, from)), real(last)));
+        out.frame = *path;
     } else {
         _frames.push_back(std::format("<< /0 {} /2 << /2 [ {} {} {} {} {} {} ] >> >>", pair(first.x() * s, first.y() * s),
                                       real(matrix[0]), real(matrix[1]), real(matrix[2]), real(matrix[3]), real(matrix[4]),

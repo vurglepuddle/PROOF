@@ -1797,6 +1797,80 @@ TEST_F(AiNativeImportTest, PathTypeClosedPathDoesNotRepeatOverflowAroundTheLoop)
     EXPECT_LT(bounds->bottom(), 35);
 }
 
+// Path type on a closed square, 100 a side: four lines kept as cubics, from the top left
+// corner round to the right.
+std::string loop_text_document(std::string const &characters, int units, std::string const &font, std::string const &bounds)
+{
+    auto data = path_text_document(characters, units, font, {}, {}, bounds);
+    std::string const line = "/1 << /0 [8191.5 8191.5 8191.5 8191.5 8391.5 8191.5 8391.5 8191.5] >> ";
+    data.replace(data.find(line), line.size(),
+                 "/1 << /0 [8191.5 8191.5 8191.5 8191.5 8291.5 8191.5 8291.5 8191.5 8291.5 8191.5 8291.5 8191.5 "
+                 "8291.5 8291.5 8291.5 8291.5 8291.5 8291.5 8291.5 8291.5 8191.5 8291.5 8191.5 8291.5 "
+                 "8191.5 8291.5 8191.5 8291.5 8191.5 8191.5 8191.5 8191.5] >> ");
+    return data;
+}
+
+TEST_F(AiNativeImportTest, PathTypeOnAClosedPathRunsOnPastItsStart)
+{
+    auto read = [](std::string const &bounds) {
+        return AN::read_text_document(text_setup(loop_text_document("(ABCD\\r)", 5, "ArialMT", bounds)), Geom::Point(100, 50));
+    };
+    // The end written past the last segment, or before the start, or the start below zero: the
+    // same range, from halfway along the fourth side round to just short of it. Time 0.49 on a
+    // line kept as a cubic is 48.5002% along it.
+    for (auto bounds : {"3.5 7.49", "3.5 3.49", "-0.5 3.49"}) {
+        auto text = read(bounds);
+        ASSERT_TRUE(text->stories.at(0)) << bounds << ": " << text->errors[0];
+        auto const &p = *text->stories[0]->path;
+        EXPECT_NEAR(p.start, 350, 0.001) << bounds;
+        EXPECT_NEAR(p.end, 748.5002, 0.001) << bounds;
+    }
+    // Brackets that meet are a whole turn; a range inside the loop is as it was.
+    for (auto [bounds, start, end] : {std::tuple{"0 4", 0.0, 400.0}, std::tuple{"1 5", 100.0, 500.0}, std::tuple{"0.5 2.5", 50.0, 250.0}}) {
+        auto text = read(bounds);
+        ASSERT_TRUE(text->stories.at(0)) << bounds << ": " << text->errors[0];
+        EXPECT_NEAR(text->stories[0]->path->start, start, 0.001) << bounds;
+        EXPECT_NEAR(text->stories[0]->path->end, end, 0.001) << bounds;
+    }
+    for (auto bounds : {"1 1", "0 9", "-9 1", "1 9.5"}) {
+        auto invalid = read(bounds);
+        ASSERT_EQ(invalid->stories.size(), 1u);
+        EXPECT_FALSE(invalid->stories[0]) << bounds;
+    }
+
+    // Laid out, the type runs on round the corner where the path starts.
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(loop_text_document("(AAAAAAAAAA\\r)", 11, font, "3.5 7.49"))));
+    ASSERT_TRUE(b);
+    auto texts = elements(b->document->getReprRoot(), "svg:text"); ASSERT_EQ(texts.size(), 1u);
+    auto spans = elements(texts[0], "svg:textPath"); ASSERT_EQ(spans.size(), 1u);
+    EXPECT_NEAR(std::stod(attr(spans[0], "proof:path-end")), 748.5002, 0.001);
+    auto *text = cast<SPText>(b->document->getObjectByRepr(texts[0])); ASSERT_TRUE(text);
+    b->document->ensureUpToDate();
+    EXPECT_FALSE(text->layout.inputTruncated());
+    auto it = text->layout.end();
+    it.prevCharacter();
+    auto const last = text->layout.convertToCurves(it, text->layout.end()).boundsFast();
+    ASSERT_TRUE(last);
+    EXPECT_GT(last->midpoint().x(), 8191.5); EXPECT_LT(last->midpoint().x(), 8250);
+    EXPECT_NEAR(last->midpoint().y(), 8191.5, 10);
+    // So do its box (selecting it, clicking it) and the cursor after it.
+    auto const box = text->layout.characterBoundingBox(it);
+    EXPECT_NEAR(box.midpoint().x(), last->midpoint().x(), 1);
+    EXPECT_NEAR(box.midpoint().y(), last->midpoint().y(), 4);
+    EXPECT_EQ(text->layout.getLetterAt(last->midpoint().x(), last->midpoint().y()), it);
+    Geom::Point cursor;
+    double height, rotation;
+    text->layout.queryCursorShape(text->layout.end(), cursor, height, rotation);
+    // Its foot is the font's descent below the top side.
+    EXPECT_GT(cursor.y(), 8191.5); EXPECT_LT(cursor.y(), 8191.5 + 4);
+    EXPECT_NEAR(rotation, 0, 1e-6);
+    EXPECT_GT(cursor.x(), last->midpoint().x()); EXPECT_LT(cursor.x(), last->right() + 1);
+    auto const near = text->layout.getNearestCursorPositionTo(Geom::Point(last->midpoint().x() + 1, 8191.5));
+    EXPECT_GE(text->layout.iteratorToCharIndex(near), 9u);
+}
+
 
 TEST_F(AiNativeImportTest, ParagraphTabsStayAlignedAfterTextAndRulerEditsAndReopen)
 {
@@ -7933,6 +8007,128 @@ TEST_F(AiNativeImportTest, ALineFeedTakesNoRoomInTheLineItEnds)
     for (auto const &[line, box] : lines) EXPECT_NEAR(box.midpoint().x(), 50, 0.05) << line;
 }
 
+/// Each character a text object draws, and where: the middle of its outline, in the document.
+std::vector<std::pair<gunichar, Geom::Point>> drawn_characters(SPDocument *doc, XML::Node *repr)
+{
+    doc->ensureUpToDate();
+    std::vector<std::pair<gunichar, Geom::Point>> out;
+    auto *text = cast<SPText>(doc->getObjectByRepr(repr));
+    if (!text) return out;
+    auto const &layout = text->layout;
+    for (auto it = layout.begin(); it != layout.end(); it.nextCharacter()) {
+        SPObject *source = nullptr;
+        Glib::ustring::iterator at;
+        layout.getSourceOfCharacter(it, &source, &at);
+        auto next = it;
+        next.nextCharacter();
+        auto const box = layout.convertToCurves(it, next).boundsFast();
+        if (!is<SPString>(source) || !it.hasGlyph() || !box) continue;
+        out.emplace_back(*at, box->midpoint() * text->i2doc_affine());
+    }
+    return out;
+}
+
+void expect_drawn_alike(SPDocument *a, XML::Node *x, SPDocument *b, XML::Node *y, double tolerance)
+{
+    auto const was = drawn_characters(a, x), now = drawn_characters(b, y);
+    ASSERT_EQ(now.size(), was.size());
+    ASSERT_FALSE(was.empty());
+    for (std::size_t c = 0; c < was.size(); ++c) {
+        EXPECT_EQ(now[c].first, was[c].first) << c;
+        EXPECT_TRUE(Geom::are_near(now[c].second, was[c].second, tolerance)) << c << ": " << now[c].second << " " << was[c].second;
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenPathTypeKeepsItsPathAndBrackets)
+{
+    auto const font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // An import's path type, left, right and centred on a line kept as a cubic, and on a closed
+    // square from halfway along its last side round past its start.
+    struct Case
+    {
+        std::string document;
+        int units;
+        unsigned alignment;
+        bool loop;
+    };
+    std::vector<Case> const cases{{path_text_document("(ABCD\\r)", 5, font), 5, 0, false},
+                                  {path_text_document("(ABCD\\r)", 5, font), 5, 1, false},
+                                  {path_text_document("(ABCD\\r)", 5, font), 5, 2, false},
+                                  {loop_text_document("(AAAAAAAAAA\\r)", 11, font, "3.5 7.49"), 11, 0, true}};
+    for (auto const &[document, units, alignment, loop] : cases) {
+        SCOPED_TRACE(alignment + 10 * loop);
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(with_paragraphs(document, {}, std::format("<< /1 {} /0 << /0 << /5 << /0 {} >> >> >> >>",
+                                                                                   units, alignment)))));
+        ASSERT_TRUE(b);
+        auto const written = AN::write_records(b->document.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        // The text object carries its path, as Illustrator writes path type.
+        EXPECT_NE(written.records.find(loop ? "/Art :\nX=\n4 As\n" : "/Art :\nX=\n1 As\n"), std::string::npos);
+        auto const texts = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+        auto const &s = *texts->stories[0];
+        ASSERT_TRUE(s.path);
+        EXPECT_EQ(s.lines.at(0).alignment, alignment);
+        auto const was = elements(b->document->getReprRoot(), "svg:textPath").at(0);
+        EXPECT_NEAR(s.path->start, std::stod(attr(was, "proof:path-start")), 0.002);
+        EXPECT_NEAR(s.path->end, std::stod(attr(was, "proof:path-end")), 0.002);
+        // Opened again, it draws each character where it was.
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        expect_drawn_alike(b->document.get(), elements(b->document->getReprRoot(), "svg:text").at(0), again->document.get(),
+                           elements(again->document->getReprRoot(), "svg:text").at(0), 0.02);
+    }
+}
+
+TEST_F(AiNativeImportTest, InkscapesTypeOnAPathIsWrittenAsPathType)
+{
+    // Inkscape's type on a path: from a start offset, centred on half the path's length, ending at
+    // an offset, on the other side, on a line, and centred over a closed path's start.
+    auto doc = svg_document(
+        R"x(<path id="curve" d="M20,100 C60,20 140,20 180,100" transform="translate(5 0)" style="fill:none;stroke:#000000"/>)x"
+        R"(<path id="line" d="M20,150 H180"/>)"
+        R"(<path id="loop" d="M300,60 C322,60 340,78 340,100 C340,122 322,140 300,140 C278,140 260,122 260,100 C260,78 278,60 300,60 Z"/>)"
+        R"(<text id="left" style="font-family:Arial;font-size:12px"><textPath href="#curve" startOffset="10">Left on a curve</textPath></text>)"
+        R"(<text id="centre" style="font-family:Arial;font-size:12px;text-anchor:middle"><textPath href="#curve" startOffset="50%">Centred</textPath></text>)"
+        R"(<text id="right" style="font-family:Arial;font-size:12px;text-anchor:end"><textPath href="#curve" startOffset="150">Right</textPath></text>)"
+        R"(<text id="under" style="font-family:Arial;font-size:12px"><textPath href="#curve" side="right" startOffset="20">Other side</textPath></text>)"
+        R"(<text id="straight" style="font-family:Arial;font-size:12px;fill:#0000ff"><textPath href="#line" startOffset="40">Straight</textPath></text>)"
+        R"(<text id="ring" style="font-family:Arial;font-size:12px;text-anchor:middle"><textPath href="#loop" startOffset="5">Round the loop</textPath></text>)"
+        // From far along a rectangle's last side, round its corner: a straight last side's own time.
+        R"(<path id="box" d="M60,380 H220 V460 H60 Z"/>)"
+        R"(<text id="corner" style="font-family:Arial;font-size:12px"><textPath href="#box" startOffset="420">Round the last corner</textPath></text>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_EQ(texts->stories.size(), 7u);
+    for (auto const &e : texts->errors) EXPECT_TRUE(e.empty()) << e;
+    unsigned const alignments[] = {0, 2, 1, 0, 0, 2, 0};
+    for (std::size_t i = 0; i < 7; ++i) {
+        ASSERT_TRUE(texts->stories[i] && texts->stories[i]->path) << i;
+        EXPECT_EQ(texts->stories[i]->lines.at(0).alignment, alignments[i]) << i;
+    }
+    // Lengths in points: a pixel is 0.75. The loop's brackets run on past its start.
+    EXPECT_NEAR(texts->stories[0]->path->start, 7.5, 0.01);
+    EXPECT_NEAR(texts->stories[4]->path->start, 30, 0.01);
+    auto const &ring = *texts->stories[5]->path;
+    EXPECT_GT(ring.end, ring.outline[0].length());
+    EXPECT_NEAR(ring.end - ring.start, ring.outline[0].length(), 0.01);
+
+    // Opened again, every character is drawn where Inkscape drew it.
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    auto const now = elements(b->document->getReprRoot(), "svg:text");
+    ASSERT_EQ(now.size(), 7u);
+    char const *const ids[] = {"left", "centre", "right", "under", "straight", "ring", "corner"};
+    for (std::size_t i = 0; i < 7; ++i) {
+        SCOPED_TRACE(ids[i]);
+        expect_drawn_alike(doc.get(), doc->getObjectById(ids[i])->getRepr(), b->document.get(), now[i], 0.05);
+    }
+}
+
 TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
 {
     std::vector<std::pair<std::string, std::string>> const cases{
@@ -7953,7 +8149,31 @@ TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
         {R"(<text proof:text-frame="M0 0 H10 V10 H0 Z M20 0 H30 V10 H20 Z" x="2" y="8">Hi</text>)",
          "area type in a frame that isn't one outline"},
         {R"(<text proof:text-frame="M0 0 H100 V50 H0 Z" x="10" y="20" style="text-align:justify">Hi</text>)", "justified type"},
-        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">Hi</textPath></text>)", "type on a path"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">Hi</textPath><textPath href="#p" startOffset="50">Hi</textPath></text>)",
+         "type on several paths"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text x="10" y="80">Off <textPath href="#p">Hi</textPath></text>)",
+         "type partly on a path"},
+        {R"(<defs><path id="p" d="M10 50 L30 50"/></defs><text style="font-size:12px"><textPath href="#p">Too long for it</textPath></text>)",
+         "type that runs off its path"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p" startOffset="-20">Hi</textPath></text>)",
+         "type that starts off its path"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">H<tspan style="baseline-shift:3px">i</tspan></textPath></text>)",
+         "type on a path raised, lowered or shifted"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p" style="font-variant-position:super">Hi</textPath></text>)",
+         "type on a path raised, lowered or shifted"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p" style="text-decoration-line:underline">Hi</textPath></text>)",
+         "type on a path underlined or struck through"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">H<tspan x="40">i</tspan></textPath></text>)",
+         "characters on a path placed by x or y"},
+        {R"x(<defs><path id="p" d="M10 50 L190 50"/></defs><text transform="scale(2 1)"><textPath href="#p">Hi</textPath></text>)x",
+         "type on a path stretched or skewed"},
+        {R"(<defs><path id="p" d="M10 50 L90 50 M110 50 L190 50"/></defs><text><textPath href="#p">Hi</textPath></text>)",
+         "type on a path of several pieces, or none"},
+        {R"(<text><textPath href="#nothing">Hi</textPath></text>)", "type on a path that isn't there"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p" proof:path-start="0" proof:path-end="bad">Hi</textPath></text>)",
+         "type on a path with brackets that can't be written"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p" startOffset="30" proof:path-start="0" proof:path-end="100">Hi</textPath></text>)",
+         "type on a path moved off its brackets"},
         {R"(<text x="10" y="20" dx="0 3">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
         {R"(<text x="10" y="20" rotate="0 15">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
         {R"(<text x="10" y="20" textLength="80">Hi</text>)", "type stretched to a length (textLength)"},

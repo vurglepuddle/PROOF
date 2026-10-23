@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -720,12 +721,43 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         // Even a straight Illustrator segment retains cubic parameterisation:
         // t=0.25 is 15.625% along a cubic with handles at its endpoints.
         path.outline = frame_outline(frame.get("1").get("0"), true);
-        auto const bounds = carries.get("6").nums(2);
-        if (path.outline.size() != 1 || bounds[0] < 0 || bounds[1] <= bounds[0] ||
-            bounds[1] > path.outline[0].size()) throw Bad("invalid or wrapped path type interval");
+        auto bounds = carries.get("6").nums(2);
+        if (path.outline.size() != 1) throw Bad("invalid or wrapped path type interval");
         auto const &geometry = path.outline[0];
-        path.start = bounds[0] == 0 ? 0 : geometry.portion(0, bounds[0]).length(0.001);
-        path.end = geometry.portion(0, bounds[1]).length(0.001);
+        // The brackets are places on Illustrator's own segments, each a cubic: the outline closes
+        // with a straight line where the last is one with its handles on its ends, timed otherwise.
+        auto const &points = frame.get("1").get("0").list;
+        std::vector<Geom::CubicBezier> segments;
+        for (std::size_t i = 0; i < points.size(); i += 8) {
+            Geom::Point p[4];
+            for (int k = 0; k < 4; ++k) p[k] = {points[i + 2 * k].num(), points[i + 2 * k + 1].num()};
+            segments.emplace_back(p[0], p[1], p[2], p[3]);
+        }
+        double const n = segments.size();
+        auto length_to = [&](double at) {
+            double d = 0;
+            auto const whole = std::min<std::size_t>(std::size_t(std::floor(at)), segments.size());
+            for (std::size_t i = 0; i < whole; ++i) d += segments[i].length(0.001);
+            if (whole < segments.size() && at > whole) {
+                d += std::unique_ptr<Geom::Curve>(segments[whole].portion(0, at - whole))->length(0.001);
+            }
+            return d;
+        };
+        if (geometry.closed() && std::isfinite(bounds[0]) && std::isfinite(bounds[1]) && bounds[0] != bounds[1] &&
+            std::abs(bounds[1] - bounds[0]) <= n + 1e-6 && std::abs(bounds[0]) <= 2 * n && std::abs(bounds[1]) <= 2 * n) {
+            // Round a closed path both brackets are places on the loop: the end can be written past
+            // the last segment (the start plus the run) or before the start (VectorCraft
+            // `1abc5d40`). The type runs on from the start, round past the path's own start when
+            // the end comes before it, a whole turn when they meet.
+            for (auto &b : bounds) b -= std::floor(b / n) * n;
+            path.start = length_to(bounds[0]);
+            path.end = length_to(bounds[1]);
+            if (path.end <= path.start) path.end += length_to(n);
+        } else {
+            if (bounds[0] < 0 || bounds[1] <= bounds[0] || bounds[1] > n) throw Bad("invalid or wrapped path type interval");
+            path.start = length_to(bounds[0]);
+            path.end = length_to(bounds[1]);
+        }
         if (!std::isfinite(path.start) || !std::isfinite(path.end) || path.end - path.start < 1e-6 || path.end > 1e9)
             throw Bad("invalid path type length");
         out.path = std::move(path);

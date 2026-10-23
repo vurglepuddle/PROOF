@@ -22,8 +22,8 @@ struct WrittenStory
     std::size_t story = 0;            ///< Its index among the typed stories.
     bool empty = false;               ///< Nothing is typed in it: there is nothing to write.
     std::vector<std::string> refused; ///< Why it can't be written; then nothing was added.
-    /// Area type: its frame, in the text's own coordinates. The text object carries it too, as
-    /// its `/Art` path.
+    /// Area type's frame, or the path type is set on, in the text's own coordinates. The text
+    /// object carries it too, as its `/Art` path.
     std::optional<Geom::Path> frame;
 };
 
@@ -40,14 +40,16 @@ struct WrittenStory
  * the import kept one), the lines sharing one anchor and each set below the one before by its
  * leading. Area type: the frame an import kept, or the one shape Inkscape flows the text into;
  * its lines joined into paragraphs where the frame wrapped them, each paragraph aligned and
- * hyphenated as its lines say, and what the frame was too small to show after them.
- * Both in fonts that are installed (or, for type set in a font standing in for one that isn't,
+ * hyphenated as its lines say, and what the frame was too small to show after them. Type on a
+ * path: one line along one piece of path, between brackets an import kept (what Illustrator
+ * showed of it) or, for Inkscape's own, where its start offset and alignment set it.
+ * All in fonts that are installed (or, for type set in a font standing in for one that isn't,
  * that font's name), process colour fills and strokes, tracking, baseline shift, kerning on or
  * off, standard and contextual ligatures, all caps, small caps, superscript and subscript,
- * underline and strikethrough. The frame's matrix places it; a uniform scale goes into the
- * sizes. Type on a path, vertical type, type that reads from right to left, tabs, justified or
- * auto-wrapped type, characters moved or turned one by one and other features are refused by
- * name.
+ * underline and strikethrough (the last four and baseline shift not on a path). The frame's
+ * matrix places it; a uniform scale goes into the sizes. Vertical type, type that reads from
+ * right to left, tabs, justified or auto-wrapped type, characters moved or turned one by one and
+ * other features are refused by name.
  */
 class TextStories
 {

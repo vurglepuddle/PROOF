@@ -199,6 +199,20 @@ def main():
           "".join(areas[0].itertext()) == "Area type that wraps in its frame" and
           len(list(areas[0].iter("{http://www.w3.org/2000/svg}tspan"))) > 1)
 
+    # Type on a path is written as Illustrator's path type, and reopens on its path between brackets.
+    pathed = out / "pathed.svg"
+    pathed.write_text(svg.replace("</defs>", '<path id="along" d="M10,80 C40,40 90,40 120,80"/></defs>').replace(
+        "</svg>", '<text style="font-family:Arial;font-size:12px;text-anchor:middle">'
+                  '<textPath href="#along" startOffset="50%">Path type</textPath></text></svg>'), encoding="utf-8")
+    pathed_ai, pathed_svg = out / "pathed.ai", out / "pathed-reopened.svg"
+    export("pathed", pathed, pathed_ai, native)
+    export("pathed-reopen", pathed_ai, pathed_svg)
+    on_paths = list(ET.parse(pathed_svg).getroot().iter("{http://www.w3.org/2000/svg}textPath"))
+    check("type on a path reopens as path type", len(on_paths) == 1 and
+          "".join(on_paths[0].itertext()) == "Path type" and
+          on_paths[0].get("{urn:x-proof:document:1}path-end") is not None and
+          "text-anchor:middle" in (on_paths[0].get("style") or ""))
+
     unsupported = out / "unsupported.svg"
     unsupported.write_text(svg.replace("</svg>", '<text x="10" y="30" style="writing-mode:vertical-rl">Live type</text></svg>'),
                            encoding="utf-8")

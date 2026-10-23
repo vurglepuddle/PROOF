@@ -81,6 +81,14 @@ void Layout::_clearOutputObjects()
     _characters.clear();
     _glyphs.clear();
     _path_fitted = nullptr;
+    _path_fitted_closed = false;
+    _path_fitted_length = 0;
+}
+
+double Layout::_wrapOnFittedPath(double offset, double from) const
+{
+    if (!_path_fitted_closed || _path_fitted_length <= Geom::EPSILON) return offset;
+    return offset - std::floor((offset - from) / _path_fitted_length) * _path_fitted_length;
 }
 
 void Layout::FontMetrics::set(FontInstance const *font)
@@ -767,7 +775,10 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
         Path::cut_position *midpoint_otp = const_cast<Path&>(path).CurvilignToPosition(1, &midpoint_offset, unused);
         double const unwrapped_midpoint = (start_offset + end_offset) * 0.5 -
             (closed ? path_length : 0);
-        bool const within_active = !active || (unwrapped_midpoint >= active->first && unwrapped_midpoint <= std::min(active->second, path_length));
+        // Round a closed path the active portion can run on past the path's start (PROOF,
+        // 2026-10-23: Illustrator's brackets), but never a second time round.
+        bool const within_active = !active || (unwrapped_midpoint >= active->first &&
+                                               unwrapped_midpoint <= std::min(active->second, closed ? active->first + path_length : path_length));
         if (within_active && midpoint_offset >= 0.0 && midpoint_otp != nullptr && midpoint_otp[0].piece >= 0) {
             Geom::Point midpoint;
             Geom::Point tangent;
@@ -844,6 +855,8 @@ void Layout::fitToPathAlign(SVGLength const &startOffset, Path const &path,
 
     _input_truncated = truncated;
     _path_fitted = &path;
+    _path_fitted_closed = closed;
+    _path_fitted_length = path_length;
 }
 
 Geom::PathVector Layout::convertToCurves() const
