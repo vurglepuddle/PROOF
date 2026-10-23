@@ -16,6 +16,7 @@
 #include "ai-native-writer-mesh.h"
 #include "ai-native-writer-picture.h"
 #include "ai-native-writer-string.h"
+#include "ai-native-writer-text.h"
 
 #include <algorithm>
 #include <array>
@@ -41,6 +42,7 @@
 #include "document.h"
 #include "helper/geom.h"
 #include "object/sp-clippath.h"
+#include "object/sp-flowtext.h"
 #include "object/sp-gradient.h"
 #include "object/sp-image.h"
 #include "object/sp-item-group.h"
@@ -51,6 +53,7 @@
 #include "object/sp-rect.h"
 #include "object/sp-root.h"
 #include "object/sp-shape.h"
+#include "object/sp-text.h"
 #include "object/sp-use.h"
 #include "page-manager.h"
 #include "spot-ink.h"
@@ -156,7 +159,7 @@ class Writer
 {
 public:
     Writer(SPDocument *doc, RecordsVersion version)
-        : _doc(doc), _legacy(version == RecordsVersion::Illustrator7)
+        : _doc(doc), _legacy(version == RecordsVersion::Illustrator7), _texts(doc)
     {}
 
     WrittenRecords write();
@@ -167,6 +170,7 @@ private:
     void contents(SPObject const *parent);
     void shape(SPShape const *shape, bool clipped);
     void mesh_shape(SPShape const *shape, SPMeshGradient const *mesh, bool clipped, std::function<void()> const &attach);
+    void text_object(SPText const *text, bool clipped, bool masked, std::string const &own);
     void check_effects(SPItem const *item, std::string_view where = {});
     std::string transparency(SPItem const *item, double alpha = 1.0);
     void end_group(std::string_view own);
@@ -190,6 +194,10 @@ private:
     Geom::Affine _to_art;
     /// The art origin on the y-down canvas where Illustrator applies a gradient's Bg matrix.
     Geom::Point _canvas;
+    /// Where art space's 0,0 lies on Illustrator's 16383-point canvas, y down, on which the text
+    /// documents place their stories.
+    Geom::Point _ruler;
+    TextStories _texts;
     std::ostringstream _body;
     std::set<std::string> _refused;
     std::map<std::string, InkDefinition> _spots;
@@ -877,6 +885,36 @@ void Writer::mesh_shape(SPShape const *s, SPMeshGradient const *mesh, bool clipp
     }
 }
 
+/**
+ * A text object as Illustrator writes one: `/AI11Text` naming its story in the text documents
+ * (ai-native-writer-text.h), then the ending a plug-in's object has.
+ */
+void Writer::text_object(SPText const *text, bool clipped, bool masked, std::string const &own)
+{
+    if (_legacy) {
+        refuse("type (Illustrator 7)");
+        return;
+    }
+    if (_in_pattern) {
+        refuse("type in patterns");
+        return;
+    }
+    if (!_masks.empty()) {
+        refuse("type in opacity masks");
+        return;
+    }
+    if (masked) {
+        refuse("opacity masks on type");
+        return;
+    }
+    auto const written = _texts.add(text, text->i2doc_affine() * _to_art * Geom::Affine(1, 0, 0, -1, _ruler.x(), _ruler.y()));
+    for (auto const &why : written.refused) refuse(why);
+    if (!written.refused.empty() || written.empty) return;
+    state(_transparency, clipped ? std::string(OPAQUE) : own);
+    _body << "/AI11Text :\n0 /FreeUndo ,\n0 /FrameIndex ,\n" << written.story << " /StoryIndex ,\n2 /TextAntialiasing ,\n;\n\n"
+          << "0 0 Xd\n6 () XW\n";
+}
+
 /// `where` names what isn't an object (a layer, the document): the modern form writes an
 /// object's and a group's transparency, and refuses it there as Illustrator 7 does everywhere.
 void Writer::check_effects(SPItem const *it, std::string_view where)
@@ -1176,6 +1214,10 @@ void Writer::item(SPItem const *it)
             _body << records;
             if (!clipped && !records.empty()) attach();
         }
+    } else if (auto text = cast<SPText>(it)) {
+        text_object(text, clipped, masked, own);
+    } else if (is<SPFlowtext>(it)) {
+        refuse("flowed type (SVG 1.2)");
     } else {
         refuse("type");
     }
@@ -1297,6 +1339,8 @@ WrittenRecords Writer::write()
     double const extent_w = (extent.right() - origin.x()) * PX_TO_PT, extent_h = (extent.bottom() - origin.y()) * PX_TO_PT;
     double const template_x = extent_w / 2 + 0.5, template_y = -extent_h / 2 - 0.5;
     _canvas = {4320 - template_x, 4320 + template_y};
+    // As the artboards' RulerOrigin below, before that is rounded down.
+    _ruler = {8191.5 - template_x, 8191.5 + template_y};
 
     // Items outside any layer go to a layer of their own, as Illustrator keeps every object in one.
     auto const *root = _doc->getRoot();
@@ -1423,6 +1467,8 @@ WrittenRecords Writer::write()
     }
     // After the gradients, as Illustrator writes them.
     for (auto const &pattern : _patterns) head << pattern.records;
+    // The text documents last, as Illustrator writes them.
+    if (!_texts.empty()) head << _texts.section(_ruler);
     head << "%%EndSetup\n";
 
     out.records = head.str() + _body.str() +

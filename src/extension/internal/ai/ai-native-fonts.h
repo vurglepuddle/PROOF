@@ -22,6 +22,7 @@
 class FontInstance;
 class SPDocument;
 class SPItem;
+class SPStyle;
 
 namespace Inkscape::XML {
 class Node;
@@ -65,6 +66,22 @@ struct FontMatch
  * @return nothing when the font isn't installed, or isn't the one Pango loads for it.
  */
 std::optional<FontMatch> find_font(std::string const &postscript_name, std::vector<double> const &design = {});
+
+/// The installed font that sets type, as a text document names it.
+struct PostScriptFont
+{
+    std::string name;      ///< Its PostScript name.
+    bool truetype = false; ///< Its outlines are TrueType's (a text document says 1), else 0.
+};
+
+/**
+ * The font that sets type in `style`, by its PostScript name.
+ *
+ * @return nothing, with `why` saying so, when the font is not the one the style names (that
+ *         family isn't installed and Pango stood another in, or Pango made up its bold or its
+ *         slant), is a variable font, or has no PostScript name.
+ */
+std::optional<PostScriptFont> postscript_font(SPStyle const *style, std::string &why);
 
 /**
  * The font that stands in for one that isn't installed: Myriad Pro, as in Illustrator,

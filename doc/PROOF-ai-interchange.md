@@ -67,11 +67,18 @@ opening-time guarantee. [Cache and comparison rules](PROOF-ai-native-records.md#
 | Masks | Linked, non-inverted greyscale vector opacity masks; Clip on/off, fills/strokes, linear/radial gradients and nested masks; Normal/Multiply blending |
 | Transparency | Object/group opacity, sixteen blend modes, isolated blending, knockout records, overprint and supported stroke styles |
 | Pictures | Supported embedded pictures and local PNG/JPEG/classic TIFF/PSD links; original process channels retained where supported |
+| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23) |
 
 Supported does not mean arbitrary combinations of these forms. Important
 explicit refusals include:
 
-- Live type; unsupported appearances/filters; layer/root transparency;
+- Area type, type on a path, vertical type, type that reads from right to left
+  or holds such letters, tabs, characters moved or turned one by one, spot inks,
+  gradients or patterns on type, translucent character paint, variable fonts,
+  fonts that aren't installed under the style's own name, and the remaining
+  OpenType and decoration settings (the writer names each); type in patterns,
+  opacity masks or the Illustrator 7 copy.
+- Unsupported appearances/filters; layer/root transparency;
   separate fill and stroke opacity when both paint.
 - Patterns sized to their object, view-box patterns, and gradients, pictures or
   nested patterns inside a tile.
@@ -181,6 +188,36 @@ identity, preserving unrelated heavy-page cache entries.
 [Implementation and controls](PROOF-ai-interchange-history.md#rgb-pdf-overprint-2026-10-22).
 [Colour contract](PROOF-document-colors.md#an-ink-beside-process-colour-2026-10-22).
 
+<a id="point-type-written-2026-10-23"></a>
+### Point type written (2026-10-23)
+
+Native saving writes point type as Illustrator keeps it: the stories in the
+records' text documents (`%AI11_BeginTextDocument`, before `%%EndSetup`) and an
+`/AI11Text` object naming its story where the text object is. Each line of a
+text object is a paragraph; the lines share one anchor, each below the one
+before by its leading (automatic where it is Illustrator's 120%). Runs carry the
+font by PostScript name, the size, process fill and stroke and the other
+features in the table above. The frame's matrix places the story; a uniform
+scale goes into the sizes, so 16 px type reads as 12 pt in Illustrator. Type set
+in a font standing in for one that isn't installed is written in that font's
+name. Lines are the layout's chunks, so an import's lines (each placed by its
+own x and y) and PROOF's own lines both write; an import's empty lines stay
+empty paragraphs.
+
+Illustrator 29.2.1 and 30.6 lay a story out again from its text, paragraphs and
+runs when they open a file, whatever layout the story keeps: a deliberately
+wrong layout changes nothing (type spike, 2026-10-23). PROOF writes the layout
+for its own reader only, each line where PROOF sets it, so its own files reopen
+natively with every character in place. Illustrator 30.6 opened a synthetic
+control (fonts, RGB/CMYK, tracking, leading, centring, a turned frame, superscript,
+small caps, underline, a stroke without a fill) within anti-aliasing of PROOF's
+drawing (a turned line within 0.13 pt); its re-save reopens natively in PROOF
+within 12 levels of the original. An owner document with Illustrator type
+(`2c7be7744c`, five stories in a font that isn't installed), imported and
+written by PROOF, draws in Illustrator within 15 levels of the original file.
+Area type, path type and the other refusals above are the next slices.
+[Records and keys](PROOF-ai-native-records.md#point-type-written-2026-10-23).
+
 ## Linked PDF/AI pages
 
 Native reading retains the one-based `AI11 PlacedPDFPageIndex` in
@@ -204,7 +241,7 @@ CMYK-defined inks and tints, supported classic gradients and opaque 8-bit
 greyscale/RGB/CMYK embedded pictures. It uses one unnamed artboard and
 Windows-1252 names. It does not need the bundled PDF backend.
 
-It refuses transparency, opacity masks, patterns, meshes, type, picture links,
+It refuses transparency, opacity masks, patterns, meshes, type (named "type (Illustrator 7)"), picture links,
 Registration, Lab/RGB-defined inks, mixed gradient models, hard stops and
 Perceptual gradients, plus unsupported geometry/names. It does not retain the
 document ICC profile or an artboard name. The combined subset was checked in

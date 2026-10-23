@@ -2534,3 +2534,85 @@ remain local; the source and original Form resources are never rewritten.
 The corrected-page cache suffix is rgb-overprint-3; unrelated heavy-page entries
 remain valid. Seven focused import/cache/thread tests and 133 checks across
 seven exact synthetic controls pass. No corpus, census, lite or live UI run.
+
+<a id="point-type-written-2026-10-23"></a>
+## Point type written (2026-10-23)
+
+PROOF's native writer (`ai/ai-native-writer-text.cpp`) writes point type in the
+form PROOF's reader reads and Illustrator opens.
+
+**In the records.** Before `%%EndSetup`, after the gradients and patterns:
+
+```text
+%AI11_BeginTextDocument
+/AI11TextDocument : /ASCII85Decode ,
+%<ASCII85 lines, each after %>~>
+x y /RulerOrigin ,
+;
+/AI11UndoFreeTextDocument : /ASCII85Decode ,
+%<...>~>
+;
+%AI11_EndTextDocument
+```
+
+`x y` is where art space's 0,0 lies on the 16383-point canvas, y down: the
+artboards' own `RulerOrigin` before it is rounded down. In the body, where the
+text object is, after its transparency:
+
+```text
+/AI11Text :
+0 /FreeUndo ,
+0 /FrameIndex ,
+n /StoryIndex ,
+2 /TextAntialiasing ,
+;
+
+0 0 Xd
+6 () XW
+```
+
+**The typed text document** (version `/98 << /0 14 >>`, Illustrator 30.6's):
+resources `/0` hold the fonts (`/1`: MyriadPro-Regular for the normal style,
+AdobeInvisFont, then each font used, `<< /0 << /99 /CoolTypeFont /0 << /0 (name)
+/2 truetype? >> >> >>`, with `/4 [16.16 axis values]` for a missing variable
+instance), the `[Normal Character Style]` (`/5`) and `[Normal Paragraph Style]`
+(`/6`) with every feature as Illustrator 30.6 saves them, and the frames (`/8`):
+`<< /0 [anchor] /2 << /2 [a b c d e f] >> >>`, the anchor in the story's own
+space and the matrix to the canvas. The main dictionary `/1` holds the
+document's superscript, subscript and small-caps settings (`/0`, keys 3 to 7),
+the stories (`/1`) and the character and paragraph defaults (`/2`, `/3`). The
+second document has the same resources and settings and no stories.
+
+**A story:** `/0` the model: the text (UTF-16BE after its mark, a return ending
+each paragraph, parentheses and backslashes escaped and other bytes as they
+are, as Illustrator writes them), paragraph runs (`/5`; each `/0 << /0 align >>`
+under the normal paragraph style `/6 0`, one per paragraph: a single run over
+two paragraphs draws them as one line in Illustrator), character runs (`/6`; each
+the normal style `/5 0` and its own features `/6`), and `/10 << /0 4 /2 true >>`
+as Illustrator writes it. `/1` the view: its frame and the layout PROOF's reader
+needs: `PC`, `F` (the frame and its anchor), `R`, `R`, then a line `L` per
+paragraph (`/0` down from the anchor) with one segment `S` (`/15 /0` its UTF-16
+count, `/0` where its first character starts across from the anchor).
+
+**Features written** (run `/6`): 0 font, 1 size (points), 4 automatic leading,
+5 leading, 8 tracking (thousandths of the size the characters are set at),
+9 baseline shift (points, up), 11 kerning (0 none, 1 the font's), 12 capitals
+(0, 1 small caps, 2 all caps), 13 position (0, 1 superscript, 2 subscript),
+15 strikethrough, 16 underline, 18 standard ligatures, 20 contextual
+alternates, 53/56 fill and its flag, 54/57 stroke and its flag, 63 stroke width,
+64 miter limit. A paint is `<< /99 /SimplePaint /0 << /0 model /1 [1.0 ...] >> >>`:
+model 1 RGB, 2 CMYK, the first value 1.
+
+**What Illustrator does with it** (type spike, 2026-10-23, Illustrator 30.6
+through its scripting interface): it reads the stories, fonts, sizes, colours
+in their own model, tracking, leading and alignment as editable type, and lays
+each story out again from the model; the layout in the view is ignored, a
+deliberately wrong one included. Without any layout it draws the same.
+
+**Where the lines come from.** Inkscape's layout gives plain SVG text (an
+import's: each line a tspan with its own x and y) one layout line, its later
+chunks moved down by their `y`; Inkscape's own lines are layout lines of one
+chunk each. The writer takes each chunk as a line, at the x its alignment is to
+and its baseline (`Layout::chunkPlacement`, added for this). A chunk's
+`chunkAnchorPoint` measures with the letter spacing after its last letter,
+which the layout leaves out when it aligns the chunk; the placement doesn't.

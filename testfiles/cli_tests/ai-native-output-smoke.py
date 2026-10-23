@@ -174,8 +174,20 @@ def main():
     check("new PDF replaces previous artwork", ImageChops.difference(
         render(updated_pdf, "edited-reference", 1), render(ai, "overwritten-page", 1)).getbbox() is None)
 
+    # Point type is written as Illustrator's stories, and reopens as editable type.
+    typed = out / "typed.svg"
+    typed.write_text(svg.replace("</svg>", '<text x="10" y="30" style="font-family:Arial;font-size:12px">'
+                                           'Live type</text></svg>'), encoding="utf-8")
+    typed_ai, typed_svg = out / "typed.ai", out / "typed-reopened.svg"
+    export("typed", typed, typed_ai, native)
+    export("typed-reopen", typed_ai, typed_svg)
+    stories = [e for e in ET.parse(typed_svg).getroot().iter("{http://www.w3.org/2000/svg}text")
+               if e.get("{urn:x-proof:document:1}ai-story") is not None]
+    check("point type reopens as a native story", len(stories) == 1 and "".join(stories[0].itertext()) == "Live type")
+
     unsupported = out / "unsupported.svg"
-    unsupported.write_text(svg.replace("</svg>", '<text x="10" y="30">Live type</text></svg>'), encoding="utf-8")
+    unsupported.write_text(svg.replace("</svg>", '<text x="10" y="30" style="writing-mode:vertical-rl">Live type</text></svg>'),
+                           encoding="utf-8")
     kept = ai.read_bytes()
     refused = run("refusal", [exe, unsupported, f"--export-filename={ai}", native], success=False)
     check("refusal returns failure without crash", refused.returncode == 1)

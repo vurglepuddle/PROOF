@@ -6,6 +6,7 @@
 #include "ai-native-fonts.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <stdexcept>
@@ -26,6 +27,7 @@
 #include "object/sp-string.h"
 #include "object/sp-text.h"
 #include "style.h"
+#include "style-text.h"
 #include "svg/css-ostringstream.h"
 #include "text-editing.h"
 #include "xml/node.h"
@@ -489,6 +491,55 @@ std::vector<XML::Node *> naming_fonts(SPDocument *document)
 }
 
 } // namespace
+
+std::optional<PostScriptFont> postscript_font(SPStyle const *style, std::string &why)
+{
+    auto *asked = ink_font_description_from_style(style);
+    if (!asked) {
+        why = "type whose font can't be found";
+        return {};
+    }
+    // The first family the style names: the one its type is in when that is installed.
+    std::string first = sp_font_description_get_family(asked) ? sp_font_description_get_family(asked) : "";
+    first = first.substr(0, first.find(','));
+    first.erase(0, first.find_first_not_of(" \t'\""));
+    first.erase(first.find_last_not_of(" \t'\"") + 1);
+    // A generic family is whatever font the system gives for it.
+    bool const generic = std::ranges::any_of(std::array{"serif", "sans-serif", "sans", "monospace", "cursive", "fantasy", "system-ui"},
+                                             [&](char const *g) { return g_ascii_strcasecmp(g, first.c_str()) == 0; });
+    auto const face = load(asked);
+    auto *got = face && face->get_font() ? pango_font_describe(face->get_font()) : nullptr;
+    std::optional<PostScriptFont> out;
+    if (!got) {
+        why = "type whose font can't be loaded";
+    } else if (auto const *family = sp_font_description_get_family(got);
+               !generic && (!family || g_ascii_strcasecmp(family, first.c_str()) != 0)) {
+        why = "type in a font that isn't installed (" + first + ")";
+    } else if (pango_font_description_get_weight(asked) - pango_font_description_get_weight(got) >= 200) {
+        why = "type made bold for a font that has no bold (" + first + ")";
+    } else if (pango_font_description_get_style(asked) != PANGO_STYLE_NORMAL &&
+               pango_font_description_get_style(got) == PANGO_STYLE_NORMAL) {
+        why = "type slanted for a font that has no italic (" + first + ")";
+    } else if (auto *hb = pango_font_get_hb_font(face->get_font()); !hb) {
+        why = "type whose font can't be loaded";
+    } else {
+        auto *hb_face = hb_font_get_face(hb);
+        auto const name = name_of(hb_face, HB_OT_NAME_ID_POSTSCRIPT_NAME);
+        if (hb_ot_var_has_data(hb_face)) {
+            // Which of its instances Illustrator would take for the name isn't qualified.
+            why = "type in a variable font (" + first + ")";
+        } else if (name.empty()) {
+            why = "type in a font without a PostScript name (" + first + ")";
+        } else {
+            auto *outlines = hb_face_reference_table(hb_face, HB_TAG('g', 'l', 'y', 'f'));
+            out = PostScriptFont{name, hb_blob_get_length(outlines) > 0};
+            hb_blob_destroy(outlines);
+        }
+    }
+    if (got) pango_font_description_free(got);
+    pango_font_description_free(asked);
+    return out;
+}
 
 /// Still set in the font the import gave it in place of its own.
 bool stands_in(XML::Node const *node)

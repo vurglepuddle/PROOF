@@ -94,6 +94,7 @@
 #include "object/sp-pattern.h"
 #include "object/sp-root.h"
 #include "object/sp-shape.h"
+#include "object/sp-string.h"
 #include "object/sp-text.h"
 #include "page-manager.h"
 #include "spot-ink.h"
@@ -6259,7 +6260,7 @@ TEST_F(AiNativeImportTest, PatternsOutsideTheWrittenSubsetAreRefusedByName)
         {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")",
               R"(<image width="5" height="5" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="/>)"),
          "pictures in patterns"},
-        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", R"(<text x="1" y="5">A</text>)"), "type"},
+        {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", R"(<text x="1" y="5">A</text>)"), "type in patterns"},
         {tile(R"(patternUnits="userSpaceOnUse" width="10" height="10")", ""), "empty patterns"},
     };
     for (auto const &[body, reason] : cases) {
@@ -6583,7 +6584,7 @@ TEST_F(AiNativeImportTest, MasksOutsideTheWrittenSubsetAreRefusedByName)
          "pictures in opacity masks"},
         {masked(R"(<rect width="20" height="20" fill="#808080" style="mix-blend-mode:screen"/>)"),
          "blend modes other than Multiply in opacity masks"},
-        {masked(R"(<text x="1" y="5">A</text>)"), "type"},
+        {masked(R"(<text x="1" y="5">A</text>)"), "type in opacity masks"},
         {masked(R"(<rect width="0.5" height="0.5" fill="#ffffff"/>)", R"(maskContentUnits="objectBoundingBox")"),
          "opacity masks sized to their object"},
         {R"(<defs><mask id="m"><rect width="20" height="20" fill="#ffffff"/></mask></defs>)"
@@ -7221,7 +7222,7 @@ TEST_F(AiNativeImportTest, LegacySaveCopyPreservesTheWorkingDocumentAndPreviousF
     std::string const saved(contents, size);
     g_free(contents);
     EXPECT_EQ(saved.find("%!PS-Adobe-3.0\n"), 0u);
-    auto refused = svg_document(R"(<text x="10" y="20">Keep live type</text>)");
+    auto refused = svg_document(R"(<text x="10" y="20" style="writing-mode:vertical-rl">Keep live type</text>)");
     ASSERT_TRUE(refused);
     EXPECT_THROW(output.save(nullptr, refused.get(), path.c_str()), std::runtime_error);
     EXPECT_THROW(output.save(nullptr, refused.get(), new_path.c_str()), std::runtime_error);
@@ -7599,6 +7600,182 @@ TEST_F(AiNativeImportTest, MeshWriterKeepsCurvedAndReflectedGeometry)
     }
 }
 
+/// Each character a text object sets, and where: its start, on its line's baseline, in the
+/// document. Plain SVG text moves later chunks off the first chunk's line: their placement says.
+std::vector<std::pair<gunichar, Geom::Point>> set_characters(SPDocument *doc, XML::Node *repr)
+{
+    doc->ensureUpToDate();
+    std::vector<std::pair<gunichar, Geom::Point>> out;
+    auto *text = cast<SPText>(doc->getObjectByRepr(repr));
+    if (!text) return out;
+    auto const &layout = text->layout;
+    for (auto it = layout.begin(); it != layout.end(); it.nextCharacter()) {
+        SPObject *source = nullptr;
+        Glib::ustring::iterator at;
+        layout.getSourceOfCharacter(it, &source, &at);
+        if (!is<SPString>(source)) continue;
+        auto const start = Geom::Point(layout.characterAnchorPoint(it).x(), layout.chunkPlacement(it).y());
+        out.emplace_back(*at, start * text->i2doc_affine());
+    }
+    return out;
+}
+
+TEST_F(AiNativeImportTest, WrittenTypeReadsBackWithEveryCharacterWhereItWas)
+{
+    // Point type: lines that are paragraphs about one anchor, runs of fonts, colours, tracking,
+    // underline, superscript and small caps, a turned frame, a stroke without a fill.
+    auto doc = svg_document(
+        R"x(<text id="plain" xml:space="preserve" x="20" y="30" style="font-family:Arial;font-size:20px;fill:device-cmyk(0 1 1 0)">Hello PROOF</text>)x"
+        R"(<text id="lines" xml:space="preserve" x="100" y="55" style="font-family:Arial;font-size:12px;text-anchor:middle;fill:#0000ff">)"
+        R"(<tspan sodipodi:role="line" x="100" y="55">Centred line one</tspan>)"
+        R"(<tspan sodipodi:role="line" x="100" y="75" style="font-family:'Times New Roman';font-weight:bold;fill:#000000;letter-spacing:1.2px">)"
+        R"(Second <tspan style="text-decoration-line:underline">line</tspan></tspan></text>)"
+        R"x(<text id="turned" xml:space="preserve" transform="rotate(-30 30 90)" x="30" y="90" style="font-family:Arial;font-size:14px;fill:#00a000">)x"
+        R"(Turned <tspan style="font-variant-position:super">30</tspan> <tspan style="font-variant-caps:small-caps">Small</tspan></text>)"
+        R"(<text id="right" xml:space="preserve" x="190" y="95" style="font-family:'Times New Roman';font-style:italic;font-size:10px;)"
+        R"(text-anchor:end;fill:none;stroke:#000000;stroke-width:0.4px">Right</text>)");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &records = written.records;
+    // The text documents last in the setup, and an object for each story in the body.
+    auto const section = records.find("%AI11_BeginTextDocument");
+    ASSERT_NE(section, std::string::npos);
+    EXPECT_LT(records.find("%AI11_EndTextDocument"), records.find("%%EndSetup"));
+    std::size_t objects = 0;
+    for (auto at = records.find("/AI11Text :"); at != std::string::npos; at = records.find("/AI11Text :", at + 1)) ++objects;
+    EXPECT_EQ(objects, 4u);
+
+    auto b = make(records);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    auto const texts = elements(imported->getReprRoot(), "svg:text");
+    ASSERT_EQ(texts.size(), 4u) << sp_repr_save_buf(imported->getReprDoc()).raw();
+    char const *const ids[] = {"plain", "lines", "turned", "right"};
+    for (std::size_t i = 0; i < texts.size(); ++i) {
+        SCOPED_TRACE(ids[i]);
+        EXPECT_EQ(attr(texts[i], "proof:ai-story"), std::to_string(i));
+        auto const was = set_characters(doc.get(), doc->getObjectById(ids[i])->getRepr());
+        auto const now = set_characters(imported, texts[i]);
+        ASSERT_EQ(now.size(), was.size());
+        ASSERT_FALSE(was.empty());
+        for (std::size_t c = 0; c < was.size(); ++c) {
+            EXPECT_EQ(now[c].first, was[c].first) << c;
+            EXPECT_NEAR(now[c].second.x(), was[c].second.x(), 0.02) << c;
+            EXPECT_NEAR(now[c].second.y(), was[c].second.y(), 0.02) << c;
+        }
+    }
+    // Process colour stays in its model.
+    imported->ensureUpToDate();
+    auto const fill = imported->getObjectByRepr(texts[0])->style->fill.getColor();
+    ASSERT_EQ(fill.getSpace()->getComponentType(), Type::CMYK);
+    EXPECT_NEAR(fill[0], 0.0, 1e-4);
+    EXPECT_NEAR(fill[1], 1.0, 1e-4);
+    EXPECT_NEAR(fill[2], 1.0, 1e-4);
+    EXPECT_NEAR(fill[3], 0.0, 1e-4);
+}
+
+TEST_F(AiNativeImportTest, WrittenTypeKeepsItsFeaturesInTheStory)
+{
+    auto doc = svg_document(
+        R"x(<g transform="scale(2)"><text xml:space="preserve" x="10" y="20" style="font-family:Arial;font-size:10px">Big</text></g>)x"
+        R"(<text xml:space="preserve" x="10" y="60" style="font-family:Arial;font-size:16px;letter-spacing:1.6px;)"
+        R"(font-feature-settings:'kern' 0;font-variant-ligatures:no-common-ligatures no-contextual">Ab)"
+        R"(<tspan style="baseline-shift:4px">c</tspan><tspan style="text-transform:uppercase;text-decoration-line:line-through">d</tspan>)"
+        R"(<tspan style="fill:none;stroke:#ff0000;stroke-width:2px">e</tspan></text>)"
+        R"(<text xml:space="preserve" x="10" y="90" proof:font-missing="PROOFNoSuchFont-Bold" style="font-family:Arial;font-size:8px">Gone</text>)",
+        R"(width="200" height="100" viewBox="0 0 200 100" proof:superscript="0.5 0.4")");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(texts->error.empty()) << texts->error;
+    ASSERT_EQ(texts->stories.size(), 3u);
+    for (auto const &e : texts->errors) EXPECT_TRUE(e.empty()) << e;
+    EXPECT_NEAR(texts->type.superscript_size, 0.5, 1e-9);
+    EXPECT_NEAR(texts->type.superscript_shift, 0.4, 1e-9);
+
+    // A uniform scale is in the size: 10 px, twice, in points.
+    auto const &big = texts->stories[0]->lines.at(0).runs.at(0).style;
+    EXPECT_EQ(big.font, "ArialMT");
+    EXPECT_NEAR(big.size, 15, 1e-6);
+    EXPECT_NEAR(texts->stories[0]->to_art.descrim(), 1, 1e-6);
+
+    auto const &runs = texts->stories[1]->lines.at(0).runs;
+    ASSERT_EQ(runs.size(), 4u);
+    EXPECT_EQ(runs[0].text, "Ab");
+    EXPECT_NEAR(runs[0].style.size, 12, 1e-6);
+    EXPECT_NEAR(runs[0].style.tracking, 100, 1e-6); // 1.6 px of 16 px
+    EXPECT_EQ(runs[0].style.kerning, 0);
+    EXPECT_FALSE(runs[0].style.ligatures);
+    EXPECT_FALSE(runs[0].style.contextual);
+    EXPECT_NEAR(runs[1].style.baseline_shift, 3, 1e-6);
+    EXPECT_TRUE(runs[2].style.all_caps);
+    EXPECT_TRUE(runs[2].style.strikethrough);
+    EXPECT_FALSE(runs[3].style.fill);
+    ASSERT_TRUE(runs[3].style.stroke);
+    EXPECT_NEAR(runs[3].style.stroke_width, 1.5, 1e-6);
+
+    // Type set in a font standing in for one that isn't installed keeps that font's name.
+    EXPECT_EQ(texts->stories[2]->lines.at(0).runs.at(0).style.font, "PROOFNoSuchFont-Bold");
+}
+
+TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
+{
+    std::vector<std::pair<std::string, std::string>> const cases{
+        {R"(<text x="10" y="20" style="writing-mode:vertical-rl">Hi</text>)", "vertical type"},
+        {R"(<text x="10" y="20" style="inline-size:100px">Hi</text>)", "area type"},
+        {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">Hi</textPath></text>)", "type on a path"},
+        {R"(<text x="10" y="20" dx="0 3">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
+        {R"(<text x="10" y="20" rotate="0 15">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
+        {R"(<text x="10" y="20" textLength="80">Hi</text>)", "type stretched to a length (textLength)"},
+        {R"(<text x="10" y="20" style="direction:rtl">Hi</text>)", "type that reads from right to left"},
+        {"<text x=\"10\" y=\"20\">\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d</text>", "letters of scripts read from right to left"},
+        {"<text x=\"10\" y=\"20\" xml:space=\"preserve\">A\tB</text>", "tabs in type"},
+        {R"(<text><tspan x="10" y="20">A</tspan><tspan x="50" y="40">B</tspan></text>)", "lines of type that don't share one anchor"},
+        {R"(<text><tspan x="10" y="40">A</tspan><tspan x="10" y="20">B</tspan></text>)",
+         "lines of type that don't each lie below the one before"},
+        {R"(<text x="10" y="20">A<tspan x="50">B</tspan></text>)", "lines of type set in pieces"},
+        {R"(<text x="10" y="20" style="font-family:PROOFNoSuchFamilyAtAll">Hi</text>)",
+         "type in a font that isn't installed (PROOFNoSuchFamilyAtAll)"},
+        {R"(<defs><linearGradient id="g"><stop stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs>)"
+         R"x(<text x="10" y="20" style="fill:url(#g)">Hi</text>)x", "gradients on type"},
+        {R"(<defs><pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="5" height="5"/></pattern></defs>)"
+         R"x(<text x="10" y="20" style="fill:url(#p)">Hi</text>)x", "patterns on type"},
+        {R"(<text x="10" y="20" style="fill:#000000;fill-opacity:0.5">Hi</text>)", "translucent fills or strokes on type"},
+        {R"(<text x="10" y="20" style="stroke:#000000;stroke-dasharray:2 1">Hi</text>)", "dashed strokes on type"},
+        {R"(<text x="10" y="20" style="stroke:#000000;stroke-linejoin:round">Hi</text>)",
+         "stroke caps or joins on type other than butt and miter"},
+        {R"(<text x="10" y="20" style="stroke:#000000;paint-order:stroke">Hi</text>)", "strokes painted under type's fill"},
+        {R"(<text x="10" y="20" style="text-transform:lowercase">Hi</text>)", "type set in lower case or capitalised"},
+        {R"(<text x="10" y="20" style="font-variant-caps:all-small-caps">Hi</text>)", "capitals other than all caps and small caps"},
+        {R"(<text x="10" y="20" style="font-variant-ligatures:discretionary-ligatures">Hi</text>)",
+         "discretionary or historical ligatures"},
+        {R"(<text x="10" y="20" style="font-variant-numeric:oldstyle-nums">Hi</text>)",
+         "OpenType figure, alternate or East Asian forms on type"},
+        {R"(<text x="10" y="20" style="font-feature-settings:'ss01'">Hi</text>)", "OpenType feature settings on type"},
+        {R"(<text x="10" y="20" style="word-spacing:3px">Hi</text>)", "word spacing on type"},
+        {R"(<text x="10" y="20">H<tspan style="baseline-shift:super">i</tspan></text>)",
+         "superscript or subscript made by a baseline shift"},
+        {R"(<text x="10" y="20" style="text-decoration-line:overline">Hi</text>)", "overlines on type"},
+        {R"(<text x="10" y="20">H<tspan style="opacity:0.5">i</tspan></text>)", "transparency on part of a text"},
+        {R"(<text x="10" y="20" style="font-size:2000px">Hi</text>)", "type sizes Illustrator can't set (under 0.1 or over 1296 pt)"},
+        {R"(<defs><mask id="m"><rect width="20" height="20" fill="#ffffff"/></mask></defs>)"
+         R"x(<text x="10" y="20" mask="url(#m)">Hi</text>)x", "opacity masks on type"},
+        {R"(<flowRoot><flowRegion><rect width="100" height="50"/></flowRegion><flowPara>Hi</flowPara></flowRoot>)",
+         "flowed type (SVG 1.2)"},
+    };
+    for (auto const &[body, reason] : cases) {
+        SCOPED_TRACE(reason);
+        auto doc = svg_document(body);
+        ASSERT_TRUE(doc);
+        auto const written = AN::write_records(doc.get());
+        EXPECT_TRUE(written.records.empty());
+        EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), reason), written.refused.end())
+            << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
+    }
+}
+
 TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
 {
     // The refusals no other test reaches, in both forms: the list the interchange document
@@ -7615,7 +7792,6 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
         {R"(<defs><linearGradient id="g" spreadMethod="reflect" x2="0.5"><stop stop-color="#ff0000"/>)"
          R"x(<stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="50" height="50" fill="url(#g)"/>)x",
          "repeating or reflected gradients"},
-        {R"(<text x="10" y="20">Hi</text>)", "type"},
     };
     for (auto const &[body, reason] : cases) {
         SCOPED_TRACE(reason);
@@ -7628,6 +7804,12 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
                 << (written.refused.empty() ? std::string("nothing refused") : written.refused.front());
         }
     }
+    // Type: the modern form writes ordinary point type; Illustrator 7's legacy type isn't written.
+    auto type = svg_document(R"(<text x="10" y="20">Hi</text>)");
+    ASSERT_TRUE(type);
+    EXPECT_TRUE(AN::write_records(type.get()).refused.empty());
+    auto const legacy = AN::write_records(type.get(), AN::RecordsVersion::Illustrator7);
+    EXPECT_NE(std::find(legacy.refused.begin(), legacy.refused.end(), "type (Illustrator 7)"), legacy.refused.end());
     // Transparency: Illustrator 7 has none, and the modern form refuses only a fill and a
     // stroke each with an opacity of its own, which takes an appearance.
     auto both = svg_document(R"(<rect width="50" height="50" style="fill:#ff0000;fill-opacity:0.5;stroke:#000000"/>)");
@@ -7643,12 +7825,12 @@ TEST_F(AiNativeImportTest, BothWritersNameEveryFormOutsideTheirSubset)
 
 TEST_F(AiNativeImportTest, TheWriterRefusesWhatItCannotWriteByName)
 {
-    auto doc = svg_document(R"(<g inkscape:groupmode="layer"><text x="10" y="20">Hi</text>)"
+    auto doc = svg_document(R"(<g inkscape:groupmode="layer"><text x="10" y="20" style="writing-mode:vertical-rl">Hi</text>)"
                             R"(<rect x="10" y="30" width="10" height="10" style="fill:#ff0000;stroke:#000000;stroke-opacity:0.5"/></g>)");
     ASSERT_TRUE(doc);
     auto const written = AN::write_records(doc.get());
     EXPECT_TRUE(written.records.empty());
-    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "type"), written.refused.end());
+    EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "vertical type"), written.refused.end());
     EXPECT_NE(std::find(written.refused.begin(), written.refused.end(), "separate fill and stroke transparency"),
               written.refused.end());
 
@@ -8235,7 +8417,7 @@ TEST_F(AiNativeImportTest, NativeSaveAsRefusesWithoutChangingTheDocumentOrPrevio
     ASSERT_TRUE(native);
     EXPECT_FALSE(native->savecopy_only());
     native->set_gui(false);
-    auto doc = svg_document(R"(<text x="10" y="20">Keep live type</text>)");
+    auto doc = svg_document(R"(<text x="10" y="20" style="writing-mode:vertical-rl">Keep live type</text>)");
     ASSERT_TRUE(doc);
     doc->ensureUpToDate();
     doc->setModifiedSinceSave(true);

@@ -505,6 +505,16 @@ public:
     \a it. */
     inline unsigned lineIndex(iterator const &it) const;
 
+    /** PROOF: returns the zero-based number of the chunk containing the character pointed to
+    by  it. */
+    inline unsigned chunkIndex(iterator const &it) const;
+
+    /** PROOF: where the chunk containing the character pointed to by  it was placed: the x
+    its paragraph's alignment is to, and its baseline. Plain SVG text places each later chunk on
+    the first chunk's line, moved by its 'y'; the baseline includes that. Horizontal text that
+    doesn't flow into a shape only. */
+    inline Geom::Point chunkPlacement(iterator const &it) const;
+
     /** Returns the zero-based number of the shape which contains the
     character pointed to by \a it. */
     inline unsigned shapeIndex(iterator const &it) const;
@@ -909,6 +919,9 @@ public:
     struct Chunk {
         unsigned in_line;
         double left_x;
+        /// PROOF: the x the chunk is aligned to: its start, middle or end by the paragraph's
+        /// alignment, as its text placed it.
+        double anchor_x = 0.0;
     };
 
     // A line of text. Depending on the shape, it may contain one or more chunks.
@@ -1192,6 +1205,17 @@ inline Layout::iterator Layout::getLetterAt(Geom::Point &point) const
 
 inline unsigned Layout::lineIndex(iterator const &it) const
     {return it._char_index == _characters.size() ? _lines.size() - 1 : _characters[it._char_index].chunk(this).in_line;}
+
+inline unsigned Layout::chunkIndex(iterator const &it) const
+    {return it._char_index == _characters.size() ? _chunks.size() - 1 : _characters[it._char_index].span(this).in_chunk;}
+
+inline Geom::Point Layout::chunkPlacement(iterator const &it) const
+{
+    if (it._char_index >= _characters.size()) return {};
+    auto const &span = _characters[it._char_index].span(this);
+    auto const &chunk = _chunks[span.in_chunk];
+    return {chunk.anchor_x, _lines[chunk.in_line].baseline_y + span.y_offset};
+}
 
 inline unsigned Layout::shapeIndex(iterator const &it) const
     {return it._char_index == _characters.size() ? _input_wrap_shapes.size() - 1 : _characters[it._char_index].line(this).in_shape;}

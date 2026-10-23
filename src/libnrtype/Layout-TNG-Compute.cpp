@@ -352,6 +352,7 @@ void Layout::Calculator::_outputLine(ParagraphInfo const &para,
         } else {
             new_chunk.left_x = _getChunkLeftWithAlignment(para, it_chunk, &add_to_each_whitespace);
         }
+        new_chunk.anchor_x = it_chunk->x;
 
         // we may also have y move orders to deal with here (dx, dy and rotate are done per span)
 

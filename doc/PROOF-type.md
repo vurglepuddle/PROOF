@@ -4,8 +4,10 @@ Fonts that aren't installed, and Illustrator's four Character options: all
 caps, small caps, superscript and subscript. First slice: 2026-10-11.
 
 Reading these from `.ai` files is described in
-[PROOF-ai-native-records.md](PROOF-ai-native-records.md). This document is
-about the editor.
+[PROOF-ai-native-records.md](PROOF-ai-native-records.md); native saving writes
+point type with them since 2026-10-23
+([AI interchange](PROOF-ai-interchange.md#point-type-written-2026-10-23)). This
+document is about the editor.
 
 ## What works now
 
