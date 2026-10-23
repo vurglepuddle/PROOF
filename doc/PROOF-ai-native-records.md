@@ -2571,7 +2571,8 @@ n /StoryIndex ,
 6 () XW
 ```
 
-**The typed text document** (version `/98 << /0 14 >>`, Illustrator 30.6's):
+**The typed text document** (version `/98 << /0 14 >>`, Illustrator 30.6's;
+Illustrator 29.2.1 writes 11 and opens 14):
 resources `/0` hold the fonts (`/1`: MyriadPro-Regular for the normal style,
 AdobeInvisFont, then each font used, `<< /0 << /99 /CoolTypeFont /0 << /0 (name)
 /2 truetype? >> >> >>`, with `/4 [16.16 axis values]` for a missing variable
@@ -2603,8 +2604,9 @@ alternates, 53/56 fill and its flag, 54/57 stroke and its flag, 63 stroke width,
 64 miter limit. A paint is `<< /99 /SimplePaint /0 << /0 model /1 [1.0 ...] >> >>`:
 model 1 RGB, 2 CMYK, the first value 1.
 
-**What Illustrator does with it** (type spike, 2026-10-23, Illustrator 30.6
-through its scripting interface): it reads the stories, fonts, sizes, colours
+**What Illustrator does with it** (type spike, 2026-10-23, Illustrator 29.2.1
+through its scripting interface; recorded as 30.6 until the owner pointed out
+that this machine's is 29.2.1): it reads the stories, fonts, sizes, colours
 in their own model, tracking, leading and alignment as editable type, and lays
 each story out again from the model; the layout in the view is ignored, a
 deliberately wrong one included. Without any layout it draws the same.
@@ -2616,3 +2618,100 @@ chunk each. The writer takes each chunk as a line, at the x its alignment is to
 and its baseline (`Layout::chunkPlacement`, added for this). A chunk's
 `chunkAnchorPoint` measures with the letter spacing after its last letter,
 which the layout leaves out when it aligns the chunk; the placement doesn't.
+
+<a id="area-type-written-2026-10-23"></a>
+## Area type written (2026-10-23)
+
+The writer writes area type in the form Illustrator 29.2.1 saves it, learned
+from a control it saved (three frames) and from area type in the owner's
+copies.
+
+**The text object** carries its frame as an unpainted path in art space between
+its story number and its antialiasing:
+
+```text
+/AI11Text :
+0 /FreeUndo ,
+0 /FrameIndex ,
+n /StoryIndex ,
+/Art :
+X=
+4 As
+50 631.89 m
+50 781.89 L
+...
+n
+X+
+; /ConfiningPath ,
+2 /TextAntialiasing ,
+;
+```
+
+`As` is the path's number of segments (4 for a rectangle, 5 for one curved
+frame of the owner's). Illustrator writes the path's state before it when it
+changes (`0 D`, `Xy`, stroke settings); PROOF writes none: the path is
+unpainted. In 255 area objects of the owner's copies the `/Art` path and the
+frame in the text document agree; nothing showed a copied object keeping its
+original's frame (VectorCraft's note in `frames.rs`).
+
+**The frame** (text document resource `/8`): `<< /0 << /1 << /0 [points] >> /2
+<< /0 1 /2 [a b c d e f] /7 18.0 /8 18.0 [/10 << /0 rule /1 minimum >>] >> >> >>`.
+The points are the outline, each segment four points (start, two handles, end;
+a straight side its ends twice), in the story's own space; Illustrator starts a
+rectangle at its bottom-left corner. `/0 1` is area type, `/7 /8` the gutters
+(18 when untouched), the matrix as for point type; Illustrator 29.2.1 leaves the
+matrix out when it is the identity.
+
+**The first baseline** (`/10`), worked out by having Illustrator 29.2.1 lay out
+nine frames of one text, each with another rule and a minimum of 0, and reading
+its re-save (Myriad Pro 12 pt, leading 15):
+
+| Rule | Illustrator's name | First baseline below the frame's top |
+|---|---|---|
+| 0 | Fixed | the minimum (0) |
+| 1 | Ascent, the default; Illustrator then leaves `/10` out | 8.52 |
+| 2 | Cap Height | 8.09 |
+| 3 | Leading | 15 |
+| 4 | x Height | 5.81 |
+| 5 | Em Box Height | 10.04 |
+| 6 | Legacy | 11.42 |
+
+7 and 8 aren't rules (one moved the line above the frame). 167 of the 248 area
+frames in the owner's copies say `/10 << /0 5 /1 0 >>` (Em Box), the rest
+nothing. The reader keeps the rule (`PointText::first_baseline`, the import's
+`proof:first-baseline`) and the writer writes it back; written without it,
+Illustrator would set such frames by Ascent, about 1.5 pt higher. Type Inkscape
+flowed into a shape is written with rule 0 and the distance from the frame's
+top to Inkscape's first baseline: Inkscape sets the first line by its line
+height, Illustrator by the font's ascent (Arial 0.716 em), 2.2 to 4.4 pt apart.
+
+**The story.** What was typed, the lines joined: a return ends a paragraph, a
+line break typed inside one is U+0003, a line the frame wrapped ends with
+nothing. Illustrator ends a paragraph run at each U+0003 as at each return (83
+stories of the owner's copies, every one); the writer does the same. Each
+paragraph run says its alignment (`/0`) and, where the import says so,
+hyphenation (`/9 true`; the normal style written has it off, as Inkscape sets
+type). Leading is each line's distance from the one before. What the frame
+was too small to show follows the last line, in its last character's features.
+The view holds, for PROOF's reader, the frame node `F` at the frame's top-left
+corner and a line `L` for each line, down from it, its segment's count and
+where it starts across. Illustrator 29.2.1 also writes the story's line count
+per paragraph (`/1 /1`) and the program that wrote it (`/1 /4`); neither is
+needed.
+
+**Reading it.** The reader marks each line's end (`TextLine::end`: a return, a
+U+0003, or the frame's wrap), its paragraph's alignment and hyphenation, all
+before it decides the anchors: an area line whose paragraph is centred but
+which keeps a space at its end is anchored at its start, as before, and now
+also carries the centring (`text-align`), which the writer writes. Nothing
+else changed in how lines are placed.
+
+**Inkscape's type in a shape.** `shape-inside` with one shape: its curve with
+the shape's own transform is the frame, in the text's coordinates. Inkscape
+keeps a typed line feed (`white-space:pre`) as a character inside its layout
+paragraph, not as a new one, so the writer ends a paragraph after a line whose
+chunk holds one. The layout measured that line feed with the font's width for
+it, though it draws it with none: a centred or right-aligned line before one
+was set off its anchor by that width (3.2 pt for 14 pt Arial). It is measured
+with none now (`Layout-TNG-Compute.cpp`, `_measureUnbrokenSpan`), and the line
+sits where Illustrator sets it.

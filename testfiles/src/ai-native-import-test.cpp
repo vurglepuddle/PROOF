@@ -2582,6 +2582,71 @@ TEST_F(AiNativeImportTest, AreaTypeBuildsPositionedLinesAndKeepsItsFrame)
     EXPECT_EQ(attr(again[0], AN::TEXT_OVERFLOW_ATTRIBUTE), "more\n");
 }
 
+/// Area type of three paragraphs: a centred one Illustrator hyphenates, which the frame wrapped
+/// after "Hello ", then two right-aligned ones, the first with a line break typed in it (U+0003,
+/// where Illustrator ends a paragraph run too), and `extra` after them.
+std::string paragraphs_in_a_frame(std::string const &font, std::string const &extra = {}, int more = 0)
+{
+    auto const run = [](int units, std::string const &own) {
+        return "<< /1 " + std::to_string(units) + " /0 << /0 << /5 << " + own + " >> >> >> >> ";
+    };
+    std::string runs = run(12, "/0 2 /9 true") + run(5, "/0 1") + run(5, "/0 1");
+    if (more) runs += run(more, "/0 1");
+    return area_text_document("(Hello world\\rNext\\003line\\r" + extra + ")", 22 + more,
+                              {{0, 12, 6}, {0, 26, 6}, {0, 40, 5}, {0, 54, 5}}, font, {}, " /5 << /0 [ " + runs + "] >>");
+}
+
+TEST_F(AiNativeImportTest, AreaTypeKeepsItsParagraphsWhereTheFrameWrappedThem)
+{
+    auto texts = AN::read_text_document(text_setup(paragraphs_in_a_frame("ArialMT")), Geom::Point(100, 50));
+    ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+    auto const &lines = texts->stories[0]->lines;
+    ASSERT_EQ(lines.size(), 4u);
+    using End = AN::TextLine::End;
+    EXPECT_EQ(lines[0].end, End::Wrap);
+    EXPECT_EQ(lines[1].end, End::Paragraph);
+    EXPECT_EQ(lines[2].end, End::Break);
+    EXPECT_EQ(lines[3].end, End::Paragraph);
+    for (std::size_t i = 0; i < 4; ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(lines[i].paragraph_alignment, i < 2 ? 2u : 1u);
+        EXPECT_EQ(lines[i].hyphenate, i < 2);
+    }
+    EXPECT_EQ(lines[2].runs.at(0).text, "Next");
+
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // On the page: each line says how it ended, and its paragraph's alignment and hyphenation,
+    // which differ here, are each line's own.
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(paragraphs_in_a_frame(font))));
+    ASSERT_TRUE(b);
+    auto const text = elements(b->document->getReprRoot(), "svg:text").at(0);
+    auto const spans = elements(text, "svg:tspan");
+    ASSERT_EQ(spans.size(), 4u);
+    char const *const ends[] = {"wrap", "", "break", ""};
+    for (std::size_t i = 0; i < 4; ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(attr(spans[i], AN::LINE_END_ATTRIBUTE), ends[i]);
+        EXPECT_NE(attr(spans[i], "style").find(i < 2 ? "text-align:center" : "text-align:end"), std::string::npos);
+        EXPECT_EQ(attr(spans[i], AN::HYPHENATE_ATTRIBUTE), i < 2 ? "true" : "");
+    }
+    EXPECT_EQ(attr(text, "style").find("text-align"), std::string::npos);
+    // How the frame places its first baseline (5, the em box), for laying it out again.
+    EXPECT_EQ(attr(text, AN::FIRST_BASELINE_ATTRIBUTE), "5 0");
+    // What all its paragraphs share is the text's.
+    auto const one = area_text_document("(Hello world\\r)", 12, {{0, 12, 6}, {0, 26, 6}}, font, {},
+                                        " /5 << /0 [ << /1 12 /0 << /0 << /5 << /0 2 /9 true >> >> >> >> ] >>");
+    b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(one)));
+    ASSERT_TRUE(b);
+    auto const shared = elements(b->document->getReprRoot(), "svg:text").at(0);
+    EXPECT_NE(attr(shared, "style").find("text-align:center"), std::string::npos);
+    EXPECT_EQ(attr(shared, AN::HYPHENATE_ATTRIBUTE), "true");
+    for (auto *span : elements(shared, "svg:tspan")) {
+        EXPECT_EQ(attr(span, "style").find("text-align"), std::string::npos);
+        EXPECT_EQ(attr(span, AN::HYPHENATE_ATTRIBUTE), "");
+    }
+}
+
 TEST_F(AiNativeImportTest, BaselineShiftMovesOnlyItsOwnCharacters)
 {
     auto shifted = AN::read_text_document(text_setup(text_document("(Hi\\r)", 3, "ArialMT", "/9 -1.5")), Geom::Point(100, 50));
@@ -7720,11 +7785,174 @@ TEST_F(AiNativeImportTest, WrittenTypeKeepsItsFeaturesInTheStory)
     EXPECT_EQ(texts->stories[2]->lines.at(0).runs.at(0).style.font, "PROOFNoSuchFont-Bold");
 }
 
+/// Area type's frame on the page: its outline's bounds in the document.
+Geom::OptRect frame_on_page(SPDocument *doc, XML::Node *repr)
+{
+    doc->ensureUpToDate();
+    auto *text = cast<SPText>(doc->getObjectByRepr(repr));
+    if (!text || !text->getAttribute(AN::TEXT_FRAME_ATTRIBUTE)) return {};
+    return (sp_svg_read_pathv(text->getAttribute(AN::TEXT_FRAME_ATTRIBUTE)) * text->i2doc_affine()).boundsExact();
+}
+
+TEST_F(AiNativeImportTest, WrittenAreaTypeKeepsItsFrameParagraphsAndLines)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // An import's area type: two lines that are one paragraph, a line break typed in the next,
+    // and a paragraph its frame doesn't show.
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), text_setup(paragraphs_in_a_frame(font, "more\\r", 5))));
+    ASSERT_TRUE(b);
+    auto const written = AN::write_records(b->document.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    // The text object carries its frame, as Illustrator writes area type.
+    EXPECT_NE(written.records.find("/Art :\nX=\n4 As\n"), std::string::npos);
+    EXPECT_NE(written.records.find("n\nX+\n; /ConfiningPath ,\n2 /TextAntialiasing ,\n"), std::string::npos);
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+    auto const &s = *texts->stories[0];
+    EXPECT_TRUE(s.area);
+    EXPECT_EQ(s.overflow, "more\n");
+    EXPECT_EQ(s.first_baseline, std::pair(5u, 0.0));
+    ASSERT_EQ(s.lines.size(), 4u);
+    using End = AN::TextLine::End;
+    End const ends[] = {End::Wrap, End::Paragraph, End::Break, End::Paragraph};
+    char const *const words[] = {"Hello ", "world", "Next", "line"};
+    for (std::size_t i = 0; i < 4; ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(s.lines[i].end, ends[i]);
+        EXPECT_EQ(s.lines[i].paragraph_alignment, i < 2 ? 2u : 1u);
+        EXPECT_EQ(s.lines[i].hyphenate, i < 2);
+        ASSERT_EQ(s.lines[i].runs.size(), 1u);
+        EXPECT_EQ(s.lines[i].runs[0].text, words[i]);
+    }
+    // Opened again, every character is where it was, and so is the frame.
+    auto again = make(written.records);
+    ASSERT_TRUE(again);
+    auto const was = elements(b->document->getReprRoot(), "svg:text").at(0);
+    auto const now = elements(again->document->getReprRoot(), "svg:text").at(0);
+    auto const before = set_characters(b->document.get(), was), after = set_characters(again->document.get(), now);
+    ASSERT_EQ(after.size(), before.size());
+    for (std::size_t c = 0; c < before.size(); ++c) {
+        EXPECT_EQ(after[c].first, before[c].first) << c;
+        EXPECT_NEAR(after[c].second.x(), before[c].second.x(), 0.02) << c;
+        EXPECT_NEAR(after[c].second.y(), before[c].second.y(), 0.02) << c;
+    }
+    auto const f0 = frame_on_page(b->document.get(), was), f1 = frame_on_page(again->document.get(), now);
+    ASSERT_TRUE(f0 && f1);
+    EXPECT_TRUE(Geom::are_near(f0->min(), f1->min(), 1e-3) && Geom::are_near(f0->max(), f1->max(), 1e-3)) << *f0 << " " << *f1;
+    EXPECT_EQ(attr(now, AN::TEXT_OVERFLOW_ATTRIBUTE), "more\n");
+
+    // A line break typed inside a paragraph of point type, which an import keeps, too.
+    auto point = svg_document(R"(<text xml:space="preserve" style="font-family:Arial;font-size:12px">)"
+                              R"(<tspan x="10" y="20" proof:line-end="break">One</tspan><tspan x="10" y="34">Two</tspan></text>)");
+    ASSERT_TRUE(point);
+    auto const lines = AN::write_records(point.get());
+    ASSERT_TRUE(lines.refused.empty()) << lines.refused.front();
+    auto const broken = AN::read_text_document(lines.records, {});
+    ASSERT_TRUE(broken->stories.at(0)) << broken->errors[0];
+    ASSERT_EQ(broken->stories[0]->lines.size(), 2u);
+    EXPECT_EQ(broken->stories[0]->lines[0].end, End::Break);
+    EXPECT_EQ(broken->stories[0]->lines[1].end, End::Paragraph);
+}
+
+TEST_F(AiNativeImportTest, TypeInAShapeIsWrittenAsAreaType)
+{
+    // Inkscape's type in a shape: its paragraphs as typed, wrapped where the shape is full,
+    // centred; the frame is the shape, moved by its own transform.
+    auto doc = svg_document(R"x(<defs><rect id="frame" x="20" y="10" width="90" height="80" transform="translate(5 0)"/></defs>)x"
+                            "<text id=\"t\" xml:space=\"preserve\" style=\"shape-inside:url(#frame);white-space:pre;font-family:Arial;"
+                            "font-size:12px;text-align:center;text-anchor:middle;fill:#000000\">"
+                            "Words that wrap inside the frame more than once\nSecond</text>");
+    ASSERT_TRUE(doc);
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const texts = AN::read_text_document(written.records, {});
+    ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+    auto const &s = *texts->stories[0];
+    EXPECT_TRUE(s.area);
+    ASSERT_GE(s.lines.size(), 3u);
+    using End = AN::TextLine::End;
+    std::string joined;
+    for (std::size_t i = 0; i < s.lines.size(); ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(s.lines[i].paragraph_alignment, 2u);
+        EXPECT_FALSE(s.lines[i].hyphenate);
+        for (auto const &run : s.lines[i].runs) joined += run.text;
+        bool const ends_paragraph = i + 2 >= s.lines.size();
+        EXPECT_EQ(s.lines[i].end, ends_paragraph ? End::Paragraph : End::Wrap);
+        if (ends_paragraph) joined += "|";
+    }
+    EXPECT_EQ(joined, "Words that wrap inside the frame more than once|Second|");
+
+    // Opened again, as an import's area type: every character where Inkscape set it, in the frame.
+    auto b = make(written.records);
+    ASSERT_TRUE(b);
+    auto const now = elements(b->document->getReprRoot(), "svg:text").at(0);
+    auto before = set_characters(doc.get(), doc->getObjectById("t")->getRepr());
+    auto const after = set_characters(b->document.get(), now);
+    // The line feed is a character of Inkscape's line; the import's lines end without one.
+    std::erase_if(before, [](auto const &c) { return c.first == '\n'; });
+    ASSERT_EQ(after.size(), before.size());
+    for (std::size_t c = 0; c < before.size(); ++c) {
+        EXPECT_EQ(after[c].first, before[c].first) << c;
+        EXPECT_NEAR(after[c].second.x(), before[c].second.x(), 0.02) << c;
+        EXPECT_NEAR(after[c].second.y(), before[c].second.y(), 0.02) << c;
+    }
+    auto const frame = frame_on_page(b->document.get(), now);
+    ASSERT_TRUE(frame);
+    EXPECT_TRUE(Geom::are_near(frame->min(), Geom::Point(25, 10), 1e-3) && Geom::are_near(frame->max(), Geom::Point(115, 90), 1e-3))
+        << *frame;
+    EXPECT_NE(attr(now, "style").find("text-align:center"), std::string::npos);
+    // Its first baseline is fixed where Inkscape set it below the frame's top, in points (a pixel is 0.75).
+    ASSERT_TRUE(s.first_baseline);
+    EXPECT_EQ(s.first_baseline->first, 0u);
+    EXPECT_NEAR(s.first_baseline->second, (before.at(0).second.y() - 10) * 0.75, 1e-4);
+}
+
+TEST_F(AiNativeImportTest, ALineFeedTakesNoRoomInTheLineItEnds)
+{
+    // Centred type in a shape: a line that ends with a typed line feed is centred as one that
+    // doesn't, on the shape's middle.
+    auto doc = svg_document(R"(<defs><rect id="frame" x="0" y="0" width="100" height="80"/></defs>)"
+                            "<text id=\"t\" xml:space=\"preserve\" style=\"shape-inside:url(#frame);white-space:pre;font-family:Arial;"
+                            "font-size:20px;text-align:center;text-anchor:middle\">mm\nmm</text>");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const &layout = cast<SPText>(doc->getObjectById("t"))->layout;
+    std::map<unsigned, Geom::Rect> lines;
+    for (auto it = layout.begin(); it != layout.end(); it.nextCharacter()) {
+        SPObject *source = nullptr;
+        Glib::ustring::iterator at;
+        layout.getSourceOfCharacter(it, &source, &at);
+        if (*at != 'm') continue;
+        auto const box = layout.characterBoundingBox(it);
+        auto [found, fresh] = lines.try_emplace(layout.lineIndex(it), box);
+        if (!fresh) found->second.unionWith(box);
+    }
+    ASSERT_EQ(lines.size(), 2u);
+    for (auto const &[line, box] : lines) EXPECT_NEAR(box.midpoint().x(), 50, 0.05) << line;
+}
+
 TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
 {
     std::vector<std::pair<std::string, std::string>> const cases{
         {R"(<text x="10" y="20" style="writing-mode:vertical-rl">Hi</text>)", "vertical type"},
-        {R"(<text x="10" y="20" style="inline-size:100px">Hi</text>)", "area type"},
+        {R"(<text x="10" y="20" style="inline-size:100px">Hi</text>)", "auto-wrapped type (inline-size)"},
+        {R"(<defs><rect id="a" width="50" height="50"/><rect id="b" x="60" width="50" height="50"/></defs>)"
+         R"x(<text style="shape-inside:url(#a) url(#b)">Hi</text>)x", "type flowed into several shapes"},
+        {R"(<defs><rect id="a" width="100" height="50"/><rect id="b" width="10" height="10"/></defs>)"
+         R"x(<text style="shape-inside:url(#a);shape-subtract:url(#b)">Hi</text>)x", "type flowed around other shapes (shape-subtract)"},
+        {R"(<defs><rect id="a" width="100" height="50"/></defs>)"
+         R"x(<text style="shape-inside:url(#a);shape-padding:4px">Hi</text>)x", "type flowed with padding inside its shape (shape-padding)"},
+        {R"(<defs><rect id="a" width="100" height="50"/></defs>)"
+         R"x(<text style="shape-inside:url(#a);text-align:justify">Hi there</text>)x", "justified type"},
+        {R"(<defs><rect id="a" width="30" height="14"/></defs>)"
+         R"x(<text style="shape-inside:url(#a);font-size:12px">Hi there and more words than fit</text>)x",
+         "type that overflows the shape it flows into"},
+        {R"x(<text transform="skewX(20)" proof:text-frame="M0 0 H100 V50 H0 Z" x="10" y="20">Hi</text>)x", "area type stretched or skewed"},
+        {R"(<text proof:text-frame="M0 0 H10 V10 H0 Z M20 0 H30 V10 H20 Z" x="2" y="8">Hi</text>)",
+         "area type in a frame that isn't one outline"},
+        {R"(<text proof:text-frame="M0 0 H100 V50 H0 Z" x="10" y="20" style="text-align:justify">Hi</text>)", "justified type"},
         {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">Hi</textPath></text>)", "type on a path"},
         {R"(<text x="10" y="20" dx="0 3">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},
         {R"(<text x="10" y="20" rotate="0 15">Hi</text>)", "characters moved or turned one by one (dx, dy, rotate)"},

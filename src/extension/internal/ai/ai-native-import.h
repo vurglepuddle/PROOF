@@ -34,7 +34,9 @@
  *   guides                         guides
  *
  *   point type, area type          text, a span to a line where Illustrator laid it out; area
- *                                  type keeps its frame in proof:text-frame
+ *                                  type keeps its frame in proof:text-frame, its paragraphs'
+ *                                  alignment in text-align and which line ends were typed in
+ *                                  proof:line-end
  *   an instance of a variable font its family, with every axis in font-variation-settings
  *   All Caps                       text-transform:uppercase on what was typed
  *   small caps                     font-variant-caps:small-caps, which the text layout sets
@@ -91,6 +93,15 @@ inline constexpr char const *LAYER_PRINT_ATTRIBUTE = "proof:layer-print";
 inline constexpr char const *TEXT_FRAME_ATTRIBUTE = "proof:text-frame";
 /// On area type whose frame is too small for its text: the text that doesn't show.
 inline constexpr char const *TEXT_OVERFLOW_ATTRIBUTE = "proof:text-overflow";
+/// On a line of type that doesn't end its paragraph: "wrap" where area type's frame broke it
+/// with nothing typed, "break" at a line break typed inside the paragraph (Illustrator's
+/// forced line break). A line without it ends its paragraph.
+inline constexpr char const *LINE_END_ATTRIBUTE = "proof:line-end";
+/// On area type, or a line of it, whose paragraphs Illustrator hyphenates: "true".
+inline constexpr char const *HYPHENATE_ATTRIBUTE = "proof:hyphenate";
+/// On area type whose frame says how it places its first baseline: the rule and the minimum
+/// (PointText::first_baseline), as "5 0".
+inline constexpr char const *FIRST_BASELINE_ATTRIBUTE = "proof:first-baseline";
 
 /// A linked picture that shows and whose file can't be found.
 struct MissingLink

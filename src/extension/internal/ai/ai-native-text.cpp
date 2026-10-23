@@ -689,7 +689,21 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     out.area = area;
     out.to_art = Geom::Affine(matrix[0], -matrix[1], matrix[2], -matrix[3],
                               matrix[4] - CANVAS_CENTRE + center.x(), CANVAS_CENTRE + center.y() - matrix[5]);
-    if (area) out.frame = frame_outline(frame.get("1").get("0"));
+    if (area) {
+        out.frame = frame_outline(frame.get("1").get("0"));
+        // The rule that places the first baseline, kept for laying the frame out again; the
+        // lines are placed as recorded. Rules Illustrator doesn't have are left out.
+        if (auto const rule = carries.dict.find("10"); rule != carries.dict.end() && rule->second.kind == Value::Dictionary) {
+            auto const kind = rule->second.dict.find("0"), minimum = rule->second.dict.find("1");
+            bool const known = kind != rule->second.dict.end() && kind->second.kind == Value::Number &&
+                               kind->second.number >= 0 && kind->second.number <= 6 && kind->second.number == std::floor(kind->second.number);
+            bool const sane = minimum == rule->second.dict.end() ||
+                              (minimum->second.kind == Value::Number && std::isfinite(minimum->second.number) && std::abs(minimum->second.number) < 1e5);
+            if (known && sane) {
+                out.first_baseline = std::pair(unsigned(kind->second.number), minimum == rule->second.dict.end() ? 0.0 : minimum->second.number);
+            }
+        }
+    }
     if (on_path) {
         // Only the default option values saved by Illustrator's ordinary pathText
         // control are understood. Unknown effects, flips and alignments fail closed.
@@ -748,7 +762,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         }
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
-    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool justified; StyleLayers characters, features; };
+    struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool justified; bool hyphenate; StyleLayers characters, features; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0, layer_budget = MAX_VALUES;
     auto add_paragraph = [&](Value const *declaration, std::size_t count) {
@@ -776,9 +790,13 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         // The way it reads (35): 0 from the left, 1 from the right.
         auto const direction = number("35");
         if (direction > 1) throw Bad("text has an unsupported paragraph direction");
+        // Whether it is hyphenated (9) where area type wraps it: Illustrator then draws a hyphen
+        // that isn't typed, and lays it out again so.
+        auto const hyphenate = layer_value(layers, "9");
         if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
         paragraph_units += count;
-        paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, justified, std::move(characters), layers});
+        paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, justified,
+                              hyphenate && hyphenate->kind == Value::Boolean && hyphenate->boolean, std::move(characters), layers});
     };
     if (s.get("0").dict.count("5")) {
         for (auto const &paragraph : s.get("0").get("5").get("0").list) {
@@ -815,7 +833,9 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         auto const count = found.dict.find("15");
         ordered.push_back(count != found.dict.end() && count->second.kind == Value::Dictionary && count->second.dict.count("7"));
         if (area) {
+            // Where the frame wrapped it, unless a return or a line break ends it (below).
             out.lines.push_back({laid[i].at + offset_of(found), {}});
+            out.lines.back().end = TextLine::End::Wrap;
             line_units.push_back(found.get("15").get("0").index());
             continue;
         }
@@ -916,6 +936,15 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
                 continue;
             }
             if (at_units + count > line_end) throw Bad("text line cuts a Unicode character or ends early");
+        }
+        // A line takes its paragraph's alignment and hyphenation, and its end from the return or
+        // the line break that ends it.
+        if (line < out.lines.size()) {
+            auto &l = out.lines[line];
+            l.paragraph_alignment = paragraphs[paragraph].alignment;
+            l.hyphenate = paragraphs[paragraph].hyphenate;
+            if (cp == '\r' || cp == '\n') l.end = TextLine::End::Paragraph;
+            else if (cp == 3) l.end = TextLine::End::Break;
         }
         if (cp == 0) {
             // A character that sets nothing; it only counts.

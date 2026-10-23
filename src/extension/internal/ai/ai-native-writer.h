@@ -33,7 +33,8 @@
  * rasters (ai-native-writer-picture.h); readable local PNG/JPEG/classic TIFF/PSD pictures stay
  * linked. Missing links and linked formats outside that subset are refused.
  * Picture slice crops retain the complete raster or link behind an editable viewport clip.
- * The modern form writes point type as Illustrator's stories (ai-native-writer-text.h).
+ * The modern form writes point type and area type as Illustrator's stories
+ * (ai-native-writer-text.h).
  * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point
  * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:

@@ -67,17 +67,19 @@ opening-time guarantee. [Cache and comparison rules](PROOF-ai-native-records.md#
 | Masks | Linked, non-inverted greyscale vector opacity masks; Clip on/off, fills/strokes, linear/radial gradients and nested masks; Normal/Multiply blending |
 | Transparency | Object/group opacity, sixteen blend modes, isolated blending, knockout records, overprint and supported stroke styles |
 | Pictures | Supported embedded pictures and local PNG/JPEG/classic TIFF/PSD links; original process channels retained where supported |
-| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23) |
+| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23) |
 
 Supported does not mean arbitrary combinations of these forms. Important
 explicit refusals include:
 
-- Area type, type on a path, vertical type, type that reads from right to left
-  or holds such letters, tabs, characters moved or turned one by one, spot inks,
-  gradients or patterns on type, translucent character paint, variable fonts,
-  fonts that aren't installed under the style's own name, and the remaining
-  OpenType and decoration settings (the writer names each); type in patterns,
-  opacity masks or the Illustrator 7 copy.
+- Type on a path, vertical type, type that reads from right to left or holds
+  such letters, tabs, justified type, auto-wrapped type (`inline-size`), type
+  flowed into several shapes, around others or with padding, or past its shape's
+  end, stretched or skewed area type, characters moved or turned one by one,
+  spot inks, gradients or patterns on type, translucent character paint, variable
+  fonts, fonts that aren't installed under the style's own name, and the
+  remaining OpenType and decoration settings (the writer names each); type in
+  patterns, opacity masks or the Illustrator 7 copy.
 - Unsupported appearances/filters; layer/root transparency;
   separate fill and stroke opacity when both paint.
 - Patterns sized to their object, view-box patterns, and gradients, pictures or
@@ -204,19 +206,65 @@ name. Lines are the layout's chunks, so an import's lines (each placed by its
 own x and y) and PROOF's own lines both write; an import's empty lines stay
 empty paragraphs.
 
-Illustrator 29.2.1 and 30.6 lay a story out again from its text, paragraphs and
-runs when they open a file, whatever layout the story keeps: a deliberately
-wrong layout changes nothing (type spike, 2026-10-23). PROOF writes the layout
-for its own reader only, each line where PROOF sets it, so its own files reopen
-natively with every character in place. Illustrator 30.6 opened a synthetic
-control (fonts, RGB/CMYK, tracking, leading, centring, a turned frame, superscript,
+Illustrator 29.2.1 lays a story out again from its text, paragraphs and runs
+when it opens a file, whatever layout the story keeps: a deliberately wrong
+layout changes nothing (type spike, 2026-10-23). PROOF writes the layout for its
+own reader only, each line where PROOF sets it, so its own files reopen natively
+with every character in place. Illustrator 29.2.1 opened a synthetic control
+(fonts, RGB/CMYK, tracking, leading, centring, a turned frame, superscript,
 small caps, underline, a stroke without a fill) within anti-aliasing of PROOF's
 drawing (a turned line within 0.13 pt); its re-save reopens natively in PROOF
 within 12 levels of the original. An owner document with Illustrator type
 (`2c7be7744c`, five stories in a font that isn't installed), imported and
 written by PROOF, draws in Illustrator within 15 levels of the original file.
-Area type, path type and the other refusals above are the next slices.
+(Recorded as Illustrator 30.6 until 2026-10-23: the spike and these checks ran
+in this machine's 29.2.1. The normal styles written are 30.6's, from a 30.6
+file; 30.6 itself hasn't opened PROOF's type yet.)
 [Records and keys](PROOF-ai-native-records.md#point-type-written-2026-10-23).
+
+<a id="area-type-written-2026-10-23"></a>
+### Area type written (2026-10-23)
+
+Native saving writes area type as Illustrator's area type: the story in its
+frame, which the text object also carries as its `/Art` path, and Illustrator
+lays it out again in the frame. Two sources:
+
+- **An import's area type** (`proof:text-frame`, each visible line a positioned
+  span). The import now keeps how each line ended (`proof:line-end`: `wrap`
+  where the frame broke it, `break` at a line break typed inside the paragraph,
+  Illustrator's U+0003; none at a paragraph's end), the paragraph's alignment in
+  `text-align` (which the positioned lines don't follow; until now a centred
+  paragraph whose lines kept a space at their ends came in as left-aligned), its
+  hyphenation (`proof:hyphenate`) and the frame's first-baseline rule
+  (`proof:first-baseline`). The writer joins wrapped lines back into their
+  paragraphs and writes what the frame was too small to show
+  (`proof:text-overflow`) after them.
+- **Type Inkscape flows into one shape** (`shape-inside`): the shape's outline is
+  the frame, the layout's paragraphs and its typed line feeds end paragraphs,
+  and the lines Inkscape wrapped are joined. Its first baseline is written fixed
+  where Inkscape set it below the frame's top, since Illustrator's default puts
+  it one ascent below (2.2 pt higher for 12 pt Arial).
+
+The lines of point type an import kept with a typed line break are written with
+one too. Refused by name: auto-wrapped type (`inline-size`; Illustrator has no
+frame that grows yet in what PROOF writes), several shapes, `shape-subtract`,
+`shape-padding`, type that overflows its shape (the layout keeps nothing of
+it), justified paragraphs, and a frame that is stretched, skewed or not one
+outline.
+
+**Checks** (Illustrator 29.2.1). Its own control (three frames: left with a
+wrap, centred, right-aligned and turned with fixed leading), imported and
+written by PROOF: Illustrator draws the write exactly as its own (no pixel
+differs in the two upright frames) and its re-save puts every line where it
+laid out the original. Inkscape's type in a rectangle, a centred one with an
+empty paragraph, a circle and a turned rectangle with 20 pt leading: Illustrator
+breaks every line where Inkscape did, and its re-save puts every line exactly
+where Inkscape set it; the drawings differ only at glyph edges. The owner
+document `15cad93e92` (four frames, typed line breaks) draws in Illustrator
+within 59 levels of the original file, no block moved. Of the 11 documents that
+area type held, the 4 it held alone now write; the rest wait on right-to-left
+type, tabs, variable fonts and missing links.
+[Records and keys](PROOF-ai-native-records.md#area-type-written-2026-10-23).
 
 ## Linked PDF/AI pages
 

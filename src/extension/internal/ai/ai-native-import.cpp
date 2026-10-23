@@ -808,6 +808,16 @@ XML::Node *Builder::text(Node const &n)
     // Type an appearance drew isn't the object's own text: its story is told apart.
     e->setAttribute(n.text_proxy ? "proof:ai-drawn-story" : "proof:ai-story", std::to_string(*n.story));
     e->setAttribute("transform", sp_svg_transform_write(story.to_art * _to_doc));
+    // Area type's paragraphs: how each is aligned, whichever end its lines are anchored at, and
+    // whether it is hyphenated. What every line has goes on the text, else on each line.
+    auto align_of = [&](TextLine const &l) {
+        return l.paragraph_alignment == 2 ? "center" : (l.paragraph_alignment == 1) != story.rtl ? "end" : "start";
+    };
+    bool one_alignment = true, one_hyphenation = true;
+    for (auto const &l : story.lines) {
+        one_alignment = one_alignment && std::string_view(align_of(l)) == align_of(story.lines.front());
+        one_hyphenation = one_hyphenation && l.hyphenate == story.lines.front().hyphenate;
+    }
     if (story.area) {
         // Area type, set as Illustrator laid it out. Its frame is kept for what flows text
         // into it again; the lines don't move when the text is edited.
@@ -815,6 +825,10 @@ XML::Node *Builder::text(Node const &n)
         if (!story.overflow.empty()) {
             e->setAttribute(TEXT_OVERFLOW_ATTRIBUTE, story.overflow);
             ++overflowing_text;
+        }
+        if (one_hyphenation && !story.lines.empty() && story.lines.front().hyphenate) e->setAttribute(HYPHENATE_ATTRIBUTE, "true");
+        if (story.first_baseline) {
+            e->setAttribute(FIRST_BASELINE_ATTRIBUTE, std::to_string(story.first_baseline->first) + " " + num(story.first_baseline->second));
         }
     }
     // A run's style in parts, each inherited by spans. The text object carries the first
@@ -917,6 +931,8 @@ XML::Node *Builder::text(Node const &n)
         if (!base && !line.runs.empty()) base = parts(line.runs.front().style);
     }
     std::string common_style = "text-anchor:start;";
+    // Which only lines laid out in a frame follow: the lines here are placed by their anchors.
+    if (story.area && one_alignment && !story.lines.empty()) common_style += std::string("text-align:") + align_of(story.lines.front()) + ";";
     if (story.rtl) common_style += "direction:rtl;";
     // Letters read from the right that Illustrator set from the left, as typed: the same here.
     if (story.unordered) {
@@ -952,7 +968,11 @@ XML::Node *Builder::text(Node const &n)
         // The line's origin is its left end, its right end or its middle. Which of those a
         // line starts at depends on the way it reads.
         char const *const anchor = line.alignment == 2 ? "middle" : (line.alignment == 1) != story.rtl ? "end" : "start";
-        span->setAttribute("style", std::string("text-anchor:") + anchor + ";");
+        span->setAttribute("style", std::string("text-anchor:") + anchor + ";" +
+                                        (story.area && !one_alignment ? std::string("text-align:") + align_of(line) + ";" : ""));
+        if (line.end == TextLine::End::Wrap) span->setAttribute(LINE_END_ATTRIBUTE, "wrap");
+        if (line.end == TextLine::End::Break) span->setAttribute(LINE_END_ATTRIBUTE, "break");
+        if (story.area && !one_hyphenation && line.hyphenate) span->setAttribute(HYPHENATE_ATTRIBUTE, "true");
         std::string plain; // Text in the object's own style, not yet written.
         auto write_plain = [&] {
             if (!plain.empty()) append(span, _xml->createTextNode(plain.c_str()));

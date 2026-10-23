@@ -4,9 +4,11 @@
 
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 #include <2geom/affine.h>
+#include <2geom/path.h>
 #include <2geom/point.h>
 
 class SPDocument;
@@ -20,6 +22,9 @@ struct WrittenStory
     std::size_t story = 0;            ///< Its index among the typed stories.
     bool empty = false;               ///< Nothing is typed in it: there is nothing to write.
     std::vector<std::string> refused; ///< Why it can't be written; then nothing was added.
+    /// Area type: its frame, in the text's own coordinates. The text object carries it too, as
+    /// its `/Art` path.
+    std::optional<Geom::Path> frame;
 };
 
 /**
@@ -27,18 +32,22 @@ struct WrittenStory
  * (`%AI11_BeginTextDocument`), each text object an `/AI11Text` naming its story.
  *
  * A story is what was typed, its paragraphs and its runs of character features, in a frame.
- * Illustrator 29.2.1 and 30.6 lay stories out again from those when they open a file, whatever
- * layout the story keeps (type spike, 2026-10-23): PROOF writes the layout only for its own
- * reader, its lines where PROOF sets them.
+ * Illustrator 29.2.1 lays stories out again from those when it opens a file, whatever layout
+ * the story keeps (type spike, 2026-10-23): PROOF writes the layout only for its own reader,
+ * its lines where PROOF sets them.
  *
- * The supported form is point type: each line of the text object one paragraph, the lines
- * sharing one anchor and each set below the one before by its leading, in fonts that are
- * installed (or, for type set in a font standing in for one that isn't, that font's name),
- * process colour fills and strokes, tracking, baseline shift, kerning on or off, standard and
- * contextual ligatures, all caps, small caps, superscript and subscript, underline and
- * strikethrough. The frame's matrix places it; a uniform scale goes into the sizes. Area type,
- * type on a path, vertical type, type that reads from right to left, tabs, characters moved or
- * turned one by one and other features are refused by name.
+ * Point type: each line of the text object one paragraph (or a line break inside one, where
+ * the import kept one), the lines sharing one anchor and each set below the one before by its
+ * leading. Area type: the frame an import kept, or the one shape Inkscape flows the text into;
+ * its lines joined into paragraphs where the frame wrapped them, each paragraph aligned and
+ * hyphenated as its lines say, and what the frame was too small to show after them.
+ * Both in fonts that are installed (or, for type set in a font standing in for one that isn't,
+ * that font's name), process colour fills and strokes, tracking, baseline shift, kerning on or
+ * off, standard and contextual ligatures, all caps, small caps, superscript and subscript,
+ * underline and strikethrough. The frame's matrix places it; a uniform scale goes into the
+ * sizes. Type on a path, vertical type, type that reads from right to left, tabs, justified or
+ * auto-wrapped type, characters moved or turned one by one and other features are refused by
+ * name.
  */
 class TextStories
 {

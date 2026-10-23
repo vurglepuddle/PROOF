@@ -185,6 +185,20 @@ def main():
                if e.get("{urn:x-proof:document:1}ai-story") is not None]
     check("point type reopens as a native story", len(stories) == 1 and "".join(stories[0].itertext()) == "Live type")
 
+    # Type in a shape is written as Illustrator's area type, and reopens in its frame.
+    framed = out / "framed.svg"
+    framed.write_text(svg.replace("</defs>", '<rect id="area" x="10" y="10" width="120" height="60"/></defs>').replace(
+        "</svg>", '<text xml:space="preserve" style="shape-inside:url(#area);white-space:pre;font-family:Arial;'
+                  'font-size:12px">Area type that wraps in its frame</text></svg>'), encoding="utf-8")
+    framed_ai, framed_svg = out / "framed.ai", out / "framed-reopened.svg"
+    export("framed", framed, framed_ai, native)
+    export("framed-reopen", framed_ai, framed_svg)
+    areas = [e for e in ET.parse(framed_svg).getroot().iter("{http://www.w3.org/2000/svg}text")
+             if e.get("{urn:x-proof:document:1}text-frame") is not None]
+    check("type in a shape reopens as area type", len(areas) == 1 and
+          "".join(areas[0].itertext()) == "Area type that wraps in its frame" and
+          len(list(areas[0].iter("{http://www.w3.org/2000/svg}tspan"))) > 1)
+
     unsupported = out / "unsupported.svg"
     unsupported.write_text(svg.replace("</svg>", '<text x="10" y="30" style="writing-mode:vertical-rl">Live type</text></svg>'),
                            encoding="utf-8")

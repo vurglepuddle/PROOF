@@ -911,8 +911,16 @@ void Writer::text_object(SPText const *text, bool clipped, bool masked, std::str
     for (auto const &why : written.refused) refuse(why);
     if (!written.refused.empty() || written.empty) return;
     state(_transparency, clipped ? std::string(OPAQUE) : own);
-    _body << "/AI11Text :\n0 /FreeUndo ,\n0 /FrameIndex ,\n" << written.story << " /StoryIndex ,\n2 /TextAntialiasing ,\n;\n\n"
-          << "0 0 Xd\n6 () XW\n";
+    _body << "/AI11Text :\n0 /FreeUndo ,\n0 /FrameIndex ,\n" << written.story << " /StoryIndex ,\n";
+    if (written.frame) {
+        // Area type carries its frame as Illustrator does: an unpainted path in art space, with
+        // its number of segments (`As`), confining the type.
+        auto const art = *written.frame * (text->i2doc_affine() * _to_art);
+        _body << "/Art :\nX=\n" << std::distance(art.begin(), art.end()) << " As\n";
+        path_data(art, "");
+        _body << "n\nX+\n; /ConfiningPath ,\n";
+    }
+    _body << "2 /TextAntialiasing ,\n;\n\n0 0 Xd\n6 () XW\n";
 }
 
 /// `where` names what isn't an object (a layer, the document): the modern form writes an

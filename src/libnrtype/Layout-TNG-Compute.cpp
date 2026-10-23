@@ -205,6 +205,12 @@ bool Layout::Calculator::_measureUnbrokenSpan(ParagraphInfo const &para,
             }
             span->end_glyph_index++;
         }
+        // A line feed takes no room in the line it ends, as its glyph is placed (see the output
+        // below): measured with the font's width for it, a centred or right-aligned line before
+        // one was set off its anchor by that width (PROOF, 2026-10-23).
+        if (*Glib::ustring::const_iterator(span->end.iter_span->input_stream_first_character.base() + span->end.char_byte) == '\n') {
+            char_width = 0.0;
+        }
 
         if (char_attributes.is_cursor_position)
             char_width += text_source->style->letter_spacing.computed * _flow.getTextLengthMultiplierDue();

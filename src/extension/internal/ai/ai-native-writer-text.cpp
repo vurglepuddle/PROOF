@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <format>
 #include <functional>
 #include <optional>
@@ -20,14 +21,19 @@
 #include <string_view>
 
 #include <glib.h>
+#include <2geom/bezier-curve.h>
+#include <2geom/pathvector.h>
 #include <2geom/transforms.h>
 
 #include "colors/color.h"
 #include "colors/spaces/base.h"
 #include "document.h"
+#include "helper/geom.h"
 #include "libnrtype/Layout-TNG.h"
 #include "object/sp-gradient.h"
 #include "object/sp-pattern.h"
+#include "object/sp-shape.h"
+#include "object/sp-shape-reference.h"
 #include "object/sp-string.h"
 #include "object/sp-text.h"
 #include "object/sp-textpath.h"
@@ -35,6 +41,7 @@
 #include "spot-ink.h"
 #include "style.h"
 #include "svg/svg-length.h"
+#include "svg/svg.h"
 #include "type-settings.h"
 #include "xml/node.h"
 #include "xml/repr.h"
@@ -230,6 +237,35 @@ std::optional<std::string> type_paint(SPIPaint const &p, SPStyle const *style, d
     return {};
 }
 
+/// Whether `owner`, or the nearest element above it up to the text that has `name`, says `value`.
+bool says(SPObject const *owner, SPText const *text, char const *name, std::string_view value)
+{
+    for (auto const *o = owner; o; o = o == text ? nullptr : o->parent) {
+        if (auto const *v = o->getAttribute(name)) return value == v;
+    }
+    return false;
+}
+
+/// How an import's area type aligns a paragraph: it keeps that in text-align, which Inkscape
+/// follows only for lines it lays out in a frame, and places the lines by their anchors.
+/// Without one, text-anchor says. Nothing for justified paragraphs.
+std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *text)
+{
+    bool aligned = false;
+    for (auto const *o = owner; o && !aligned; o = o == text ? nullptr : o->parent) aligned = o->style->text_align.set;
+    auto const *st = owner->style;
+    if (aligned) {
+        switch (st->text_align.computed) {
+            case SP_CSS_TEXT_ALIGN_JUSTIFY: return {};
+            case SP_CSS_TEXT_ALIGN_END:
+            case SP_CSS_TEXT_ALIGN_RIGHT: return 1;
+            case SP_CSS_TEXT_ALIGN_CENTER: return 2;
+            default: return 0;
+        }
+    }
+    return st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_END ? 1 : st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_MIDDLE ? 2 : 0;
+}
+
 } // namespace
 
 TextStories::TextStories(SPDocument const *document)
@@ -263,11 +299,41 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     std::set<std::string> why;
     auto finish = [&] {
         out.refused.assign(why.begin(), why.end());
+        out.frame.reset();
         return out;
     };
-    if (text->has_shape_inside() || text->has_inline_size() || text->getAttribute(TEXT_FRAME_ATTRIBUTE)) {
-        why.insert("area type");
+    // Area type: the frame an import kept, or the one shape Inkscape flows the text into, in the
+    // text's own coordinates. What an import's frame was too small to show comes after its lines.
+    bool const flowed = text->has_shape_inside();
+    std::optional<Geom::PathVector> frame;
+    std::string overflow;
+    if (flowed) {
+        auto const &style = *text->style;
+        auto const &inside = style.shape_inside.hrefs;
+        auto *shape = inside.size() == 1 ? inside[0]->getObject() : nullptr;
+        if (inside.size() != 1) {
+            why.insert("type flowed into several shapes");
+        } else if (!shape) {
+            why.insert("type flowed into something that isn't a shape");
+        } else {
+            if (!shape->curve()) shape->set_shape();
+            if (shape->curve()) frame = *shape->curve() * shape->transform;
+        }
+        if (style.shape_subtract.set && !style.shape_subtract.hrefs.empty()) {
+            why.insert("type flowed around other shapes (shape-subtract)");
+        }
+        if (style.shape_padding.set && std::abs(style.shape_padding.computed) > 1e-9) {
+            why.insert("type flowed with padding inside its shape (shape-padding)");
+        }
+        // The layout leaves out what doesn't fit: there is nothing of it to write.
+        if (text->layout.inputTruncated()) why.insert("type that overflows the shape it flows into");
+    } else if (text->has_inline_size()) {
+        why.insert("auto-wrapped type (inline-size)");
+    } else if (auto const *d = text->getAttribute(TEXT_FRAME_ATTRIBUTE)) {
+        frame = sp_svg_read_pathv(d);
+        if (auto const *more = text->getAttribute(TEXT_OVERFLOW_ATTRIBUTE)) overflow = more;
     }
+    bool const area = frame.has_value();
     if (!text->is_horizontal()) why.insert("vertical type");
     // What the layout doesn't keep of each character: pieces moved, turned or stretched.
     std::function<void(SPObject const *)> look = [&](SPObject const *o) {
@@ -286,13 +352,34 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     double const det = to_canvas.det();
     if (!std::isfinite(det) || std::abs(det) < 1e-12) why.insert("type that can't be placed");
     if (!why.empty()) return finish();
-    // A uniform scale goes into the sizes: Illustrator shows type's own size as set.
-    double const s = std::sqrt(std::abs(det));
-    auto const frame = Geom::Scale(1 / s) * to_canvas;
+    // A uniform scale goes into the sizes: Illustrator shows type's own size as set. A turn as
+    // Illustrator writes one, to five decimals, is a scale a few millionths from 1: none.
+    double s = std::sqrt(std::abs(det));
+    if (std::abs(s - 1) < 1e-5) s = 1;
+    auto const matrix = Geom::Scale(1 / s) * to_canvas;
+    // Area type's frame is turned and moved, not stretched: Illustrator lays it out in the frame
+    // as it is, at the type's own size.
+    std::optional<Geom::Path> outline;
+    if (area) {
+        if (std::abs(matrix[0] * matrix[0] + matrix[1] * matrix[1] - 1) > 1e-4 ||
+            std::abs(matrix[2] * matrix[2] + matrix[3] * matrix[3] - 1) > 1e-4 ||
+            std::abs(matrix[0] * matrix[2] + matrix[1] * matrix[3]) > 1e-4) {
+            why.insert("area type stretched or skewed");
+        }
+        auto const pv = pathv_to_linear_and_cubic_beziers(*frame);
+        auto const bounds = pv.size() == 1 ? pv.boundsExact() : Geom::OptRect();
+        if (!bounds || bounds->width() * s < 0.01 || bounds->height() * s < 0.01) {
+            why.insert("area type in a frame that isn't one outline");
+        } else {
+            outline = pv[0];
+            outline->close(true);
+        }
+        if (!why.empty()) return finish();
+    }
 
-    // The characters, line by line: each line of point type is a paragraph. A line is the
-    // layout's chunk: plain SVG text (an import's) sets each of its lines as a chunk of one layout
-    // line, by its own x and y; Inkscape's lines are layout lines of a chunk each.
+    // The characters, line by line. A line is the layout's chunk: plain SVG text (an import's)
+    // sets each of its lines as a chunk of one layout line, by its own x and y; Inkscape's lines,
+    // and those it flows into a shape, are layout lines of a chunk each.
     struct Char
     {
         std::string utf8;
@@ -305,6 +392,10 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         double left = 0;     ///< Where its first character starts.
         unsigned alignment = 0;
         unsigned layout_line = 0;
+        unsigned paragraph = 0; ///< The layout's paragraph.
+        /// A line feed or a line separator typed at its end, which Inkscape's layout keeps as a
+        /// character of the line inside its paragraph (white-space:pre, as for type in a shape).
+        std::optional<bool> typed_break; ///< True for a line separator.
         std::vector<Char> chars;
     };
     std::map<unsigned, Line> lines;
@@ -321,8 +412,11 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             break;
         }
         gunichar const c = *at;
-        // Breaks are the layout's lines.
-        if (c == '\n' || c == '\r' || c == 0x2028 || c == 0x2029) continue;
+        // Breaks are the layout's lines. One typed at the end of a line ends it there.
+        if (c == '\n' || c == '\r' || c == 0x2028 || c == 0x2029) {
+            if (auto const typed = lines.find(layout.chunkIndex(it)); typed != lines.end()) typed->second.typed_break = c == 0x2028;
+            continue;
+        }
         if (c == '\t') {
             why.insert("tabs in type");
             break;
@@ -340,30 +434,46 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (fresh) {
             line.anchor = layout.chunkPlacement(it);
             line.left = layout.characterAnchorPoint(it)[Geom::X];
-            auto const alignment = layout.paragraphAlignment(it);
-            line.alignment = alignment == Text::Layout::RIGHT ? 1 : alignment == Text::Layout::CENTER ? 2 : 0;
             line.layout_line = layout.lineIndex(it);
+            line.paragraph = layout.paragraphIndex(it);
+            // Inkscape aligns the lines it flows into a shape by their paragraph. An import's area
+            // type keeps its paragraphs' alignment in text-align, the lines placed by their anchors.
+            std::optional<unsigned> alignment;
+            if (area && !flowed) {
+                alignment = frame_alignment(string->parent, text);
+            } else {
+                auto const a = layout.paragraphAlignment(it);
+                if (a != Text::Layout::FULL) alignment = a == Text::Layout::RIGHT ? 1 : a == Text::Layout::CENTER ? 2 : 0;
+            }
+            if (!alignment) {
+                why.insert("justified type");
+                break;
+            }
+            line.alignment = *alignment;
         }
         gchar bytes[8];
         auto const n = g_unichar_to_utf8(c, bytes);
         line.chars.push_back({std::string(bytes, n), c > 0xffff ? 2u : 1u, string->parent});
     }
     if (!why.empty()) return finish();
-    if (lines.empty()) {
+    if (lines.empty() && overflow.find_first_not_of('\n') == std::string::npos) {
         out.empty = true;
         return out;
     }
     // Point type has one anchor, its lines aligned to it, each its leading below the one before.
-    auto const first = lines.begin()->second.anchor;
-    struct Paragraph
+    // Area type's lines lie where the frame put them.
+    enum class End { Paragraph, Break, Wrap };
+    struct Row
     {
         Line const *line; ///< Nothing for an empty line between two others.
         double y;
+        End end = End::Paragraph;
     };
-    std::vector<Paragraph> paragraphs;
+    std::vector<Row> rows;
+    auto const first = lines.empty() ? Geom::Point() : lines.begin()->second.anchor;
     for (auto it = lines.begin(); it != lines.end(); ++it) {
         auto const &line = it->second;
-        if (std::abs(line.anchor.x() - first.x()) * s > 1e-3) why.insert("lines of type that don't share one anchor");
+        if (!area && std::abs(line.anchor.x() - first.x()) * s > 1e-3) why.insert("lines of type that don't share one anchor");
         if (it != lines.begin()) {
             auto const &before = std::prev(it)->second;
             double const down = (line.anchor.y() - before.anchor.y()) * s;
@@ -375,10 +485,10 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             // Empty lines of Inkscape's are layout lines without a chunk, evenly between.
             auto const steps = std::max(1u, line.layout_line - std::min(line.layout_line, before.layout_line));
             for (unsigned k = 1; k < steps; ++k) {
-                paragraphs.push_back({nullptr, before.anchor.y() + (line.anchor.y() - before.anchor.y()) * k / steps});
+                rows.push_back({nullptr, before.anchor.y() + (line.anchor.y() - before.anchor.y()) * k / steps});
             }
         }
-        paragraphs.push_back({&line, line.anchor.y()});
+        rows.push_back({&line, line.anchor.y()});
     }
     if (!why.empty()) return finish();
     // An empty line of plain SVG text is an element placed by its own y with nothing in it.
@@ -393,8 +503,39 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         look_in(span);
         SVGLength y;
         if (typed || !y.read(child.getAttribute("y"))) continue;
-        auto const at = std::find_if(paragraphs.begin(), paragraphs.end(), [&](Paragraph const &p) { return p.y > y.computed; });
-        if (at != paragraphs.begin() && at != paragraphs.end() && (at - 1)->y < y.computed) paragraphs.insert(at, {nullptr, y.computed});
+        auto const at = std::find_if(rows.begin(), rows.end(), [&](Row const &r) { return r.y > y.computed; });
+        if (at != rows.begin() && at != rows.end() && (at - 1)->y < y.computed) {
+            rows.insert(at, {nullptr, y.computed, says(&child, text, LINE_END_ATTRIBUTE, "break") ? End::Break : End::Paragraph});
+        }
+    }
+    // How each line ends. The layout's paragraphs, and lines that end with a line feed, end with
+    // a typed end. Inside one, Inkscape's own lines in a shape are where it wrapped them; an
+    // import's lines say how they ended.
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        auto &row = rows[i];
+        if (!row.line) continue;
+        if (row.line->typed_break) {
+            row.end = *row.line->typed_break ? End::Break : End::Paragraph;
+            continue;
+        }
+        auto const *next = i + 1 < rows.size() ? rows[i + 1].line : nullptr;
+        if (next && next->paragraph != row.line->paragraph) continue;
+        auto const *last = row.line->chars.back().owner;
+        if (says(last, text, LINE_END_ATTRIBUTE, "break")) {
+            row.end = End::Break;
+        } else if (area && i + 1 < rows.size() && (flowed || says(last, text, LINE_END_ATTRIBUTE, "wrap"))) {
+            row.end = End::Wrap;
+        }
+    }
+    // The story ends its last paragraph, unless an import's last line ends where its frame
+    // stopped showing the rest, which comes after it.
+    bool const hidden = overflow.find_first_not_of('\n') != std::string::npos;
+    if (!rows.empty()) {
+        auto &last = rows.back();
+        auto const *owner = last.line ? last.line->chars.back().owner : nullptr;
+        last.end = hidden && owner && says(owner, text, LINE_END_ATTRIBUTE, "wrap")    ? End::Wrap
+                 : hidden && owner && says(owner, text, LINE_END_ATTRIBUTE, "break") ? End::Break
+                                                                                       : End::Paragraph;
     }
 
     // Each owner's features, but for leading, which is the line's.
@@ -554,10 +695,13 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         return it->second;
     };
 
-    // The story: what was typed, a return ending each paragraph, in runs of one set of features.
+    // The story: what was typed, a return ending each paragraph and a line break each line
+    // typed inside one, in runs of one set of features. A paragraph run ends at either, as
+    // Illustrator writes them.
     std::string typed, paragraph_runs, style_runs, laid;
     std::optional<std::string> run_features;
-    std::size_t run_units = 0;
+    std::size_t run_units = 0, paragraph_units = 0;
+    std::optional<Row const *> paragraph_start;
     auto flush = [&] {
         if (run_units) style_runs += std::format(" << /0 << /0 << /0 {} /5 0 /6 {} >> >> /1 {} >>", utf16(""), *run_features, run_units);
         run_units = 0;
@@ -569,12 +713,26 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         }
         run_units += units;
     };
-    for (std::size_t i = 0; i < paragraphs.size(); ++i) {
-        auto const &p = paragraphs[i];
+    auto end_paragraph = [&] {
+        auto const *row = *paragraph_start;
+        auto const alignment = row->line ? row->line->alignment : 0u;
+        bool const hyphenate = area && !flowed && row->line && says(row->line->chars.front().owner, text, HYPHENATE_ATTRIBUTE, "true");
+        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {}{} >> /6 0 >> >> /1 {} >>", utf16(""), alignment,
+                                      hyphenate ? " /9 true" : "", paragraph_units);
+        paragraph_units = 0;
+        paragraph_start.reset();
+    };
+    // Where the layout PROOF's reader reads starts: point type's anchor, area type's frame's
+    // top-left corner. Lines are placed down and across from it.
+    auto const origin = area ? outline->boundsExact()->min() : first;
+    std::optional<Features> last_features;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        auto const &p = rows[i];
+        if (!paragraph_start) paragraph_start = &p;
         // Its leading: down from the line before; the first takes the second's.
         std::optional<double> leading;
-        if (i > 0) leading = (p.y - paragraphs[i - 1].y) * s;
-        else if (paragraphs.size() > 1) leading = (paragraphs[1].y - p.y) * s;
+        if (i > 0) leading = (p.y - rows[i - 1].y) * s;
+        else if (rows.size() > 1) leading = (rows[1].y - p.y) * s;
         std::vector<Char> const empty{{"", 0, text}};
         auto const &chars = p.line ? p.line->chars : empty;
         double largest = 0;
@@ -589,37 +747,101 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             if (!automatic) f[5] = real(*leading);
             typed += c.utf8;
             units += c.units;
-            // The return that ends the paragraph is in the features of its last character.
-            if (&c == &chars.back()) {
-                typed += '\r';
+            // What ends the line is in the features of its last character.
+            if (&c == &chars.back() && p.end != End::Wrap) {
+                typed += p.end == End::Break ? '\x03' : '\r';
                 ++units;
                 append(dict(f), c.units + 1);
             } else {
                 append(dict(f), c.units);
             }
+            if (&c == &chars.back()) last_features = std::move(f);
         }
         if (!why.empty()) return finish();
-        auto const alignment = p.line ? p.line->alignment : 0u;
-        paragraph_runs += std::format(" << /0 << /0 << /0 {} /5 << /0 {} >> /6 0 >> >> /1 {} >>", utf16(""), alignment, units);
-        // The line where PROOF sets it, for PROOF's reader: down from the anchor, and where it
-        // starts from the anchor across.
-        double const across = p.line ? (p.line->left - first.x()) * s : 0.0;
+        paragraph_units += units;
+        if (p.end != End::Wrap) end_paragraph();
+        // The line where PROOF sets it, for PROOF's reader: down from where the layout starts,
+        // and where it starts across from there.
+        double const across = p.line ? (p.line->left - origin.x()) * s : 0.0;
         laid += "<< /99 /L";
-        if (i > 0) laid += " /0 << /0 " + pair(0, (p.y - first.y()) * s) + " >>";
+        if (area || i > 0) laid += " /0 << /0 " + pair(0, (p.y - origin.y()) * s) + " >>";
         laid += std::format(" /6 [ << /99 /S /15 << /0 {} /2 0 /5 false >> /0 << /0 {} >> >> ] >> ", units, pair(across, 0));
+    }
+    // What an import's frame was too small to show: its paragraphs, in the last character's features.
+    Row const none{nullptr, 0};
+    if (hidden) {
+        if (!last_features) last_features = features_of(text);
+        if (!last_features) return finish();
+        auto const features = dict(*last_features);
+        auto const *after = rows.empty() ? &none : &rows.back();
+        if (!paragraph_start) paragraph_start = after;
+        if (overflow.back() != '\n') overflow += '\n';
+        for (auto const *at = overflow.c_str(); *at; at = g_utf8_next_char(at)) {
+            gunichar const c = g_utf8_get_char(at);
+            if (c == '\n') {
+                typed += '\r';
+                append(features, 1);
+                ++paragraph_units;
+                end_paragraph();
+                paragraph_start = after;
+                continue;
+            }
+            if (c < 0x20 || c == 0x7f || reads_from_the_right(c)) {
+                why.insert("type the frame doesn't show that can't be written");
+                return finish();
+            }
+            gchar bytes[8];
+            typed.append(bytes, g_unichar_to_utf8(c, bytes));
+            append(features, c > 0xffff ? 2 : 1);
+            paragraph_units += c > 0xffff ? 2 : 1;
+        }
+        paragraph_start.reset();
     }
     flush();
 
     auto const frame_index = _frames.size();
-    _frames.push_back(std::format("<< /0 {} /2 << /2 [ {} {} {} {} {} {} ] >> >>", pair(first.x() * s, first.y() * s),
-                                  real(frame[0]), real(frame[1]), real(frame[2]), real(frame[3]), real(frame[4]),
-                                  real(frame[5])));
+    if (area) {
+        // The outline, each segment four points (a start, two handles and an end) in the
+        // story's own space; Illustrator's kind for area type (1) and its gutters.
+        std::string points;
+        for (auto const &c : *outline) {
+            auto const *cubic = dynamic_cast<Geom::CubicBezier const *>(&c);
+            for (auto const &q : {c.initialPoint(), cubic ? (*cubic)[1] : c.initialPoint(), cubic ? (*cubic)[2] : c.finalPoint(),
+                                  c.finalPoint()}) {
+                points += " " + real(q.x() * s) + " " + real(q.y() * s);
+            }
+        }
+        // Where its first baseline goes: by the rule an import's frame had (Illustrator's
+        // default, Ascent, unless it says), and for type Inkscape flowed into a shape where
+        // Inkscape set it, fixed (rule 0) that far below the frame's top. Illustrator 29.2.1's
+        // rules, found by having it lay out each (2026-10-23): 0 fixed at the minimum, 1 Ascent,
+        // 2 cap height, 3 leading, 4 x-height, 5 em box, 6 legacy.
+        std::string first_baseline;
+        if (auto const *rule = text->getAttribute(FIRST_BASELINE_ATTRIBUTE)) {
+            char *end = nullptr, *stop = nullptr;
+            auto const kind = std::strtoul(rule, &end, 10);
+            double const minimum = g_ascii_strtod(end, &stop);
+            if (end != rule && kind <= 6 && stop != end && std::isfinite(minimum)) {
+                first_baseline = std::format(" /10 << /0 {} /1 {} >>", kind, real(minimum));
+            }
+        } else if (flowed && !rows.empty()) {
+            first_baseline = std::format(" /10 << /0 0 /1 {} >>", real(std::max(0.0, (rows.front().y - origin.y()) * s)));
+        }
+        _frames.push_back(std::format("<< /1 << /0 [{} ] >> /2 << /0 1 /2 [ {} {} {} {} {} {} ] /7 18.0 /8 18.0{} >> >>", points,
+                                      real(matrix[0]), real(matrix[1]), real(matrix[2]), real(matrix[3]), real(matrix[4]),
+                                      real(matrix[5]), first_baseline));
+        out.frame = *outline;
+    } else {
+        _frames.push_back(std::format("<< /0 {} /2 << /2 [ {} {} {} {} {} {} ] >> >>", pair(first.x() * s, first.y() * s),
+                                      real(matrix[0]), real(matrix[1]), real(matrix[2]), real(matrix[3]), real(matrix[4]),
+                                      real(matrix[5])));
+    }
     out.story = _stories.size();
     _stories.push_back(std::format(
         "<< /0 << /0 {} /5 << /0 [{} ] >> /6 << /0 [{} ] >> /10 << /0 4 /2 true >> >> "
         "/1 << /0 [ << /0 {} >> ] /2 [ << /99 /PC /5 0 /6 [ << /99 /F /10 {} /0 << /0 {} >> /5 2 "
         "/6 [ << /99 /R /6 [ << /99 /R /5 2 /6 [ {}] >> ] >> ] >> ] >> ] >> >>",
-        utf16(typed), paragraph_runs, style_runs, frame_index, frame_index, pair(first.x() * s, first.y() * s), laid));
+        utf16(typed), paragraph_runs, style_runs, frame_index, frame_index, pair(origin.x() * s, origin.y() * s), laid));
     return out;
 }
 

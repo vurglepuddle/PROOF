@@ -6,7 +6,8 @@
  * PROOF keeps explicit line origins and UTF-16 run lengths, reads area type's frames,
  * recorded lines, baseline shifts, all caps and small caps, superscript and subscript,
  * underline and strikethrough, paragraphs that read from right to left, and the axis values
- * of a variable font's instance (worked out from real files, 2026-10-10), and refuses
+ * of a variable font's instance (worked out from real files, 2026-10-10), which line ends
+ * were typed and how each line's paragraph is aligned and hyphenated (2026-10-23), and refuses
  * unsupported frames and styles rather than guessing at them.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
@@ -77,6 +78,13 @@ struct TextLine
     /// paragraph reads. It preserves the editable anchor.
     unsigned alignment = 0;
     std::optional<Text::LeftTabStops> tabs; ///< Live left-aligned paragraph tabs.
+    /// How the line ends: with its paragraph (a return), at a line break typed inside the
+    /// paragraph (Illustrator's forced line break, U+0003), or where area type's frame wrapped
+    /// it, with nothing typed.
+    enum class End { Paragraph, Break, Wrap } end = End::Paragraph;
+    /// How its paragraph is aligned, 0 left, 1 right, 2 centred, whichever end `origin` is.
+    unsigned paragraph_alignment = 0;
+    bool hyphenate = false; ///< Its paragraph is hyphenated where area type wraps it.
 };
 
 /// Ordinary path type retains its full geometry and active text interval.
@@ -102,6 +110,10 @@ struct PointText
     /// here. Its paragraphs read from the left.
     bool unordered = false;
     Geom::PathVector frame; ///< Area type: the frame's outline, in the layout's space.
+    /// Area type: how the frame places its first baseline, when it says (its 10): the rule, 0
+    /// fixed at the minimum, 1 Ascent (Illustrator's default), 2 cap height, 3 leading,
+    /// 4 x-height, 5 em box, 6 legacy; and the minimum, in points.
+    std::optional<std::pair<unsigned, double>> first_baseline;
     /// Area type: the text its frame is too small to show, a line feed for each line end.
     /// Illustrator doesn't draw it either.
     std::string overflow;

@@ -6,7 +6,9 @@ caps, small caps, superscript and subscript. First slice: 2026-10-11.
 Reading these from `.ai` files is described in
 [PROOF-ai-native-records.md](PROOF-ai-native-records.md); native saving writes
 point type with them since 2026-10-23
-([AI interchange](PROOF-ai-interchange.md#point-type-written-2026-10-23)). This
+([AI interchange](PROOF-ai-interchange.md#point-type-written-2026-10-23)), and
+area type, an import's or type flowed into a shape, since the same day
+([area type](PROOF-ai-interchange.md#area-type-written-2026-10-23)). This
 document is about the editor.
 
 ## What works now
@@ -41,6 +43,11 @@ document is about the editor.
 - **Superscript, subscript and small caps follow the document's settings**
   (Illustrator's Document Setup > Type): how much smaller, and how far off the
   baseline. A document from Illustrator brings its own.
+- **A line that ends with a typed line feed is aligned like any other** in type
+  flowed into a shape (since 2026-10-23). The layout measured the line feed
+  with the font's width for it and drew it with none, so a centred line before
+  one sat half that width to the left (3.2 pt at 14 pt Arial), where
+  Illustrator centres it.
 
 Not yet:
 
