@@ -2127,9 +2127,15 @@ TEST_F(AiNativeImportTest, ParagraphStylesRefuseInvalidReferencesCyclesAndInheri
         deep += "<< /0 << /5 << >>" + (i < 64 ? " /6 " + std::to_string(i + 1) : "") + " >> >> ";
     }
     bad_story(deep, "0");
+    // Justification a style gives is the paragraph's, and so are the spacings it allows.
     auto justified = with_paragraphs(area_text_document("(Hi\\r)", 3, {{0, 10, 3}}),
         "<< /0 << /5 << /0 3 >> >> >>", "<< /1 3 /0 << /0 0 >> >>");
-    auto refused = AN::read_text_document(text_setup(justified), Geom::Point(100, 50));
+    auto read = AN::read_text_document(text_setup(justified), Geom::Point(100, 50));
+    ASSERT_TRUE(read->stories[0]) << read->errors[0];
+    EXPECT_EQ(read->stories[0]->lines[0].justification, 3u);
+    auto spaced = with_paragraphs(area_text_document("(Hi\\r)", 3, {{0, 10, 3}}),
+        "<< /0 << /5 << /0 3 /18 [0 0.05 0.1] >> >> >>", "<< /1 3 /0 << /0 0 >> >>");
+    auto refused = AN::read_text_document(text_setup(spaced), Geom::Point(100, 50));
     EXPECT_FALSE(refused->stories[0]);
     EXPECT_NE(refused->errors[0].find("justified"), std::string::npos);
 }
@@ -2645,11 +2651,15 @@ TEST_F(AiNativeImportTest, AreaTypeAnchorsOverflowAndEmptyFrames)
     ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
     EXPECT_EQ(texts->stories[0]->lines[0].alignment, 0u);
     EXPECT_EQ(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(30, 48));
-    // Justified lines aren't set the way Illustrator spaces them.
-    auto const justified = " /5 << /0 [ << /1 6 /0 << /0 << /5 << /0 3 >> >> >> >> ] >>";
-    texts = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 6}}, "ArialMT", {}, justified)),
+    // A justified paragraph's last line is set at its own width, from its start.
+    auto const justified = " /5 << /0 [ << /1 6 /0 << /0 << /5 << /0 5 >> >> >> >> ] >>";
+    texts = AN::read_text_document(text_setup(area_text_document("(Hello\\r)", 6, {{0, 12, 6, 30, 40}}, "ArialMT", {}, justified)),
                                    Geom::Point(100, 50));
-    EXPECT_FALSE(texts->stories[0]);
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_EQ(texts->stories[0]->lines[0].alignment, 0u);
+    EXPECT_EQ(texts->stories[0]->lines[0].justification, 5u);
+    EXPECT_FALSE(texts->stories[0]->lines[0].justified_width);
+    EXPECT_EQ(texts->stories[0]->lines[0].origin * texts->stories[0]->to_art, Geom::Point(40, 48));
 
     // A paragraph with nothing in it past the frame's end holds nothing; real text is kept.
     texts = AN::read_text_document(text_setup(area_text_document("(Hello \\r\\r)", 8, {{0, 12, 7}})), Geom::Point(100, 50));
@@ -2680,6 +2690,252 @@ TEST_F(AiNativeImportTest, AreaTypeAnchorsOverflowAndEmptyFrames)
     EXPECT_TRUE(elements(b->document->getReprRoot(), "svg:text").empty());
     ASSERT_EQ(b->notes.size(), 1u);
     EXPECT_NE(b->notes[0].find("nothing typed"), std::string::npos) << b->notes[0];
+}
+
+std::vector<std::pair<gunichar, Geom::Point>> set_characters(SPDocument *doc, XML::Node *repr);
+void expect_characters_where_they_were(SPDocument *was_doc, XML::Node *was, SPDocument *now_doc, XML::Node *now);
+
+/// A paragraph run of `units` aligned `alignment` (Illustrator's paragraph feature 0), with `more`.
+std::string aligned_paragraph(int units, int alignment, std::string const &more = {})
+{
+    return " /5 << /0 [ << /1 " + std::to_string(units) + " /0 << /0 << /5 << /0 " + std::to_string(alignment) + more +
+           " >> >> >> >> ] >>";
+}
+
+TEST_F(AiNativeImportTest, JustifiedAreaTypeKeepsEachLinesMeasure)
+{
+    using End = AN::TextLine::End;
+    auto read = [](std::string const &characters, int units, std::vector<AreaLine> const &lines, std::string const &paragraphs) {
+        return AN::read_text_document(text_setup(area_text_document(characters, units, lines, "ArialMT", {}, paragraphs)),
+                                      Geom::Point(100, 50));
+    };
+    // Justified, its last line left: the line the frame wrapped reaches across the frame, 100
+    // from its start; the last is set at its own width. Both from their starts.
+    auto texts = read("(Hello world\\r)", 12, {{0, 12, 6}, {0, 26, 6}}, aligned_paragraph(12, 3));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    auto const *lines = &texts->stories[0]->lines;
+    ASSERT_EQ(lines->size(), 2u);
+    for (auto const &l : *lines) {
+        EXPECT_EQ(l.justification, 3u);
+        EXPECT_EQ(l.alignment, 0u);
+        EXPECT_EQ(l.paragraph_alignment, 0u);
+    }
+    ASSERT_TRUE((*lines)[0].justified_width);
+    EXPECT_DOUBLE_EQ(*(*lines)[0].justified_width, 100);
+    EXPECT_FALSE((*lines)[1].justified_width);
+
+    // Less its indents: the start one where the line starts, the end one off its box.
+    texts = read("(Hello world\\r)", 12, {{0, 12, 6, 10}, {0, 26, 6, 10}}, aligned_paragraph(12, 3, " /2 10 /3 5"));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    ASSERT_TRUE(texts->stories[0]->lines[0].justified_width);
+    EXPECT_DOUBLE_EQ(*texts->stories[0]->lines[0].justified_width, 85);
+
+    // Justified to the last line too; a line break typed inside the paragraph is stretched as well.
+    texts = read("(Hello world\\r)", 12, {{0, 12, 6}, {0, 26, 6}}, aligned_paragraph(12, 6));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_TRUE(texts->stories[0]->lines[1].justified_width);
+    texts = read("(Hello\\003world\\r)", 12, {{0, 12, 6}, {0, 26, 6}}, aligned_paragraph(12, 5));
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    lines = &texts->stories[0]->lines;
+    EXPECT_EQ((*lines)[0].end, End::Break);
+    EXPECT_TRUE((*lines)[0].justified_width);
+    EXPECT_FALSE((*lines)[1].justified_width);
+    EXPECT_EQ((*lines)[1].paragraph_alignment, 2u);
+    EXPECT_EQ((*lines)[1].alignment, 0u);
+
+    // What PROOF doesn't justify alike is refused by name: a paragraph that reads from the right,
+    // and Illustrator's spacing settings other than its defaults.
+    for (auto const *more : {" /33 1", " /17 [0.8 0.9 1.33]", " /19 [0.9 1 1.1]"}) {
+        SCOPED_TRACE(more);
+        texts = read("(Hello world\\r)", 12, {{0, 12, 6}, {0, 26, 6}}, aligned_paragraph(12, 3, more));
+        EXPECT_FALSE(texts->stories[0]);
+        EXPECT_NE(texts->errors[0].find("justified"), std::string::npos) << texts->errors[0];
+    }
+}
+
+/// Area type in the 100 x 40 frame of area_text_document, its layout tree written out: each
+/// line's character count, its glyph run (`glyphs` glyphs, which `older` counts as Illustrator
+/// before 2025 does) with what Illustrator added to them (the body of its 6), and the
+/// segment's clusters (the body of its count's 1).
+struct GlyphLine
+{
+    int units, glyphs;
+    std::string added, clusters = {};
+    bool older = false;
+};
+std::string justified_layout(std::vector<GlyphLine> const &lines)
+{
+    std::string laid;
+    int y = 12;
+    for (auto const &l : lines) {
+        std::string ids;
+        for (int i = 0; i < l.glyphs; ++i) ids += " 0";
+        laid += "<< /99 /L /0 << /0 [0 " + std::to_string(y) + "] >> /1 [0 -10 100 3] /6 [ << /99 /S /15 << /0 " +
+                std::to_string(l.units) + (l.clusters.empty() ? "" : " /1 [ " + l.clusters + " ]") +
+                " /2 0 /5 false >> /6 [ << /99 /G /1 [0 -10 100 3] " +
+                (l.older ? "/5 [" + ids + " ]" : "/21 << /0 [" + ids + " ] >>") +
+                (l.added.empty() ? "" : " /6 << " + l.added + " >>") + " >> ] >> ] >> ";
+        y += 14;
+    }
+    return "/2 [ << /99 /PC /6 [ << /99 /F /0 << /0 [8191.5 8191.5] >> /1 [0 0 100 40] /6 [ << /99 /R /6 [ "
+           "<< /99 /R /6 [ " + laid + "] >> ] >> ] >> ] >> ]";
+}
+
+TEST_F(AiNativeImportTest, JustifiedLinesAreCheckedAgainstHowIllustratorWidenedTheirSpaces)
+{
+    auto read = [](std::string const &characters, int units, std::vector<GlyphLine> const &lines, int alignment = 3) {
+        auto const doc = area_text_document(characters, units, {}, "ArialMT", {}, aligned_paragraph(units, alignment),
+                                            justified_layout(lines));
+        return AN::read_text_document(text_setup(doc), Geom::Point(100, 50));
+    };
+    auto refused_for = [](auto const &texts, char const *why) {
+        EXPECT_FALSE(texts->stories[0]);
+        EXPECT_NE(texts->errors[0].find(why), std::string::npos) << texts->errors[0];
+    };
+    // "aa bb " then "cc": the space between the words widened by a quarter of its width, the one
+    // at the line's end left alone, as Illustrator 29.2.1 does.
+    auto const widened = "/0 [ << >> << /1 0.25 >> << >> ] /1 [2 1 3]";
+    auto texts = read("(aa bb cc\\r)", 9, {{6, 6, widened}, {3, 3, ""}});
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    EXPECT_TRUE(texts->stories[0]->lines[0].justified_width);
+    // As older files count their glyphs, too.
+    texts = read("(aa bb cc\\r)", 9, {{6, 6, widened, "", true}, {3, 3, ""}});
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    // Tracking on every glyph doesn't move what is justified.
+    texts = read("(aa bb cc\\r)", 9, {{6, 6, "/0 [ << /3 0.5 >> << /1 0.25 /3 0.5 >> << /3 0.5 >> ] /1 [2 1 3]"}, {3, 3, ""}});
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+    // A ligature is one glyph for its letters: the space after "ffi" is the second glyph.
+    texts = read("(ffi aa bb\\r)", 10, {{7, 5, "/0 [ << >> << /1 0.3 >> << >> ] /1 [1 1 3]", "<< /0 1 /1 0 /2 3 >>"}, {3, 3, ""}});
+    ASSERT_TRUE(texts->stories[0]) << texts->errors[0];
+
+    // Counted without its cluster, that glyph would be a letter: Illustrator spacing letters.
+    refused_for(read("(ffi aa bb\\r)", 10, {{7, 5, "/0 [ << >> << /1 0.3 >> << >> ] /1 [1 1 3]"}, {3, 3, ""}}),
+                "spaces its letters");
+    refused_for(read("(aa bb cc\\r)", 9, {{6, 6, "/0 [ << /1 0.25 >> << >> ] /1 [1 5]"}, {3, 3, ""}}), "spaces its letters");
+    // Word spaces widened by different shares, or one left alone.
+    refused_for(read("(aa bb cc dd\\r)", 12, {{9, 9, "/0 [ << >> << /1 0.2 >> << >> << /1 0.3 >> << >> ] /1 [2 1 2 1 3]"}, {3, 3, ""}}),
+                "unequally");
+    refused_for(read("(aa bb cc dd\\r)", 12, {{9, 9, "/0 [ << >> << /1 0.2 >> << >> ] /1 [2 1 6]"}, {3, 3, ""}}), "unequally");
+    // A last line, set at its own width, with spaces of another width.
+    refused_for(read("(aa bb cc dd\\r)", 12, {{6, 6, widened}, {6, 6, "/0 [ << >> << /1 0.1 >> << >> ] /1 [2 1 3]"}}),
+                "wider or narrower");
+    // Glyph counts that disagree.
+    refused_for(read("(aa bb cc\\r)", 9, {{6, 5, widened}, {3, 3, ""}}), "glyph adjustments");
+}
+
+TEST_F(AiNativeImportTest, JustifiedAreaTypeIsStretchedAcrossItsFrame)
+{
+    // Courier New's advance is 1229/2048 em: at 12 points "aaa bbb" is seven of them, its space
+    // one. To reach 100 the space takes the rest: its word spacing.
+    double const advance = 12 * 1229.0 / 2048, extra = 100 - 7 * advance;
+    auto *courier = FontFactory::get().parsePostscriptName("CourierNewPSMT", false);
+    if (!courier) GTEST_SKIP() << "CourierNewPSMT isn't installed";
+    pango_font_description_free(courier);
+    auto const source = [](int alignment, std::string const &style = {}) {
+        return records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                       text_setup(area_text_document("(aaa bbb ccc ddd\\r)", 16, {{0, 12, 8}, {0, 26, 8}}, "CourierNewPSMT",
+                                                     style, aligned_paragraph(16, alignment))));
+    };
+    auto b = make(source(3));
+    ASSERT_TRUE(b);
+    auto const text = elements(b->document->getReprRoot(), "svg:text").at(0);
+    EXPECT_NE(attr(text, "style").find("text-align:justify;"), std::string::npos) << attr(text, "style");
+    EXPECT_EQ(attr(text, AN::TEXT_ALIGN_LAST_ATTRIBUTE), "start");
+    auto const spans = elements(text, "svg:tspan");
+    ASSERT_EQ(spans.size(), 2u);
+    auto const spacing = [](XML::Node *span) -> std::optional<double> {
+        auto const style = attr(span, "style");
+        auto const at = style.find("word-spacing:");
+        if (at == std::string::npos) return {};
+        return g_ascii_strtod(style.c_str() + at + 13, nullptr);
+    };
+    ASSERT_TRUE(spacing(spans[0]));
+    EXPECT_NEAR(*spacing(spans[0]), extra, 1e-4);
+    EXPECT_FALSE(spacing(spans[1]));
+    // Its second word starts so far along, in advances (the document's units aren't points).
+    auto const chars = set_characters(b->document.get(), text);
+    ASSERT_EQ(chars.size(), 15u);
+    double const one = chars[1].second.x() - chars[0].second.x();
+    EXPECT_NEAR((chars[4].second.x() - chars[0].second.x()) / one, 4 + extra / advance, 1e-4);
+
+    // Justified to the last line too, the last line takes its share as well.
+    b = make(source(6));
+    ASSERT_TRUE(b);
+    auto const all = elements(elements(b->document->getReprRoot(), "svg:text").at(0), "svg:tspan");
+    EXPECT_EQ(attr(elements(b->document->getReprRoot(), "svg:text").at(0), AN::TEXT_ALIGN_LAST_ATTRIBUTE), "justify");
+    ASSERT_TRUE(spacing(all.at(1)));
+    EXPECT_NEAR(*spacing(all.at(1)), extra, 1e-4);
+
+    // Tracked, the letters reach the measure without the tracking after the last of them, and
+    // the space is widened with its own: 0.6 after each of the six characters before the last.
+    b = make(source(3, "/8 50"));
+    ASSERT_TRUE(b);
+    auto const tracked = elements(elements(b->document->getReprRoot(), "svg:text").at(0), "svg:tspan");
+    ASSERT_TRUE(spacing(tracked.at(0)));
+    EXPECT_NEAR(*spacing(tracked.at(0)), 100 - 7 * advance - 6 * 0.6, 1e-4);
+}
+
+TEST_F(AiNativeImportTest, JustifiedAreaTypeMatchesIndependentPdf)
+{
+    // At 24 points Courier New's letters are 14.4 apart: "bb" ends at the frame's right side,
+    // 100 from its left at 10, so it starts at 81.2.
+    auto *font = FontFactory::get().parsePostscriptName("CourierNewPSMT", false);
+    if (!font) GTEST_SKIP() << "CourierNewPSMT isn't installed";
+    pango_font_description_free(font);
+    auto src = records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                       text_setup(area_text_document("(aa bb cc\\r)", 9, {{0, 22, 6}, {0, 46, 3}}, "CourierNewPSMT",
+                                                     "/1 24 /53 << /0 << /0 0 /1 [1 0] >> >>", aligned_paragraph(9, 3))));
+    std::string reason;
+    auto good = Extension::Internal::open_ai_native(
+        fixture(src, {"0 g BT /F1 24 Tf 10 38 Td (aa) Tj ET BT /F1 24 Tf 81.2 38 Td (bb) Tj ET BT /F1 24 Tf 10 14 Td (cc) Tj ET"},
+                "/MediaBox [0 0 200 100]", "CourierNewPSMT"), reason);
+    ASSERT_TRUE(good) << reason;
+    // Where the words would be with their space as the font has it.
+    EXPECT_FALSE(Extension::Internal::open_ai_native(
+        fixture(src, {"0 g BT /F1 24 Tf 10 38 Td (aa) Tj ET BT /F1 24 Tf 53.2 38 Td (bb) Tj ET BT /F1 24 Tf 10 14 Td (cc) Tj ET"},
+                "/MediaBox [0 0 200 100]", "CourierNewPSMT"), reason));
+}
+
+TEST_F(AiNativeImportTest, WrittenJustifiedAreaTypeKeepsItsJustification)
+{
+    auto *courier = FontFactory::get().parsePostscriptName("CourierNewPSMT", false);
+    if (!courier) GTEST_SKIP() << "CourierNewPSMT isn't installed";
+    pango_font_description_free(courier);
+    for (int alignment : {3, 4, 5, 6}) {
+        SCOPED_TRACE(alignment);
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                              text_setup(area_text_document("(aaa bbb\\003ccc ddd eee\\r)", 20, {{0, 12, 8}, {0, 26, 12}},
+                                                            "CourierNewPSMT", {}, aligned_paragraph(20, alignment)))));
+        ASSERT_TRUE(b);
+        auto const written = AN::write_records(b->document.get());
+        ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+        auto const texts = AN::read_text_document(written.records, {});
+        ASSERT_TRUE(texts->stories.at(0)) << texts->errors[0];
+        auto const &lines = texts->stories[0]->lines;
+        ASSERT_EQ(lines.size(), 2u);
+        EXPECT_EQ(lines[0].end, AN::TextLine::End::Break);
+        for (auto const &l : lines) EXPECT_EQ(l.justification, unsigned(alignment));
+        // The reader finds its measure from the frame: PROOF writes no line boxes.
+        ASSERT_TRUE(lines[0].justified_width);
+        EXPECT_NEAR(*lines[0].justified_width, 100, 1e-3);
+        EXPECT_EQ(bool(lines[1].justified_width), alignment == 6);
+        // Opened again, every character is where it was.
+        auto again = make(written.records);
+        ASSERT_TRUE(again);
+        expect_characters_where_they_were(b->document.get(), elements(b->document->getReprRoot(), "svg:text").at(0),
+                                          again->document.get(), elements(again->document->getReprRoot(), "svg:text").at(0));
+    }
+    // Word spacing on a line that isn't stretched is the characters' own, which Illustrator has not.
+    auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"),
+                          text_setup(area_text_document("(aaa bbb ccc ddd\\r)", 16, {{0, 12, 8}, {0, 26, 8}}, "CourierNewPSMT",
+                                                        {}, aligned_paragraph(16, 3)))));
+    ASSERT_TRUE(b);
+    auto const last = elements(elements(b->document->getReprRoot(), "svg:text").at(0), "svg:tspan").at(1);
+    last->setAttribute("style", attr(last, "style") + "word-spacing:3;");
+    b->document->ensureUpToDate();
+    auto const written = AN::write_records(b->document.get());
+    ASSERT_FALSE(written.refused.empty());
+    EXPECT_NE(written.refused.front().find("word spacing"), std::string::npos) << written.refused.front();
 }
 
 TEST_F(AiNativeImportTest, AreaTypeBuildsPositionedLinesAndKeepsItsFrame)
@@ -9200,14 +9456,15 @@ TEST_F(AiNativeImportTest, TypeOutsideTheWrittenSubsetIsRefusedByName)
         {R"(<defs><rect id="a" width="100" height="50"/></defs>)"
          R"x(<text style="shape-inside:url(#a);shape-padding:4px">Hi</text>)x", "type flowed with padding inside its shape (shape-padding)"},
         {R"(<defs><rect id="a" width="100" height="50"/></defs>)"
-         R"x(<text style="shape-inside:url(#a);text-align:justify">Hi there</text>)x", "justified type"},
+         R"x(<text style="shape-inside:url(#a);text-align:justify">Hi there</text>)x", "justified type flowed into a shape"},
         {R"(<defs><rect id="a" width="30" height="14"/></defs>)"
          R"x(<text style="shape-inside:url(#a);font-size:12px">Hi there and more words than fit</text>)x",
          "type that overflows the shape it flows into"},
         {R"x(<text transform="skewX(20)" proof:text-frame="M0 0 H100 V50 H0 Z" x="10" y="20">Hi</text>)x", "area type stretched or skewed"},
         {R"(<text proof:text-frame="M0 0 H10 V10 H0 Z M20 0 H30 V10 H20 Z" x="2" y="8">Hi</text>)",
          "area type in a frame that isn't one outline"},
-        {R"(<text proof:text-frame="M0 0 H100 V50 H0 Z" x="10" y="20" style="text-align:justify">Hi</text>)", "justified type"},
+        {R"(<text proof:text-frame="M0 0 H100 L50 50 Z" x="10" y="20" style="text-align:justify">Hi</text>)",
+         "justified type in a frame that isn't a rectangle"},
         {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text><textPath href="#p">Hi</textPath><textPath href="#p" startOffset="50">Hi</textPath></text>)",
          "type on several paths"},
         {R"(<defs><path id="p" d="M10 50 L190 50"/></defs><text x="10" y="80">Off <textPath href="#p">Hi</textPath></text>)",

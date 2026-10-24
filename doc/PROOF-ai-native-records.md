@@ -1005,7 +1005,7 @@ last line left, right, centred, or justified too. A line of point type has no
 measure to be justified to, so it is set as that last line: from its left end
 for 3 and 6, from its right end or its middle for 4 and 5 where the layout
 says where that is, and from where its glyphs start otherwise. Justified area
-type is still refused: its lines are stretched to the frame.
+type is read since 2026-10-24 ("Justified area type", below).
 
 **Hebrew that isn't set up for its direction.** The sample is four Hebrew
 letters in a paragraph that reads from the left (feature 33 is 0), with the
@@ -3119,3 +3119,76 @@ documents, the same order as Illustrator's. `TextStories::ink_operator` is the
 path writer's own `paint()` for a fill, so the ink is declared and refused exactly
 as for a path. Illustrator 29.2.1 reads every character back at its ink and tint,
 and its own Save As keeps them.
+
+## Justified area type (2026-10-24)
+
+Paragraph feature 0 at 3 to 6 in area type. What Illustrator 29.2.1 does, from its
+own control (`743e4b65a1`: five frames, justified with the last line left, centred,
+right with indents, justified throughout with tracking and a larger run inside a
+line, and Calibri with ligatures) and the glyph places it keeps there:
+
+- It stretches a line its frame wrapped, and one a line break typed inside the
+  paragraph ended; a paragraph's last line too when that is justified (6). Other
+  last lines are set at their own width, placed by their segment's offset.
+- It widens or narrows only the word spaces, each by one share of its own width,
+  its tracking included. A glyph run's `6` (values `0`, each for so many glyphs
+  `1`) gives the share as a value's `1` (0.0816: that space 8.16% wider), beside
+  the tracking it keeps as `3`. Letters and the space at the line's end keep their
+  widths. A share can be below zero (spaces down to 80%, paragraph feature 17's
+  least) or far above 133% when nothing else may fill the line (feature 18, for
+  letters, is 0 by default): "then wait." across 120 pt took 27.8 times its space.
+- The line's letters reach its box's right end (the line's `1`, from its origin)
+  less the end indent, without the tracking after the last letter, from where the
+  line starts (its segment's offset, the start and first-line indents in it).
+- The segment's count (`15`) lists clusters in its `1`: so many glyphs (`0`) for so
+  many UTF-16 units (`2`) from a place (`1`), as for a ligature, after which the
+  glyph numbers shift ("ffi" is one glyph for three letters).
+- Illustrator 2025 lists a run's glyphs and where each starts in its `21` (`0`, `1`);
+  older files list the glyphs in `5`.
+
+PROOF reads such a paragraph as justified (`TextLine::justification`), each line it
+stretches with its measure (`justified_width`), and sets every line from its start.
+It checks what Illustrator added: a share on a letter, shares that differ, a word
+space left alone, or a share on a line it doesn't stretch refuse the story by name,
+as do a paragraph that reads from the right or is set by the Middle Eastern
+composer, spacing settings other than Illustrator's defaults (17 `[0.8 1 1.33]`,
+18 `[0 0 0]`, 19 `[1 1 1]`), and a no-break space between the words of a stretched
+line, which the layout would widen too. The import writes `text-align:justify`
+and the last line's alignment in `proof:text-align-last` (`start`, `end`,
+`center`, `justify`). Once the document is laid out it sets `word-spacing` on what
+holds each stretched line's word spaces, so that the line reaches its measure, and
+checks that it does (`justify`, `ai-native-import.cpp`). A line of one word isn't
+stretched. An edited line keeps its spacing: the lines don't move when area type
+is edited.
+
+Native saving writes the paragraph's alignment, 3 to 6, from `text-align` and
+`proof:text-align-last`, and leaves the stretching to Illustrator: the word spacing
+of a stretched line is the layout's, not written. Elsewhere word spacing is still
+refused. PROOF writes no line boxes, so its reader takes the measure of a line PROOF
+wrote from the frame's right side; justified type in a frame that isn't a rectangle
+is refused, as are justified type Inkscape flows into a shape (it only widens, and
+doesn't stretch a line a break ends) and justified type that reads from the right.
+
+**PDF text.** PROOF's PDF output, its PDF export and every native page, wrote each
+glyph's width cut to a whole thousandth of an em (CapyPDF's `/W`) and each change
+of position cut toward zero likewise, so a glyph could fall two thousandths short
+and a line drifted: a justified line of 10 pt Arial ended 0.16 pt short of its
+margin, 0.85 pt with tracking (its first attempt), and unjustified Calibri lines
+0.15 pt. Widths are now written exactly (an overlay in `capypdf-compat.cmake`) and
+changes of position rounded, the remainder carried to the next glyph
+(`build-text.cpp`).
+
+**Checks.** `test_ai-native-import`: `JustifiedAreaTypeKeepsEachLinesMeasure`,
+`JustifiedLinesAreCheckedAgainstHowIllustratorWidenedTheirSpaces`,
+`JustifiedAreaTypeIsStretchedAcrossItsFrame` (Courier New, tracked too),
+`JustifiedAreaTypeMatchesIndependentPdf` and
+`WrittenJustifiedAreaTypeKeepsItsJustification` (each alignment, written, read and
+reopened with every character where it was). Illustrator's control imports
+natively; on PROOF's page each of its 140 words lies within 0.04 pt of Illustrator's
+own (pdftotext's word boxes), for the import, PROOF's native save and that save
+reopened natively. Illustrator 29.2.1 opens PROOF's save with each frame justified
+as written and breaks every line where its original did. The one copy of the 871
+with justified paragraphs, `f8a8c3d717`, now comes in natively (its page before),
+the modern writer reads it back and its complete save reopens natively; 31 more
+copies with type, through complete saves, keep their v1 results, one gate measure
+a little closer (lightness 0.004969 to 0.004961), and the lite set holds.

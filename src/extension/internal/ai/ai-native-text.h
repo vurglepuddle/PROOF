@@ -7,8 +7,9 @@
  * recorded lines, baseline shifts, all caps and small caps, superscript and subscript,
  * underline and strikethrough, paragraphs that read from right to left, and the axis values
  * of a variable font's instance (worked out from real files, 2026-10-10), which line ends
- * were typed and how each line's paragraph is aligned and hyphenated (2026-10-23), and refuses
- * unsupported frames and styles rather than guessing at them.
+ * were typed and how each line's paragraph is aligned and hyphenated (2026-10-23), justified
+ * area type's measures (2026-10-24), and refuses unsupported frames and styles rather than
+ * guessing at them.
  */
 #ifndef SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
 #define SEEN_EXTENSION_INTERNAL_AI_NATIVE_TEXT_H
@@ -96,7 +97,16 @@ struct TextLine
     /// it, with nothing typed.
     enum class End { Paragraph, Break, Wrap } end = End::Paragraph;
     /// How its paragraph is aligned, 0 left, 1 right, 2 centred, whichever end `origin` is.
+    /// For a justified paragraph, how its last line is.
     unsigned paragraph_alignment = 0;
+    /// Area type in a justified paragraph: paragraph feature 0, 3 to 6, justified with the
+    /// last line left, right, centred or justified too. 0 for any other paragraph.
+    unsigned justification = 0;
+    /// A justified line of area type: how far from `origin` its letters reach, without the
+    /// tracking after the last. Illustrator widens or narrows its word spaces alike, each by the
+    /// same share of its own width, tracking included, to get there. Nothing for a line set at
+    /// its natural width.
+    std::optional<double> justified_width;
     bool hyphenate = false; ///< Its paragraph is hyphenated where area type wraps it.
     bool automatic_hyphen = false; ///< A displayed wrap hyphen, absent from the editable story.
     /// Paragraph features 1, 2, 3, in text layout units: first-line, start and end indents.

@@ -295,16 +295,28 @@ std::array<double, 3> paragraph_indents(SPObject const *owner, SPText const *tex
 
 /// How an import's area type aligns a paragraph: it keeps that in text-align, which Inkscape
 /// follows only for lines it lays out in a frame, and places the lines by their anchors.
-/// Without one, text-anchor says. Nothing for justified paragraphs.
-std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *text)
+/// Without one, text-anchor says. A justified paragraph gives how its last line is aligned
+/// (TEXT_ALIGN_LAST_ATTRIBUTE beside its text-align, start when that doesn't say), and puts
+/// Illustrator's alignment for it, 3 to 6, in `justification`; nothing without that.
+std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *text, unsigned *justification = nullptr)
 {
-    bool aligned = false;
-    for (auto const *o = owner; o && !aligned; o = o == text ? nullptr : o->parent) aligned = o->style->text_align.set;
+    SPObject const *aligner = nullptr;
+    for (auto const *o = owner; o && !aligner; o = o == text ? nullptr : o->parent) {
+        if (o->style->text_align.set) aligner = o;
+    }
     auto const *st = owner->style;
     bool const rtl = st->direction.computed == SP_CSS_DIRECTION_RTL;
-    if (aligned) {
+    if (justification) *justification = 0;
+    if (aligner) {
         switch (st->text_align.computed) {
-            case SP_CSS_TEXT_ALIGN_JUSTIFY: return {};
+            case SP_CSS_TEXT_ALIGN_JUSTIFY: {
+                auto const *said = aligner->getAttribute(TEXT_ALIGN_LAST_ATTRIBUTE);
+                std::string_view const last = said ? said : "start";
+                unsigned const j = last == "start" ? 3 : last == "end" ? 4 : last == "center" ? 5 : last == "justify" ? 6 : 0;
+                if (!justification || !j) return {};
+                *justification = j;
+                return j == 5 ? 2u : (j == 4) != rtl ? 1u : 0u;
+            }
             case SP_CSS_TEXT_ALIGN_RIGHT: return 1;
             case SP_CSS_TEXT_ALIGN_LEFT: return 0;
             case SP_CSS_TEXT_ALIGN_END: return rtl ? 0 : 1;
@@ -314,6 +326,25 @@ std::optional<unsigned> frame_alignment(SPObject const *owner, SPText const *tex
     }
     return st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_MIDDLE ? 2 :
            (st->text_anchor.computed == SP_CSS_TEXT_ANCHOR_END) != rtl ? 1 : 0;
+}
+
+/// Whether a frame is one rectangle with its sides along the axes, each point a corner: PROOF's
+/// reader then finds a justified line's measure from the frame's right side.
+bool axis_rectangle(Geom::Path const &outline)
+{
+    auto const box = outline.boundsExact();
+    if (!box || box->width() <= 0 || box->height() <= 0) return false;
+    for (auto const &c : outline) {
+        auto const *bezier = dynamic_cast<Geom::BezierCurve const *>(&c);
+        if (!bezier) return false;
+        for (unsigned i = 0; i < bezier->size(); ++i) {
+            auto const p = bezier->controlPoint(i);
+            bool const across = std::abs(p.x() - box->left()) < 1e-6 || std::abs(p.x() - box->right()) < 1e-6;
+            bool const down = std::abs(p.y() - box->top()) < 1e-6 || std::abs(p.y() - box->bottom()) < 1e-6;
+            if (!across || !down) return false;
+        }
+    }
+    return true;
 }
 
 /// The tab stops a character's tabs step to: the nearest element up to the text that has PROOF's
@@ -565,6 +596,8 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         Geom::Point anchor;  ///< The x it is aligned to, on its baseline.
         double left = 0;     ///< Where its first character starts.
         unsigned alignment = 0;
+        /// An import's justified paragraph: Illustrator's alignment for it, 3 to 6; else 0.
+        unsigned justification = 0;
         unsigned layout_line = 0;
         unsigned paragraph = 0; ///< The layout's paragraph.
         /// A line feed or a line separator typed at its end, which Inkscape's layout keeps as a
@@ -668,15 +701,18 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
             line.paragraph = layout.paragraphIndex(it);
             // Inkscape aligns the lines it flows into a shape by their paragraph. An import's area
             // type keeps its paragraphs' alignment in text-align, the lines placed by their anchors.
+            // Its lines are where the import stretched them; Illustrator justifies them again.
             std::optional<unsigned> alignment;
             if (area && !flowed) {
-                alignment = frame_alignment(string->parent, text);
+                alignment = frame_alignment(string->parent, text, &line.justification);
             } else {
                 auto const a = layout.paragraphAlignment(it);
                 if (a != Text::Layout::FULL) alignment = a == Text::Layout::RIGHT ? 1 : a == Text::Layout::CENTER ? 2 : 0;
             }
             if (!alignment) {
-                why.insert("justified type");
+                // Inkscape justifies what it flows into a shape otherwise than Illustrator: it only
+                // widens word spaces, and not a line a break ends.
+                why.insert(flowed ? "justified type flowed into a shape" : "justified type");
                 break;
             }
             line.alignment = *alignment;
@@ -729,6 +765,9 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     if (world_ready && std::any_of(lines.begin(), lines.end(), [](auto const &entry) { return bool(entry.second.tabs); })) {
         why.insert("tabs with a Middle Eastern composer");
     }
+    bool const justified = std::any_of(lines.begin(), lines.end(), [](auto const &entry) { return entry.second.justification != 0; });
+    if (justified && (rtl || unordered || ordered_script || world_ready)) why.insert("justified type that reads from the right");
+    if (justified && outline && !axis_rectangle(*outline)) why.insert("justified type in a frame that isn't a rectangle");
     if (flowed && !rtl && std::any_of(lines.begin(), lines.end(), [](auto const &entry) { return entry.second.ordered_rtl; })) {
         why.insert("mixed-direction type flowed into a shape");
     }
@@ -973,7 +1012,15 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         }
         if (!(tracking >= -1000 && tracking <= 10000)) own.insert("tracking Illustrator can't set");
         f[8] = number(tracking);
-        if (!st->word_spacing.normal && st->word_spacing.computed != 0) own.insert("word spacing on type");
+        // A justified line's word spacing is how far the import stretched it across the frame,
+        // which Illustrator does again: not its characters'. Set on the text itself it is theirs;
+        // on a line that isn't stretched too (below).
+        if (!st->word_spacing.normal && st->word_spacing.computed != 0) {
+            unsigned justification = 0;
+            if (!area || flowed || !frame_alignment(owner, text, &justification) || !justification || text->style->word_spacing.set) {
+                own.insert("word spacing on type");
+            }
+        }
         // A shift is from the baseline of what holds the span, and adds to that one's.
         double shift = 0;
         bool underline = false, strikethrough = false;
@@ -1088,9 +1135,10 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     };
     auto end_paragraph = [&] {
         auto const *row = *paragraph_start;
+        unsigned justification = row->line ? row->line->justification : 0u;
         auto const physical_alignment = row->line ? row->line->alignment :
-            row->owner ? frame_alignment(row->owner, text).value_or(0) : 0u;
-        auto const alignment = rtl && physical_alignment != 2 ? 1u - physical_alignment : physical_alignment;
+            row->owner ? frame_alignment(row->owner, text, &justification).value_or(0) : 0u;
+        auto const alignment = justification ? justification : rtl && physical_alignment != 2 ? 1u - physical_alignment : physical_alignment;
         bool const hyphenate = area && !flowed && row->line && says(row->line->chars.front().owner, text, HYPHENATE_ATTRIBUTE, "true");
         std::string margins;
         if (indents) for (unsigned i = 0; i < 3; ++i) margins += std::format(" /{} {}", i + 1, real((*indents)[i] * s));
@@ -1139,6 +1187,16 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         if (p.line && p.line->automatic_hyphen && features_of(p.line->hyphen_owner) != features_of(chars.back().owner)) {
             why.insert("an automatic hyphen styled differently from its word");
             return finish();
+        }
+        // Illustrator stretches a justified paragraph's lines but its last (unless that is justified
+        // too): word spacing elsewhere would be lost.
+        bool const stretched = p.line && p.line->justification && (p.end != End::Paragraph || p.line->justification == 6);
+        for (auto const &c : chars) {
+            auto const &spacing = c.owner->style->word_spacing;
+            if (!stretched && !spacing.normal && spacing.computed != 0) {
+                why.insert("word spacing on type");
+                return finish();
+            }
         }
         double largest = 0;
         for (auto const &c : chars) largest = std::max(largest, c.owner->style->font_size.computed * s);

@@ -37,6 +37,10 @@
  *                                  type keeps its frame in proof:text-frame, its paragraphs'
  *                                  alignment in text-align and which line ends were typed in
  *                                  proof:line-end
+ *   justified area type            text-align:justify, the last line's alignment in
+ *                                  proof:text-align-last; each line Illustrator stretched is
+ *                                  stretched across the frame by word-spacing, its word spaces
+ *                                  widened alike, as Illustrator widens them
  *   an instance of a variable font its family, with every axis in font-variation-settings
  *   All Caps                       text-transform:uppercase on what was typed
  *   small caps                     font-variant-caps:small-caps, which the text layout sets
@@ -99,6 +103,9 @@ inline constexpr char const *TEXT_OVERFLOW_ATTRIBUTE = "proof:text-overflow";
 inline constexpr char const *LINE_END_ATTRIBUTE = "proof:line-end";
 /// On area type, or a line of it, whose paragraphs Illustrator hyphenates: "true".
 inline constexpr char const *HYPHENATE_ATTRIBUTE = "proof:hyphenate";
+/// Where text-align is justify on area type or a line of it: how its paragraph's last line is
+/// aligned, "start", "end", "center" or "justify" (Illustrator's paragraph alignment 3 to 6).
+inline constexpr char const *TEXT_ALIGN_LAST_ATTRIBUTE = "proof:text-align-last";
 /// Paragraph features 1, 2, 3 as three lengths in the text's coordinates.
 inline constexpr char const *PARAGRAPH_INDENTS_ATTRIBUTE = "proof:paragraph-indents";
 /// A displayed automatic wrap hyphen, excluded from the native story on save.

@@ -61,9 +61,19 @@ document is about the editor.
   with the font's width for it and drew it with none, so a centred line before
   one sat half that width to the left (3.2 pt at 14 pt Arial), where
   Illustrator centres it.
+- **Justified area type from Illustrator** (since 2026-10-24): each line Illustrator
+  stretched reaches across the frame, its word spaces widened alike as Illustrator
+  widens them, and it is saved back justified
+  ([records](PROOF-ai-native-records.md#justified-area-type-2026-10-24)).
+- **Type prints where the layout sets it** (since 2026-10-24). PDF output cut each
+  glyph's width and place to whole thousandths of an em, so a long line ended a
+  fraction of a point short.
 
 Not yet:
 
+- **Justifying type in the editor.** Inkscape's own justification of type in a
+  shape isn't Illustrator's and isn't saved natively, and an imported justified
+  line keeps its spacing when edited.
 - **Editing the document's settings.** They are read from `.ai` files and
   kept, and there is no control for them.
 - **Underline and strikethrough buttons.** Both are read from `.ai` files and

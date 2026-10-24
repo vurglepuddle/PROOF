@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <utility>
 #include <glib.h>
@@ -613,6 +614,113 @@ Geom::Point offset_of(Value const &node)
     return {o[0], o[1]};
 }
 
+/**
+ * Whether Illustrator set a line of area type as PROOF sets a justified one: its word spaces
+ * widened or narrowed alike, each by one share of its own width, and nothing else moved, or
+ * nothing at all. `characters` are the line's, its end included, with their UTF-16 units;
+ * `stretched` whether the line is justified across the frame (not a paragraph's last line set
+ * at its natural width). Throws otherwise.
+ *
+ * Each glyph run (G) of the segment may say what was added to its glyphs (6: values, 0, each
+ * for so many glyphs, 1; a value's 1 is the share of the glyph's width, 3 the tracking). The
+ * segment's character count (15) maps clusters (its 1: so many glyphs, 0, for so many units,
+ * 2, from a place, 1, as a ligature); other characters are a glyph each. A run's glyphs are
+ * counted by its 21 (glyphs and their places; 5 in older files) or by its adjustments.
+ */
+void check_justified_spaces(Value const &segment, std::vector<std::pair<gunichar, unsigned>> const &characters, bool stretched)
+{
+    std::vector<gunichar> at_unit; // The character starting at each unit, 0 inside one.
+    for (auto const &[c, n] : characters) {
+        at_unit.push_back(c);
+        if (n == 2) at_unit.push_back(0);
+    }
+    std::map<std::size_t, std::pair<std::size_t, std::size_t>> clusters; // Place: glyphs, units.
+    if (auto const &counts = segment.get("15"); counts.dict.count("1") && counts.get("1").kind == Value::Array) {
+        for (auto const &m : counts.get("1").list) clusters[m.get("1").index()] = {m.get("0").index(), m.get("2").index()};
+    }
+    std::vector<std::size_t> glyph_units; // Where each glyph's characters start.
+    for (std::size_t u = 0; u < at_unit.size();) {
+        auto const c = clusters.find(u);
+        auto const [glyphs, units] = c != clusters.end() && c->second.second ? c->second : std::pair<std::size_t, std::size_t>{1, 1};
+        for (std::size_t g = 0; g < glyphs && glyph_units.size() < 2 * at_unit.size() + 8; ++g) glyph_units.push_back(u);
+        u += units;
+    }
+    std::vector<std::pair<std::size_t, double>> widened; // A glyph, and the share added to its width.
+    std::size_t first = 0;
+    bool counted = true;
+    static std::vector<Value> const no_runs;
+    for (auto const &g : segment.dict.count("6") ? segment.get("6").list : no_runs) {
+        if (!g.node("G")) continue;
+        std::optional<std::size_t> glyphs;
+        if (auto const it = g.dict.find("21"); it != g.dict.end() && it->second.dict.count("0")) {
+            glyphs = it->second.get("0").list.size();
+        } else if (auto const it = g.dict.find("5"); it != g.dict.end() && it->second.kind == Value::Array) {
+            glyphs = it->second.list.size();
+        }
+        if (auto const it = g.dict.find("6"); it != g.dict.end() && it->second.kind == Value::Dictionary && it->second.dict.count("0")) {
+            auto const &values = it->second.get("0").list, &repeats = it->second.get("1").list;
+            if (values.size() != repeats.size()) throw Bad("invalid glyph adjustments in a justified line");
+            std::size_t covered = 0;
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                auto const n = repeats[i].index();
+                auto const share = values[i].kind == Value::Dictionary ? values[i].dict.find("1") : values[i].dict.end();
+                if (values[i].kind == Value::Dictionary && share != values[i].dict.end() && share->second.num() != 0) {
+                    if (!counted) throw Bad("a justified line whose glyph runs can't be counted");
+                    for (std::size_t k = 0; k < n && widened.size() <= glyph_units.size(); ++k) widened.push_back({first + covered + k, share->second.num()});
+                }
+                covered += n;
+            }
+            if (glyphs && *glyphs != covered) throw Bad("invalid glyph adjustments in a justified line");
+            glyphs = covered;
+        }
+        if (glyphs) first += *glyphs; else counted = false;
+    }
+    // The spaces between its words: those before its last character that isn't a space or its end.
+    std::size_t last = 0;
+    for (std::size_t u = 0; u < at_unit.size(); ++u) {
+        auto const c = at_unit[u];
+        if (c && c != ' ' && c != 0xa0 && c != '\r' && c != '\n' && c != 3) last = u;
+    }
+    std::set<std::size_t> inner;
+    for (std::size_t u = 0; u < last; ++u) {
+        if (at_unit[u] == ' ') inner.insert(u);
+        // Spaces that don't break would be widened here too.
+        if (stretched && at_unit[u] == 0xa0) throw Bad("justified lines with no-break spaces between their words aren't supported yet");
+    }
+    if (widened.empty()) return;
+    if (!stretched) throw Bad("word spaces Illustrator set wider or narrower than their font's aren't supported yet");
+    std::set<std::size_t> found;
+    for (auto const &[glyph, share] : widened) {
+        if (glyph >= glyph_units.size()) throw Bad("invalid glyph adjustments in a justified line");
+        if (at_unit[glyph_units[glyph]] != ' ') throw Bad("justified type that spaces its letters isn't supported yet");
+        if (std::abs(share - widened.front().second) > 1e-4) {
+            throw Bad("justified lines whose word spaces Illustrator widened unequally aren't supported yet");
+        }
+        found.insert(glyph_units[glyph]);
+    }
+    for (auto const u : inner) {
+        if (!found.count(u)) throw Bad("justified lines whose word spaces Illustrator widened unequally aren't supported yet");
+    }
+}
+
+/// Whether an outline is one rectangle with its sides along the axes, each point a corner.
+bool axis_rectangle(Geom::PathVector const &outline)
+{
+    auto const box = outline.boundsExact();
+    if (outline.size() != 1 || !box || box->width() <= 0 || box->height() <= 0) return false;
+    for (auto const &c : outline[0]) {
+        auto const *bezier = dynamic_cast<Geom::BezierCurve const *>(&c);
+        if (!bezier) return false;
+        for (unsigned i = 0; i < bezier->size(); ++i) {
+            auto const p = bezier->controlPoint(i);
+            bool const across = std::abs(p.x() - box->left()) < 1e-6 || std::abs(p.x() - box->right()) < 1e-6;
+            bool const down = std::abs(p.y() - box->top()) < 1e-6 || std::abs(p.y() - box->bottom()) < 1e-6;
+            if (!across || !down) return false;
+        }
+    }
+    return true;
+}
+
 /// The lines under `v` (the frame, or a row or column in it), each from the frame's anchor:
 /// the offsets of what holds a line add up.
 void laid_lines(Value const &v, Geom::Point const &at, unsigned depth, std::vector<Laid> &out)
@@ -831,7 +939,7 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         if (sane) out.set.emplace_back(Geom::Point(b[0], b[1]), Geom::Point(b[2], b[3]));
     }
     struct Paragraph { std::size_t end; unsigned alignment; bool rtl; bool world_ready; bool justified; bool hyphenate;
-        std::array<double, 3> indents; StyleLayers characters, features; };
+        std::array<double, 3> indents; StyleLayers characters, features; unsigned justification; };
     std::vector<Paragraph> paragraphs;
     std::size_t paragraph_units = 0, layer_budget = MAX_VALUES;
     auto add_paragraph = [&](Value const *declaration, std::size_t count) {
@@ -852,9 +960,10 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         auto align = number("0");
         if (align > 6) throw Bad("text has an unsupported paragraph alignment");
         bool const justified = align > 2;
-        // A line of point type has no measure to be justified to: it is set as the last
-        // line of its paragraph would be, and one justified too from its left end.
-        if (justified && area) throw Bad("justified paragraph alignment isn't supported yet");
+        // Area type's justified lines are stretched across the frame (below). A line of point
+        // type has no measure to be justified to: it is set as the last line of its paragraph
+        // would be, and one justified too from its left end.
+        unsigned const justification = justified && area ? unsigned(align) : 0u;
         if (justified) align = align == 4 ? 1 : align == 5 ? 2 : 0;
         // Direction (33) and composer (35) are independent. The Middle Eastern composer
         // reorders/shapes scripts in LTR paragraphs too; it is not a paragraph direction.
@@ -862,6 +971,21 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         if (direction > 1) throw Bad("text has an unsupported paragraph direction");
         auto const composer = number("35");
         if (composer > 1) throw Bad("text has an unsupported paragraph composer");
+        if (justification) {
+            if (direction == 1 || composer == 1) throw Bad("justified type that reads from the right isn't supported yet");
+            // How far Illustrator may take word spaces (17: least, desired, most, of their width),
+            // letters (18) and glyphs (19) to justify a line. With its defaults it widens word
+            // spaces only, which is what PROOF does, and what it writes.
+            auto const normal = [&](char const *key, std::array<double, 3> const &values) {
+                auto const *v = layer_value(layers, key);
+                if (!v) return true;
+                auto const got = v->nums(3);
+                for (unsigned i = 0; i < 3; ++i) if (std::abs(got[i] - values[i]) > 1e-4) return false;
+                return true;
+            };
+            if (!normal("17", {0.8, 1.0, 1.33}) || !normal("18", {0, 0, 0}) || !normal("19", {1, 1, 1}))
+                throw Bad("justified type spaced other than as Illustrator's defaults space it isn't supported yet");
+        }
         // Illustrator's alignment is relative to the paragraph's reading direction.
         // TextLine keeps physical left/right anchors, independently of that direction.
         if (direction == 1 && align != 2) align = 1 - align;
@@ -878,7 +1002,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         if (!count || count > MAX_STORY * 2 - paragraph_units) throw Bad("invalid paragraph run length");
         paragraph_units += count;
         paragraphs.push_back({paragraph_units, unsigned(align), direction == 1, composer == 1, justified,
-                              hyphenate && hyphenate->kind == Value::Boolean && hyphenate->boolean, indents, std::move(characters), layers});
+                              hyphenate && hyphenate->kind == Value::Boolean && hyphenate->boolean, indents, std::move(characters), layers,
+                              justification});
     };
     if (s.get("0").dict.count("5")) {
         for (auto const &paragraph : s.get("0").get("5").get("0").list) {
@@ -911,9 +1036,11 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     // its composer for those leaves what it worked out with the segment's character count
     // (15, key 7). Its other composer sets such letters from the left as typed, backwards.
     std::vector<bool> ordered;
+    std::vector<Value const *> segments; // Each line's.
     for (std::size_t i = 0; i < lines.size(); ++i) {
         auto const *line = lines[i];
         auto const &found = segment_of(*line);
+        segments.push_back(&found);
         auto const count = found.dict.find("15");
         ordered.push_back(count != found.dict.end() && count->second.kind == Value::Dictionary && count->second.dict.count("7"));
         if (area) {
@@ -1012,6 +1139,8 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     }
     std::size_t run = 0, line = 0, at_units = 0, paragraph = 0, line_end = area ? line_units[0] : 0;
     bool in_order = false, as_typed = false;
+    // Area type: each line's characters as laid out, its end included, and their UTF-16 units.
+    std::vector<std::vector<std::pair<gunichar, unsigned>>> laid_characters(area ? out.lines.size() : 0);
     for (auto const *at = text.data(); at < text.data() + text.size();) {
         auto const cp = g_utf8_get_char(at); auto const *next = g_utf8_next_char(at);
         auto const count = cp > 0xffff ? 2u : 1u;
@@ -1044,7 +1173,9 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
         if (line < out.lines.size()) {
             auto &l = out.lines[line];
             l.paragraph_alignment = paragraphs[paragraph].alignment;
+            l.justification = paragraphs[paragraph].justification;
             l.hyphenate = paragraphs[paragraph].hyphenate;
+            if (area) laid_characters[line].push_back({cp, count});
             for (unsigned i = 0; i < 3; ++i) l.indents[i] = paragraphs[paragraph].indents[i] / hscale;
             if (cp == '\r' || cp == '\n') l.end = TextLine::End::Paragraph;
             else if (cp == 3) l.end = TextLine::End::Break;
@@ -1123,6 +1254,31 @@ PointText story(Value const &s, Value const &frames, Value const &defaults,
     for (auto const &line : out.lines) {
         if (line.automatic_hyphen && (line.end != TextLine::End::Wrap || !line.hyphenate || line.runs.empty() || out.rtl || in_order || as_typed))
             throw Bad("unsupported automatic hyphen at an area line end");
+    }
+    // Justified area type. Illustrator stretches across the frame each line its frame wrapped,
+    // or a line break typed inside the paragraph ended (Illustrator 29.2.1's own control,
+    // 2026-10-24), and a paragraph's last line too when that is justified (6). A line is set
+    // from its start, and reaches to its box's right end (its 1, from the line's origin) less
+    // the end indent; for a story whose lines have no box (PROOF's own), to its rectangular
+    // frame's right side.
+    for (std::size_t i = 0; area && i < out.lines.size(); ++i) {
+        auto &l = out.lines[i];
+        if (!l.justification) continue;
+        l.alignment = 0;
+        bool const stretched = l.end != TextLine::End::Paragraph || l.justification == 6;
+        check_justified_spaces(*segments[i], laid_characters[i], stretched);
+        if (!stretched || l.runs.empty()) continue;
+        double right = 0;
+        if (lines[i]->dict.count("1")) {
+            right = (laid[i].at.x() + lines[i]->get("1").nums(4)[2]) / hscale;
+        } else if (axis_rectangle(out.frame)) {
+            right = out.frame.boundsExact()->right();
+        } else {
+            throw Bad("justified type whose lines have no measure isn't supported yet");
+        }
+        double const width = right - l.indents[2] - l.origin.x();
+        if (!(width > 0 && width < 1e6)) throw Bad("a justified line has no room in its frame");
+        l.justified_width = width;
     }
     if (on_path) {
         if (out.lines.size() != 1 || paragraphs.size() != 1 || out.rtl || out.world_ready || paragraphs[0].justified)
@@ -1304,7 +1460,10 @@ bool same_drawing(PointText const &a, PointText const &b)
     for (std::size_t i = 0; i < a.lines.size(); ++i) {
         auto const &la = a.lines[i], &lb = b.lines[i];
         if (la.runs.size() != lb.runs.size() || la.alignment != lb.alignment || la.tabs != lb.tabs || la.indents != lb.indents ||
-            la.automatic_hyphen != lb.automatic_hyphen) return false;
+            la.automatic_hyphen != lb.automatic_hyphen || la.justification != lb.justification ||
+            la.justified_width.has_value() != lb.justified_width.has_value() ||
+            (la.justified_width && std::abs(*la.justified_width * a.to_art.expansionX() - *lb.justified_width * b.to_art.expansionX()) > 0.01))
+            return false;
         if (!la.runs.empty() && !Geom::are_near(la.origin * a.to_art, lb.origin * b.to_art, 0.01)) return false;
         for (std::size_t r = 0; r < la.runs.size(); ++r) {
             if (la.runs[r].text != lb.runs[r].text || !same_style(la.runs[r].style, lb.runs[r].style)) return false;

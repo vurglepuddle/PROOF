@@ -61,6 +61,7 @@
 #include "object/sp-image.h"
 #include "object/sp-item.h"
 #include "object/sp-namedview.h"
+#include "object/sp-string.h"
 #include "object/sp-text.h"
 #include "spot-ink.h"
 #include "style.h"
@@ -564,6 +565,8 @@ public:
     std::size_t path_text = 0; ///< Parameter brackets expanded to editable path distances.
     std::size_t path_options = 0; ///< Source options retained; automatic curve spacing approximated.
     std::vector<XML::Node *> automatic_path_text; ///< Must have a supported live spacing metric after layout.
+    /// Lines of justified area type, and how far each reaches: stretched once laid out (justify).
+    std::vector<std::pair<XML::Node *, double>> justified_lines;
     std::size_t paragraph_styled_text = 0; ///< Named paragraph style links expanded inline.
     std::size_t mesh_outlines = 0; ///< Uniform mesh patches with extra boundary nodes.
     std::size_t mesh_cut = 0; ///< Mesh patches bent through anchors, cut into cells there.
@@ -728,12 +731,14 @@ void Builder::run()
         auto const error = link_error;
         auto const foreign = foreign_error;
         auto const auto_paths = automatic_path_text.size();
+        auto const justified = justified_lines.size();
         auto const counts = std::tuple(hidden_text, empty_text, overflowing_text, optical_kerning, knockouts,
                                        hidden_links_missing, substituted_text, glyphs_missing_text, unordered_text,
                                        gradient_text, paragraph_styled_text, path_text, path_options, mesh_outlines, mesh_cut, mesh_split,
                                        foreign_objects, hidden_foreign, unused_gradient_end_stops);
         auto const id = pattern_tile(int(i));
         automatic_path_text.resize(auto_paths); // These definitions are not painted with.
+        justified_lines.resize(justified);
         bool const placed = images_left_out == images && link_error == error && foreign_error == foreign;
         images_left_out = images;
         link_error = error;
@@ -818,13 +823,20 @@ XML::Node *Builder::text(Node const &n)
     e->setAttribute(n.text_proxy ? "proof:ai-drawn-story" : "proof:ai-story", std::to_string(*n.story));
     e->setAttribute("transform", sp_svg_transform_write(story.to_art * _to_doc));
     // Area type's paragraphs: how each is aligned, whichever end its lines are anchored at, and
-    // whether it is hyphenated. What every line has goes on the text, else on each line.
-    auto align_of = [&](TextLine const &l) {
+    // whether it is hyphenated. What every line has goes on the text, else on each line. A
+    // justified one says how its last line is aligned too, as CSS's text-align-last would.
+    auto align_of = [&](TextLine const &l) -> char const * {
+        if (l.justification) return "justify";
         return l.paragraph_alignment == 2 ? "center" : (l.paragraph_alignment == 1) != story.rtl ? "end" : "start";
+    };
+    auto last_of = [](TextLine const &l) -> char const * {
+        if (!l.justification) return "";
+        return l.justification == 6 ? "justify" : l.justification == 5 ? "center" : l.justification == 4 ? "end" : "start";
     };
     bool one_alignment = true, one_hyphenation = true;
     for (auto const &l : story.lines) {
-        one_alignment = one_alignment && std::string_view(align_of(l)) == align_of(story.lines.front());
+        one_alignment = one_alignment && std::string_view(align_of(l)) == align_of(story.lines.front()) &&
+                        std::string_view(last_of(l)) == last_of(story.lines.front());
         one_hyphenation = one_hyphenation && l.hyphenate == story.lines.front().hyphenate;
     }
     if (story.area) {
@@ -943,7 +955,10 @@ XML::Node *Builder::text(Node const &n)
     }
     std::string common_style = "text-anchor:start;";
     // Which only lines laid out in a frame follow: the lines here are placed by their anchors.
-    if (story.area && one_alignment && !story.lines.empty()) common_style += std::string("text-align:") + align_of(story.lines.front()) + ";";
+    if (story.area && one_alignment && !story.lines.empty()) {
+        common_style += std::string("text-align:") + align_of(story.lines.front()) + ";";
+        if (story.lines.front().justification) e->setAttribute(TEXT_ALIGN_LAST_ATTRIBUTE, last_of(story.lines.front()));
+    }
     if (story.illustrator_alignment) e->setAttribute(Text::LINE_ALIGNMENT_ATTRIBUTE, "illustrator");
     e->setAttribute("proof:ai-text-composer", story.world_ready ? "middle-eastern" : "latin");
     if (story.rtl) common_style += "direction:rtl;";
@@ -994,6 +1009,9 @@ XML::Node *Builder::text(Node const &n)
         char const *const anchor = line.alignment == 2 ? "middle" : (line.alignment == 1) != story.rtl ? "end" : "start";
         span->setAttribute("style", std::string("text-anchor:") + anchor + ";" +
                                         (story.area && !one_alignment ? std::string("text-align:") + align_of(line) + ";" : ""));
+        if (story.area && !one_alignment && line.justification) span->setAttribute(TEXT_ALIGN_LAST_ATTRIBUTE, last_of(line));
+        // A justified line is stretched across its measure once the document can lay it out.
+        if (line.justified_width) justified_lines.emplace_back(span, *line.justified_width);
         if (line.end == TextLine::End::Wrap) span->setAttribute(LINE_END_ATTRIBUTE, "wrap");
         if (line.end == TextLine::End::Break) span->setAttribute(LINE_END_ATTRIBUTE, "break");
         if (story.area && !one_hyphenation && line.hyphenate) span->setAttribute(HYPHENATE_ATTRIBUTE, "true");
@@ -2345,6 +2363,77 @@ std::size_t add_guides(SPDocument *doc, std::vector<Geom::Path> const &paths)
     return curved;
 }
 
+/**
+ * Each line of justified area type across its measure, as Illustrator justifies it: its word
+ * spaces widened or narrowed alike, each by one share of its own width, its tracking included
+ * (TextLine::justified_width). The layout says where the line's letters end, without the
+ * tracking after the last, and how wide its word spaces are; word-spacing on the element that
+ * holds them adds the rest. Illustrator 29.2.1's glyph places in its own control (2026-10-24)
+ * show both. Nothing when every line then reaches its measure; why not otherwise.
+ */
+std::string justify(SPDocument *doc, std::vector<std::pair<XML::Node *, double>> const &lines)
+{
+    if (lines.empty()) return {};
+    struct Laid
+    {
+        SPObject *line;
+        double start, end;                                    ///< Where its letters start and end.
+        std::map<SPObject *, std::pair<double, unsigned>> spaces; ///< Its word spaces' widths, by holder.
+    };
+    auto measure = [](SPObject *line) -> std::optional<Laid> {
+        auto *text = line ? cast<SPText>(line->parent) : nullptr;
+        if (!text) return {};
+        Laid out{line, 0, 0, {}};
+        auto const &layout = text->layout;
+        std::vector<std::tuple<gunichar, SPObject *, Geom::Rect>> chars;
+        for (auto it = layout.begin(); it != layout.end(); it.nextCharacter()) {
+            SPObject *source = nullptr;
+            Glib::ustring::iterator at;
+            layout.getSourceOfCharacter(it, &source, &at);
+            auto const *string = cast<SPString>(source);
+            if (!string || !string->parent) continue;
+            bool inside = false;
+            for (auto *o = string->parent; o && o != text && !inside; o = o->parent) inside = o == line;
+            if (inside) chars.emplace_back(*at, string->parent, layout.characterBoundingBox(it));
+        }
+        auto const last = std::find_if(chars.rbegin(), chars.rend(), [](auto const &c) { return !g_unichar_isspace(std::get<0>(c)); });
+        if (last == chars.rend()) return {};
+        out.start = std::get<2>(chars.front()).left();
+        out.end = std::get<2>(*last).right() - std::get<1>(*last)->style->letter_spacing.computed;
+        for (auto c = chars.begin(); c != last.base() - 1; ++c) {
+            auto const [unichar, holder, box] = *c;
+            if (unichar != ' ') continue;
+            auto const *st = holder->style;
+            auto &[width, count] = out.spaces[holder];
+            width += box.width() - (st->word_spacing.normal ? 0.0 : st->word_spacing.computed);
+            ++count;
+        }
+        return out;
+    };
+    for (auto const &[repr, width] : lines) {
+        auto const laid = measure(doc->getObjectByRepr(repr));
+        if (!laid) continue;
+        double spaces = 0;
+        for (auto const &[holder, sum] : laid->spaces) spaces += sum.first;
+        if (spaces <= 0) continue; // A word alone, or none: its letters aren't spaced out.
+        double const share = (width - (laid->end - laid->start)) / spaces;
+        if (!std::isfinite(share) || share < -0.9) return "a justified line is too long for its frame";
+        for (auto const &[holder, sum] : laid->spaces) {
+            auto *own = holder->getRepr();
+            auto const *style = own->attribute("style");
+            own->setAttribute("style", std::string(style ? style : "") + "word-spacing:" + num(share * sum.first / sum.second) + ";");
+        }
+    }
+    doc->ensureUpToDate();
+    for (auto const &[repr, width] : lines) {
+        auto const laid = measure(doc->getObjectByRepr(repr));
+        if (laid && !laid->spaces.empty() && std::abs(laid->end - laid->start - width) > 0.01) {
+            return "justified type its fonts here can't set across its frame";
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 std::optional<Built> build(Document const &ai, std::string &error, Source const &source)
@@ -2447,6 +2536,10 @@ std::optional<Built> build(Document const &ai, std::string &error, Source const 
             error = "automatic type spacing on a sharp, very tight or collapsed path";
             return {};
         }
+    }
+    if (auto why = justify(doc.get(), b.justified_lines); !why.empty()) {
+        error = std::move(why);
+        return {};
     }
 
     auto &notes = built.notes;

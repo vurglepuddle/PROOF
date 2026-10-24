@@ -82,7 +82,8 @@ explicit refusals include:
   explicit Unicode bidi controls and isolates, bidi tracking/trailing spaces/tabs,
   mixed-direction LTR type flowed into a shape, Arabic forced into typed order,
   tabs without PROOF's stops (Inkscape's own), in a shape or on a path,
-  centred or right-aligned lines Illustrator would align apart, justified type, auto-wrapped type (`inline-size`), type
+  centred or right-aligned lines Illustrator would align apart, justified type Inkscape flows into a shape or that
+  reads from the right, auto-wrapped type (`inline-size`), type
   flowed into several shapes, around others or with padding, or past its shape's
   end, stretched or skewed area type, characters moved or turned one by one,
   gradients or patterns on type, translucent character paint,
@@ -263,8 +264,10 @@ The lines of point type an import kept with a typed line break are written with
 one too. Refused by name: auto-wrapped type (`inline-size`; Illustrator has no
 frame that grows yet in what PROOF writes), several shapes, `shape-subtract`,
 `shape-padding`, type that overflows its shape (the layout keeps nothing of
-it), justified paragraphs, and a frame that is stretched, skewed or not one
-outline.
+it), justified paragraphs Inkscape flows into a shape, and a frame that is
+stretched, skewed or not one outline. An import's justified paragraphs are written
+with their alignment since 2026-10-24, in a rectangular frame
+([records](PROOF-ai-native-records.md#justified-area-type-2026-10-24)).
 
 **Checks** (Illustrator 29.2.1). Its own control (three frames: left with a
 wrap, centred, right-aligned and turned with fixed leading), imported and

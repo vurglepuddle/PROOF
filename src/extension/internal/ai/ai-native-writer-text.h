@@ -42,7 +42,8 @@ struct WrittenStory
  * the import kept one), the lines sharing one anchor and each set below the one before by its
  * leading. Area type: the frame an import kept, or the one shape Inkscape flows the text into;
  * its lines joined into paragraphs where the frame wrapped them, each paragraph aligned and
- * hyphenated as its lines say, and what the frame was too small to show after them. Type on a
+ * hyphenated as its lines say (an import's justified paragraph in a rectangular frame too,
+ * its last line as it says), and what the frame was too small to show after them. Type on a
  * path: one line along one piece of path, between brackets an import kept (what Illustrator
  * showed of it) or, for Inkscape's own, where its start offset and alignment set it.
  * All in fonts that are installed (or, for type set in a font standing in for one that isn't,
@@ -54,8 +55,9 @@ struct WrittenStory
  * uniform paragraph direction and LTR typed-order overrides are supported, with the Latin or
  * Middle Eastern composer kept independently. Imported LTR left-tab rulers are supported.
  * Vertical type, bidi path type, nested overrides, bidi tracking/trailing spaces/tabs, mixed
- * LTR type flowed into a shape, justified type and individually positioned characters remain
- * refused by name; hidden RTL overflow also needs separate qualification.
+ * LTR type flowed into a shape, justified type Inkscape flows into a shape, justified type that
+ * reads from the right and individually positioned characters remain refused by name; hidden
+ * RTL overflow also needs separate qualification.
  */
 class TextStories
 {
