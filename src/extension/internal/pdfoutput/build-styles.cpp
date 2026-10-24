@@ -12,11 +12,15 @@
 
 #include "build-drawing.h"
 
+#include <algorithm>
 #include <cmath>
+#include <format>
 #include <hb-ot.h>
 
 #include "colors/cms/profile.h"
 #include "colors/color.h"
+#include "colors/document-colors.h"
+#include "colors/manager.h"
 #include "colors/spaces/cms.h"
 #include "colors/spaces/cmyk.h"
 #include "object/sp-gradient.h"
@@ -24,32 +28,165 @@
 #include "object/sp-paint-server.h"
 #include "spot-ink.h"
 #include "style.h"
+#ifdef PROOF_CAPYPDF_ICC_SEPARATION
+#include "3rdparty/capypdf-version.h"
+#endif
 
 namespace Inkscape::Extension::Internal::PdfBuilder {
 
 namespace {
 
 /// The bundled C++ Color wrapper omits Separation, while the C API supports it.
-class RegistrationColor : public capypdf::Color
+class SeparationColor : public capypdf::Color
 {
 public:
-    RegistrationColor(CapyPDF_SeparationId ink, double tint)
+    SeparationColor(CapyPDF_SeparationId ink, double tint)
     {
         auto const error = capy_color_set_separation(*this, ink, tint);
         if (error) throw capypdf::PdfException(capy_error_message(error));
     }
 };
 
+/// A number as a calculator function takes one: plain decimals.
+std::string calculator_number(double v)
+{
+    auto s = std::format("{:.6f}", std::abs(v) < 5e-7 ? 0.0 : v);
+    s.erase(s.find_last_not_of('0') + 1);
+    if (s.back() == '.') s.pop_back();
+    return s;
+}
+
+/**
+ * Calculator code that takes the tint on the stack to its colour by straight lines between
+ * samples `from` and `to`, `samples[i]` being the colour at tint i / (samples.size() - 1):
+ * halving the span at each test, so the deepest is a few procedures down.
+ */
+std::string between_samples(std::vector<std::vector<double>> const &samples, std::size_t from, std::size_t to)
+{
+    double const n = samples.size() - 1;
+    if (to - from > 1) {
+        auto const middle = (from + to) / 2;
+        return std::format("dup {} lt {{ {} }} {{ {} }} ifelse", calculator_number(middle / n),
+                           between_samples(samples, from, middle), between_samples(samples, middle, to));
+    }
+    // From the tint u past this segment's start, each channel a + u * slope, left in order.
+    auto const &a = samples[from], &b = samples[to];
+    std::string out = from ? calculator_number(from / n) + " sub" : std::string();
+    for (std::size_t c = 0; c < a.size(); ++c) {
+        auto const line = std::format("{} mul {} add", calculator_number((b[c] - a[c]) * n), calculator_number(a[c]));
+        out += (out.empty() ? "" : " ") + (c + 1 < a.size() ? "dup " + line + " exch" : line);
+    }
+    return out;
+}
+
 } // namespace
 
 CapyPDF_SeparationId DocumentGenerator::add_registration_ink(CapyPDF_FunctionId tint_transform,
                                                             CapyPDF_Device_Colorspace alternate)
 {
+    return add_ink("All", tint_transform, alternate);
+}
+
+CapyPDF_SeparationId DocumentGenerator::add_ink(std::string_view name, CapyPDF_FunctionId tint_transform,
+                                                CapyPDF_Device_Colorspace alternate)
+{
     CapyPDF_SeparationId separation;
-    auto const error = capy_generator_add_separation(
-        *this, "All", 3, alternate, tint_transform, &separation);
+    auto const error = capy_generator_add_separation(*this, name.data(), static_cast<int32_t>(name.size()), alternate,
+                                                     tint_transform, &separation);
     if (error) throw capypdf::PdfException(capy_error_message(error));
     return separation;
+}
+
+std::optional<CapyPDF_SeparationId> DocumentGenerator::add_icc_ink(std::string_view name, CapyPDF_FunctionId tint_transform,
+                                                                   CapyPDF_IccColorSpaceId alternate)
+{
+#ifdef PROOF_CAPYPDF_ICC_SEPARATION
+    return capypdf::proof::add_icc_separation(*this, name, alternate, tint_transform);
+#else
+    return {};
+#endif
+}
+
+/**
+ * A spot ink's plate, its tint transform taking a tint to the colour the ink shows at it
+ * (SpotInk::display_color) as the document prints colour. In a CMYK document that is the
+ * document's CMYK, as the canvas and the .ai writer take paint there: a CMYK ink's own numbers
+ * times the tint, a Lab or RGB ink converted, in the document's ICC space when it has a profile
+ * (so the alternate draws as its process colour does). Elsewhere a CMYK ink keeps its numbers in
+ * DeviceCMYK, and the others are RGB. A press gets the ink on its own plate; a proof without it
+ * the alternate. A straight scale is one line; a converted ink's tints are 32 straight pieces of
+ * its own curve.
+ */
+std::optional<CapyPDF_SeparationId> Document::spot_plate(std::string const &name, Colors::Color const &alternate,
+                                                         SPDocument *document)
+{
+    using Colors::Space::Type;
+    auto const definition = alternate.toString(false);
+    if (auto const known = _plates.find(name); known != _plates.end()) {
+        // One name, one plate: what PDF names an ink by is its plate.
+        if (known->second.first != definition) {
+            g_warning("Spot ink '%s' has two definitions; PDF output gives it the first one's alternate.", name.c_str());
+        }
+        return known->second.second;
+    }
+    auto &plate = _plates[name];
+    plate.first = definition;
+    bool const ascii = !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
+        return static_cast<unsigned char>(c) >= 0x20 && static_cast<unsigned char>(c) < 0x7f;
+    });
+    auto const space = alternate.getSpace();
+    if (!ascii || name == "None" || !space) {
+        g_warning("Spot ink '%s' can't be named in PDF: it is drawn in its display colour, without a plate.",
+                  name.c_str());
+        return {};
+    }
+    bool const ink_cmyk = space->getComponentType() == Type::CMYK && space->getComponentCount() == 4;
+    std::shared_ptr<Colors::Space::AnySpace> target;
+    if (document && Colors::DocumentColors::mode(document) == Type::CMYK) {
+        target = Colors::DocumentColors::assignedSpace(document);
+        if (!target) target = Colors::Manager::get().find(Type::CMYK);
+    }
+    bool const cmyk = ink_cmyk || target;
+    std::vector<std::vector<double>> samples;
+    for (int i = 0; i <= 32; ++i) {
+        auto const shown = SpotInk::display_color(alternate, i / 32.0);
+        std::optional<Colors::Color> values;
+        if (ink_cmyk) {
+            values = shown;
+        } else if (target) {
+            auto const read = Colors::DocumentColors::interpret(document, shown);
+            values = read.getSpace()->getComponentType() == Type::CMYK ? std::optional(read) : read.converted(target);
+        } else {
+            values = shown.converted(Type::RGB);
+        }
+        if (!values || values->getValues().size() < (cmyk ? 4u : 3u)) return {};
+        std::vector<double> channels;
+        for (unsigned c = 0; c < (cmyk ? 4u : 3u); ++c) channels.push_back(std::clamp((*values)[c], 0.0, 1.0));
+        samples.push_back(std::move(channels));
+    }
+    // Straight from paper to the full ink: two samples say it all.
+    bool straight = true;
+    for (std::size_t i = 1; i + 1 < samples.size() && straight; ++i) {
+        for (std::size_t c = 0; c < samples[i].size(); ++c) {
+            auto const on_line = samples.front()[c] + (samples.back()[c] - samples.front()[c]) * i / (samples.size() - 1.0);
+            straight = straight && std::abs(samples[i][c] - on_line) < 1e-6;
+        }
+    }
+    if (straight) samples = {samples.front(), samples.back()};
+    double domain[]{0, 1};
+    std::vector<double> range;
+    for (std::size_t c = 0; c < samples.front().size(); ++c) range.insert(range.end(), {0.0, 1.0});
+    auto const code = "{ " + between_samples(samples, 0, samples.size() - 1) + " }";
+    capypdf::Type4Function transform(domain, 2, range.data(), static_cast<int32_t>(range.size()), code.c_str(),
+                                     static_cast<int32_t>(code.size()));
+    auto const function = _gen.add_function(transform);
+    // In the document's profile when it has one, as its process CMYK is drawn (get_color).
+    auto const cms = cmyk ? std::dynamic_pointer_cast<Colors::Space::CMS>(target) : nullptr;
+    if (auto const icc = cms ? get_icc_profile(cms) : std::nullopt) {
+        if (auto const ink = _gen.add_icc_ink(name, function, *icc)) return plate.second = ink;
+    }
+    plate.second = _gen.add_ink(name, function, cmyk ? CAPY_DEVICE_CS_CMYK : CAPY_DEVICE_CS_RGB);
+    return plate.second;
 }
 
 /**
@@ -416,7 +553,14 @@ std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle
                         auto const function = _gen.add_function(tint_transform);
                         registration = _gen.add_registration_ink(function, cmyk ? CAPY_DEVICE_CS_CMYK : CAPY_DEVICE_CS_RGB);
                     }
-                    return capypdf::Color{RegistrationColor(*registration, ink->tint)};
+                    return capypdf::Color{SeparationColor(*registration, ink->tint)};
+                }
+            }
+            // PROOF: any other ink on its own plate. A mask's rendering pass takes its luminosity.
+            if (!opacity && ink && ink->name != "All" && std::isfinite(ink->tint) && ink->tint >= 0.0 && ink->tint <= 1.0 &&
+                ink->alternate.getOpacity() == 1.0) {
+                if (auto const plate = spot_plate(ink->name, ink->alternate, swatch->document)) {
+                    return capypdf::Color{SeparationColor(*plate, ink->tint)};
                 }
             }
             return get_color(swatch->getPreviewAverageColor(), opacity);

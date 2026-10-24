@@ -70,7 +70,8 @@ Advanced type, gradients/meshes, richer masks/patterns, symbols, link packaging
 and general overprint follow this milestone one feature at a time. Modern AI
 without usable PDF-compatible content remains unsupported.
 
-PDF spot plates, PDF/X, full press soft proofing and physical print matching
+Spot inks print on their own plates in PDF (gradient stops still blend as
+process colour). PDF/X, full press soft proofing and physical print matching
 remain separate prepress work. The v1 milestone qualifies the documented
 interchange subset.
 

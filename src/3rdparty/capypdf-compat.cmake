@@ -3,6 +3,8 @@
 # open and write files by their full Unicode names on Windows, and subset CFF
 # fonts without assuming optional metadata entries are present. Serialize the
 # TrueType maxp payload without the C++ variant's discriminator/padding.
+# Give a spot ink's Separation an ICC-based alternate, which the C API lacks.
+# Let a text object set a Separation colour, which it aborted on.
 # Keep the submodule untouched, and fail on an upstream change needing review.
 set(CAPYPDF_PROOF_DIR "${CMAKE_CURRENT_BINARY_DIR}/capypdf-proof")
 file(MAKE_DIRECTORY "${CAPYPDF_PROOF_DIR}")
@@ -251,3 +253,89 @@ proof_capypdf_overlay(cffsubsetter.cpp
     fixups.fdselect.offset = fdselect_offset + dict_start;
     fixups.charsets.offset = charset_offset + dict_start;
     fixups.charstrings.offset = charstrings_offset + dict_start;]==])
+
+# A spot ink's plate with an ICC-based alternate: the document's own CMYK profile, so the
+# alternate draws as the document's process colour does. The C API takes only device spaces.
+proof_capypdf_overlay(document.hpp
+    [==[    rvoe<CapyPDF_SeparationId> create_separation(const asciistring &name,
+                                                 CapyPDF_Device_Colorspace cs,
+                                                 CapyPDF_FunctionId fid);]==]
+    [==[    rvoe<CapyPDF_SeparationId> create_separation(const asciistring &name,
+                                                 CapyPDF_Device_Colorspace cs,
+                                                 CapyPDF_FunctionId fid);
+    // PROOF: a Separation whose alternate is an ICC-based colour space.
+    rvoe<CapyPDF_SeparationId> create_icc_separation(const asciistring &name,
+                                                     CapyPDF_IccColorSpaceId icc,
+                                                     CapyPDF_FunctionId fid);]==])
+proof_capypdf_overlay(document.cpp
+    [==[    fmt.add_token(colorspace_names.at((int)cs));
+    fmt.add_object_ref(f4.object_number);
+    fmt.end_array();
+    separation_objects.push_back(add_object(FullPDFObject{fmt.steal(), {}}));
+    return CapyPDF_SeparationId{(int32_t)separation_objects.size() - 1};
+}
+]==]
+    [==[    fmt.add_token(colorspace_names.at((int)cs));
+    fmt.add_object_ref(f4.object_number);
+    fmt.end_array();
+    separation_objects.push_back(add_object(FullPDFObject{fmt.steal(), {}}));
+    return CapyPDF_SeparationId{(int32_t)separation_objects.size() - 1};
+}
+
+rvoe<CapyPDF_SeparationId> PdfDocument::create_icc_separation(const asciistring &name,
+                                                              CapyPDF_IccColorSpaceId icc,
+                                                              const CapyPDF_FunctionId fid) {
+    const auto &f4 = functions.at(fid.id);
+    if(!std::holds_alternative<FunctionType4>(f4.original)) {
+        RETERR(IncorrectFunctionType);
+    }
+    ObjectFormatter fmt;
+    fmt.begin_array();
+    fmt.add_token("/Separation");
+    fmt.add_token(bytes2pdfstringliteral(name.sv(), true));
+    fmt.add_object_ref(get(icc).object_num);
+    fmt.add_object_ref(f4.object_number);
+    fmt.end_array();
+    separation_objects.push_back(add_object(FullPDFObject{fmt.steal(), {}}));
+    return CapyPDF_SeparationId{(int32_t)separation_objects.size() - 1};
+}
+]==])
+proof_capypdf_overlay(generator.hpp
+    [==[        return pdoc.create_separation(name, cs, fid);
+    }
+]==]
+    [==[        return pdoc.create_separation(name, cs, fid);
+    }
+
+    // PROOF: see PdfDocument::create_icc_separation.
+    rvoe<CapyPDF_SeparationId> create_icc_separation(const asciistring &name,
+                                                     CapyPDF_IccColorSpaceId icc,
+                                                     CapyPDF_FunctionId fid) {
+        return pdoc.create_icc_separation(name, icc, fid);
+    }
+]==])
+
+# A run of type in a spot ink after the first sets its Separation inside the text object,
+# which CapyPDF's text serializer aborts on. Set it as the draw context sets one on a path.
+proof_capypdf_overlay(drawcontext.cpp
+    [==[            } else {
+                printf("Given text stroke colorspace not supported yet.\n");]==]
+    [==[            } else if(auto sep = std::get_if<SeparationColor>(&sarg.c)) {
+                // PROOF: a spot ink's plate, as PdfDrawContext::set_color writes it.
+                CHECK_INDEXNESS(sep->id.id, doc->separation_objects);
+                const auto idnum = doc->separation_object_number(sep->id);
+                used_colorspaces.insert(idnum);
+                cmds.append(std::format("/CSpace{} CS\n{:f} SCN\n", idnum, sep->v.v()));
+            } else {
+                printf("Given text stroke colorspace not supported yet.\n");]==])
+proof_capypdf_overlay(drawcontext.cpp
+    [==[            } else {
+                printf("Given text nonstroke colorspace not supported yet.\n");]==]
+    [==[            } else if(auto sep = std::get_if<SeparationColor>(&nsarg.c)) {
+                // PROOF: a spot ink's plate, as PdfDrawContext::set_color writes it.
+                CHECK_INDEXNESS(sep->id.id, doc->separation_objects);
+                const auto idnum = doc->separation_object_number(sep->id);
+                used_colorspaces.insert(idnum);
+                cmds.append(std::format("/CSpace{} cs\n{:f} scn\n", idnum, sep->v.v()));
+            } else {
+                printf("Given text nonstroke colorspace not supported yet.\n");]==])

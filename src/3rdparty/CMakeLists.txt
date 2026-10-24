@@ -40,7 +40,7 @@ if(WITH_CAPYPDF AND WITH_INTERNAL_CAPYPDF)
     target_sources(capypdf_LIB PRIVATE
         ${SRC}/pdfcommon.cpp
         ${SRC}/generator.cpp
-        ${SRC}/drawcontext.cpp
+        ${CAPYPDF_PROOF_DIR}/drawcontext.cpp
         ${CAPYPDF_PROOF_DIR}/document.cpp
         capypdf-version.cpp
         capypdf-version.h

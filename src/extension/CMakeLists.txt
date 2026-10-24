@@ -195,6 +195,10 @@ if(WITH_CAPYPDF)
         set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/internal/pdfoutput/pdf-output.cpp"
             TARGET_DIRECTORY inkscape_base APPEND PROPERTY
             COMPILE_DEFINITIONS PROOF_CAPYPDF_PDF17)
+        # A spot ink's plate with the document's ICC CMYK as its alternate (capypdf-compat.cmake).
+        set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/internal/pdfoutput/build-styles.cpp"
+            TARGET_DIRECTORY inkscape_base APPEND PROPERTY
+            COMPILE_DEFINITIONS PROOF_CAPYPDF_ICC_SEPARATION)
     endif()
     target_sources(inkscape_base PRIVATE
 	    internal/pdfoutput/build-document.cpp

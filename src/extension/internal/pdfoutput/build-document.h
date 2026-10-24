@@ -99,6 +99,12 @@ public:
     using capypdf::Generator::Generator;
 
     CapyPDF_SeparationId add_registration_ink(CapyPDF_FunctionId tint_transform, CapyPDF_Device_Colorspace alternate);
+    /// PROOF: a Separation colour space, the plate of the ink `name` (ASCII), with its tint transform.
+    CapyPDF_SeparationId add_ink(std::string_view name, CapyPDF_FunctionId tint_transform,
+                                 CapyPDF_Device_Colorspace alternate);
+    /// PROOF: the same with an ICC-based alternate; nothing with a CapyPDF without PROOF's overlay.
+    std::optional<CapyPDF_SeparationId> add_icc_ink(std::string_view name, CapyPDF_FunctionId tint_transform,
+                                                    CapyPDF_IccColorSpaceId alternate);
 };
 
 class Document
@@ -184,6 +190,11 @@ public:
     CapyPDF_Device_Colorspace get_default_colorspace() const;
     CapyPDF_Device_Colorspace get_colorspace(std::shared_ptr<Colors::Space::AnySpace> const &space) const;
     std::optional<CapyPDF_IccColorSpaceId> get_icc_profile(std::shared_ptr<Colors::Space::CMS> const &profile);
+    /// PROOF: the plate of a spot ink (named `name`, defined as `alternate` at full strength) in
+    /// `document`, made once for each name. Nothing when PDF can't name it (not ASCII, or None), or
+    /// its alternate has no colour: it is then drawn as its display colour, as before.
+    std::optional<CapyPDF_SeparationId> spot_plate(std::string const &name, Colors::Color const &alternate,
+                                                   SPDocument *document);
 
 protected:
     friend class DrawContext;
@@ -209,6 +220,9 @@ private:
     std::map<std::string, CapyPDF_IccColorSpaceId> _icc_cache;
     std::optional<CapyPDF_SeparationId> _registration_ink;
     std::optional<CapyPDF_SeparationId> _registration_rgb_ink; ///< An RGB document's Registration.
+    /// PROOF: each spot ink's plate by its name, with the definition it was made for; nothing for an
+    /// ink that has none (spot_plate).
+    std::map<std::string, std::pair<std::string, std::optional<CapyPDF_SeparationId>>> _plates;
     std::map<ItemCacheKey, CapyPDF_TransparencyGroupId> _item_cache;
     std::map<std::string, CapyPDF_TransparencyGroupId> _mask_cache;
     std::map<std::string, CapyPDF_PatternId> _pattern_cache;

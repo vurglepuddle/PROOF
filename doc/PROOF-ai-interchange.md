@@ -471,8 +471,10 @@ are now qualified. Extended
 Oklab settings/freeform/named-ink controls, connected/folded mesh export,
 richer masks/patterns, symbols, packaging and general overprint are later
 extensions, tackled separately with their present refusals retained.
-PDF spot separations, PDF/X, full press soft proofing and physical print matching
-are unfinished or unqualified; this v1 plan does not certify press output.
+Spot inks print on their own plates in PDF since 2026-10-24 (gradient stops
+excepted; [spot-ink reference](PROOF-spot-inks.md#pdf-plates-2026-10-24)). PDF/X,
+full press soft proofing and physical print matching are unfinished or unqualified;
+this v1 plan does not certify press output.
 
 For detailed evidence, use the feature references and dated history:
 
@@ -601,6 +603,6 @@ acceptance, saved and returned page counts and gate measures from the v1
 qualification, the 134-page stress case with its v1 serial retry (763 s). No
 broad run.
 
-PDF output draws type in an ink as it draws a path in one, by what the ink looks
-like; separate plates in PDF are prepress work (the spot-ink reference).
+PDF output prints type in an ink on the ink's plate, as it does a path in one
+(since 2026-10-24, [PDF plates](PROOF-spot-inks.md#pdf-plates-2026-10-24)).
 [Record details](PROOF-ai-native-records.md#type-in-spot-inks-2026-10-24).

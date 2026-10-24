@@ -36,12 +36,19 @@ PROOF document, not flattened colours. First slice: 2026-10-02.
   or off to make an ink an ordinary colour. A short line says which ink, tint
   and colour space you are editing.
 
+- **PDF output prints each ink on its own plate** (2026-10-24). Every spot ink
+  is a PDF `/Separation` with the ink's name, painted at its tint: fills, strokes,
+  type, patterns, translucent groups, and the page of a native `.ai`. Its
+  alternate, what a proof without the ink shows, is the ink as the document prints
+  colour: in a CMYK document its CMYK in the document's own ICC profile (a CMYK
+  ink's numbers times the tint; a Lab or RGB ink converted as the canvas converts
+  it), so pages look as they did; in an RGB document a CMYK ink keeps its numbers
+  and the others are RGB. See "PDF plates" below.
+
 Not yet:
-- **Exporting spot inks to PDF.** PDF output still writes them as their screen
-  colour. The native `.ai` writer keeps them: inks defined in CMYK in both its
-  forms, and in the modern form inks defined in Lab or RGB too, with their tints,
-  as Illustrator writes them (`PROOF-ai-interchange.md`, "Spot inks defined in
-  Lab or RGB in the modern form").
+- **Gradients with ink stops in PDF** still blend as process colour (a shading
+  with a Separation or DeviceN space is later work). An ink whose name isn't ASCII,
+  or is `None`, is drawn in its display colour without a plate, with a warning.
 - **Choosing a new tint of a spot ink from a slider.**
 
 ## How a spot ink is stored
@@ -134,10 +141,11 @@ swatch files that Illustrator opens is future writer work.
    so the export should treat `proof:ink-alternate` as authoritative. The
    Swatches panel's right-click "Edit…" still opens Fill & Stroke or the
    Gradient tool rather than a dedicated ink dialog.
-2. **Export.** CapyPDF PDF output should write Separation colour spaces from
-   these swatches. The native `.ai` writer does write them (`x`/`Xx`, the tint
-   taken from 1; Lab and RGB definitions in its modern form since 2026-10-21).
-   Cairo output can only use the display colour.
+2. **Export.** CapyPDF PDF output writes Separation colour spaces from these
+   swatches since 2026-10-24 (below), except in gradient stops. The native `.ai`
+   writer writes them too (`x`/`Xx`, the tint taken from 1; Lab and RGB
+   definitions in its modern form since 2026-10-21). Cairo output can only use
+   the display colour.
 3. **DeviceN** (several inks mixed in one colour, e.g. in Giant File) still
    falls back to CMYK, with the importer warning. The registration ink `/All` is
    currently just a spot named "All".
@@ -145,3 +153,45 @@ swatch files that Illustrator opens is future writer work.
    for it yet. The CutContour workflow needs it.
 5. Tint picking in the UI, and Illustrator-style global process swatches (ASE
    type 0) as linked swatches.
+
+## PDF plates (2026-10-24)
+
+`Document::get_paint` (`pdfoutput/build-styles.cpp`) gives a spot swatch, outside
+an opacity mask's rendering pass, a Separation from `Document::spot_plate`: one per
+ink name, made when the ink is first used, painted at the swatch's tint. A second
+definition under one name warns and uses the first plate (a name is a plate).
+Registration keeps its own `/All` plate as before.
+
+The tint transform is a calculator (Type 4) function, the only kind CapyPDF takes
+for a Separation. It runs from paper at 0 to the ink at 1 through the colour the
+ink shows at each tint (`SpotInk::display_color`), as the document prints colour:
+
+| Document | Ink | Alternate |
+|---|---|---|
+| CMYK with its own profile | any | The profile's ICC space: a CMYK ink's numbers times the tint; a Lab or RGB ink converted into the document's CMYK as the canvas converts paint (`DocumentColors::interpret`, then the profile) |
+| CMYK without one | any | DeviceCMYK, the same numbers (through the working CMYK) |
+| RGB | CMYK | DeviceCMYK, the ink's numbers times the tint |
+| RGB | Lab, RGB | DeviceRGB, from paper white to the ink |
+
+A straight scale is one line; a converted ink is 33 samples joined by straight
+pieces, found by halving the range, so the deepest procedure is five tests down.
+CapyPDF's C API takes only device alternates; PROOF's overlay
+(`3rdparty/capypdf-compat.cmake`) adds `PdfDocument::create_icc_separation`, and
+`capypdf::proof::add_icc_separation` calls it. The ICC alternate draws as the
+document's process CMYK does (`get_color` paints that in the same space), so a page
+looks as it did when inks were painted as their display colour. CapyPDF's text
+object aborted on a Separation set inside a text block (a later run in an ink, or
+an ink stroke); the overlay sets it there as the draw context does on a path.
+
+Checks (`testfiles/cli_tests/pdf-spot-plates-smoke.py`, 21): plates and Registration,
+alternates and functions in both modes, every tint used, type on its plate and a
+later run's ink and stroke inside one text block, the page within one level of the
+output before plates at 14 probes, a mask's luminosity, the native `.ai` page with
+the same plates reopening natively, and Ghostscript's `tiffsep` putting each ink on
+its own plate at its tint and none of it on the process plates. Illustrator 29.2.1
+opens the `.ai` page of that control (as PDF 1.7, its private data removed) with
+the three inks and Registration as spot swatches, CMYK-defined, every object at its
+tint. Thirty-two copied documents with CMYK, Lab and RGB inks, tints and
+transparency keep their import, writer, complete-save page counts and both gate
+measures from the v1 qualification; 31 of their saved pages carry ink plates, and
+the other's inks are all in a hidden layer.
