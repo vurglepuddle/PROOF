@@ -12,132 +12,76 @@ file exchange.
 
 ![PROOF with its editable launcher artwork open on the canvas, tools on the left and Properties, Stroke and Layers panels on the right](doc/screenshots/proof-workspace.png)
 
+## V1 interchange milestone
+
+**Qualified on 24 October 2026.** PROOF's first bounded native Illustrator
+interchange milestone is complete: open supported artwork, edit it, and save
+fresh native `.ai` records together with their PDF pages.
+
+| Copied artwork qualification | Result |
+|---|---|
+| Native imports | **862 of 871 documents** |
+| Complete modern `.ai` saves and native reopening | **862 of 862 documents**, covering **1,330 PDF pages** |
+| Existing PDF fallbacks | **9 documents**, unchanged |
+
+All copied input hashes remain unchanged. Representative Illustrator controls
+qualify editability separately. See the [qualification and limits](doc/PROOF-ai-interchange.md#qualification-and-next-work).
+
 ## What's changed
 
 - **A workspace focused on prepress.** Compact dark chrome, a reduced tool strip,
-  contextual Properties, and dedicated Stroke and Layers panels. Panels can dock,
-  float, and retain their layout; Reset Workspace gets you back to the default.
+  contextual Properties, and dockable Stroke and Layers panels.
 - **Document ICC color management.** RGB and CMYK working spaces, profile
-  assignment, mode conversion, rendering intents, and black-point compensation
-  through LittleCMS 2. Embedded profiles and process-color channels survive
-  saving and reopening in PROOF SVG.
-- **CMYK editing that keeps your numbers.** Fixes for picker refresh,
-  profile names, and copy/paste prevent unintended channel changes during editing.
-- **Spot inks and swatch libraries.** Import named inks and tints from
-  PDF-compatible `.ai` and PDF artwork; load `.ase`, `.acb`, and `.ai` palettes.
-  Linked spot swatches retain their ink definitions, and editing an ink updates
-  its tints.
-- **Illustrator interchange.** Read supported native `.ai` artwork, checked
-  against its PDF pages. **Save As** writes native layers, smooth paths, inks,
-  transparency and blend modes, supported linear/radial gradient fills and
-  strokes, supported editable point/area/path type, patterns, mesh patches,
-  greyscale opacity masks, embedded pictures and local
-  raster links; **Save a Copy** also
-  offers Illustrator 7 records and PDF-based RGB interchange.
-  SVG keeps features the native writer cannot write yet.
+  assignment and conversion, rendering intents, and black-point compensation.
+  Embedded profiles and process channels survive PROOF SVG saves.
+- **CMYK editing that keeps your numbers.** Color controls and copy/paste
+  preserve process channels during editing.
+- **Spot inks and swatch libraries.** Named inks, linked tints, and `.ase`,
+  `.acb`, and `.ai` palettes.
+- **Native Illustrator interchange.** Supported layers, paths, inks, gradients,
+  transparency, patterns, meshes, masks, pictures and type remain editable.
+- **Editable type and live PDF text.** Point, area and ordinary path type,
+  bounded Arabic/Hebrew, and supported variable-font instances. PDF text stays
+  selectable and searchable, including supported CFF and variable fonts.
 - **Editing and output fixes.** Smoother object dragging on Windows, corrected
   PDF bleed boxes, and fixes for image transforms and SVG profile imports.
 
-## Illustrator .ai progress
+## Illustrator file exchange
 
-PROOF reads supported native Illustrator artwork and writes a growing editable
-subset without Illustrator installed. Every imported artboard is compared with
-its PDF page; unsupported or visibly different content uses PDF import. A
-native pass can still carry explicit notes about reduced live editing controls.
+PROOF reads and writes its supported native subset without Illustrator installed.
+Imported artboards are compared with their PDF pages; unsupported or visibly
+different content uses PDF import.
 
 | Route | Current support |
 |---|---|
-| **Open native `.ai`** | Layers, paths/clips, process/spot colours, profiles, gradients, patterns, supported meshes/masks, pictures and supported editable type |
-| **Save As: Adobe Illustrator (native)** | Fresh editable records and PDF 1.7 pages: named artboards/layers, paths, inks/tints, supported linear/radial and Oklab gradients, patterns, independent editable mesh patches, grey vector opacity masks, object/group transparency, supported pictures/raster links and editable point, area and ordinary path type |
-| **Save a Copy: Adobe Illustrator 7** | A qualified opaque subset on one artboard, with Windows-1252 names; no PDF preview or retained document ICC profile |
+| **Open native `.ai`** | Supported editable artwork and type, with PDF fallback |
+| **Save As: Adobe Illustrator (native)** | Fresh editable native records with PDF 1.7 pages |
+| **Save a Copy: Adobe Illustrator 7** | A limited opaque subset on one artboard; no PDF preview or retained document ICC profile |
 | **Save a Copy: Illustrator interchange (PDF-based)** | Broader RGB PDF artwork; native layers and print-ink identity are not retained |
 
 Unsupported native output is refused by name, preserving the previous file.
-The modern writer requires PROOF's bundled PDF backend. Keep SVG as the working
-master for features it cannot write yet, including unsupported type layouts.
-Point/area type and ordinary type on one open or closed path now save as
-editable Illustrator stories. Imported automatic curve spacing uses a qualified
-font-metric approximation on smooth paths and retains its mode in native output.
-Very tight inward bends, corners and collapsed spacing paths remain guarded.
-Overflow clips by whole letter/word, retaining the complete editable story.
-Bounded Arabic/Hebrew point and area type keeps direction and composer separately;
-mixed Latin/digit runs, Arabic vowel marks and lam–alef ligatures have targeted
-Illustrator checks. Nested overrides, bidi path type and bidi tracking stay guarded.
-Area paragraphs retain first-line and side indents, including hanging margins;
-centred/right end spaces, wrapping and typed breaks have Illustrator controls.
-Installed variable-font instances keep their editable axes in native AI. PDF
-embeds the chosen static instance with live text, including TrueType and CFF2 sources.
-The [current interchange reference](doc/PROOF-ai-interchange.md) gives each route's
-limits and CLI selection; the [implementation history](doc/PROOF-ai-interchange-history.md)
-retains the detailed recipes and Illustrator qualification.
-
-Classic gradients and meshes in CMYK documents blend in CMYK through the
-document profile. Mixed spot/process ramps follow Illustrator's overprint
-appearance on the canvas and in process-colour PDF output. **Perceptual/Oklab**
-gradients retain their editable stops and method; rendered CMYK colours follow
-RGB/Oklab/profile re-separation, including endpoints and black generation.
-Illustrator 29.2.1 opens their Classic alternate and loses Oklab on save;
-Illustrator 30.6.0 retains the editable methods, stops, midpoints and CMYK
-profile. The two returned controls qualify the gradient colour and opacity
-fields, including off-centre midpoints. Low-resolution raster previews can
-differ around a radial colour stop; measured limits are documented below.
-[Colour and Oklab contract](doc/PROOF-ai-interchange.md#colour-and-rendering-contracts).
-
-Linked CMYK TIFF and Photoshop pictures retain supported process channels,
-depth and cut-out transparency in PDF output. Linked PDF/AI files retain their
-selected page (first by default) as vectors in ordinary PDF output, with fonts
-and inks; the native AI writer still refuses these page links.
-[Placed pages](doc/PROOF-placed-pages.md).
-
-Heavy native-import PDF checks cache hash-verified reference drawings and start
-a finer drawing concurrently after 3 s. The qualified heavy case improved from
-232 s to 137 s on first opening and takes 33.5 s subsequently.
-[Measurements and cache rules](doc/PROOF-ai-native-records.md#pages-slow-to-draw-weighed-once-and-kept-2026-10-22).
-
-**V1 interchange qualification, 2026-10-24:** 862 native imports from 871
-hash-verified copies; all 862 complete modern AI saves reopen natively,
-covering 1,330 PDF pages. The same nine inputs keep their existing PDF fallback.
-This is one full pass at `4a2fe20bbf` plus exact repairs at `bea629e857`, not a
-second full pass. Both 134/135-page stress cases pass in serial comparison mode.
-Legacy writing remains 100 records acceptances. These checks qualify PROOF's
-bounded subset; Illustrator editability has separate representative controls.
-Future edits use affected units and copied cases, not another census per round.
+Keep SVG as the working master for features the writer cannot save yet.
+Route limits, CLI options, rendering behavior and Illustrator-version checks
+are in the [interchange reference](doc/PROOF-ai-interchange.md).
 
 ## Still in progress
 
-Full native `.ai` support remains unfinished. Main writing limits include
-advanced type forms, layer transparency, separate fill/stroke opacity, broader mask/pattern
-forms, advanced meshes and additional linked formats. Modern AI without usable
-PDF-compatible content is unsupported. Many imported live appearances retain
-their drawn result with an explicit note.
+Advanced type, gradients/meshes, richer masks/patterns, symbols, link packaging
+and general overprint follow this milestone one feature at a time. Modern AI
+without usable PDF-compatible content remains unsupported.
 
-The page comparison and default editable PDF importer now simulate the bounded
-RGB `/MultiChannelPaint` ink/process pairs Illustrator writes, including on pages
-with ordinary raster pictures and supported leaf Form objects beside the pairs.
-Inherited/shared states remain protected. The qualified RGB control returns
-natively; broader overprint and the optional Cairo-to-SVG import remain open. Unknown extended gradient settings still fail
-closed. Meshes with translucent corners need a conservative whole-grid
-non-overlap check before native saving; some valid strongly bent meshes also
-fall outside that subset. Opaque mesh writing retains its prior bounds;
-object/group opacity still applies once to the complete object.
-
-The v1 interchange milestone is qualified, including bounded editable point,
-area and ordinary path type, Arabic/Hebrew and variable-font instances. Paragraph
-indents, generated hyphens, empty line ends and hidden artwork survive saving.
-Wider type forms remain explicit refusals. Advanced gradients/meshes,
-richer masks/patterns, symbols, packaging and broader overprint follow v1,
-one feature at a time.
-
-Native AI output retains supported spot names and tints, but PDF spot plates
-and PDF/X remain separate work. Full CMYK transparency/knockout appearance,
-press soft proofing, general overprint simulation and physical print matching
-remain limited or unqualified. Validate production output for the intended job.
+PDF spot plates, PDF/X, full press soft proofing and physical print matching
+remain separate prepress work. The v1 milestone qualifies the documented
+interchange subset.
 
 ## More information
 
 - [Document color management](doc/PROOF-document-colors.md)
 - [Spot inks](doc/PROOF-spot-inks.md)
 - [AI interchange and its limits](doc/PROOF-ai-interchange.md)
+- [Type and fonts](doc/PROOF-type.md)
+- [Placed PDF/AI pages](doc/PROOF-placed-pages.md)
+- [Native records and import performance](doc/PROOF-ai-native-records.md)
 - [Building from source](doc/building/readme.md) — inherited Inkscape build guides;
   local build scripts and dependencies may differ.
 - [Inkscape](https://inkscape.org/) · [Upstream source](https://gitlab.com/inkscape/inkscape)
