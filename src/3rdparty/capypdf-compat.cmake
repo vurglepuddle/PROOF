@@ -5,6 +5,7 @@
 # TrueType maxp payload without the C++ variant's discriminator/padding.
 # Give a spot ink's Separation an ICC-based alternate, which the C API lacks.
 # Let a text object set a Separation colour, which it aborted on.
+# Write a subset font's glyph widths exactly, which were cut to whole thousandths.
 # Keep the submodule untouched, and fail on an upstream change needing review.
 set(CAPYPDF_PROOF_DIR "${CMAKE_CURRENT_BINARY_DIR}/capypdf-proof")
 file(MAKE_DIRECTORY "${CAPYPDF_PROOF_DIR}")
@@ -339,3 +340,10 @@ proof_capypdf_overlay(drawcontext.cpp
                 cmds.append(std::format("/CSpace{} cs\n{:f} scn\n", idnum, sep->v.v()));
             } else {
                 printf("Given text nonstroke colorspace not supported yet.\n");]==])
+
+# A subset font's widths (/W) were each cut to a whole thousandth of an em, so a viewer set every
+# glyph up to that much short of where the layout put it, and a line of type ended short of its
+# measure: a fraction of a point at 10 points (2026-10-24). PDF takes real numbers there.
+proof_capypdf_overlay(pdfwriter.cpp
+    [==[        std::format_to(bi, "{} ", (int32_t)(double(horiadvance) * 1000 / face->units_per_EM));]==]
+    [==[        std::format_to(bi, "{:.3f} ", double(horiadvance) * 1000 / face->units_per_EM);]==])

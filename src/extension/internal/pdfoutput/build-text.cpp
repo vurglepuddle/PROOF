@@ -13,6 +13,9 @@
 #include "build-text.h"
 
 #include "build-drawing.h"
+
+#include <cmath>
+
 #include "libnrtype/Layout-TNG.h"
 #include "libnrtype/font-instance.h"
 #include "style.h"
@@ -146,6 +149,9 @@ void TextContext::finalize()
 void TextContext::render_text(Text::Layout const &layout, Text::Layout::Span const &span)
 {
     double prev_advance = 0.0;
+    // PROOF: what the whole-thousandth adjustments written so far left out, carried into the
+    // next, so that the glyphs of a sequence stay where the layout put them all along.
+    double carry = 0.0;
     Geom::Affine prev_Tm;
     std::unique_ptr<capypdf::TextSequence> seq;
 
@@ -177,7 +183,9 @@ void TextContext::render_text(Text::Layout const &layout, Text::Layout::Span con
                 // The kerning is the change in glyph position minus the glyph's advance.
                 // This is because the transform is known-good and will position glyphs perfectly
                 // But the kerning is *relative* to the glyph_width
-                int kerning = (tr[Geom::X] - prev_advance) * -1000;
+                double const wanted = (tr[Geom::X] - prev_advance) * -1000 + carry;
+                int const kerning = static_cast<int>(std::lround(wanted));
+                carry = wanted - kerning;
                 // Kerning is the left-ward shift in integer thous, negate for rightward shift;
                 if (kerning != 0) {
                     seq->append_kerning(kerning);
@@ -189,6 +197,7 @@ void TextContext::render_text(Text::Layout const &layout, Text::Layout::Span con
                 }
                 // Start a new sequence of sequential glyphs
                 seq = std::make_unique<capypdf::TextSequence>();
+                carry = 0.0;
                 _tx.cmd_Tm(Tm[0], Tm[1], Tm[2], Tm[3], Tm[4], Tm[5]);
             }
 
