@@ -72,3 +72,6 @@ tags
 
 # YCM code completer
 .ycm_*
+
+# PROOF: the GitHub social preview, kept locally (doc/branding/README.md)
+doc/branding/
