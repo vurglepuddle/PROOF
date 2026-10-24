@@ -3,6 +3,7 @@
 #define SEEN_AI_NATIVE_WRITER_TEXT_H
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -12,6 +13,7 @@
 #include <2geom/point.h>
 
 class SPDocument;
+class SPIPaint;
 class SPText;
 
 namespace Inkscape::Extension::Internal::AiNative {
@@ -44,7 +46,8 @@ struct WrittenStory
  * path: one line along one piece of path, between brackets an import kept (what Illustrator
  * showed of it) or, for Inkscape's own, where its start offset and alignment set it.
  * All in fonts that are installed (or, for type set in a font standing in for one that isn't,
- * that font's name), process colour fills and strokes, tracking, baseline shift, kerning on or
+ * that font's name), process colour and spot ink fills and strokes (an ink by an art style, as
+ * Illustrator names one), tracking, baseline shift, kerning on or
  * off, standard and contextual ligatures, all caps, small caps, superscript and subscript,
  * underline and strikethrough (the last four and baseline shift not on a path). The frame's
  * matrix places it; a uniform scale goes into the sizes. Bounded horizontal Arabic/Hebrew,
@@ -69,6 +72,18 @@ public:
     /// `ruler_origin`: where art space's 0,0 lies on the canvas.
     std::string section(Geom::Point const &ruler_origin) const;
 
+    /// The records' art styles: one for each ink type is painted with, each its ink's line, which
+    /// the characters name (`Anon PROOF 1` and on). Empty when there are none. Before the text
+    /// section, as Illustrator writes them.
+    std::string art_styles() const;
+
+    /// An ink's swatch as the colour operator that fills with it, the writer's own for paths
+    /// (`c m y k (name) tint x`, `… type Xx`, Registration's `Xs` and `Xz`), declaring the ink;
+    /// nothing when the writer refuses it, which it says. Illustrator's type takes an ink by an
+    /// art style holding that line, for its fill and its stroke alike (Illustrator 29.2.1,
+    /// 2026-10-24). Without it, type in an ink is refused.
+    std::function<std::optional<std::string>(SPIPaint const &)> ink_operator;
+
 private:
     std::size_t font(std::string const &name, bool truetype, std::vector<double> const &design);
     std::string document(bool typed) const;
@@ -77,6 +92,7 @@ private:
     std::vector<std::string> _fonts;              ///< Each font's entry, in index order.
     std::map<std::string, std::size_t> _font_at;  ///< A font's name and axes, to its index.
     std::vector<std::string> _frames, _stories;
+    std::vector<std::string> _styles; ///< Each art style's ink line, in the order of their names.
 };
 
 } // namespace Inkscape::Extension::Internal::AiNative

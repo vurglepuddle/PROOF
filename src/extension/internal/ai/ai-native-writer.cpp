@@ -160,7 +160,10 @@ class Writer
 public:
     Writer(SPDocument *doc, RecordsVersion version)
         : _doc(doc), _legacy(version == RecordsVersion::Illustrator7), _texts(doc)
-    {}
+    {
+        // Type takes an ink by an art style holding the line a path filled with it has.
+        _texts.ink_operator = [this](SPIPaint const &p) { return paint(p, nullptr, true, Geom::identity()); };
+    }
 
     WrittenRecords write();
 
@@ -1475,7 +1478,8 @@ WrittenRecords Writer::write()
     }
     // After the gradients, as Illustrator writes them.
     for (auto const &pattern : _patterns) head << pattern.records;
-    // The text documents last, as Illustrator writes them.
+    // The art styles type in an ink names, then the text documents last, as Illustrator writes them.
+    head << _texts.art_styles();
     if (!_texts.empty()) head << _texts.section(_ruler);
     head << "%%EndSetup\n";
 

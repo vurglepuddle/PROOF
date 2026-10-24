@@ -297,9 +297,11 @@ Font font_entry(Value const &entry)
 /// What a paint a character names is, when it isn't a plain colour.
 struct NamedPaint
 {
-    bool is_pattern = false; ///< A pattern; else a gradient.
+    bool is_pattern = false; ///< A pattern; else a gradient, or an ink.
     /// For a pattern: which, and where. Nothing when it is placed in a way that isn't read.
     std::optional<TextPattern> pattern;
+    /// A spot ink, Registration or a global process colour, at its tint; nothing for a gradient.
+    std::optional<TextInk> ink;
 };
 
 /// The pattern a `(name) px py sx sy angle rf r k ka [a b c d tx ty] p` line places, when
@@ -358,7 +360,9 @@ std::optional<TextPattern> placed_pattern(std::string_view line)
  * in a `/SimpleStyle`, the operators that set its paint: `Bg` for a gradient, `p` or `P`
  * for a pattern. For those two the colour the text document keeps beside the name is
  * black, whatever the paint looks like. A pattern's line also says which pattern, and
- * where its tile lies.
+ * where its tile lies. A spot ink's line (`x`, `Xx`), Registration's (`Xs`, `Xz`) and a
+ * global process colour's (`Xk`) say which ink, at what tint: the colour beside the name
+ * is only what it looks like (Illustrator 29.2.1 keeps a Lab ink's there in RGB, untinted).
  */
 std::map<std::string, NamedPaint> named_paints(std::string_view records)
 {
@@ -368,6 +372,7 @@ std::map<std::string, NamedPaint> named_paints(std::string_view records)
         at += BEGIN.size();
         std::string name;
         std::optional<NamedPaint> kind;
+        std::optional<TextInk> ink;
         bool patterned = false;
         // Line by line to the style's end; a style is a few lines long.
         for (unsigned lines = 0; lines < 4096 && at < records.size(); ++lines) {
@@ -389,7 +394,14 @@ std::map<std::string, NamedPaint> named_paints(std::string_view records)
                 kind->is_pattern = true;
                 if (!patterned) kind->pattern = placed_pattern(line);
                 patterned = true;
+            } else if (!ink && !line.empty() && line.front() != '/') {
+                if (auto named = named_ink(line)) ink = TextInk{named->first, named->second};
             }
+        }
+        // A gradient or a pattern is what is drawn, whatever colour its style also sets.
+        if (!kind && ink) {
+            kind.emplace();
+            kind->ink = ink;
         }
         if (kind && !name.empty() && name.size() <= 256) out[name] = *kind;
     }
@@ -542,10 +554,12 @@ TextStyle style(Value const &own, Value const &defaults, Setup const &setup,
         // A paint that names a style of the document's is that style's. Where that is a
         // plain colour, it is the colour beside the name. A gradient isn't drawn on type:
         // Illustrator sets the characters black, the colour that is kept for one. A
-        // pattern is drawn, and isn't read here.
+        // pattern is drawn, and isn't read here. An ink is the ink, at its tint.
         if (auto const name = pick(k).dict.find("5"); name != pick(k).dict.end() && name->second.kind == Value::String && setup.paints) {
             if (auto const named = setup.paints->find(name->second.string); named != setup.paints->end()) {
-                if (!named->second.is_pattern) {
+                if (named->second.ink) {
+                    (std::string_view(k) == "53" ? out.fill_ink : out.stroke_ink) = named->second.ink;
+                } else if (!named->second.is_pattern) {
                     out.gradient = true;
                 } else if (!named->second.pattern) {
                     throw Bad("type painted with a pattern placed in a way that isn't supported");

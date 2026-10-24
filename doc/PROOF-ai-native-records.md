@@ -1031,6 +1031,7 @@ the name is black, whatever the paint looks like.
 | A colour | That colour | The colour beside the name, as before |
 | A gradient | Black: a gradient isn't drawn on type | Black, with a note that says why |
 | A pattern | The pattern | The pattern, placed by the style's matrix as on a path |
+| An ink (`x`, `Xx`, `Xs`, `Xz`), or a global process colour (`Xk`) | The ink at its tint | The ink's swatch at its tint, as a path in it has (since 2026-10-24; [type in spot inks](#type-in-spot-inks-2026-10-24)) |
 
 Before this the gradient case was right by accident and the pattern case came
 in black without a word; the check let it through, since two words are a
@@ -3076,3 +3077,45 @@ checks that hidden shapes/images/text stay out of the PDF while native images
 and text remain editable. The PDF's direct painting path now honours the same
 hidden-item test as its transparency-group path. Five exact copied mismatches
 from the full pass, including both pages of one document, now reopen natively.
+
+<a id="type-in-spot-inks-2026-10-24"></a>
+## Type in spot inks (2026-10-24)
+
+An Illustrator 29.2.1 control, saved from a script with CMYK, Lab and RGB inks
+and a global process colour on point type: every character's paint is a
+`/CAITextPaint`, process colour too, each naming an `(Anon <base64>)` known style
+in `%AI9_BeginArtStyles`. A style for type is always the same few lines:
+
+```
+/KnownStyle :
+(Anon vJ5L4SpmQBc=) /Name ,
+/SimpleStyle :
+0 O
+0 0.800000011920929 0.899999976158142 0 (PROOF Spot CMYK) 0 x
+0 1 0 0 0 Xy
+0 J 0 j 1 w 10 M []0 d
+0 XR
+0 1 Xd
+/Paint ;
+ /Def ;
+```
+
+The ink's line is the one a path filled with it has: `x` with the full CMYK and
+the tint taken from 1 for a CMYK ink (`0.6 x` at 40%); `Xx` with the CMYK of the
+tinted colour, the definition, the tint and its type (2 Lab, 1 RGB) otherwise;
+`Xk` for a global process colour. A stroke's style also fills (lower case).
+Beside the name, `/0` keeps what the ink looks like: a CMYK ink's tinted CMYK, an
+RGB ink's tinted RGB, and a Lab ink's RGB untinted, whatever its tint.
+
+The reader (`named_paints`, `named_ink` in `ai-native-reader.cpp`) takes the
+style's ink and tint into `TextStyle::fill_ink`/`stroke_ink`; the import paints the
+characters with that ink's swatch (the Swatches panel's of that name, else one
+made for it), a global process colour with its process swatch. A style holding a
+gradient or a pattern is still that; an ink line beside one is not read.
+
+PROOF writes `(Anon PROOF 1)` and on, one for each ink line, in a
+`%AI5_Begin_NonPrinting`/`Np` wrapper after the patterns and before the text
+documents, the same order as Illustrator's. `TextStories::ink_operator` is the
+path writer's own `paint()` for a fill, so the ink is declared and refused exactly
+as for a path. Illustrator 29.2.1 reads every character back at its ink and tint,
+and its own Save As keeps them.

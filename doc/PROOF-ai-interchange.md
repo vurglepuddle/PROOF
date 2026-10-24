@@ -73,7 +73,7 @@ qualified Latin-composer LTR typed-order override remains editable. See
 | Masks | Linked, non-inverted greyscale vector opacity masks; Clip on/off, fills/strokes, linear/radial gradients and nested masks; Normal/Multiply blending |
 | Transparency | Object/group opacity, sixteen blend modes, isolated blending, knockout records, overprint and supported stroke styles |
 | Pictures | Supported embedded pictures and local PNG/JPEG/classic TIFF/PSD links; original process channels retained where supported |
-| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process fill and stroke, tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23). Ordinary type on one open or closed path, including wrapped intervals. [Path type written](#path-type-written-2026-10-23). Tabs on an import's left-aligned rulers; centred and right-aligned lines aligned as Illustrator aligns them, with the spaces at their ends and without their last tracking. [Tabs and line alignment written](#tabs-and-line-alignment-written-2026-10-23) |
+| Type | Point type as Illustrator's own stories: each line a paragraph about one anchor, with its leading; runs of installed fonts (or a missing font's own name), sizes, process or spot-ink fill and stroke ([type in spot inks](#type-in-spot-inks-2026-10-24)), tracking, baseline shift, kerning on/off, standard/contextual ligatures, all caps, small caps, superscript, subscript, underline, strikethrough; any frame matrix. [Point type written](#point-type-written-2026-10-23). Area type in its frame (an import's, or the one shape Inkscape flows type into): paragraphs joined where the frame wrapped them, typed line breaks, alignment, hyphenation, the first-baseline rule, what the frame doesn't show; turned frames. [Area type written](#area-type-written-2026-10-23). Ordinary type on one open or closed path, including wrapped intervals. [Path type written](#path-type-written-2026-10-23). Tabs on an import's left-aligned rulers; centred and right-aligned lines aligned as Illustrator aligns them, with the spaces at their ends and without their last tracking. [Tabs and line alignment written](#tabs-and-line-alignment-written-2026-10-23) |
 
 Supported does not mean arbitrary combinations of these forms. Important
 explicit refusals include:
@@ -85,7 +85,7 @@ explicit refusals include:
   centred or right-aligned lines Illustrator would align apart, justified type, auto-wrapped type (`inline-size`), type
   flowed into several shapes, around others or with padding, or past its shape's
   end, stretched or skewed area type, characters moved or turned one by one,
-  spot inks, gradients or patterns on type, translucent character paint,
+  gradients or patterns on type, translucent character paint,
   unknown axis settings, fonts that aren't installed under the style's own name, and the
   remaining OpenType and decoration settings (the writer names each); type in
   patterns, opacity masks or the Illustrator 7 copy.
@@ -559,3 +559,48 @@ qualified in this targeted round. All copied input hashes are unchanged.
 The historical 60-case type subset is now **60/60 records accepted**, not a fresh
 whole-corpus or 60-file complete-save qualification. Remaining bounded type
 correctness work and the planned v1 qualification remain separate.
+
+<a id="type-in-spot-inks-2026-10-24"></a>
+## Type in spot inks (2026-10-24)
+
+Type in a spot ink now keeps the ink both ways. Illustrator names an ink on type
+by an art style: each character's paint is a `/CAITextPaint` whose `/5` is the
+name of a `/KnownStyle` among the records, and that style's line is the ink's,
+as a path filled with it has (`c m y k (name) tint x`, `... type Xx`). The reader
+used to take the colour kept beside the name, so a Pantone on type came in as its
+process stand-in, and a Lab ink at a tint as its full strength (Illustrator keeps
+a Lab ink's untinted RGB there). It now reads the style: the characters get the
+ink's swatch at its tint, the same swatch a path in that ink has; a global process
+colour (`Xk`) gets its named process swatch. Registration (`Xs`, `Xz`) is read the
+same way.
+
+Native saving writes such type as Illustrator does: one `(Anon PROOF n)` style for
+each ink and tint, with the line the path writer writes for that ink (a stroke's
+style fills with it, as Illustrator's do), before the text documents; the
+characters name it. Inks are declared as for paths. A character still has no
+opacity of its own, so an ink at an opacity stays refused, as do gradients and
+patterns on type.
+
+**Illustrator 29.2.1.** Its own control (CMYK, Lab and RGB inks, a tint, a stroke,
+a global process colour, mixed runs) reads back into PROOF with every character in
+its ink and tint. PROOF's control (point type in a CMYK ink, a Lab ink at 40% with
+a word stroked in an RGB ink at 60%, process type with a word in an ink, area type
+in a Lab ink) opens in Illustrator with every character's spot, kind, tint and
+stroke weight as written; Illustrator's Save As reopens natively in PROOF with
+all of them again. With alerts off, Illustrator tagged its copy with its working
+profile, so two saturated inks display up to 26 levels apart; the definitions are
+the same.
+
+**Checks.** Importer 231 (229 pass, two opt-in skips), two of them new: the
+reader and import with Illustrator's own lines for six inks and colours, fill and
+stroke, and the writer's round trip. Reader 79. The new export smoke
+`ai-spot-type-output-smoke.py`: 16 checks. The 12 of the 871 copied inputs whose
+type names an ink style (6 inks, 6 global process colours) were rerun through the
+writer census with complete saves: all 12 keep their import result, writer
+acceptance, saved and returned page counts and gate measures from the v1
+qualification, the 134-page stress case with its v1 serial retry (763 s). No
+broad run.
+
+PDF output draws type in an ink as it draws a path in one, by what the ink looks
+like; separate plates in PDF are prepress work (the spot-ink reference).
+[Record details](PROOF-ai-native-records.md#type-in-spot-inks-2026-10-24).

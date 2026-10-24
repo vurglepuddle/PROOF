@@ -3992,6 +3992,98 @@ TEST_F(AiNativeImportTest, TypePaintedByNameIsBlackForAGradientAndPatternedForAP
                              [](std::string const &n) { return n.find("painted with a gradient") != std::string::npos; }));
 }
 
+TEST_F(AiNativeImportTest, TypeInAnInkIsTheInkItsArtStyleNames)
+{
+    auto font = available_text_font();
+    if (font.empty()) GTEST_SKIP() << "none of the test fonts is installed";
+    // The styles as Illustrator 29.2.1 wrote them for type in inks (2026-10-24): a CMYK ink
+    // whole and at 40%, a Lab ink at 70%, an RGB ink at 60% and a global process colour.
+    auto style = [](std::string const &name, std::string const &line) {
+        return "/KnownStyle :\n(" + name + ") /Name ,\n/SimpleStyle :\n0 O\n" + line +
+               "\n0 1 0 0 0 Xy\n0 J 0 j 1 w 10 M []0 d\n0 XR\n0 1 Xd\n/Paint ;\n /Def ;\n";
+    };
+    std::string const styles = "%AI9_BeginArtStyles\n" +
+        style("Anon whole", "0 0.800000011920929 0.899999976158142 0 (PROOF Spot CMYK) 0 x") +
+        style("Anon tint", "0 0.800000011920929 0.899999976158142 0 (PROOF Spot CMYK) 0.600000023841858 x") +
+        style("Anon lab", "0.452307909727097 0.582391083240509 0 0 40 50 -60 (PROOF Spot Lab) 0.300000011920929 2 Xx") +
+        style("Anon rgb", "0.565667152404785 0 0.477851510047913 0 0.078431375324726 0.627451002597809 0.352941185235977 "
+                          "(PROOF Spot RGB) 0.400000005960465 1 Xx") +
+        style("Anon global", "0.600000023841858 0.100000001490116 0 0.200000002980232 (PROOF Global) 0 0 Xk") +
+        style("Anon registration", "1 1 1 1 ([Registration]) 0.5 Xs") +
+        "%AI9_EndArtStyles\n";
+    // Beside the name, what the ink looks like: for a Lab ink RGB, whatever its tint.
+    auto painted = [&](std::string const &name, bool stroke = false) {
+        std::string const paint = " << /99 /CAITextPaint /5 (" + name + ") /0 << /0 1 /1 [1 0.5 0.2 0.76] >> >>";
+        return text_document("(Hello\\r)", 6, font, "/1 40 " + (stroke ? "/57 true /63 0.5 /54" + paint : "/56 true /53" + paint));
+    };
+    auto run_of = [&](std::string const &name, bool stroke = false) {
+        auto texts = AN::read_text_document(styles + text_setup(painted(name, stroke)), Geom::Point(100, 50));
+        EXPECT_TRUE(texts->stories.at(0)) << texts->errors.at(0);
+        return texts->stories.at(0) ? texts->stories[0]->lines.at(0).runs.at(0).style : AN::TextStyle{};
+    };
+    struct Expected
+    {
+        char const *style;
+        char const *ink;
+        AN::Ink::Kind kind;
+        AN::Color color;
+        double tint;
+    };
+    Expected const cases[] = {
+        {"Anon whole", "PROOF Spot CMYK", AN::Ink::Kind::Spot, AN::Color::cmyk(0, 0.800000011920929, 0.899999976158142, 0), 1},
+        {"Anon tint", "PROOF Spot CMYK", AN::Ink::Kind::Spot, AN::Color::cmyk(0, 0.800000011920929, 0.899999976158142, 0), 0.4},
+        {"Anon lab", "PROOF Spot Lab", AN::Ink::Kind::Spot, AN::Color::lab(40, 50, -60), 0.7},
+        {"Anon rgb", "PROOF Spot RGB", AN::Ink::Kind::Spot, AN::Color::rgb(0.078431375324726, 0.627451002597809, 0.352941185235977), 0.6},
+        {"Anon global", "PROOF Global", AN::Ink::Kind::Process, AN::Color::cmyk(0.600000023841858, 0.100000001490116, 0, 0.200000002980232), 1},
+        {"Anon registration", "[Registration]", AN::Ink::Kind::Registration, AN::Color::cmyk(1, 1, 1, 1), 0.5},
+    };
+    for (auto const &c : cases) {
+        for (bool stroke : {false, true}) {
+            SCOPED_TRACE(std::string(c.style) + (stroke ? " stroke" : " fill"));
+            auto const s = run_of(c.style, stroke);
+            auto const &ink = stroke ? s.stroke_ink : s.fill_ink;
+            ASSERT_TRUE(ink);
+            EXPECT_FALSE(stroke ? s.fill_ink : s.stroke_ink);
+            EXPECT_FALSE(s.gradient);
+            EXPECT_EQ(ink->ink.name, c.ink);
+            EXPECT_EQ(ink->ink.kind, c.kind);
+            EXPECT_EQ(ink->ink.color, c.color);
+            EXPECT_NEAR(ink->tint, c.tint, 1e-6);
+            // What it looks like stays beside it.
+            ASSERT_TRUE(stroke ? s.stroke : s.fill);
+        }
+    }
+    // A plain colour's style is no ink.
+    EXPECT_FALSE(run_of("Anon nowhere").fill_ink);
+
+    // The import paints the characters with the ink's swatch, as a path in it is painted. An ink
+    // only type uses, which the Swatches panel doesn't list, gets one too.
+    for (auto const &c : cases) {
+        SCOPED_TRACE(c.style);
+        auto b = make(records(layer("/AI11Text :\n0 /StoryIndex ,\n;\n"), styles + text_setup(painted(c.style))));
+        ASSERT_TRUE(b);
+        auto *doc = b->document.get();
+        doc->ensureUpToDate();
+        auto const texts = elements(doc->getReprRoot(), "svg:text");
+        ASSERT_EQ(texts.size(), 1u);
+        auto *text = cast<SPText>(doc->getObjectByRepr(texts[0]));
+        ASSERT_TRUE(text && text->style->fill.isPaintserver());
+        auto *swatch = cast<SPGradient>(text->style->getFillPaintServer());
+        ASSERT_TRUE(swatch);
+        if (c.kind == AN::Ink::Kind::Process) {
+            // A global process colour is a swatch of its name, in process colour.
+            EXPECT_FALSE(SpotInk::read(swatch->getRepr()));
+            EXPECT_NE(attr(swatch->getRepr(), "inkscape:label").find("PROOF Global"), std::string::npos);
+            continue;
+        }
+        auto const ink = SpotInk::read(swatch->getRepr());
+        ASSERT_TRUE(ink);
+        // Registration is PDF's ink All, as on a path.
+        EXPECT_EQ(ink->name, c.kind == AN::Ink::Kind::Registration ? std::string("All") : std::string(c.ink));
+        EXPECT_NEAR(ink->tint, c.tint, 1e-4);
+    }
+}
+
 TEST_F(AiNativeImportTest, DirectionOverridesTheWayLettersRead)
 {
     if (available_text_font() != "ArialMT") GTEST_SKIP() << "Arial, which has Hebrew, isn't installed";
@@ -8295,6 +8387,108 @@ TEST_F(AiNativeImportTest, WrittenTypeKeepsItsFeaturesInTheStory)
 
     // Type set in a font standing in for one that isn't installed keeps that font's name.
     EXPECT_EQ(texts->stories[2]->lines.at(0).runs.at(0).style.font, "PROOFNoSuchFont-Bold");
+}
+
+TEST_F(AiNativeImportTest, WrittenTypeInInksNamesTheirArtStylesAndReadsBack)
+{
+    auto doc = svg_document(R"(<text id="whole" xml:space="preserve" x="10" y="20" style="font-family:Arial;font-size:16px">Spot</text>)"
+                            R"(<text id="tinted" xml:space="preserve" x="10" y="45" style="font-family:Arial;font-size:16px">Lab )"
+                            R"(<tspan id="stroked">ink</tspan></text>)"
+                            R"x(<text id="mixed" xml:space="preserve" x="10" y="70" style="font-family:Arial;font-size:16px;fill:device-cmyk(0.1 0.2 0.3 0.4)">)x"
+                            R"(Mixed <tspan id="again">spot</tspan></text>)");
+    ASSERT_TRUE(doc);
+    auto const lab = Colors::Color(Type::LAB, {0.4, (50.0 + 128) / 255, (-60.0 + 128) / 255});
+    auto const cmyk = SpotInk::ensure(doc.get(), {"Press Orange", Colors::Color(Type::CMYK, {0, 0.6, 1, 0}), 1.0});
+    auto const tinted = SpotInk::ensure(doc.get(), {"Book Violet", lab, 0.4});
+    auto const rgb = SpotInk::ensure(doc.get(), {"Screen Green", Colors::Color(Type::RGB, {0, 0.6, 0.2}), 0.6});
+    doc->getObjectById("whole")->setAttribute("style", "font-family:Arial;font-size:16px;fill:url(#" + cmyk + ")");
+    doc->getObjectById("tinted")->setAttribute("style", "font-family:Arial;font-size:16px;fill:url(#" + tinted + ")");
+    doc->getObjectById("stroked")->setAttribute("style", "stroke:url(#" + rgb + ");stroke-width:0.5px");
+    doc->getObjectById("again")->setAttribute("style", "fill:url(#" + cmyk + ")");
+    doc->ensureUpToDate();
+
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &records = written.records;
+    // One art style for each ink and tint, the line a path in it has, before the text
+    // documents; the ink declared as for a path.
+    auto const styles = records.find("%AI5_Begin_NonPrinting\nNp\n%AI9_BeginArtStyles\n");
+    ASSERT_NE(styles, std::string::npos);
+    EXPECT_LT(records.find("%%BeginSetup"), styles);
+    EXPECT_LT(records.find("%AI9_EndArtStyles\n%AI5_End_NonPrinting--\n"), records.find("%AI11_BeginTextDocument"));
+    std::size_t count = 0;
+    for (auto at = records.find("/KnownStyle :"); at != std::string::npos; at = records.find("/KnownStyle :", at + 1)) ++count;
+    EXPECT_EQ(count, 3u);
+    EXPECT_NE(records.find("(Anon PROOF 1) /Name ,\n/SimpleStyle :\n0 O\n0 0.6 1 0 (Press Orange) 0 x\n0 1 0 0 0 Xy\n"),
+              std::string::npos);
+    EXPECT_NE(records.find(" 40 50 -60 (Book Violet) 0.6 2 Xx\n"), std::string::npos);
+    // A stroke's style fills with the ink too, as Illustrator writes it.
+    EXPECT_NE(records.find(" 0 0.6 0.2 (Screen Green) 0.4 1 Xx\n"), std::string::npos);
+    EXPECT_EQ(records.find("(Screen Green) 0.4 1 XX"), std::string::npos);
+    EXPECT_NE(records.find("%%DocumentCustomColors: (Book Violet)\n%%+ (Press Orange)\n%%+ (Screen Green)\n"), std::string::npos);
+
+    // Read back, each character is in the ink and at the tint it was.
+    auto const texts = AN::read_text_document(records, {});
+    ASSERT_TRUE(texts->error.empty()) << texts->error;
+    ASSERT_EQ(texts->stories.size(), 3u);
+    for (auto const &e : texts->errors) EXPECT_TRUE(e.empty()) << e;
+    auto const &whole = texts->stories[0]->lines.at(0).runs.at(0).style;
+    ASSERT_TRUE(whole.fill_ink);
+    EXPECT_EQ(whole.fill_ink->ink.name, "Press Orange");
+    EXPECT_EQ(whole.fill_ink->ink.color, AN::Color::cmyk(0, 0.6, 1, 0));
+    EXPECT_NEAR(whole.fill_ink->tint, 1, 1e-6);
+    auto const &lines = texts->stories[1]->lines.at(0).runs;
+    ASSERT_EQ(lines.size(), 2u);
+    for (auto const &run : lines) {
+        ASSERT_TRUE(run.style.fill_ink);
+        EXPECT_EQ(run.style.fill_ink->ink.name, "Book Violet");
+        EXPECT_EQ(run.style.fill_ink->ink.color, AN::Color::lab(40, 50, -60));
+        EXPECT_NEAR(run.style.fill_ink->tint, 0.4, 1e-6);
+    }
+    EXPECT_FALSE(lines[0].style.stroke_ink);
+    ASSERT_TRUE(lines[1].style.stroke_ink);
+    EXPECT_EQ(lines[1].style.stroke_ink->ink.name, "Screen Green");
+    EXPECT_NEAR(lines[1].style.stroke_ink->tint, 0.6, 1e-6);
+    auto const &mixed = texts->stories[2]->lines.at(0).runs;
+    ASSERT_EQ(mixed.size(), 2u);
+    EXPECT_FALSE(mixed[0].style.fill_ink);
+    ASSERT_TRUE(mixed[1].style.fill_ink);
+    EXPECT_EQ(mixed[1].style.fill_ink->ink.name, "Press Orange");
+
+    // The import paints them with the inks' swatches, which the next save writes the same way.
+    auto b = make(records);
+    ASSERT_TRUE(b);
+    auto *imported = b->document.get();
+    imported->ensureUpToDate();
+    std::map<std::string, std::set<double>> used;
+    std::function<void(SPObject *)> walk = [&](SPObject *o) {
+        if (is<SPString>(o) && !cast<SPString>(o)->string.empty()) {
+            for (SPIPaint const *paint : std::initializer_list<SPIPaint const *>{&o->parent->style->fill, &o->parent->style->stroke}) {
+                if (!paint->isPaintserver() || !paint->href) continue;
+                if (auto const *g = cast<SPGradient>(paint->href->getObject()); g) {
+                    if (auto const ink = SpotInk::read(g->getRepr())) used[ink->name].insert(std::round(ink->tint * 1e4) / 1e4);
+                }
+            }
+        }
+        for (auto &child : o->children) walk(&child);
+    };
+    walk(imported->getRoot());
+    EXPECT_EQ(used["Press Orange"], (std::set<double>{1.0}));
+    EXPECT_EQ(used["Book Violet"], (std::set<double>{0.4}));
+    EXPECT_EQ(used["Screen Green"], (std::set<double>{0.6}));
+    auto const again = AN::write_records(imported);
+    ASSERT_TRUE(again.refused.empty()) << again.refused.front();
+    auto const styles_of = [](std::string const &r) {
+        auto const from = r.find("%AI9_BeginArtStyles");
+        return from == std::string::npos ? std::string() : r.substr(from, r.find("%AI9_EndArtStyles") - from);
+    };
+    EXPECT_EQ(styles_of(again.records), styles_of(records));
+
+    // An ink at an opacity is refused on type as before: a character has no opacity of its own.
+    doc->getObjectById("whole")->setAttribute("style", "font-family:Arial;font-size:16px;fill:url(#" + cmyk + ");fill-opacity:0.5");
+    doc->ensureUpToDate();
+    auto const translucent = AN::write_records(doc.get());
+    EXPECT_EQ(translucent.refused, std::vector<std::string>{"translucent fills or strokes on type"});
 }
 
 /// Area type's frame on the page: its outline's bounds in the document.

@@ -29,6 +29,15 @@ struct TextPattern
     bool operator==(TextPattern const &) const = default;
 };
 
+/// A spot ink, Registration or a global process colour that paints type: Illustrator names it
+/// by an art style, whose line says which ink and at what tint.
+struct TextInk
+{
+    Ink ink;
+    double tint = 1; ///< 0-1, 1 the full colour.
+    bool operator==(TextInk const &) const = default;
+};
+
 struct TextStyle
 {
     std::string font; ///< Exact PostScript font name.
@@ -57,6 +66,8 @@ struct TextStyle
     /// The fill or the stroke is a pattern, by name. `fill` or `stroke` is then set too, to
     /// the black the text document keeps beside the name, and isn't what is drawn.
     std::optional<TextPattern> fill_pattern, stroke_pattern;
+    /// The fill or the stroke is an ink, by name. `fill` or `stroke` is then what it looks like.
+    std::optional<TextInk> fill_ink, stroke_ink;
     /// Where the characters stand: 0 on the line, 1 superscript, 2 subscript. Illustrator
     /// makes those of the same font, smaller and moved, by what the document says
     /// (TextDocument::type). `size` and `baseline_shift` stay the type's own.

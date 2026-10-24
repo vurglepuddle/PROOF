@@ -2921,6 +2921,36 @@ std::string text_of(std::string_view bytes, bool windows_1252)
     return out;
 }
 
+std::optional<std::pair<Ink, double>> named_ink(std::string_view line)
+{
+    Lexer lex(line);
+    Values vals;
+    std::string_view w;
+    while (auto t = lex.next()) {
+        if (!w.empty() || vals.size() > 16) return {};
+        if (t->kind == Token::Kind::Number) {
+            vals.push_back(Value::number(t->number));
+        } else if (t->kind == Token::Kind::String) {
+            vals.push_back(Value::string(std::move(t->string)));
+        } else if (t->kind == Token::Kind::Word) {
+            w = t->view;
+        } else {
+            return {};
+        }
+    }
+    // As Reader::color reads the same operators on a path.
+    auto const lower = w.size() == 1 ? std::string(1, static_cast<char>(g_ascii_tolower(w[0])))
+                                     : w.size() == 2 && w[0] == 'X' ? std::string("X") + static_cast<char>(g_ascii_tolower(w[1]))
+                                                                    : std::string();
+    if (lower != "x" && lower != "Xx" && lower != "Xk" && lower != "Xs" && lower != "Xz") return {};
+    auto kind = lower == "Xk" ? Ink::Kind::Process : lower == "Xs" || lower == "Xz" ? Ink::Kind::Registration : Ink::Kind::Spot;
+    auto const force = lower == "x" || lower == "Xs" ? std::optional<bool>(false) : std::nullopt;
+    auto n = parse_named(vals, kind, force);
+    if (!n || n->name.empty() || n->name.size() > 256) return {};
+    if (n->name == "[Registration]") n->kind = Ink::Kind::Registration;
+    return std::pair{Ink{n->name, n->kind, n->color, n->cmyk}, n->tint};
+}
+
 std::string xml_name(std::string_view id)
 {
     // The suffix that makes ids unique: "_" then 20 or more digits, then "_".

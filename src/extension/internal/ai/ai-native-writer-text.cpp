@@ -190,8 +190,23 @@ bool declares_font(XML::Node const *repr)
     return has;
 }
 
-/// A paint on type, as its dictionary; nothing for none, and for what is refused.
-std::optional<std::string> type_paint(SPIPaint const &p, SPStyle const *style, double opacity, std::set<std::string> &why)
+/// A colour as a paint's colour dictionary: CMYK, else RGB.
+std::optional<std::string> colour_values(Colors::Color const &c)
+{
+    auto channel = [](double v) { return real(std::clamp(v, 0.0, 1.0)); };
+    if (c.getSpace() && c.getSpace()->getComponentType() == Type::CMYK) {
+        return std::format("<< /0 2 /1 [ 1.0 {} {} {} {} ] >>", channel(c[0]), channel(c[1]), channel(c[2]), channel(c[3]));
+    }
+    if (auto rgb = c.converted(Type::RGB)) {
+        return std::format("<< /0 1 /1 [ 1.0 {} {} {} ] >>", channel((*rgb)[0]), channel((*rgb)[1]), channel((*rgb)[2]));
+    }
+    return {};
+}
+
+/// A paint on type, as its dictionary; nothing for none, and for what is refused. `by_ink`
+/// names the art style of an ink's swatch (TextStories::ink_operator), or refuses it.
+std::optional<std::string> type_paint(SPIPaint const &p, SPStyle const *style, double opacity, std::set<std::string> &why,
+                                      std::function<std::optional<std::string>(SPIPaint const &)> const &by_ink)
 {
     if (p.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_FILL || p.paintOrigin == SP_CSS_PAINT_ORIGIN_CONTEXT_STROKE) {
         why.insert("context paint on type");
@@ -208,12 +223,23 @@ std::optional<std::string> type_paint(SPIPaint const &p, SPStyle const *style, d
         auto *server = p.isPaintserver() && p.href ? p.href->getObject() : nullptr;
         auto *swatch = cast<SPGradient>(server);
         if (swatch && swatch->isSolid()) {
-            // Illustrator's type takes an ink by its swatch; the reader doesn't read that yet.
-            if (SpotInk::read(swatch->getRepr()) || (swatch->getVector() && SpotInk::read(swatch->getVector()->getRepr()))) {
-                why.insert("spot inks on type");
-                return {};
-            }
             c = swatch->getPreviewAverageColor();
+            // Illustrator's type takes an ink by an art style that paints with it, and keeps
+            // what it looks like beside the style's name (Illustrator 29.2.1, 2026-10-24).
+            if (SpotInk::read(swatch->getRepr()) || (swatch->getVector() && SpotInk::read(swatch->getVector()->getRepr()))) {
+                if (c->getOpacity() * opacity < 1.0 - 1e-6) {
+                    why.insert("translucent fills or strokes on type");
+                    return {};
+                }
+                auto const shown = colour_values(*c);
+                if (!shown) {
+                    why.insert("colours on type that are neither CMYK nor RGB");
+                    return {};
+                }
+                auto const name = by_ink(p);
+                if (!name) return {};
+                return "<< /99 /CAITextPaint /5 " + utf16(*name) + " /0 " + *shown + " >>";
+            }
         } else if (is<SPPattern>(server)) {
             why.insert("patterns on type");
             return {};
@@ -227,15 +253,7 @@ std::optional<std::string> type_paint(SPIPaint const &p, SPStyle const *style, d
         why.insert("translucent fills or strokes on type");
         return {};
     }
-    auto channel = [](double v) { return real(std::clamp(v, 0.0, 1.0)); };
-    if (c->getSpace() && c->getSpace()->getComponentType() == Type::CMYK) {
-        return std::format("<< /99 /SimplePaint /0 << /0 2 /1 [ 1.0 {} {} {} {} ] >> >>", channel((*c)[0]), channel((*c)[1]),
-                           channel((*c)[2]), channel((*c)[3]));
-    }
-    if (auto rgb = c->converted(Type::RGB)) {
-        return std::format("<< /99 /SimplePaint /0 << /0 1 /1 [ 1.0 {} {} {} ] >> >>", channel((*rgb)[0]),
-                           channel((*rgb)[1]), channel((*rgb)[2]));
-    }
+    if (auto const values = colour_values(*c)) return "<< /99 /SimplePaint /0 " + *values + " >>";
     why.insert("colours on type that are neither CMYK nor RGB");
     return {};
 }
@@ -876,6 +894,19 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
     }
     if (!why.empty()) return finish();
 
+    // An ink on type: the art style that paints with it, by its name. Nothing when the writer
+    // refuses the ink, which it then says.
+    auto by_ink = [&](SPIPaint const &paint) -> std::optional<std::string> {
+        if (!ink_operator) {
+            why.insert("spot inks on type");
+            return {};
+        }
+        auto const line = ink_operator(paint);
+        if (!line) return {};
+        auto at = std::find(_styles.begin(), _styles.end(), *line);
+        if (at == _styles.end()) at = _styles.insert(at, *line);
+        return std::format("Anon PROOF {}", std::distance(_styles.begin(), at) + 1);
+    };
     // Each owner's features, but for leading, which is the line's.
     auto const settings = TypeSettings::of(_document);
     std::map<SPObject const *, std::optional<Features>> known;
@@ -1007,12 +1038,12 @@ WrittenStory TextStories::add(SPText const *text, Geom::Affine const &to_canvas)
         }
         f[12] = transform == SP_CSS_TEXT_TRANSFORM_UPPERCASE ? "2" : caps == SP_CSS_FONT_VARIANT_CAPS_SMALL ? "1" : "0";
         // Fill and stroke. Illustrator strokes characters over their fill.
-        auto const fill = type_paint(st->fill, st, st->fill_opacity.value / double(SP_SCALE24_MAX), own);
+        auto const fill = type_paint(st->fill, st, st->fill_opacity.value / double(SP_SCALE24_MAX), own, by_ink);
         f[56] = fill ? "true" : "false";
         if (fill) f[53] = *fill;
         std::optional<std::string> stroke;
         if (!st->stroke.isNone() && st->stroke_width.computed > 0) {
-            stroke = type_paint(st->stroke, st, st->stroke_opacity.value / double(SP_SCALE24_MAX), own);
+            stroke = type_paint(st->stroke, st, st->stroke_opacity.value / double(SP_SCALE24_MAX), own, by_ink);
         }
         f[57] = stroke ? "true" : "false";
         if (stroke) {
@@ -1263,6 +1294,20 @@ std::string TextStories::document(bool typed) const
     }
     out += " /2 << " + std::string(NORMAL_CHARACTER) + " >> /3 << " + std::string(NORMAL_PARAGRAPH) + " >> >>";
     return out;
+}
+
+std::string TextStories::art_styles() const
+{
+    if (_styles.empty()) return {};
+    // Each as Illustrator 29.2.1 writes the style a run in an ink names: the ink's line between
+    // an opaque fill's state, with nothing stroked (2026-10-24).
+    std::string out = "%AI5_Begin_NonPrinting\nNp\n%AI9_BeginArtStyles\n";
+    for (std::size_t i = 0; i < _styles.size(); ++i) {
+        out += std::format("/KnownStyle :\n(Anon PROOF {}) /Name ,\n/SimpleStyle :\n0 O\n{}\n0 1 0 0 0 Xy\n"
+                           "0 J 0 j 1 w 10 M []0 d\n0 XR\n0 1 Xd\n/Paint ;\n /Def ;\n",
+                           i + 1, _styles[i]);
+    }
+    return out + "%AI9_EndArtStyles\n%AI5_End_NonPrinting--\n";
 }
 
 std::string TextStories::section(Geom::Point const &ruler_origin) const

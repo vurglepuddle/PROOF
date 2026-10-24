@@ -87,6 +87,7 @@ struct Ink
     Kind kind = Kind::Spot;
     Color color;                     ///< At full strength, in its defining model.
     std::array<double, 4> cmyk{};    ///< Illustrator's CMYK equivalent.
+    bool operator==(Ink const &) const = default;
 };
 
 /**
@@ -435,6 +436,12 @@ std::string xml_name(std::string_view id);
 /// Text from record bytes: BOM-marked UTF-16BE, otherwise UTF-8 then Windows-1252.
 /// An old file-format header selects Windows-1252 without guessing UTF-8 or a Unicode BOM.
 std::string text_of(std::string_view bytes, bool windows_1252 = false);
+
+/// The ink a colour operator names, as an art style's line has one for type: `c m y k (name)
+/// tint x`, `c m y k v1 v2 v3 (name) tint type Xx`, `Xk` for a global process colour, `Xs` and
+/// `Xz` for Registration (strokes' upper-case forms too). The ink and its tint, 1 the full
+/// colour; nothing for any other line.
+std::optional<std::pair<Ink, double>> named_ink(std::string_view line);
 
 /**
  * Put the one artboard of a document whose records list none where its page lies.

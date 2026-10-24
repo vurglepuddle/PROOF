@@ -621,6 +621,8 @@ private:
     Colors::Color process(Color const &c) const;
     std::string paint(Paint const &p);
     std::string ink(int index, double tint);
+    std::string ink_swatch(Ink const &ink, double tint);
+    std::string text_ink(TextInk const &used);
     std::string process_swatch(Ink const &ink, double tint);
     std::string gradient(Paint const &p);
     std::string gradient_vector(int index);
@@ -641,6 +643,7 @@ private:
     std::shared_ptr<Colors::CMS::Profile> _srgb;
     cmsHTRANSFORM _cmyk_to_rgb = nullptr;
     std::map<std::pair<int, double>, std::string> _inks; ///< (ink, tint) to its paint.
+    std::vector<std::pair<TextInk, std::string>> _text_inks; ///< Inks only type uses, to their paint.
     std::map<std::pair<int, bool>, std::string> _vectors; ///< (Gradient, mask coverage) to vector id.
     std::map<int, std::string> _tiles;                 ///< Pattern to its tile's id.
     /// An image as the document holds it: for the screen, and its CMYK samples for print.
@@ -899,8 +902,10 @@ XML::Node *Builder::text(Node const &n)
         return url;
     };
     auto parts = [&](auto const &s) {
-        auto color = [&](std::optional<Color> const &c, std::optional<TextPattern> const &pattern) {
+        auto color = [&](std::optional<Color> const &c, std::optional<TextPattern> const &pattern,
+                         std::optional<TextInk> const &named) {
             if (c && pattern) return patterned(*pattern);
+            if (c && named) return text_ink(*named);
             Paint p;
             if (c) p.color = *c;
             return c ? paint(p) : std::string("none");
@@ -918,8 +923,8 @@ XML::Node *Builder::text(Node const &n)
         out.css = {
             font.css + (instances && !font.variable ? "font-variation-settings:normal;" : ""),
             // The type's own size: a superscript or subscript is drawn smaller by the layout.
-            "font-size:" + num(s.size) + ";", "fill:" + color(s.fill, s.fill_pattern) + ";",
-            "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke, s.stroke_pattern) + ";",
+            "font-size:" + num(s.size) + ";", "fill:" + color(s.fill, s.fill_pattern, s.fill_ink) + ";",
+            "fill-opacity:" + num(s.fill_opacity) + ";", "stroke:" + color(s.stroke, s.stroke_pattern, s.stroke_ink) + ";",
             "stroke-opacity:" + num(s.stroke_opacity) + ";", "stroke-width:" + num(s.stroke_width) + ";",
             "letter-spacing:" + num(s.set_size() * s.tracking / 1000.0) + ";", ligatures, kerning,
             capitals ? std::string("text-transform:") + (s.all_caps ? "uppercase" : "none") + ";" : std::string(),
@@ -1708,7 +1713,11 @@ std::string Builder::ink(int index, double tint)
     tint = std::clamp(tint, 0.0, 1.0);
     auto const key = std::pair(index, tint);
     if (auto it = _inks.find(key); it != _inks.end()) return it->second;
-    auto const &ink = _ai.inks[index];
+    return _inks[key] = ink_swatch(_ai.inks[index], tint);
+}
+
+std::string Builder::ink_swatch(Ink const &ink, double tint)
+{
     std::string id;
     if (ink.kind == Ink::Kind::Process) {
         id = process_swatch(ink, tint);
@@ -1716,7 +1725,26 @@ std::string Builder::ink(int index, double tint)
         auto const name = ink.kind == Ink::Kind::Registration ? std::string(REGISTRATION_INK) : ink.name;
         id = SpotInk::ensure(_xml, _defs, _doc, SpotInk::Ink{name, definition(ink.color), tint});
     }
-    return _inks[key] = "url(#" + id + ")";
+    return "url(#" + id + ")";
+}
+
+std::string Builder::text_ink(TextInk const &used)
+{
+    // The Swatches panel's ink of that name, which paths painted with it share: the same
+    // definition first, else the one of that name and kind.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (std::size_t i = 0; i < _ai.inks.size(); ++i) {
+            auto const &known = _ai.inks[i];
+            if (known.name == used.ink.name && known.kind == used.ink.kind && (pass == 1 || known.color == used.ink.color)) {
+                return ink(static_cast<int>(i), used.tint);
+            }
+        }
+    }
+    // An ink only type uses.
+    for (auto const &[known, url] : _text_inks) {
+        if (known == used) return url;
+    }
+    return _text_inks.emplace_back(used, ink_swatch(used.ink, std::clamp(used.tint, 0.0, 1.0))).second;
 }
 
 std::string Builder::process_swatch(Ink const &ink, double tint)
