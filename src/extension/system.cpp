@@ -20,6 +20,7 @@
 #include "system.h"
 
 #include <glibmm/miscutils.h>
+#include <glibmm/fileutils.h>
 
 #include "db.h"
 #include "document.h"
@@ -479,53 +480,33 @@ get_file_save_extension (Inkscape::Extension::FileSaveMethod method) {
 Glib::ustring
 get_file_save_path (SPDocument *doc, FileSaveMethod method) {
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
-    Glib::ustring path;
-    bool use_current_dir = true;
-    switch (method) {
-        case FILE_SAVE_METHOD_SAVE_AS:
-        {
-            use_current_dir = prefs->getBool("/dialogs/save_as/use_current_dir", true);
-            if (doc->getDocumentFilename() && use_current_dir) {
-                path = Glib::path_get_dirname(doc->getDocumentFilename());
-            } else {
-                path = prefs->getString("/dialogs/save_as/path");
-            }
-            break;
+    auto directory = [](Glib::ustring const &path) {
+        return !path.empty() && Glib::file_test(path, Glib::FileTest::IS_DIR);
+    };
+    if (method == FILE_SAVE_METHOD_SAVE_AS || method == FILE_SAVE_METHOD_SAVE_COPY ||
+        method == FILE_SAVE_METHOD_INKSCAPE_SVG) {
+        Glib::ustring document_path;
+        if (auto filename = doc->getDocumentFilename(); filename && Glib::path_is_absolute(filename)) {
+            auto path = Glib::path_get_dirname(filename);
+            if (directory(path)) document_path = path;
         }
-        case FILE_SAVE_METHOD_TEMPORARY:
-            path = prefs->getString("/dialogs/save_as/path");
-            break;
-        case FILE_SAVE_METHOD_SAVE_COPY:
-            use_current_dir = prefs->getBool("/dialogs/save_copy/use_current_dir", prefs->getBool("/dialogs/save_as/use_current_dir", true));
-            if (doc->getDocumentFilename() && use_current_dir) {
-                path = Glib::path_get_dirname(doc->getDocumentFilename());
-            } else {
-                path = prefs->getString("/dialogs/save_copy/path");
-            }
-            break;
-        case FILE_SAVE_METHOD_INKSCAPE_SVG:
-            if (doc->getDocumentFilename()) {
-                path = Glib::path_get_dirname(doc->getDocumentFilename());
-            } else {
-                // FIXME: should we use the save_as path here or something else? Maybe we should
-                // leave this as a choice to the user.
-                path = prefs->getString("/dialogs/save_as/path");
-            }
-            break;
-        case FILE_SAVE_METHOD_EXPORT:
-            /// \todo no default path set for Export?
-            // defaults to g_get_home_dir()
-            break;
+        bool const use_current_dir = prefs->getBool("/dialogs/save_as/use_current_dir", true);
+        if (use_current_dir && !document_path.empty()) return document_path;
+        auto last_path = prefs->getString("/dialogs/file/last_path");
+        if (directory(last_path)) return last_path;
+        if (!document_path.empty()) return document_path;
+        // Open and save dialogs used separate histories (and two spellings of "dialog").
+        for (auto key : {"/dialog/open/path", "/dialogs/open/path",
+                         method == FILE_SAVE_METHOD_SAVE_COPY ? "/dialogs/save_copy/path" : "/dialogs/save_as/path",
+                         "/dialogs/save_as/path"}) {
+            auto path = prefs->getString(key);
+            if (directory(path)) return path;
+        }
+    } else if (method == FILE_SAVE_METHOD_TEMPORARY) {
+        auto path = prefs->getString("/dialogs/save_as/path");
+        if (directory(path)) return path;
     }
-
-    if(path.empty()) {
-        path = g_get_home_dir(); // Is this the most sensible solution? Note that we should avoid
-                                 // g_get_current_dir because this leads to problems on OS X where
-                                 // Inkscape opens the dialog inside application bundle when it is
-                                 // invoked for the first teim.
-    }
-
-    return path;
+    return Glib::get_home_dir();
 }
 
 void
@@ -549,6 +530,9 @@ store_file_extension_in_prefs (Glib::ustring extension, FileSaveMethod method) {
 void
 store_save_path_in_prefs (Glib::ustring path, FileSaveMethod method) {
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
+    if (method != FILE_SAVE_METHOD_TEMPORARY && method != FILE_SAVE_METHOD_EXPORT) {
+        prefs->setString("/dialogs/file/last_path", path);
+    }
     switch (method) {
         case FILE_SAVE_METHOD_SAVE_AS:
         case FILE_SAVE_METHOD_TEMPORARY:

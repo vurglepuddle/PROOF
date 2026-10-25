@@ -2396,7 +2396,7 @@ void InkscapePreferences::initPageIO()
 
     _save_use_current_dir.init( _("Use current directory for \"Save As ...\""), "/dialogs/save_as/use_current_dir", true);
     _page_io.add_line( false, "", _save_use_current_dir, "",
-                         _("When this option is on, the \"Save as...\" and \"Save a Copy...\" dialogs will always open in the directory where the currently open document is; when it's off, each will open in the directory where you last saved a file using it"), true);
+                         _("When enabled, Save As and Save a Copy try the document's folder first, then the folder last used to open or save a file. When disabled, they try the last-used folder first, then the document's folder. If neither is available, they use Home."), true);
 
     _misc_default_metadata.init( _("Add default metadata to new documents"), "/metadata/addToNewFile", false);
     _page_io.add_line( false, "", _misc_default_metadata, "",

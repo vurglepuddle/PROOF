@@ -208,7 +208,8 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-paths.cpp
 	    internal/pdfoutput/build-patterns.cpp
 	    internal/pdfoutput/build-styles.cpp
-        internal/pdfoutput/build-text.cpp
+	    internal/pdfoutput/build-text.cpp
+	    internal/pdfoutput/export-outlines.cpp
         internal/pdfoutput/static-font.cpp
         internal/pdfoutput/static-font.h
 	    internal/pdfoutput/pdf-output.cpp
@@ -223,6 +224,7 @@ if(WITH_CAPYPDF)
 	    internal/pdfoutput/build-page.h
 	    internal/pdfoutput/build-patterns.h
 	    internal/pdfoutput/build-text.h
+	    internal/pdfoutput/export-outlines.h
 	    internal/pdfoutput/pdf-output.h
 	    internal/pdfoutput/pdf-update.h
 	    internal/pdfoutput/placed-pages.h

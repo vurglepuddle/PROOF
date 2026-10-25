@@ -235,6 +235,7 @@ file_save(Gtk::Window &parentWindow,
     recently_used->prepend_to_list(font_lister->get_font_family());
     recently_used->set_continuous_streak(false);
 
+    Inkscape::Extension::store_save_path_in_prefs(Glib::path_get_dirname(path), save_method);
     doc->get_event_log()->rememberFileSave();
     Glib::ustring msg;
     if (doc->getDocumentFilename() == nullptr) {
@@ -288,7 +289,7 @@ sp_file_save_dialog(Gtk::Window &parentWindow, SPDocument *doc, Inkscape::Extens
 
     std::string save_path = Inkscape::Extension::get_file_save_path(doc, save_method); // Glib::ustring -> std::string FIXME
 
-    if (!Inkscape::IO::file_test(save_path.c_str(), (GFileTest)(G_FILE_TEST_EXISTS | G_FILE_TEST_IS_DIR))) {
+    if (!Inkscape::IO::file_test(save_path.c_str(), G_FILE_TEST_IS_DIR)) {
         save_path.clear();
     }
 
@@ -375,9 +376,6 @@ sp_file_save_dialog(Gtk::Window &parentWindow, SPDocument *doc, Inkscape::Extens
             Glib::RefPtr<Gtk::RecentManager> recent = Gtk::RecentManager::get_default();
             recent->add_item(file->get_uri()); // Gtk4 add_item(file)
         }
-
-        save_path = Glib::path_get_dirname(file->get_path());
-        Inkscape::Extension::store_save_path_in_prefs(save_path, save_method);
 
         return true;
     }

@@ -12,12 +12,13 @@ struct PdfExportSettings
 {
     std::string version = "PDF-1.7";
     std::string text = "embed";
+    bool strokes = false;
     bool rasterize = true;
-    int resolution = 96;
+    int resolution = 300;
 
     static PdfExportSettings load(Extension::Output const &output);
     void apply(Extension::Output &output) const;
-    bool has_warnings() const { return version == "PDF-2.0" || text != "embed"; }
+    bool has_warnings() const { return version == "PDF-2.0" || text != "embed" || strokes; }
 };
 
 bool export_pdf_dialog(Extension::Output &output, bool settings);

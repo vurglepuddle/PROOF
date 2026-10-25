@@ -14,12 +14,14 @@
 
 #include <glib/gstdio.h>
 #include <stdexcept>
+#include <string_view>
 #ifdef PROOF_CAPYPDF_PDF17
 #include "3rdparty/capypdf-version.h"
 #endif
 
 #include "build-document.h"
 #include "build-page.h"
+#include "export-outlines.h"
 #include "colors/document-colors.h"
 #include "colors/spaces/enum.h"
 #include "document.h"
@@ -31,7 +33,6 @@
 #include "object/sp-page.h"
 #include "object/sp-root.h"
 #include "page-manager.h"
-#include "path-chemistry.h"
 #include "preferences.h"
 #include "rdf.h"
 #include "ui/dialog/export-pdf-dialog.h"
@@ -114,9 +115,10 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     if (mod->get_param_bool("blurToBitmap")) {
         pdf.set_filter_resolution(mod->get_param_int("resolution"));
     }
-    if (mod->get_param_optiongroup_is("textToPath", "paths")) {
-        Inkscape::convert_text_to_curves(doc);
-    } else if (mod->get_param_optiongroup_is("textToPath", "LaTeX")) {
+    bool const strokes = std::string_view(mod->get_id()) == "org.inkscape.output.pdf.capypdf" &&
+                         mod->get_param_bool("strokesToPath");
+    PdfBuilder::outline_for_export(doc, mod->get_param_optiongroup_is("textToPath", "paths"), strokes);
+    if (mod->get_param_optiongroup_is("textToPath", "LaTeX")) {
         pdf.set_text_enabled(false);
         if (!latex_render_document_text_to_file(doc, filename, true)) {
             throw Inkscape::Extension::Output::save_failed();
@@ -210,8 +212,9 @@ void PdfOutput::init()
                 "<option value=\"paths\">" N_("Convert text to paths") "</option>\n"
                 "<option value=\"LaTeX\">" N_("Omit text in PDF and create LaTeX file") "</option>\n"
             "</param>\n"
+            "<param name='strokesToPath' gui-text='" N_("Convert strokes to outlines") "' type='bool'>false</param>\n"
             "<param name=\"blurToBitmap\" gui-text=\"" N_("Rasterize filter effects") "\" type=\"bool\">true</param>\n"
-            "<param name=\"resolution\" gui-text=\"" N_("Resolution for rasterization (dpi):") "\" type=\"int\" min=\"1\" max=\"10000\">96</param>\n"
+            "<param name=\"resolution\" gui-text=\"" N_("Resolution for rasterization (dpi):") "\" type=\"int\" min=\"1\" max=\"10000\">300</param>\n"
             "<output is_exported='true' priority='4'>\n"
                 "<extension>.pdf</extension>\n"
                 "<mimetype>application/pdf</mimetype>\n"

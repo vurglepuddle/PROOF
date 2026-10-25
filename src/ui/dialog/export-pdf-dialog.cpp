@@ -41,6 +41,7 @@ PdfExportSettings PdfExportSettings::load(Extension::Output const &output)
     }
     settings.text = output.get_param_optiongroup("textToPath");
     if (!output.get_param_optiongroup_contains("textToPath", settings.text.c_str())) settings.text = "embed";
+    settings.strokes = output.get_param_bool("strokesToPath");
     settings.rasterize = output.get_param_bool("blurToBitmap");
     settings.resolution = std::clamp(output.get_param_int("resolution"), 1, 10000);
     return settings;
@@ -50,6 +51,7 @@ void PdfExportSettings::apply(Extension::Output &output) const
 {
     output.set_param_optiongroup("PDFversion", version.c_str());
     output.set_param_optiongroup("textToPath", text.c_str());
+    output.set_param_bool("strokesToPath", strokes);
     output.set_param_bool("blurToBitmap", rasterize);
     output.set_param_int("resolution", std::clamp(resolution, 1, 10000));
 }
@@ -175,20 +177,35 @@ public:
         _text.set_active_id(_settings.text);
         _text.set_hexpand();
         text_row->append(_text);
-        group(*pages[4], _("Fonts")).append(*text_row);
-        auto effects = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-        _rasterize.set_label(_("Rasterize filter effects at"));
+        auto &outlines = group(*pages[4], _("Outlines"));
+        outlines.append(*text_row);
+        _strokes.set_label(_("Convert strokes to outlines"));
+        _strokes.set_active(_settings.strokes);
+        outlines.append(_strokes);
+        outlines.append(*label(_("Layers and inks named for cutting (Cut, CutContour, Die line, Thru-cut, ...) are never converted.")));
+        auto &effects_group = group(*pages[4], _("Effects"));
+        _rasterize.set_label(_("Rasterize filter effects"));
         _rasterize.set_active(_settings.rasterize);
-        effects->append(_rasterize);
+        effects_group.append(_rasterize);
+        auto effects = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        effects->append(*label(_("Resolution:")));
+        _resolution_preset.append("72", _("Screen (72 ppi)"));
+        _resolution_preset.append("150", _("Medium (150 ppi)"));
+        _resolution_preset.append("300", _("High (300 ppi)"));
+        _resolution_preset.append("other", _("Other"));
+        auto const dpi = _settings.resolution;
+        _resolution_preset.set_active_id(dpi == 72 || dpi == 150 || dpi == 300 ? std::to_string(dpi) : "other");
+        effects->append(_resolution_preset);
         _resolution.set_range(1, 10000);
         _resolution.set_increments(1, 10);
         _resolution.set_digits(0);
         _resolution.set_numeric();
         _resolution.set_value(_settings.resolution);
         _resolution.set_width_chars(5);
-        effects->append(_resolution);
-        effects->append(*label(_("ppi")));
-        group(*pages[4], _("Effects")).append(*effects);
+        _custom_resolution.append(_resolution);
+        _custom_resolution.append(*label(_("ppi")));
+        effects->append(_custom_resolution);
+        effects_group.append(*effects);
         pages[5]->append(*label(_("Passwords and permissions aren't offered.")));
         _summary.set_xalign(0);
         _summary.set_yalign(0);
@@ -201,7 +218,9 @@ public:
         _sections.select_row(*_sections.get_row_at_index(0));
         _compatibility.signal_changed().connect(sigc::mem_fun(*this, &ExportPdfDialog::update));
         _text.signal_changed().connect(sigc::mem_fun(*this, &ExportPdfDialog::update));
+        _strokes.signal_toggled().connect(sigc::mem_fun(*this, &ExportPdfDialog::update));
         _rasterize.signal_toggled().connect(sigc::mem_fun(*this, &ExportPdfDialog::update));
+        _resolution_preset.signal_changed().connect(sigc::mem_fun(*this, &ExportPdfDialog::update));
         _resolution.signal_value_changed().connect(sigc::mem_fun(*this, &ExportPdfDialog::update));
         update();
 
@@ -237,8 +256,13 @@ private:
     {
         _settings.version = _compatibility.get_active_id();
         _settings.text = _text.get_active_id();
+        _settings.strokes = _strokes.get_active();
         _settings.rasterize = _rasterize.get_active();
-        _settings.resolution = _resolution.get_value_as_int();
+        auto const preset = _resolution_preset.get_active_id();
+        bool const custom = preset == "other";
+        _settings.resolution = custom ? _resolution.get_value_as_int() : std::stoi(preset.raw());
+        _custom_resolution.set_visible(custom);
+        _resolution_preset.set_sensitive(_settings.rasterize);
         _resolution.set_sensitive(_settings.rasterize);
         bool const pdf17 = _settings.version == "PDF-1.7";
         _description.get_buffer()->set_text(pdf17
@@ -246,12 +270,14 @@ private:
             : _("Creates PDF 2.0 files. Illustrator 29 can't open them; Acrobat and Adobe Reader open them."));
         Glib::ustring text = _("Compatibility:") + Glib::ustring(" ") + _compatibility.get_active_text() + "\n" +
             _("Text:") + Glib::ustring(" ") + _text.get_active_text() + "\n";
+        text += _settings.strokes ? _("Strokes: Convert to outlines\n") : _("Strokes: Keep strokes\n");
         text += _settings.rasterize
             ? Glib::ustring::compose(_("Rasterize filter effects at %1 ppi"), _settings.resolution)
             : _("Filter effects are not rasterized.");
         if (!pdf17) text += "\n\n" + Glib::ustring(_("PDF 2.0 cannot be opened in Illustrator 29."));
         if (_settings.text == "paths") text += "\n\n" + Glib::ustring(_("Text will be converted to outlines."));
         if (_settings.text == "LaTeX") text += "\n\n" + Glib::ustring(_("Text will be omitted from the PDF and written to a LaTeX file."));
+        if (_settings.strokes) text += "\n\n" + Glib::ustring(_("Strokes will be converted to outlines."));
         _summary.set_text(text);
         _summary_title->set_text(_settings.has_warnings() ? _("Summary!") : _("Summary"));
     }
@@ -260,7 +286,10 @@ private:
     Glib::RefPtr<Gtk::CssProvider> _css;
     Gtk::ComboBoxText _compatibility;
     Gtk::ComboBoxText _text;
+    Gtk::CheckButton _strokes;
     Gtk::CheckButton _rasterize;
+    Gtk::ComboBoxText _resolution_preset;
+    Gtk::Box _custom_resolution{Gtk::Orientation::HORIZONTAL, 6};
     Gtk::SpinButton _resolution;
     Gtk::ListBox _sections;
     Gtk::Stack _pages;

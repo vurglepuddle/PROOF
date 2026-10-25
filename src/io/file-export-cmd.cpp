@@ -435,7 +435,7 @@ int InkFileExportCmd::do_export_vector(SPDocument *doc, std::string const &expor
                                        Inkscape::Extension::Output &extension)
 {
     // Start with options that are once per document.
-    if (export_text_to_path) {
+    if (export_text_to_path && std::string_view(extension.get_id()) != "org.inkscape.output.pdf.capypdf") {
         Inkscape::convert_text_to_curves(doc);
     }
 

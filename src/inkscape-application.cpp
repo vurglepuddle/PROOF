@@ -53,6 +53,9 @@
 #include <glibmm/i18n.h>  // Internationalization
 #include <gtkmm/application.h>
 #include <gtkmm/window.h>
+#ifdef _WIN32
+#include <gtk/gtk.h>
+#endif
 
 #include "inkscape-version-info.h"
 #include "inkscape-window.h"
@@ -149,8 +152,32 @@ static void guard_new_windows(GListModel *windows, guint position, guint /*remov
     }
 }
 
+// PROOF: the Layers panel's inline name entry can go away inside a live window. Give its
+// GtkText (or a GtkTextView) the focus-out while it still has its native and surface.
+// GtkWidget::unrealize is RUN_LAST; this hook runs before its class handler, and unparent
+// unrealizes before detaching the widget. The window guard above stays for whole windows.
+static gboolean release_text_focus_before_unrealize(GSignalInvocationHint *, guint, GValue const *values, gpointer)
+{
+    auto widget = GTK_WIDGET(g_value_get_object(values));
+    if (auto root = gtk_widget_get_root(widget)) {
+        auto focus = gtk_root_get_focus(root);
+        if (focus && (GTK_IS_TEXT(focus) || GTK_IS_TEXT_VIEW(focus)) &&
+            (focus == widget || gtk_widget_is_ancestor(focus, widget))) {
+            gtk_root_set_focus(root, nullptr);
+        }
+    }
+    return TRUE;
+}
+
 static void guard_input_method_filters()
 {
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+    auto widget_class = g_type_class_ref(GTK_TYPE_WIDGET);
+    g_signal_add_emission_hook(g_signal_lookup("unrealize", GTK_TYPE_WIDGET), 0,
+                               release_text_focus_before_unrealize, nullptr, nullptr);
+    g_type_class_unref(widget_class);
     auto windows = gtk_window_get_toplevels();
     g_signal_connect(windows, "items-changed", G_CALLBACK(guard_new_windows), nullptr);
     guard_new_windows(windows, 0, 0, g_list_model_get_n_items(windows), nullptr);
@@ -228,6 +255,9 @@ std::pair<SPDocument *, bool> InkscapeApplication::document_open(Glib::RefPtr<Gi
     // Add/promote recent file; when we call add_item and file is on a recent list already,
     // then apparently only "modified" time changes.
     auto path = file->get_path();
+    if (INKSCAPE.use_gui() && !path.empty()) {
+        Inkscape::Preferences::get()->setString("/dialogs/file/last_path", Glib::path_get_dirname(path));
+    }
     // Opening crash files or auto-save files, we can link them back using the
     // recent files manager to get the original context for the file.
     if (auto original = Inkscape::IO::openAsInkscapeRecentOriginalFile(path)) {

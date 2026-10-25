@@ -60,8 +60,9 @@ protected:
         if (pdf17) xml += "<option value='PDF-1.7'>PDF 1.7</option>";
         xml += "</param><param name='textToPath' gui-text='Text' type='optiongroup'><option value='embed'>Embed</option>"
             "<option value='paths'>Paths</option><option value='LaTeX'>LaTeX</option></param>"
+            "<param name='strokesToPath' gui-text='Strokes' type='bool'>false</param>"
             "<param name='blurToBitmap' gui-text='Filters' type='bool'>true</param>"
-            "<param name='resolution' gui-text='Resolution' type='int' min='1' max='10000'>96</param>"
+            "<param name='resolution' gui-text='Resolution' type='int' min='1' max='10000'>300</param>"
             "<output><extension>.pdf</extension><mimetype>application/pdf</mimetype>"
             "<filetypename>PDF options test</filetypename></output></inkscape-extension>";
         Extension::build_from_mem(xml.c_str(), std::move(implementation));
@@ -82,16 +83,19 @@ TEST_F(PdfExportSettingsTest, StagingAndDiscardDoNotChangeParametersOrMigration)
         EXPECT_EQ(settings.version, "PDF-2.0");
         EXPECT_EQ(settings.text, "embed");
         EXPECT_TRUE(settings.rasterize);
-        EXPECT_EQ(settings.resolution, 96);
+        EXPECT_FALSE(settings.strokes);
+        EXPECT_EQ(settings.resolution, 300);
         settings.text = "paths";
+        settings.strokes = true;
         settings.rasterize = false;
-        settings.resolution = 300;
+        settings.resolution = 150;
         EXPECT_TRUE(settings.has_warnings());
     }
     EXPECT_TRUE(out->get_param_optiongroup_is("PDFversion", "PDF-2.0"));
     EXPECT_TRUE(out->get_param_optiongroup_is("textToPath", "embed"));
     EXPECT_TRUE(out->get_param_bool("blurToBitmap"));
-    EXPECT_EQ(out->get_param_int("resolution"), 96);
+    EXPECT_FALSE(out->get_param_bool("strokesToPath"));
+    EXPECT_EQ(out->get_param_int("resolution"), 300);
     EXPECT_FALSE(Preferences::get()->getBool(MIGRATED));
 }
 
@@ -102,18 +106,39 @@ TEST_F(PdfExportSettingsTest, AcceptanceAppliesAllOptionsWithoutMigration)
     auto settings = PdfExportSettings::load(*out);
     settings.version = "PDF-1.7";
     EXPECT_FALSE(settings.has_warnings());
+    settings.strokes = true;
+    EXPECT_TRUE(settings.has_warnings());
     settings.text = "LaTeX";
     settings.rasterize = false;
-    settings.resolution = 300;
+    settings.resolution = 150;
     settings.apply(*out);
     EXPECT_TRUE(out->get_param_optiongroup_is("PDFversion", "PDF-1.7"));
     EXPECT_TRUE(out->get_param_optiongroup_is("textToPath", "LaTeX"));
     EXPECT_FALSE(out->get_param_bool("blurToBitmap"));
-    EXPECT_EQ(out->get_param_int("resolution"), 300);
+    EXPECT_TRUE(out->get_param_bool("strokesToPath"));
+    EXPECT_EQ(out->get_param_int("resolution"), 150);
     EXPECT_FALSE(Preferences::get()->getBool(MIGRATED));
     settings.version = "PDF-2.0";
     settings.apply(*out);
     EXPECT_EQ(PdfExportSettings::load(*out).version, "PDF-2.0");
+}
+
+TEST_F(PdfExportSettingsTest, FreshResolutionIsPrintQualityAndSaved96IsNotMigrated)
+{
+    auto prefs = Preferences::get();
+    auto restore = prefs->temporaryPreferences();
+    char const *resolution = "/extensions/org.inkscape.output.pdf.capypdf.resolution";
+    prefs->remove(resolution);
+    Extension::Internal::PdfOutput::init();
+    auto out = dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.pdf.capypdf"));
+    ASSERT_TRUE(out);
+    EXPECT_EQ(PdfExportSettings{}.resolution, 300);
+    EXPECT_EQ(PdfExportSettings::load(*out).resolution, 300);
+    prefs->setInt(resolution, 96);
+    Extension::Internal::PdfOutput::init();
+    out = dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.pdf.capypdf"));
+    ASSERT_TRUE(out);
+    EXPECT_EQ(PdfExportSettings::load(*out).resolution, 96);
 }
 
 TEST_F(PdfExportSettingsTest, InitializationMigratesSavedPdf20BeforeReadingParametersOnlyOnce)

@@ -103,7 +103,7 @@ set(TEST_SOURCES
     page-management
     path-reverse-lpe-test
     preferences-test
-    pdf-export-settings-test
+    file-save-path-test
     rebase-hrefs-test
     stream-test
     style-elem-test
@@ -146,6 +146,8 @@ endif()
 if(WITH_CAPYPDF)
     list(APPEND TEST_SOURCES
         extensions-pdfoutput-test
+        pdf-export-settings-test
+        pdf-outline-test
     )
 endif()
 

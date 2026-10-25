@@ -68,6 +68,47 @@ no longer deletes a file of that name it never wrote.
   an RGB control with pictures, a placed page, and a drawing of the owner's saved from the window
   ("It opens directly in Illustrator!").
 
+## Outlines, cut layers, raster effects and the save folder (2026-10-25)
+
+The owner's requests after trying the window.
+
+**Convert strokes to outlines** (Advanced, Outlines group, beside the text choice; parameter
+`strokesToPath`, off): "Maybe we can put Outline all fonts (already present!) and turn all lines
+into paths into there too, right? ... Usually you don't want in PDF, but sometimes you do." It
+works on the copy being exported (`outline_for_export`, `export-outlines.cpp`), with Inkscape's
+own Stroke to Path: a stroke becomes a filled outline in its paint and opacity; clones are
+unlinked first; text with a stroke goes to curves so its stroke can follow. Strokes inside a clip
+path are left alone (a clip ignores strokes, so an outline would widen it); masks, patterns and
+markers are outlined (it looks the same there). What can't be converted stays a stroke, with a
+warning in the log. Summary warns of it.
+
+**Cutting is never converted**, by either outlining: "Cut layer should be exempt always (a layer
+named cut/etc/all the common vendor names)". A layer counts, with everything in it, when one of
+its words (split on spaces, punctuation and camelCase, any case) is cut, cuts, cutline(s),
+cutcontour, cutter, cutting, thrucut, kisscut, die(s), dieline(s), diecut, perf(s), perforation,
+crease(s), score, scoreline, fold or foldline (`is_cut_name`): "Cut", "CUT_LINES", "CutContour",
+"Thru-cut", "Kiss cut", "Die line" do, "Cutout art" doesn't. So does any object stroked in a
+spot ink so named, wherever it is: print-and-cut RIPs find the cut line by the ink's name
+("CutContour"), not the layer's. The window says so under the options.
+
+**Raster effects** as Illustrator's Document Raster Effects Settings, which the owner finds "so
+annoying to set there before saving to PDF": Rasterize filter effects at Screen (72 ppi), Medium
+(150), High (300) or Other. A fresh profile starts at High, Illustrator's print default (it was
+96, Inkscape's screen default); a value saved before stays.
+
+**The save dialog's folder**: "it doesn't remember your last opened folder, so you keep being
+dumped to Home". Save As and Save a Copy kept separate histories, neither knowing where files were
+opened, and an empty one fell back to Home. Opening, Save As and Save a Copy now share one history
+(`/dialogs/file/last_path`); the dialogs start in the document's own folder, then that history,
+then Home. Preferences' "Use current directory for Save As" (on) still chooses the order: off
+starts in the last folder used.
+
+Checks: `test_pdf-outline` (7: the cutting names both ways, exempt layers and inks, a clip path's
+wide stroke kept, clip text still converted, masks outlined, clones), `test_file-save-path` (5:
+both orders of the preference), `test_pdf-export-settings` (9), `pdf-outline-smoke.py` (42: a
+stroke filled and drawn alike, a "CutContour" layer's and ink's strokes kept, text outlined but on
+a "Die line" layer).
+
 ## Found, open: type comes into Illustrator as outlines
 
 Illustrator opens a CapyPDF PDF's text as paths, not type; the same drawing from the Cairo writer
