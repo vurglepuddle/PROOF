@@ -141,6 +141,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/document-properties.cpp
 	dialog/document-resources.cpp
 	dialog/export.cpp
+	dialog/export-pdf-dialog.cpp
 	dialog/export-batch.cpp
 	dialog/export-single.cpp
 	dialog/extensions-gallery.cpp
@@ -388,6 +389,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/document-properties.h
 	dialog/document-resources.h
 	dialog/export.h
+	dialog/export-pdf-dialog.h
 	dialog/export-batch.h
 	dialog/export-single.h
 	dialog/extensions-gallery.h

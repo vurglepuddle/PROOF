@@ -32,7 +32,9 @@
 #include "object/sp-root.h"
 #include "page-manager.h"
 #include "path-chemistry.h"
+#include "preferences.h"
 #include "rdf.h"
+#include "ui/dialog/export-pdf-dialog.h"
 
 namespace Inkscape::Extension::Internal {
 
@@ -48,6 +50,11 @@ bool PdfOutput::supports_pdf17()
 bool PdfOutput::check(Inkscape::Extension::Extension *)
 {
     return Inkscape::Extension::db.get("org.inkscape.output.pdf.capypdf");
+}
+
+std::optional<bool> PdfOutput::output_prefs(Inkscape::Extension::Output *module, bool settings)
+{
+    return UI::Dialog::export_pdf_dialog(*module, settings);
 }
 
 /**
@@ -103,6 +110,7 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     // opt.set_device_profile(DEVICE_COLORSPACE, icc_profile);
 
     auto pdf = PdfBuilder::Document(filename, opt);
+    pdf.set_pdf17(mod->get_param_optiongroup_is("PDFversion", "PDF-1.7"));
     if (mod->get_param_bool("blurToBitmap")) {
         pdf.set_filter_resolution(mod->get_param_int("resolution"));
     }
@@ -163,7 +171,7 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     } catch (PdfBuilder::PlacedPagesFailed const &ex) {
         // PROOF: a PDF without the pages placed in it isn't kept: it would print without them.
         g_warning("Couldn't put the placed pages into the PDF: %s", ex.what());
-        g_unlink(filename);
+        if (ex.file_written) g_unlink(filename);
         throw Inkscape::Extension::Output::save_failed();
     } catch (std::exception &ex) {
         g_warning("Couldn't save pdf file: %s", ex.what());
@@ -176,14 +184,26 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
 
 void PdfOutput::init()
 {
+    auto prefs = Preferences::get();
+    char const *migrated = "/dialogs/export/pdf/compatibility_migrated";
+    if (supports_pdf17() && !prefs->getBool(migrated)) {
+        char const *version = "/extensions/org.inkscape.output.pdf.capypdf.PDFversion";
+        if (prefs->getString(version) == "PDF-2.0") {
+            prefs->setString(version, "PDF-1.7");
+        }
+        prefs->setBool(migrated, true);
+    }
+
     // clang-format off
     Inkscape::Extension::build_from_mem(
         "<inkscape-extension xmlns=\"" INKSCAPE_EXTENSION_URI "\">\n"
             "<name>Portable Document Format</name>\n"
             "<id>org.inkscape.output.pdf.capypdf</id>\n"
             "<param name=\"PDFversion\" gui-text=\"" N_("Restrict to PDF version:") "\" type=\"optiongroup\" appearance=\"combo\" >\n"
+#ifdef PROOF_CAPYPDF_PDF17
+                "<option value='PDF-1.7'>" N_("Acrobat 8 (PDF 1.7)") "</option>\n"
+#endif
                 "<option value='PDF-2.0'>" N_("PDF 2.0") "</option>\n"
-                // No other value is supported at the moment
             "</param>\n"
             "<param name=\"textToPath\" gui-text=\"" N_("Text output options:") "\" type=\"optiongroup\" appearance=\"radio\">\n"
                 "<option value=\"embed\">" N_("Embed fonts") "</option>\n"

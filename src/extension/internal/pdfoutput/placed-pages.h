@@ -28,9 +28,12 @@ struct PlacedPage
     int index = 1;     ///< The selected page, from 1.
 };
 
+bool placed_pages_pdf17_compatible(std::vector<PlacedPage> const &pages, std::string &error);
+
 /// The stand-ins in the PDF at `path` replaced by their pages. When that fails the file is left
 /// as it was written and `error` says why.
-bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const &pages, std::string &error);
+bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const &pages, std::string &error,
+                         bool pdf17 = false);
 
 } // namespace Inkscape::Extension::Internal::PdfBuilder
 

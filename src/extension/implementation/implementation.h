@@ -15,6 +15,7 @@
 
 #include <vector>
 #include <memory>
+#include <optional>
 #include <sigc++/signal.h>
 #include <glibmm/value.h>
 #include <2geom/forward.h>
@@ -119,6 +120,9 @@ public:
     virtual std::unique_ptr<SPDocument> open(Inkscape::Extension::Input *module, char const *filename, bool is_importing);
 
     // ----- Output functions -----
+    // nullopt keeps the generated options; false cancels. Settings mode uses an OK button.
+    virtual std::optional<bool> output_prefs(Output * /*module*/, bool /*settings*/) { return std::nullopt; }
+
     /** Find out information about the file. */
     virtual void save(Inkscape::Extension::Output * /*module*/, SPDocument * /*doc*/, gchar const * /*filename*/) {
         throw Inkscape::Extension::Output::save_failed(); // flag the lack of implementation to the user

@@ -46,6 +46,8 @@ public:
     ~Output () override;
 
     bool check() override;
+    bool prefs() override;
+    bool prefs(bool settings);
 
     void         save (SPDocument *doc,
                        gchar const *filename,

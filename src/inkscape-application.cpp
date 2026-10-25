@@ -742,7 +742,7 @@ InkscapeApplication::InkscapeApplication()
     gapp->add_main_option_entry(T::OptionType::BOOL,     "export-id-only",         'j', N_("Hide all objects except object with ID selected by export-id"),             ""); // BSx
     gapp->add_main_option_entry(T::OptionType::BOOL,     "export-plain-svg",       'l', N_("Remove Inkscape-specific SVG attributes/properties"),                       ""); // xSx
     gapp->add_main_option_entry(T::OptionType::INT,      "export-ps-level",       '\0', N_("Postscript level (2 or 3); default is 3"),                         N_("LEVEL")); // xxP
-    gapp->add_main_option_entry(T::OptionType::STRING,   "export-pdf-version",    '\0', N_("PDF version (1.4 or 1.5); default is 1.5"),                      N_("VERSION")); // xxP
+    gapp->add_main_option_entry(T::OptionType::STRING,   "export-pdf-version",    '\0', N_("PDF version supported by the selected writer; default is 2.0 (1.4 for Cairo)"), N_("VERSION")); // xxP
     gapp->add_main_option_entry(T::OptionType::BOOL,     "export-text-to-path",    'T', N_("Convert text to paths (PS/EPS/PDF/SVG)"),                                   ""); // xxP
     gapp->add_main_option_entry(T::OptionType::BOOL,     "export-latex",          '\0', N_("Export text separately to LaTeX file (PS/EPS/PDF)"),                        ""); // xxP
     gapp->add_main_option_entry(T::OptionType::BOOL,     "export-ignore-filters", '\0', N_("Render objects without filters instead of rasterizing (PS/EPS/PDF)"),       ""); // xxP

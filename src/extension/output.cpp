@@ -12,6 +12,7 @@
 #include "output.h"
 
 #include "document.h"
+#include "inkscape.h"
 
 #include "io/sys.h"
 #include "implementation/implementation.h"
@@ -23,6 +24,20 @@
 
 namespace Inkscape {
 namespace Extension {
+
+bool Output::prefs()
+{
+    return prefs(false);
+}
+
+bool Output::prefs(bool settings)
+{
+    if (!INKSCAPE.use_gui() || !get_gui()) return true;
+    if (!loaded()) set_state(STATE_LOADED);
+    if (!loaded()) return false;
+    if (auto result = imp->output_prefs(this, settings)) return *result;
+    return Extension::prefs();
+}
 
 /**
     \brief    Builds an Output object from a XML description

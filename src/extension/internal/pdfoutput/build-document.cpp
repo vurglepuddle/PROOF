@@ -365,10 +365,13 @@ std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> Document::plac
 
 void Document::write()
 {
-    if (!_placed_error.empty()) throw PlacedPagesFailed(_placed_error);
-    _gen.write();
+    if (!_placed_error.empty()) throw PlacedPagesFailed(_placed_error, false);
     std::string error;
-    if (!splice_placed_pages(_filename, _placed, error)) {
+    if (_pdf17 && !placed_pages_pdf17_compatible(_placed, error)) {
+        throw PlacedPagesFailed(error, false);
+    }
+    _gen.write();
+    if (!splice_placed_pages(_filename, _placed, error, _pdf17)) {
         throw PlacedPagesFailed(error);
     }
 }

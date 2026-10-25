@@ -21,6 +21,7 @@ class PdfOutput : public Inkscape::Extension::Implementation::Implementation
 {
 public:
     bool check(Inkscape::Extension::Extension *module) override;
+    std::optional<bool> output_prefs(Inkscape::Extension::Output *module, bool settings) override;
     void save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename) override;
     static void init();
     static bool supports_pdf17();

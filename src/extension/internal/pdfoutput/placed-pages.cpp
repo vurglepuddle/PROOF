@@ -48,13 +48,15 @@ std::string number(double v)
 
 /// Every object `root` refers to in `xref`, and those they refer to, in the order found. A page
 /// tree's parent isn't followed. False when there are too many.
-bool reach(Object const &root, XRef *xref, std::set<std::pair<int, int>> &seen, std::vector<Ref> &found)
+bool reach(Object const &root, XRef *xref, std::set<std::pair<int, int>> &seen, std::vector<Ref> &found,
+           std::string *incompatible = nullptr)
 {
     std::vector<Object> todo;
     todo.push_back(root.copy());
     while (!todo.empty()) {
         Object o = std::move(todo.back());
         todo.pop_back();
+        // Poppler writes UTF-8 BOM strings as UTF-16BE, which PDF 1.7 supports.
         if (o.isRef()) {
             auto const r = o.getRef();
             if (!seen.insert({r.num, r.gen}).second) continue;
@@ -65,6 +67,11 @@ bool reach(Object const &root, XRef *xref, std::set<std::pair<int, int>> &seen, 
             for (int i = 0; i < o.arrayGetLength(); ++i) todo.push_back(o.getArray()->getNF(i).copy());
         } else if (Dict *d = o.isDict() ? o.getDict() : o.isStream() ? o.getStream()->getDict() : nullptr) {
             for (int i = 0; i < d->getLength(); ++i) {
+                std::string_view const key = d->getKey(i);
+                if (incompatible && (key == "UseBlackPtComp" || key == "AF" || key == "AFRelationship")) {
+                    *incompatible = "/" + std::string(key);
+                    return false;
+                }
                 if (std::string_view(d->getKey(i)) != "Parent") todo.push_back(d->getValNF(i).copy());
             }
         }
@@ -91,7 +98,42 @@ struct Source
 
 } // namespace
 
-bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const &pages, std::string &error)
+bool placed_pages_pdf17_compatible(std::vector<PlacedPage> const &pages, std::string &error)
+{
+    error.clear();
+    if (pages.empty()) return true;
+    if (!globalParams) globalParams = _POPPLER_NEW_GLOBAL_PARAMS();
+    std::map<std::string, std::shared_ptr<PDFDoc>> sources;
+    std::map<std::string, std::set<std::pair<int, int>>> visited;
+    for (auto const &p : pages) {
+        auto &pdf = sources[p.file];
+        if (!pdf) pdf = _POPPLER_MAKE_SHARED_PDFDOC(p.file.c_str());
+        if (!pdf || !pdf->isOk() || p.index < 1 || p.index > pdf->getNumPages()) {
+            error = "a placed file's selected page can't be read: " + p.file;
+            return false;
+        }
+        auto page = pdf->getPage(p.index);
+        std::vector<Ref> found;
+        std::string incompatible;
+        auto check = [&](Object const &object) {
+            return reach(object, pdf->getXRef(), visited[p.file], found, &incompatible);
+        };
+        bool ok = true;
+        if (auto resources = page->getResourceDictObject()) ok = check(*resources);
+        if (auto group = page->getGroup(); ok && group) {
+            Object copy(group->copy(pdf->getXRef()));
+            ok = check(copy);
+        }
+        if (!ok) {
+            error = incompatible.empty() ? "a placed page uses too many objects: " + p.file
+                                        : "a placed PDF uses PDF 2.0 features: " + incompatible;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const &pages, std::string &error, bool pdf17)
 {
     error.clear();
     if (pages.empty()) return true;
@@ -144,6 +186,7 @@ bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const 
         std::set<std::pair<int, int>> seen;
         std::vector<Ref> found;
         bool ok = true;
+        std::string incompatible;
         // A file may supply several different pages. Copy the union of their resources,
         // once, with one renumbering offset for the file, including shared fonts/pictures.
         for (auto const &selected : pages) {
@@ -155,16 +198,16 @@ bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const 
                 return false;
             }
             if (auto *resources = page->getResourceDictObject()) {
-                ok = ok && reach(*resources, pdf->getXRef(), seen, found);
+                ok = ok && reach(*resources, pdf->getXRef(), seen, found, pdf17 ? &incompatible : nullptr);
             }
             if (auto *group = page->getGroup()) {
-                for (int i = 0; ok && i < group->getLength(); ++i) {
-                    ok = reach(group->getValNF(i), pdf->getXRef(), seen, found);
-                }
+                Object copy(group->copy(pdf->getXRef()));
+                ok = ok && reach(copy, pdf->getXRef(), seen, found, pdf17 ? &incompatible : nullptr);
             }
         }
         if (!ok) {
-            error = "a placed page uses too many objects: " + p.file;
+            error = incompatible.empty() ? "a placed page uses too many objects: " + p.file
+                                        : "a placed PDF uses PDF 2.0 features: " + incompatible;
             return false;
         }
         Source source{pdf, unsigned(next - 1)};
@@ -234,7 +277,14 @@ bool splice_placed_pages(std::string const &path, std::vector<PlacedPage> const 
     return true;
 }
 #else
-bool splice_placed_pages(std::string const &, std::vector<PlacedPage> const &pages, std::string &error)
+bool placed_pages_pdf17_compatible(std::vector<PlacedPage> const &pages, std::string &error)
+{
+    if (pages.empty()) return true;
+    error = "this build can't put placed pages into a PDF";
+    return false;
+}
+
+bool splice_placed_pages(std::string const &, std::vector<PlacedPage> const &pages, std::string &error, bool)
 {
     if (pages.empty()) return true;
     error = "this build can't put placed pages into a PDF";

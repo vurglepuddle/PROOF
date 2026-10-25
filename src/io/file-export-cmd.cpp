@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <boost/algorithm/string.hpp>
 #include <giomm/file.h>
 #include <glibmm/convert.h>
@@ -62,7 +63,7 @@ InkFileExportCmd::InkFileExportCmd()
     , export_ignore_filters(false)
     , export_text_to_path(false)
     , export_ps_level(3)
-    , export_pdf_level("2.0")
+    , export_pdf_level()
     , export_latex(false)
     , export_id_only(false)
     , export_background_opacity(-1) // default is unset != actively set to 0
@@ -917,37 +918,16 @@ int InkFileExportCmd::do_export_ps_pdf(SPDocument *doc, std::string const &filen
     }
 
     // handle --export-pdf-version
-    if (ai_interchange) {
-        // The generic CLI defaults to PDF 2.0. This format deliberately uses
-        // Cairo's supported older versions, regardless of that generic default.
-        extension.set_param_optiongroup("PDFversion", export_pdf_level == "1.4" ? "PDF-1.4" : "PDF-1.5");
-    } else if (mime_type == "application/pdf") {
-        bool set_export_pdf_version_fail = true;
-        const gchar *pdfver_param_name = "PDFversion";
-        if (!export_pdf_level.empty()) {
-            // combine "PDF " and the given command line
-            std::string version_gui_string = std::string("PDF-") + export_pdf_level.raw();
-            try {
-                // first, check if the given pdf version is selectable in the ComboBox
-                if (extension.get_param_optiongroup_contains("PDFversion", version_gui_string.c_str())) {
-                    extension.set_param_optiongroup(pdfver_param_name, version_gui_string.c_str());
-                    set_export_pdf_version_fail = false;
-                } else {
-                    g_warning("Desired PDF export version \"%s\" not supported! Hint: input one of the versions found in the pdf export dialog e.g. \"2.0\".",
-                              export_pdf_level.c_str());
-                }
-            } catch (...) {
-                // can be thrown along the way:
-                // throw Extension::param_not_exist();
-                // throw Extension::param_not_enum_param();
-                g_warning("Parameter or Enum \"%s\" might not exist", pdfver_param_name);
-            }
+    if (mime_type == "application/pdf") {
+        // Defaults are independent of the profile and of earlier exports in this process.
+        auto const default_version = ai_interchange ? "1.5" :
+            std::string_view(extension.get_id()) == "org.inkscape.output.pdf.cairorenderer" ? "1.4" : "2.0";
+        auto const version = "PDF-" + (export_pdf_level.empty() ? std::string(default_version) : export_pdf_level.raw());
+        if (!extension.get_param_optiongroup_contains("PDFversion", version.c_str())) {
+            std::cerr << "PDF export version " << version << " is not supported by " << extension.get_id() << std::endl;
+            return 1;
         }
-
-        // set default pdf export version to 1.4, also if something went wrong
-        if(set_export_pdf_version_fail) {
-            extension.set_param_optiongroup(pdfver_param_name, "PDF-1.4");
-        }
+        extension.set_param_optiongroup("PDFversion", version.c_str());
     }
 
     if (mime_type == "image/x-postscript" || mime_type == "image/x-e-postscript") {

@@ -4,7 +4,7 @@ and pypdf).
 Two small PDFs are written here: one with a spot ink, CMYK numbers and type on page 1 and a
 CMYK picture on page 2, one with a separate CMYK picture. A drawing places them by link,
 pages 1 and 2 each twice, and is exported with the built editor,
-as PDF 2.0 (whose cross-references are a stream) and as PDF 1.4 (a table). The page must go into
+as PDF 2.0 and PDF 1.7 (both use a cross-reference stream). The page must go into
 the PDF as it is: the spot ink by its name, the numbers and the picture's samples unchanged, the
 font kept and shared across the pages, one form per repeated page, and no stand-in left (see
 src/extension/internal/pdfoutput/placed-pages.h). The file must read strictly and draw without
@@ -229,7 +229,7 @@ def main():
         return {"orange": r > 200 and 70 < g < 210 and b < 90, "yellow": r > 200 and g > 200 and b < 90,
                 "black": max(rgb) < 80, "cyan": r < 90 and g > 120 and b > 180, "white": min(rgb) > 240}[what]
 
-    for version in ("2.0", "1.4"):
+    for version in ("2.0", "1.7"):
         name = f"PDF {version}"
         target = out / f"placed-{version}.pdf"
         r = run(f"export-{version}", [exe, svg, f"--export-filename={target}", f"--export-pdf-version={version}"])

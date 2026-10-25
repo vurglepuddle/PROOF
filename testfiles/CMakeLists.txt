@@ -103,6 +103,7 @@ set(TEST_SOURCES
     page-management
     path-reverse-lpe-test
     preferences-test
+    pdf-export-settings-test
     rebase-hrefs-test
     stream-test
     style-elem-test

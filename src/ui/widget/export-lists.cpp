@@ -9,9 +9,12 @@
 
 #include "export-lists.h"
 
+#include <string_view>
+
 #include <glibmm/convert.h>
 #include <glibmm/i18n.h>
 #include <gtkmm/label.h>
+#include <gtkmm/button.h>
 #include <gtkmm/menubutton.h>
 #include <gtkmm/spinbutton.h>
 #include <gtkmm/viewport.h>
@@ -49,7 +52,14 @@ void ExtensionList::init()
     _popover_signal = _pref_popover->signal_show().connect([=, this]() {
         _pref_holder->unset_child();
         if (auto ext = getExtension()) {
-            if (auto gui = ext->autogui(nullptr, nullptr)) {
+            if (std::string_view(ext->get_id()) == "org.inkscape.output.pdf.capypdf") {
+                auto button = Gtk::make_managed<Gtk::Button>(_("PDF Options…"));
+                button->signal_clicked().connect([this, ext] {
+                    _pref_popover->popdown();
+                    ext->prefs(true);
+                });
+                _pref_holder->set_child(*button);
+            } else if (auto gui = ext->autogui(nullptr, nullptr)) {
                 _pref_holder->set_child(*gui);
                 _pref_popover->grab_focus();
             }

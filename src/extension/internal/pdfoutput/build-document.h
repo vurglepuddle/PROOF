@@ -88,7 +88,9 @@ std::vector<PaintLayer> get_paint_layers(SPStyle const *style, SPStyle const *co
 /// PROOF: the placed pages couldn't be put into the PDF; it lacks them (placed-pages.h).
 struct PlacedPagesFailed : std::runtime_error
 {
-    using std::runtime_error::runtime_error;
+    explicit PlacedPagesFailed(std::string const &message, bool written = true)
+        : std::runtime_error(message), file_written(written) {}
+    bool file_written;
 };
 
 /// The bundled C++ wrapper does not check add_separation's result. Keep the
@@ -132,6 +134,7 @@ public:
     /// Writes the file; then the placed pages go into it (placed-pages.h). Throws
     /// PlacedPagesFailed when they can't, the rest of the file written.
     void write();
+    void set_pdf17(bool value) { _pdf17 = value; }
 
     void set_filter_resolution(unsigned res = 0) { _filter_resolution = res; }
     unsigned get_filter_resolution() const { return _filter_resolution; }
@@ -238,6 +241,7 @@ private:
 
     unsigned _filter_resolution = 0; // Do not rasterise
     bool _text_enabled = true;
+    bool _pdf17 = false;
 };
 
 } // namespace Inkscape::Extension::Internal::PdfBuilder
