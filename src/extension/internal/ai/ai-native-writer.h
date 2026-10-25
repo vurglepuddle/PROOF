@@ -35,6 +35,9 @@
  * Picture slice crops retain the complete raster or link behind an editable viewport clip.
  * The modern form writes point type and area type as Illustrator's stories
  * (ai-native-writer-text.h).
+ * The modern form names objects, clipping paths and layers by their labels as Illustrator does:
+ * an XML id (`/XMLUID : (id) ; (AI10_ArtUID) ,`) in the ArtDictionary after each, ahead of any
+ * mask, unique in the document (xml_id()). Illustrator 7 has no names but its layers'.
  * Auto/symmetric points become smooth; Illustrator chooses an open path's first-point
  * type because the initial move has no separate flag.
  * Anything else in the document is named in `refused`, and then no records are written:

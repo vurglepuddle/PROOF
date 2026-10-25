@@ -1090,9 +1090,11 @@ XML::Node *Builder::layer(Node const &n)
     if (!o.preview) e->setAttribute("proof:layer-preview", "false");
     if (o.dim) e->setAttribute("proof:layer-dim", std::to_string(*o.dim));
     if (n.clipped) {
-        // A layer's clipping path clips its other objects: a clip group inside the layer.
+        // A layer's clipping path clips its other objects: a clip group inside the layer, marked so
+        // that saving doesn't name it (object_name()).
         auto clip = create("svg:g");
         clip->setAttribute("inkscape:label", "Clip Group");
+        clip->setAttribute("proof:layer-clip", "true");
         children(clip, n.children, true);
         append(e, clip);
     } else {

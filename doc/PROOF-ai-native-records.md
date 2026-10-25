@@ -62,7 +62,7 @@ reader (`crates/eps/src/import/ai/` at `4cf912f`, MIT OR Apache-2.0). Rows marke
 | `a b Xd`, then `6 () XW` | Ends the state a group is written with after it closes. The group's transparency is what holds at `Xd`, whether an `Xy` came before it or not. A group that ends with `9 () XW` has no state of its own. | VectorCraft (`939bc02f`), checked on **2026-10-13** |
 | `(plug-in) a b n XP`, then n bytes on `%` lines | Ends an object a plug-in keeps live. Two groups come before it: what the object was made from, on `%_` lines, and what the plug-in drew. Only the second is art. Seen: `Pathfinder Suite` (compound shape), `Adobe Path Blends`, `Adobe Calligraphic Brush Tool`, `Adobe ArtOnPath Brush Tool`, `Adobe PatternOnPath Brush Tool`, `Adobe Deform Plugin` (envelope). | **2026-10-13 round**; the envelope from the second gauntlet |
 | `n (style) XW` | Style marker. `1` means the object's drawn look came first and the object itself follows on `%_` lines. | VectorCraft |
-| `/ArtDictionary : … ;` | Follows an object. `AIArtName`, or `AI10_ArtUID` (an XML id: `_` is a space, `_xHH_` an escaped character), gives its name. `BBAccumRotation` is the turned box's angle. | VectorCraft; angle from PROOF's transform-box work |
+| `/ArtDictionary : … ;` | Follows an object. `AIArtName`, or `AI10_ArtUID` (an XML id: `_` is a space, `_xHH_` an escaped character, a character past U+FFFF two of them), gives its name. `BBAccumRotation` is the turned box's angle. | VectorCraft; angle from PROOF's transform-box work; the id's spelling and where it goes from Illustrator 29.2.1's control, [object names](#object-names-2026-10-25) |
 | `g`/`G` | Grey, where 1 is white. | VectorCraft |
 | `k`/`K` | CMYK. | VectorCraft |
 | `Xa`/`XA` | RGB: `c m y k r g b`, where the CMYK values are its equivalent. | VectorCraft |
@@ -3192,3 +3192,93 @@ with justified paragraphs, `f8a8c3d717`, now comes in natively (its page before)
 the modern writer reads it back and its complete save reopens natively; 31 more
 copies with type, through complete saves, keep their v1 results, one gate measure
 a little closer (lightness 0.004969 to 0.004961), and the lite set holds.
+
+## Object names (2026-10-25)
+
+Illustrator keeps an object's name as an XML id in the `/ArtDictionary` written
+after the object:
+
+```
+%_/ArtDictionary :
+%_/XMLUID : (Box_x5F_2_x5F_) ; (AI10_ArtUID) ,
+%_;
+%_
+```
+
+How a name becomes its id, from Illustrator 29.2.1's control (36 names on every
+kind of object, saved from a script):
+
+- a space is `_`;
+- `_` itself, and any character an XML 1.0 (fifth edition) name can't hold at that
+  place, is `_x`, its code in upper-case hexadecimal without leading zeros, and `_`:
+  a leading `1` is `_x31_`, `,` is `_x2C_`, `\` is `_x5C_`, `—` is `_x2014_`;
+- other letters stay as they are, `Ü` or `日本` in UTF-8;
+- a character past U+FFFF is its two UTF-16 halves, each escaped: 🌟 is
+  `_xD83C__xDF1F_`;
+- spaces at the end are dropped, those at the start kept;
+- a second object of the same name gets `_`, fifty digits and `_` after its id,
+  which the reader drops.
+
+Where the dictionary goes:
+
+| Object | After |
+|---|---|
+| Path | its paint operator |
+| Compound path | `*U` |
+| Group, clipping group | `U` or `Q`, before `9 () XW` |
+| Clipping path | `W n` |
+| Type | `/AI11Text … ;` and a blank line, before `0 0 Xd` |
+| Picture | `%AI5_EndPlace`, or `%AI5_EndRaster` and `N` |
+| Layer | `Ln` (and its `AE`), before `0 A` |
+
+An object with an opacity mask has one dictionary, its name first and then
+`/Mask :`: so are all 14 such dictionaries in the copies (a script can't make an
+opacity mask, so the control has none). The older `/UnicodeString (AIArtName)` is
+still read; none of the copies has one.
+
+**Reading.** `xml_name()` (`ai-native-reader.cpp`) took each escape alone, so a
+name with a character past U+FFFF came in broken (`Star  xD83C  xDF1F `). It now
+joins a high half with the low half that follows it; a half alone is U+FFFD.
+
+**Writing.** Native saving dropped every object's name. `xml_id()`
+(`ai-native-writer-string.h`) is the inverse of `xml_name()`, and the modern
+writer (`art_dictionary()`, `ai-native-writer.cpp`) now names each object by its
+label, as the Layers panel shows it, in the places above: paths, compound paths,
+groups, clipping groups and their clipping paths, type, pictures, layers, and the
+art of a pattern's tile on its hidden `%_` lines. An object with a clip is written
+in a clipping group, which takes its name. A clone is written as a copy of what it
+shows; the copy takes the clone's name, or, when the clone has none, the name of
+what it shows, as a copy in Illustrator does. When the import's wrapper about a
+masked object and the object inside both have names (the wrapper's own, or a
+clone's that shows it), the wrapper stays a group so that both are kept. The
+group Illustrator keeps a mask's art in takes the name of the mask's one group, as
+Illustrator writes it (after `%_U` in the art of 32 masks in the copies).
+The group the import makes of a clipped layer's objects (labelled "Clip Group",
+marked `proof:layer-clip`) isn't named unless renamed: in Illustrator that
+clipping is the layer's. Ids are
+unique in the document as Illustrator makes them. An id's bytes past ASCII are
+octal escapes in the PostScript string, which Illustrator reads as its own raw
+bytes. Illustrator 7 output still names only its layers (`Ln`).
+
+**Illustrator 29.2.1.** PROOF imports the control with all 36 names. PROOF's save
+of it opens in Illustrator with the same 36 names, kinds and order as Illustrator's
+own file. A drawing made in PROOF (every kind above, a 409-character name, a named
+and an unnamed clone, a mask, a sublayer, names that need escapes) opens in
+Illustrator with every name; the tile's art can't be listed there, and PROOF reads
+it back.
+
+**Checks.** Reader `XmlNames` (both halves, a half alone, `Box_x5F_2_x5F_`);
+importer `ObjectNamesAreTheXmlIdsIllustratorWrites` (the control's forms, both
+ways), `WrittenObjectNamesAreIllustratorsAndReadBack` (where each dictionary
+lands, its 22 ids and every label read back) and
+`WrittenNamesOfMaskWrappersClippedLayersAndIllustrator7` (wrappers, a named clone
+of an unnamed wrapper, a mask's named group, the import's clipped-layer group and a
+user's group of that name). Reader 79, importer 237 pass (three opt-in skips
+between them); the focused suites and every export group pass. 31 copies that
+name objects in each of these ways (on a mask, a pattern's art, a clipping path,
+type and pictures, outside ASCII, made unique, 200 or more) went through
+`ai-writer-census.py --complete-saves`: the modern writer reads all 31 back, and 30
+save and reopen natively with their v1 page counts and 57 of their 60 gate measures
+to the digit. The other three moved by less than 0.0003, two of them closer, in
+two copies with type and inks and no masks: the PDF text and plate changes since
+v1. The 135-page copy, alone with its v1 serial retry: NATIVE, 135 of 135 pages, both gate measures as in v1, 965 s. No broad run.

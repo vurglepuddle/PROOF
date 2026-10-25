@@ -70,6 +70,10 @@ corners or close control. If the image cannot be read, a plain PROOF title and
 the loading indicator still appear; failure to create the optional thread/window
 does not prevent startup.
 
+The splash registers the executable's embedded `APPLICATION_ICON` at Windows'
+large and small icon sizes. This gives Windows the PROOF mark for the early
+startup window, before GTK creates the editor window.
+
 Other platforms keep their existing startup behaviour for now. Large-file
 loading feedback in an already open editor remains separate work.
 

@@ -430,7 +430,8 @@ struct Limits
 std::optional<Document> read(std::string_view records, std::string &error, Limits const &limits = {});
 
 /// An object name from its XML id (AI10_ArtUID): '_' is a space and "_xHH_" a
-/// character; the "_000..._" suffix that makes ids unique goes.
+/// character (one beyond U+FFFF two, its UTF-16 halves); the "_000..._" suffix that
+/// makes ids unique goes. The writer's xml_id() is its inverse.
 std::string xml_name(std::string_view id);
 
 /// Text from record bytes: BOM-marked UTF-16BE, otherwise UTF-8 then Windows-1252.

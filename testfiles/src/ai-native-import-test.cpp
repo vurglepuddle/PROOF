@@ -7200,6 +7200,163 @@ TEST_F(AiNativeImportTest, MasksOutsideTheWrittenSubsetAreRefusedByName)
     EXPECT_TRUE(AN::write_records(doc.get()).refused.empty());
 }
 
+/// Every label in a document but its layers', artboards' and patterns', as they are written in it.
+std::multiset<std::string> object_labels(XML::Node *root)
+{
+    std::multiset<std::string> out;
+    sp_repr_visit_descendants(root, [&](XML::Node *n) {
+        auto const kind = std::string_view(n->name());
+        auto const *label = n->attribute("inkscape:label");
+        if (label && kind != "inkscape:page" && kind != "svg:view" && kind != "svg:pattern" &&
+            attr(n, "inkscape:groupmode") != "layer") {
+            out.insert(label);
+        }
+        return true;
+    });
+    return out;
+}
+
+TEST_F(AiNativeImportTest, WrittenObjectNamesAreIllustratorsAndReadBack)
+{
+    // Each kind of object, named as Illustrator 29.2.1's control names them (2026-10-24): paths,
+    // a compound path, groups, a clipping group and its path, type, a picture, a masked object, clones,
+    // a pattern's art and a sublayer, with names that test their encoding.
+    std::string const unicode = "\xc3\x9c" "n" "\xc3\xaf" "c" "\xc3\xb6" "d" "\xc3\xa9 \xe2\x80\x94 \xe2\x9c\x93 \xe6\x97\xa5\xe6\x9c\xac";
+    std::string const star = "Star \xf0\x9f\x8c\x9f";
+    auto doc = svg_document(
+        R"(<defs><clipPath id="c"><rect inkscape:label="Clip shape" x="100" y="10" width="30" height="30"/></clipPath>)"
+        R"(<mask id="m" maskUnits="userSpaceOnUse"><rect x="150" y="10" width="20" height="20" fill="#808080"/></mask>)"
+        R"(<pattern id="tile" inkscape:label="Dots" patternUnits="userSpaceOnUse" width="10" height="10">)"
+        R"(<rect inkscape:label="Tile art" width="5" height="5" style="fill:#ff0000"/></pattern></defs>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art">)"
+        R"(<rect id="plain" inkscape:label="Plain name" x="10" y="10" width="10" height="10"/>)"
+        R"(<rect inkscape:label=")" + unicode + R"(" x="25" y="10" width="10" height="10"/>)"
+        R"(<rect inkscape:label=")" + star + R"(" x="40" y="10" width="10" height="10"/>)"
+        R"(<rect inkscape:label="Twin" x="55" y="10" width="10" height="10"/>)"
+        R"(<rect inkscape:label="Twin" x="70" y="10" width="10" height="10"/>)"
+        R"(<rect inkscape:label="Box_2_" x="85" y="10" width="10" height="10"/>)"
+        R"(<rect inkscape:label="  leading and trailing  " x="10" y="25" width="10" height="10"/>)"
+        R"(<rect x="25" y="25" width="10" height="10"/>)"
+        R"(<g inkscape:label="Named group"><rect inkscape:label="Inside" x="40" y="25" width="10" height="10"/></g>)"
+        R"x(<g inkscape:label="Named clip" clip-path="url(#c)"><rect inkscape:label="Clipped art" x="95" y="5" width="40" height="40"/></g>)x"
+        R"(<path inkscape:label="Compound name" d="M 10 50 H 30 V 70 H 10 Z M 15 55 V 65 H 25 V 55 Z"/>)"
+        R"(<text inkscape:label="Point type name" xml:space="preserve" style="font-size:12px;font-family:Arial">)"
+        R"(<tspan x="40" y="60">Point</tspan></text>)"
+        R"(<image inkscape:label="Embedded picture" x="80" y="50" width="5" height="5" href="data:image/png;base64,)"
+        R"(iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="/>)"
+        R"x(<rect inkscape:label="Masked object" x="145" y="5" width="30" height="30" fill="#0000ff" mask="url(#m)"/>)x"
+        R"(<use inkscape:label="Clone name" href="#plain" x="0" y="70"/><use href="#plain" x="15" y="70"/>)"
+        R"x(<rect x="100" y="60" width="20" height="20" style="fill:url(#tile)"/>)x"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Sub layer, named">)"
+        R"(<rect inkscape:label="In sublayer" x="130" y="60" width="10" height="10"/></g></g>)");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &r = written.records;
+    auto const uid = [](std::string const &id) { return "%_/XMLUID : (" + id + ") ; (AI10_ArtUID) ,\n"; };
+    // Where Illustrator puts each: a layer's after Ln, a clipping path's after its W n, type's
+    // between its records and its ending, a masked object's ahead of its mask.
+    EXPECT_NE(r.find("(Art) Ln\n%_/ArtDictionary :\n" + uid("Art") + "%_;\n%_\n0 A\n"), std::string::npos) << r;
+    EXPECT_NE(r.find("h\nW\nn\n%_/ArtDictionary :\n" + uid("Clip_shape")), std::string::npos);
+    EXPECT_NE(r.find(";\n\n%_/ArtDictionary :\n" + uid("Point_type_name") + "%_;\n%_\n0 0 Xd\n"), std::string::npos);
+    EXPECT_NE(r.find(uid("Masked_object") + "%_/Mask :\n"), std::string::npos);
+    EXPECT_NE(r.find("U\n%_/ArtDictionary :\n" + uid("Named_group")), std::string::npos);
+    EXPECT_NE(r.find("*U\n%_/ArtDictionary :\n" + uid("Compound_name")), std::string::npos);
+    // A second of one name is made unique as Illustrator makes it.
+    EXPECT_NE(r.find(uid("Twin")), std::string::npos);
+    EXPECT_NE(r.find(uid("Twin_" + std::string(49, '0') + "1_")), std::string::npos);
+    EXPECT_NE(r.find(uid("Plain_name_" + std::string(49, '0') + "1_")), std::string::npos);
+    // In a pattern's art, on hidden lines once.
+    EXPECT_NE(r.find(uid("Tile_art")), std::string::npos);
+    EXPECT_EQ(r.find("%_%_"), std::string::npos);
+    // Two layers and twenty objects; the unnamed rectangle and the tile's user are none.
+    EXPECT_EQ(occurrences(r, "(AI10_ArtUID)"), 22u);
+
+    auto b = make(r);
+    ASSERT_TRUE(b);
+    auto *root = b->document->getReprRoot();
+    std::multiset<std::string> const expected{"Plain name", unicode, star, "Twin", "Twin", "Box_2_",
+                                              "  leading and trailing", "Named group", "Inside", "Named clip",
+                                              "Clip shape", "Clipped art", "Compound name", "Point type name",
+                                              "Embedded picture", "Masked object", "Clone name", "Plain name",
+                                              "Tile art", "In sublayer"};
+    EXPECT_EQ(object_labels(root), expected);
+    auto const labelled = [&](char const *kind, std::string const &label) {
+        auto const all = elements(root, kind);
+        return std::any_of(all.begin(), all.end(), [&](XML::Node *n) { return attr(n, "inkscape:label") == label; });
+    };
+    EXPECT_TRUE(labelled("svg:text", "Point type name"));
+    EXPECT_TRUE(labelled("svg:image", "Embedded picture"));
+    EXPECT_TRUE(labelled("svg:g", "Named clip"));
+    for (auto *clip : elements(root, "svg:clipPath")) EXPECT_EQ(attr(clip->firstChild(), "inkscape:label"), "Clip shape");
+    for (auto *tile : elements(root, "svg:pattern")) {
+        if (tile->firstChild()) EXPECT_EQ(attr(tile->firstChild(), "inkscape:label"), "Tile art");
+    }
+}
+
+TEST_F(AiNativeImportTest, WrittenNamesOfMaskWrappersClippedLayersAndIllustrator7)
+{
+    // The import's wrapper about a masked object names it where the object has no name of its own;
+    // where both have one, the wrapper is a group of its own, so that both stay. A clone's name is
+    // the wrapper's it shows.
+    auto doc = svg_document(
+        R"(<defs><mask id="m" maskUnits="userSpaceOnUse"><rect width="20" height="20" fill="#808080"/></mask>)"
+        // Illustrator keeps a mask's art in a group, named or not.
+        R"(<mask id="g" maskUnits="userSpaceOnUse"><g inkscape:label="Mask group">)"
+        R"(<rect width="20" height="20" fill="#808080"/></g></mask>)"
+        R"(<clipPath id="c"><rect width="50" height="50"/></clipPath></defs>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Art">)"
+        R"x(<g inkscape:label="Wrapper" mask="url(#m)"><rect width="30" height="30" fill="#ff0000"/></g>)x"
+        R"x(<g inkscape:label="Outer" mask="url(#m)"><rect inkscape:label="Inner" x="40" width="30" height="30" fill="#00ff00"/></g>)x"
+        R"x(<g id="shown" mask="url(#m)"><rect inkscape:label="Shown" x="80" width="30" height="30" fill="#0000ff"/></g>)x"
+        R"(<use inkscape:label="Clone" href="#shown" y="40"/>)"
+        R"x(<rect inkscape:label="Masked by group" x="120" width="30" height="30" mask="url(#g)"/>)x"
+        R"(</g>)"
+        // The group the import makes of a clipped layer's objects is no object in Illustrator; a
+        // group of the user's by that name is one.
+        R"(<g inkscape:groupmode="layer" inkscape:label="Clipped">)"
+        R"x(<g inkscape:label="Clip Group" proof:layer-clip="true" clip-path="url(#c)">)x"
+        R"(<rect inkscape:label="Kept" width="60" height="60"/></g></g>)"
+        R"(<g inkscape:groupmode="layer" inkscape:label="Own">)"
+        R"x(<g inkscape:label="Clip Group" clip-path="url(#c)"><rect x="10" width="60" height="60"/></g></g>)x");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const written = AN::write_records(doc.get());
+    ASSERT_TRUE(written.refused.empty()) << written.refused.front();
+    auto const &r = written.records;
+    auto const uid = [](std::string const &id) { return "%_/XMLUID : (" + id + ") ; (AI10_ArtUID) ,\n"; };
+    // The wrapper's name and mask on the rectangle, as Illustrator had them.
+    EXPECT_NE(r.find("f\n%_/ArtDictionary :\n" + uid("Wrapper") + "%_/Mask :\n"), std::string::npos) << r;
+    EXPECT_NE(r.find("U\n%_/ArtDictionary :\n" + uid("Outer") + "%_/Mask :\n"), std::string::npos);
+    EXPECT_NE(r.find(uid("Inner")), std::string::npos);
+    // The clone's copy of an unnamed wrapper is a group by the clone's name, and what it holds
+    // keeps its own.
+    EXPECT_NE(r.find("f\n%_/ArtDictionary :\n" + uid("Shown") + "%_/Mask :\n"), std::string::npos);
+    EXPECT_NE(r.find("U\n%_/ArtDictionary :\n" + uid("Clone") + "%_/Mask :\n"), std::string::npos);
+    EXPECT_NE(r.find(uid("Shown_" + std::string(49, '0') + "1_")), std::string::npos);
+    // The name of the mask's group, on the group Illustrator keeps the art in.
+    EXPECT_NE(r.find("%_U\n%_/ArtDictionary :\n" + uid("Mask_group")), std::string::npos);
+    auto const own = r.find(uid("Clip_Group"));
+    EXPECT_NE(own, std::string::npos);
+    EXPECT_EQ(r.find("Clip_Group", own + uid("Clip_Group").size()), std::string::npos);
+    EXPECT_NE(r.find("Q\n%_/ArtDictionary :\n" + uid("Clip_Group")), std::string::npos);
+    EXPECT_NE(r.find(uid("Kept")), std::string::npos);
+    auto b = make(r);
+    ASSERT_TRUE(b);
+    EXPECT_EQ(object_labels(b->document->getReprRoot()),
+              (std::multiset<std::string>{"Wrapper", "Outer", "Inner", "Shown", "Clone", "Shown", "Masked by group",
+                                          "Mask group", "Kept", "Clip Group"}));
+
+    // Illustrator 7 has no object names; its layers keep theirs.
+    auto plain = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Art"><rect inkscape:label="Named" width="10" height="10"/></g>)");
+    ASSERT_TRUE(plain);
+    auto const legacy = AN::write_records(plain.get(), AN::RecordsVersion::Illustrator7);
+    ASSERT_TRUE(legacy.refused.empty()) << legacy.refused.front();
+    EXPECT_EQ(legacy.records.find("ArtDictionary"), std::string::npos);
+    EXPECT_NE(legacy.records.find("(Art) Ln\n"), std::string::npos);
+}
+
 TEST_F(AiNativeImportTest, WrittenRecordsKeepInksDefinedInLabAndRgb)
 {
     auto doc = svg_document(R"(<g inkscape:groupmode="layer" inkscape:label="Ink">)"
@@ -7727,6 +7884,42 @@ TEST(AiNativeWriterStrings, AllDefinedWindows1252CharactersAndStrictRefusals)
                                   "\xc2\x81", "\xc2\x8d", "\xc2\x8f", "\xc2\x90", "\xc2\x9d"}) {
         EXPECT_FALSE(AN::legacy_name_bytes(bad));
     }
+}
+
+TEST(AiNativeWriterStrings, ObjectNamesAreTheXmlIdsIllustratorWrites)
+{
+    // Each as Illustrator 29.2.1 wrote it for the name given in its control (2026-10-24).
+    std::string const unicode = "\xc3\x9c" "n" "\xc3\xaf" "c" "\xc3\xb6" "d" "\xc3\xa9 \xe2\x80\x94 \xe2\x9c\x93 \xe6\x97\xa5\xe6\x9c\xac";
+    std::vector<std::pair<std::string, std::string>> const names{
+        {"Plain name", "Plain_name"},
+        {unicode, "\xc3\x9c" "n" "\xc3\xaf" "c" "\xc3\xb6" "d" "\xc3\xa9__x2014___x2713__\xe6\x97\xa5\xe6\x9c\xac"},
+        {"Star \xf0\x9f\x8c\x9f", "Star__xD83C__xDF1F_"},
+        {"with (parens) / slash & <angle> \"quotes\" 'single'",
+         "with__x28_parens_x29___x2F__slash__x26___x3C_angle_x3E___x22_quotes_x22___x27_single_x27_"},
+        {"123 starts with digit", "_x31_23_starts_with_digit"},
+        {"Box_2_", "Box_x5F_2_x5F_"},
+        {"lit_x41_eral", "lit_x5F_x41_x5F_eral"},
+        {"dash-dot.colon:", "dash-dot.colon:"},
+        {"  leading and trailing  ", "__leading_and_trailing"},
+        {"back\\slash", "back_x5C_slash"},
+        {"Sub layer, named", "Sub_layer_x2C__named"},
+        {"Second layer \xc3\xbc", "Second_layer_\xc3\xbc"},
+    };
+    for (auto const &[name, id] : names) {
+        EXPECT_EQ(AN::xml_id(name), id) << name;
+        // Read back as given, but for the spaces at its end, which Illustrator drops.
+        auto trimmed = name;
+        while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
+        EXPECT_EQ(AN::xml_name(id), trimmed) << name;
+    }
+    // What can't start a name is escaped only there; nothing is no name.
+    EXPECT_EQ(AN::xml_id("-a-1"), "_x2D_a-1");
+    EXPECT_EQ(AN::xml_id(".5"), "_x2E_5");
+    EXPECT_EQ(AN::xml_id(" 1"), "_1");
+    EXPECT_EQ(AN::xml_id("tab\there"), "tab_x9_here");
+    EXPECT_EQ(AN::xml_id("   "), "");
+    EXPECT_EQ(AN::xml_id(""), "");
+    EXPECT_EQ(AN::xml_id("\xff"), "");
 }
 
 TEST_F(AiNativeImportTest, LegacyNamesKeepWindows1252AndDistinctUtf8LookingBytes)

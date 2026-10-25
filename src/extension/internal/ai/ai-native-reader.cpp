@@ -2964,25 +2964,41 @@ std::string xml_name(std::string_view id)
             }
         }
     }
+    // _xHHHH_ at `at`: its number and where it ends.
+    auto escape = [&](std::size_t at) -> std::optional<std::pair<gunichar, std::size_t>> {
+        if (id.substr(at, 2) != "_x") return {};
+        auto const end = id.find('_', at + 2);
+        if (end == std::string_view::npos) return {};
+        auto const hex = id.substr(at + 2, end - at - 2);
+        if (hex.empty() || hex.size() > 6 || !std::all_of(hex.begin(), hex.end(), [](char c) { return g_ascii_isxdigit(c); })) {
+            return {};
+        }
+        return std::pair{static_cast<gunichar>(std::stoul(std::string(hex), nullptr, 16)), end + 1};
+    };
     std::string out;
     std::size_t i = 0;
     while (i < id.size()) {
         if (id[i] == '_') {
-            // _xHHHH_: a character.
-            if (id.substr(i, 2) == "_x") {
-                auto const end = id.find('_', i + 2);
-                if (end != std::string_view::npos) {
-                    auto const hex = id.substr(i + 2, end - i - 2);
-                    if (!hex.empty() && hex.size() <= 6 && std::all_of(hex.begin(), hex.end(), [](char c) { return g_ascii_isxdigit(c); })) {
-                        auto const cp = static_cast<gunichar>(std::stoul(std::string(hex), nullptr, 16));
-                        if (g_unichar_validate(cp)) {
-                            char buf[8];
-                            auto const len = g_unichar_to_utf8(cp, buf);
-                            out.append(buf, len);
-                            i = end + 1;
-                            continue;
-                        }
+            if (auto e = escape(i)) {
+                auto [cp, next] = *e;
+                // A character beyond U+FFFF is its two UTF-16 halves; one alone is no character.
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    auto const low = escape(next);
+                    if (low && low->first >= 0xDC00 && low->first <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low->first - 0xDC00);
+                        next = low->second;
+                    } else {
+                        cp = 0xFFFD;
                     }
+                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                    cp = 0xFFFD;
+                }
+                if (g_unichar_validate(cp)) {
+                    char buf[8];
+                    auto const len = g_unichar_to_utf8(cp, buf);
+                    out.append(buf, len);
+                    i = next;
+                    continue;
                 }
             }
             out.push_back(' ');

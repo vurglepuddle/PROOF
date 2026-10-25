@@ -76,12 +76,20 @@ struct StartupSplash::Impl
             GetMonitorInfoW(launch_monitor(), &monitor);
 
             auto instance = GetModuleHandleW(nullptr);
-            WNDCLASSW klass{};
+            WNDCLASSEXW klass{sizeof(WNDCLASSEXW)};
             klass.lpfnWndProc = procedure;
             klass.hInstance = instance;
+            // Windows task lists can see the splash before GTK creates the editor window.
+            // Give it the same embedded icon at both shell sizes from the first frame.
+            klass.hIcon = static_cast<HICON>(LoadImageW(instance, L"APPLICATION_ICON", IMAGE_ICON,
+                                                       GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+                                                       LR_SHARED));
+            klass.hIconSm = static_cast<HICON>(LoadImageW(instance, L"APPLICATION_ICON", IMAGE_ICON,
+                                                         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+                                                         LR_SHARED));
             klass.hCursor = LoadCursor(nullptr, IDC_APPSTARTING);
             klass.lpszClassName = L"PROOFStartupSplash";
-            RegisterClassW(&klass);
+            RegisterClassExW(&klass);
 
             auto hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, klass.lpszClassName,
                                        L"PROOF is loading", WS_POPUP, monitor.rcWork.left, monitor.rcWork.top,

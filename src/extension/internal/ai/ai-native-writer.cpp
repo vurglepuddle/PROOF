@@ -155,6 +155,17 @@ constexpr std::string_view OPAQUE = "0 1 0 0 0 Xy";
 /// Darken, Lighten, Difference, Exclusion, Hue, Saturation, Color, Luminosity.
 constexpr std::array<int, SP_CSS_BLEND_ENDMODE> BLEND_INDEX{0, 1, 2, 8, 9, 3, 6, 7, 5, 4, 10, 11, 12, 13, 14, 15};
 
+/// What an object is called: its label, as PROOF's Layers panel shows it. The label the import
+/// gives the group it makes of a clipped layer's objects (Builder::layer, `proof:layer-clip`)
+/// isn't one: in Illustrator, that clipping is the layer's, and no object. Renamed, it is.
+std::string object_name(SPItem const *it)
+{
+    auto const *label = it->label();
+    if (!label) return {};
+    if (it->getAttribute("proof:layer-clip") && std::string_view(label) == "Clip Group") return {};
+    return label;
+}
+
 class Writer
 {
 public:
@@ -173,12 +184,14 @@ private:
     void contents(SPObject const *parent);
     void shape(SPShape const *shape, bool clipped);
     void mesh_shape(SPShape const *shape, SPMeshGradient const *mesh, bool clipped, std::function<void()> const &attach);
-    void text_object(SPText const *text, bool clipped, bool masked, std::string const &own);
+    void text_object(SPText const *text, bool clipped, bool masked, std::string const &own,
+                     std::function<void()> const &attach);
     void check_effects(SPItem const *item, std::string_view where = {});
     std::string transparency(SPItem const *item, double alpha = 1.0);
     void end_group(std::string_view own);
     bool open_clip(SPItem const *item);
     std::string opacity_mask(SPItem const *owner);
+    std::string art_dictionary(std::string const &name, SPItem const *mask_owner);
     void clear_state();
     std::vector<std::string> path_types(SPShape const *shape, Geom::PathVector const &paths, Geom::Affine const &affine);
     void path_data(Geom::Path const &path, std::string_view types);
@@ -223,6 +236,10 @@ private:
     std::vector<SPMask const *> _masks;
     /// The object whose mask goes with the next item written: the import's wrapper about it.
     SPItem const *_mask_owner = nullptr;
+    /// The name the next item written goes by instead of its own: its wrapper's, or a clone's.
+    std::string _next_name;
+    /// The XML ids of the names written, which Illustrator keeps unique.
+    std::set<std::string> _ids;
     std::size_t _layers = 0;
     // What has been set already, so each operator is written only when it changes.
     std::string _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule;
@@ -520,8 +537,9 @@ std::optional<std::string> Writer::define_pattern(SPPattern const *root, double 
 
     auto const quoted = ps_string(name);
     std::string records = "%AI3_BeginPattern: " + quoted + "\n" + quoted + " 0 0 " + precise(w) + " " + precise(h) + "\n";
+    // The names in the art are on hidden lines already, and Illustrator hides a line only once.
     std::istringstream lines(art.str());
-    for (std::string line; std::getline(lines, line);) records += "%_" + line + "\n";
+    for (std::string line; std::getline(lines, line);) records += (line.starts_with("%_") ? "" : "%_") + line + "\n";
     records += "E\n%AI3_EndPattern\n";
     _patterns.push_back({root, w, h, name, std::move(records)});
     return name;
@@ -680,6 +698,7 @@ bool Writer::open_clip(SPItem const *item)
         _body << "h\nW\nn\n";
     }
     if (pv.size() > 1) _body << "*U\n";
+    _body << art_dictionary(object_name(shapes[0]), nullptr);
     return true;
 }
 
@@ -890,9 +909,11 @@ void Writer::mesh_shape(SPShape const *s, SPMeshGradient const *mesh, bool clipp
 
 /**
  * A text object as Illustrator writes one: `/AI11Text` naming its story in the text documents
- * (ai-native-writer-text.h), then the ending a plug-in's object has.
+ * (ai-native-writer-text.h), its dictionary (`attach`) unless its clipping group has it, then the
+ * ending a plug-in's object has.
  */
-void Writer::text_object(SPText const *text, bool clipped, bool masked, std::string const &own)
+void Writer::text_object(SPText const *text, bool clipped, bool masked, std::string const &own,
+                         std::function<void()> const &attach)
 {
     if (_legacy) {
         refuse("type (Illustrator 7)");
@@ -923,7 +944,9 @@ void Writer::text_object(SPText const *text, bool clipped, bool masked, std::str
         path_data(art, "");
         _body << "n\nX+\n; /ConfiningPath ,\n";
     }
-    _body << "2 /TextAntialiasing ,\n;\n\n0 0 Xd\n6 () XW\n";
+    _body << "2 /TextAntialiasing ,\n;\n\n";
+    if (!clipped) attach();
+    _body << "0 0 Xd\n6 () XW\n";
 }
 
 /// `where` names what isn't an object (a layer, the document): the modern form writes an
@@ -1003,8 +1026,10 @@ void Writer::clear_state()
 }
 
 /// The object in the import's wrapper about a masked one (Builder::masked): a group with the mask
-/// and nothing else of its own, about one object. Illustrator's mask is the object's own.
-SPItem const *mask_wrapped(SPItem const *it)
+/// and nothing else of its own, about one object. Illustrator's mask is the object's own. A
+/// wrapper's name, `name` (its own, or a clone's it is written for), is the object's, unless both
+/// have one.
+SPItem const *mask_wrapped(SPItem const *it, std::string const &name)
 {
     auto const *group = cast<SPGroup>(it);
     if (!group || group->isLayer() || !group->getMaskObject() || group->getClipObject() || group->isHidden() ||
@@ -1026,6 +1051,7 @@ SPItem const *mask_wrapped(SPItem const *it)
     }
     auto const *inner = cast<SPGroup>(only);
     if (!only || is<SPUse>(only) || only->getMaskObject() || (inner && inner->isLayer())) return nullptr;
+    if (!name.empty() && !object_name(only).empty()) return nullptr;
     return only;
 }
 
@@ -1065,7 +1091,7 @@ bool white_backdrop(SPMask const *mask, SPItem const *first, SPItem const *owner
 
 /**
  * The opacity mask of `owner`, as Illustrator writes one straight after the object it masks: an
- * AI9_Mask in the object's ArtDictionary on hidden lines, linked and not inverted, its art in a
+ * AI9_Mask in the object's ArtDictionary (art_dictionary()), linked and not inverted, its art in a
  * group of its own between X= and X+ (the owner's files, 2026-10-22). The art is written in a
  * state of its own, all of it set; whether what held before holds again after it is the reader's
  * to say (Reader::end_obj puts it back), so the next object sets all of its own too.
@@ -1095,7 +1121,9 @@ std::string Writer::opacity_mask(SPItem const *owner)
     bool const clip = art.empty() || !white_backdrop(mask, art.front(), owner);
     if (!clip) art.erase(art.begin());
     // Illustrator keeps a mask's art in a group, which comes back as one: art that is one group
-    // with nothing of its own is that group, and isn't put in another each time it is written.
+    // with nothing of its own is that group, and isn't put in another each time it is written. Its
+    // name is the group's that Illustrator keeps.
+    std::string group_name;
     if (art.size() == 1) {
         auto const *group = cast<SPGroup>(art.front());
         auto const *style = group ? group->style : nullptr;
@@ -1104,6 +1132,7 @@ std::string Writer::opacity_mask(SPItem const *owner)
             !group->getAttribute("proof:knockout-shape") && scale24(style->opacity.value) >= 1.0 - 1e-6 &&
             style->mix_blend_mode.value == SP_CSS_BLEND_NORMAL && style->isolation.value != SP_CSS_ISOLATION_ISOLATE &&
             !const_cast<SPStyle *>(style)->getFilter()) {
+            group_name = object_name(group);
             art.clear();
             for (auto const &child : group->children) {
                 if (auto const *it = cast<SPItem>(&child)) art.push_back(it);
@@ -1125,21 +1154,41 @@ std::string Writer::opacity_mask(SPItem const *owner)
     _masks.push_back(mask);
     _body << "u\n";
     for (auto const *it : art) item(it);
-    _body << "U\n";
+    _body << "U\n" << art_dictionary(group_name, nullptr);
     end_group(OPAQUE);
     _masks.pop_back();
     std::swap(_body, records);
     std::tie(_to_art, _fill_over, _fill, _stroke_over, _stroke, _stroke_style, _rule, _transparency, _hiding, _locking) =
         std::move(saved);
 
-    auto out = std::format("%_/ArtDictionary :\n%_/Mask :\n%_1 /Bool (Linked) ,\n%_0 /Bool (Inverted) ,\n"
+    auto out = std::format("%_/Mask :\n%_1 /Bool (Linked) ,\n%_0 /Bool (Inverted) ,\n"
                            "%_{} /Bool (Clipping) ,\n%_0 /Bool (Disabled) ,\n%_X=\n", clip ? 1 : 0);
     // A mask in the art is on hidden lines already, and Illustrator hides a line only once.
     std::istringstream lines(records.str());
     for (std::string line; std::getline(lines, line);) out += (line.starts_with("%_") ? "" : "%_") + line + "\n";
-    out += "%_X+\n%_ (Art) ,\n%_; (AI9_Mask) ,\n%_;\n%_\n";
+    out += "%_X+\n%_ (Art) ,\n%_; (AI9_Mask) ,\n";
     clear_state();
     return out;
+}
+
+/**
+ * What Illustrator writes after an object, on hidden lines: its ArtDictionary, with the object's
+ * name, then the opacity mask of `mask_owner`; nothing when it has neither. The name is the XML id
+ * Illustrator keeps it by (xml_id()), unique in the document as Illustrator makes it: a second
+ * "Twin" is `Twin_` and fifty digits `_`, which its reader drops (Illustrator 29.2.1's control,
+ * 2026-10-24). Illustrator 7 has neither.
+ */
+std::string Writer::art_dictionary(std::string const &name, SPItem const *mask_owner)
+{
+    if (_legacy) return {};
+    std::string out;
+    if (auto const base = xml_id(name); !base.empty()) {
+        auto id = base;
+        for (std::size_t n = 1; !_ids.insert(id).second; ++n) id = base + std::format("_{:050}_", n);
+        out += "%_/XMLUID : " + ps_string(id) + " ; (AI10_ArtUID) ,\n";
+    }
+    if (mask_owner) out += opacity_mask(mask_owner);
+    return out.empty() ? out : "%_/ArtDictionary :\n" + out + "%_;\n%_\n";
 }
 
 void Writer::item(SPItem const *it)
@@ -1147,19 +1196,21 @@ void Writer::item(SPItem const *it)
     // Whose mask goes after this object: its own, or that of the import's wrapper about it,
     // which is written as the object alone, as Illustrator had it.
     auto mask_owner = std::exchange(_mask_owner, nullptr);
+    // What it is called: the name of what it is written for (that wrapper, a clone), else its own.
+    auto name = std::exchange(_next_name, {});
+    if (name.empty()) name = object_name(it);
     if (!mask_owner && it->getMaskObject()) mask_owner = it;
     if (mask_owner == it && !_legacy && !_in_pattern) {
-        if (auto const *only = mask_wrapped(it)) {
+        if (auto const *only = mask_wrapped(it, name)) {
             _mask_owner = it;
+            _next_name = name;
             item(only);
             return;
         }
     }
     bool const masked = mask_owner && !_legacy && !_in_pattern && !is<SPUse>(it);
-    // The mask goes straight after the object, before a group's own state.
-    auto const attach = [&] {
-        if (masked) _body << opacity_mask(mask_owner);
-    };
+    // Its dictionary, its name and mask, goes straight after it, before a group's own state.
+    auto const attach = [&] { _body << art_dictionary(name, masked ? mask_owner : nullptr); };
     check_effects(it);
     // Only the object's own: a locked layer's objects aren't each locked.
     bool const hidden = it->isHidden();
@@ -1181,12 +1232,17 @@ void Writer::item(SPItem const *it)
     auto const own = _legacy ? std::string(OPAQUE) : transparency(it);
 
     if (auto use = cast<SPUse>(it)) {
-        // A clone is written as a copy of what it shows, in a group for its own transparency.
+        // A clone is written as a copy of what it shows, in a group for its own transparency. The
+        // copy goes by the clone's name where that group or a clipping group doesn't, else by
+        // the name of what it shows, as a copy in Illustrator does.
         bool const wrap = !clipped && own != OPAQUE;
         if (wrap) _body << "u\n";
+        if (!wrap && !clipped) _next_name = name;
         if (use->child) item(use->child);
+        _next_name.clear();
         if (wrap) {
             _body << "U\n";
+            attach();
             end_group(own);
         }
     } else if (auto group = cast<SPGroup>(it)) {
@@ -1226,7 +1282,7 @@ void Writer::item(SPItem const *it)
             if (!clipped && !records.empty()) attach();
         }
     } else if (auto text = cast<SPText>(it)) {
-        text_object(text, clipped, masked, own);
+        text_object(text, clipped, masked, own, attach);
     } else if (is<SPFlowtext>(it)) {
         refuse("flowed type (SVG 1.2)");
     } else {
@@ -1308,7 +1364,8 @@ void Writer::layer(SPGroup const *group)
     if (!_legacy) _body << "1 ";
     _body << std::format("{} {} {} {}", nearest[0], nearest[1], nearest[2], nearest[3]);
     if (!_legacy) _body << " 0 " << (dim.empty() ? "50" : dim) << " 0";
-    _body << " Lb\n" << encoded_name(label, "layer names") << " Ln\n0 A\n";
+    // Illustrator keeps a layer's name as an object's too, after Ln.
+    _body << " Lb\n" << encoded_name(label, "layer names") << " Ln\n" << art_dictionary(label, nullptr) << "0 A\n";
     if (!_legacy) _body << "0 Xw\n";
     _hiding = _locking = false;
     // Illustrator keeps a layer's transparency apart from its objects'; PROOF doesn't write it yet.
@@ -1370,7 +1427,8 @@ WrittenRecords Writer::write()
         ++_layers;
         if (_transparency != OPAQUE) _transparency.clear();
         _body << (_legacy ? "%AI5_BeginLayer\n1 1 1 1 0 0 0 79 128 255 Lb\n(Layer) Ln\n0 A\n"
-                         : "%AI5_BeginLayer\n1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb\n(Layer) Ln\n0 A\n0 Xw\n");
+                          : "%AI5_BeginLayer\n1 1 1 1 0 0 1 0 79 128 255 0 50 0 Lb\n(Layer) Ln\n" +
+                                art_dictionary("Layer", nullptr) + "0 A\n0 Xw\n");
         _hiding = _locking = false;
         for (auto const &child : root->children) {
             auto group = cast<SPGroup>(&child);

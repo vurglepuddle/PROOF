@@ -1960,6 +1960,11 @@ TEST(AiNativeReader, XmlNames)
     EXPECT_EQ(xml_name("_x31_abc__x28_paren_x29_"), "1abc (paren)");
     EXPECT_EQ(xml_name("S_00000092429200007574234970000005974767392385616558_"), "S");
     EXPECT_EQ(xml_name("a_x_"), "a x ");
+    // Beyond U+FFFF, its UTF-16 halves (Illustrator 29.2.1's control, 2026-10-24); one alone is none.
+    EXPECT_EQ(xml_name("Star__xD83C__xDF1F_"), "Star \xf0\x9f\x8c\x9f");
+    EXPECT_EQ(xml_name("_xD83C_a"), "\xef\xbf\xbd" "a");
+    EXPECT_EQ(xml_name("_xDF1F__xD83C_"), "\xef\xbf\xbd\xef\xbf\xbd");
+    EXPECT_EQ(xml_name("Box_x5F_2_x5F_"), "Box_2_");
 }
 
 TEST(AiNativeReader, LatinText)

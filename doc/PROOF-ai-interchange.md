@@ -65,7 +65,7 @@ qualified Latin-composer LTR typed-order override remains editable. See
 
 | Artwork | Supported form |
 |---|---|
-| Structure | Named/multiple artboards, layers, groups, supported clones, smooth paths, compound paths and clips with holes/winding rules |
+| Structure | Named/multiple artboards, layers, groups, supported clones, smooth paths, compound paths and clips with holes/winding rules; the names of objects, clipping paths and layers ([object names](#object-names-2026-10-25)) |
 | Solid paint | RGB, CMYK and grey process colour; named CMYK-, Lab- and RGB-defined inks with tints; canonical Registration definitions |
 | Gradients | Non-repeating linear/radial fills and strokes, separately or together; midpoints, interior hard stops, stop opacity, mixed colour models, supported spot/ICC stops, and the qualified Oklab method |
 | Patterns | User-space tiles on fills/strokes, containing supported vector art |
@@ -609,3 +609,14 @@ broad run.
 PDF output prints type in an ink on the ink's plate, as it does a path in one
 (since 2026-10-24, [PDF plates](PROOF-spot-inks.md#pdf-plates-2026-10-24)).
 [Record details](PROOF-ai-native-records.md#type-in-spot-inks-2026-10-24).
+
+## Object names (2026-10-25)
+
+Native saving now keeps the names of objects, clipping paths and layers, written
+as Illustrator writes them: an XML id in the dictionary after each, unique in the
+document as Illustrator makes it. A clone's copy takes the clone's name, else the
+name of what it shows. Reading now takes names with characters past U+FFFF (an
+emoji), which came in broken. Illustrator 29.2.1 opens PROOF's save of its own
+36-name control with the same names, kinds and order. The Illustrator 7 copy
+names only layers, as before.
+[Record details](PROOF-ai-native-records.md#object-names-2026-10-25).
