@@ -473,12 +473,14 @@ bool MeshTool::root_handler(CanvasEvent const &event)
                     // Check if object already has mesh... if it does,
                     // don't create new mesh with click-drag.
                     new_default();
+                    created_on_press = true;
                 }
 
                 ret = true;
             }
 
             if (event.num_press == 1 && event.button == 1) {
+                created_on_press = false;
 
 #ifdef DEBUG_MESH
                 std::cout << "root_handler: GDK_BUTTON_PRESS" << std::endl;
@@ -623,7 +625,11 @@ bool MeshTool::root_handler(CanvasEvent const &event)
                         ret = true;
                     } else {
 
-                        if (!within_tolerance) {
+                        if (created_on_press) {
+                            // The double-click made the mesh, replacing a shape by a mesh object:
+                            // keep that selected rather than treat this as a click on the canvas.
+                            created_on_press = false;
+                        } else if (!within_tolerance) {
 
                             // Check if object already has mesh... if it does,
                             // don't create new mesh with click-drag.
@@ -654,10 +660,10 @@ bool MeshTool::root_handler(CanvasEvent const &event)
                             } else {
                                 // No dragging, select clicked item if any.
                                 if (mod_select_add_to->active(event.modifiers)) {
-                                    selection->toggle(item_to_select);
+                                    selection->toggle(item_to_select.get());
                                 } else {
                                     _grdrag->deselectAll();
-                                    selection->set(item_to_select);
+                                    selection->set(item_to_select.get());
                                 }
                             }
                         } else {

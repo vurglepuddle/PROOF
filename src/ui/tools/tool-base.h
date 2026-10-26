@@ -17,6 +17,7 @@
 #include <gdkmm/cursor.h>
 
 #include "desktop.h"
+#include "object/weakptr.h"
 #include "preferences.h"
 #include "ui/modifiers.h"
 #include "ui/widget/events/enums.h"
@@ -141,8 +142,10 @@ protected:
     bool _button1on = false;
     bool _button2on = false;
     bool _button3on = false;
-    SPItem *item_to_select = nullptr; ///< the item where mouse_press occurred, to
-                                      ///< be selected if this is a click not drag
+    /// The item where mouse_press occurred, to be selected if this is a click not drag. Weak: a
+    /// tool may replace it before the release (the Mesh tool turns a shape into a mesh object on
+    /// a double-click's second press), and selecting it then crashed PROOF (owner, 2026-10-26).
+    SPWeakPtr<SPItem> item_to_select;
 
     void setup_for_drag_start(ButtonPressEvent const &ev);
     void saveDragOrigin(Geom::Point const &pos);

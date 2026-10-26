@@ -256,7 +256,7 @@ bool DropperTool::root_handler(CanvasEvent const &event)
 
                 // Change selected object to object under cursor.
                 if (item_to_select) {
-                    selection->set(item_to_select);
+                    selection->set(item_to_select.get());
                 }
             }
 

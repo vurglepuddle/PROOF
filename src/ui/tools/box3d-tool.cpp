@@ -269,9 +269,9 @@ bool Box3dTool::root_handler(CanvasEvent const &event)
             } else if (item_to_select) {
                 // no dragging, select clicked box3d if any
                 if (mod_select_add_to->active(event.modifiers)) {
-                    selection->toggle(item_to_select);
+                    selection->toggle(item_to_select.get());
                 } else {
-                    selection->set(item_to_select);
+                    selection->set(item_to_select.get());
                 }
             } else {
                 // click in an empty space

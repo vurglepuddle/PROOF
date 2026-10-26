@@ -555,10 +555,10 @@ bool GradientTool::root_handler(CanvasEvent const &event)
                     } else {
                         // no dragging, select clicked item if any
                         if (mod_select_add_to->active(event.modifiers)) {
-                            selection->toggle(item_to_select);
+                            selection->toggle(item_to_select.get());
                         } else {
                             _grdrag->deselectAll();
-                            selection->set(item_to_select);
+                            selection->set(item_to_select.get());
                         }
                     }
                 } else {
@@ -694,7 +694,7 @@ void GradientTool::drag(Geom::Point const &pt, uint32_t etime)
         SPGradient *vector;
         if (item_to_select) {
             // pick color from the object where drag started
-            vector = sp_gradient_vector_for_object(document, _desktop, item_to_select, fill_or_stroke);
+            vector = sp_gradient_vector_for_object(document, _desktop, item_to_select.get(), fill_or_stroke);
         } else {
             // Starting from empty space:
             // Sort items so that the topmost comes last
