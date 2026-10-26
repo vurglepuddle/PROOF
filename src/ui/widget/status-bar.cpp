@@ -10,6 +10,11 @@
  */
 
 #include "status-bar.h"
+#ifdef WITH_MCP_BRIDGE
+#include <gtkmm/button.h>
+#include "inkscape-application.h"
+#include "mcp-bridge/bridge.h"
+#endif
 
 #include <gtkmm/applicationwindow.h>
 #include <gtkmm/popovermenu.h>
@@ -39,6 +44,23 @@ StatusBar::StatusBar()
     // **** Coordinates  ****
 
     coordinates  = &UI::get_widget<Gtk::Label> (builder, "statusbar-coordinates");
+#ifdef WITH_MCP_BRIDGE
+    if (auto app = InkscapeApplication::instance(); app && app->mcp_bridge()) {
+        auto bridge = app->mcp_bridge();
+        auto indicator = Gtk::make_managed<Gtk::Button>();
+        indicator->signal_clicked().connect([app] {
+            if (auto bridge = app->mcp_bridge()) bridge->disconnect();
+        });
+        statusbar.insert_child_after(*indicator, *coordinates->get_prev_sibling());
+        auto update_indicator = [indicator, bridge] {
+            indicator->set_label("AI: " + bridge->permission_label());
+            indicator->set_visible(bridge->connected());
+            indicator->set_tooltip_text(bridge->client_name() + " is connected (" + bridge->permission_label() + "). Click to disconnect.");
+        };
+        update_indicator();
+        _mcp_state = bridge->signal_changed().connect(update_indicator);
+    }
+#endif
 
     // **** Snapshot  ****
 

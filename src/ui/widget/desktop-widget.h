@@ -36,6 +36,8 @@
 #ifndef SEEN_SP_DESKTOP_WIDGET_H
 #define SEEN_SP_DESKTOP_WIDGET_H
 
+#include "config.h"
+
 #include <gtkmm/box.h>
 
 #include "message.h"
@@ -119,6 +121,9 @@ public:
 private:
     sigc::scoped_connection modified_connection;
     sigc::scoped_connection _color_mode_connection;
+#ifdef WITH_MCP_BRIDGE
+    sigc::scoped_connection _mcp_state;
+#endif
 
     std::vector<SPDesktop *> _desktops;
     SPDesktop *_desktop = nullptr;

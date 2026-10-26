@@ -16,6 +16,10 @@ add_subdirectory(tutorials)
 add_subdirectory(ui)
 add_subdirectory(doc)
 
+if(WITH_MCP_BRIDGE)
+    install(FILES mcp/proof_mcp.py DESTINATION ${INKSCAPE_SHARE_INSTALL}/mcp)
+endif()
+
 
 # extensions (git submodule!)
 install(DIRECTORY extensions DESTINATION ${INKSCAPE_SHARE_INSTALL}

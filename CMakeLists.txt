@@ -87,6 +87,11 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR} C
 # Options
 # -----------------------------------------------------------------------------
 option(WITH_GNU_READLINE "Compile with GNU Readline support (shell mode)" ON)
+option(WITH_MCP_BRIDGE "Compile PROOF's optional local AI bridge" ${WIN32})
+if(NOT WIN32)
+    set(WITH_MCP_BRIDGE OFF CACHE BOOL "Compile PROOF's optional local AI bridge" FORCE)
+    message(STATUS "MCP bridge disabled: Windows named pipes are required")
+endif()
 option(ENABLE_LCMS "Compile with LCMS support" ON)
 option(WITH_SVG2 "Compile with support for new SVG2 features" ON)
 option(WITH_LPETOOL "Compile with LPE Tool" OFF)

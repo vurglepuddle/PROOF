@@ -222,6 +222,9 @@ target_sources(inkscape_base PRIVATE
 
 add_subdirectory(actions)
 add_subdirectory(async)
+if(WITH_MCP_BRIDGE)
+    add_subdirectory(mcp-bridge)
+endif()
 add_subdirectory(colors)
 add_subdirectory(css)
 add_subdirectory(debug)

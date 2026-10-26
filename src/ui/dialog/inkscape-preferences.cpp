@@ -20,6 +20,10 @@
 # include "config.h"  // only include where actually required!
 #endif
 
+#ifdef WITH_MCP_BRIDGE
+#include "mcp-bridge/preferences.h"
+#endif
+
 #include <fstream>
 #include <gio/gio.h>
 #include <giomm/themedicon.h>
@@ -3884,6 +3888,11 @@ void InkscapePreferences::initPageSystem()
     box->set_size_request(300, -1);
     _page_system.add_line( false, _("Shared default resources folder:"), *box, "",
                             _("A folder structured like a user's Inkscape preferences directory. This makes it possible to share a set of resources, such as extensions, fonts, icon sets, keyboard shortcuts, patterns/hatches, palettes, symbols, templates, themes and user interface definition files, between multiple users who have access to that folder (on the same computer or in the network). Requires a restart of Inkscape to work when changed."), false, reset_icon());
+#ifdef WITH_MCP_BRIDGE
+    _page_system.add_group_header(_("AI bridge (MCP)"));
+    auto mcp = Gtk::make_managed<Inkscape::MCP::PreferencesPanel>();
+    _page_system.add_line(false, "", *mcp, "", "", true);
+#endif
     _page_system.add_group_header( _("System info"));
 
     _sys_user_prefs.set_text(prefs->getPrefsFilename());

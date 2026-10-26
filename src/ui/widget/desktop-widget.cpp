@@ -22,6 +22,9 @@
  */
 
 #include "desktop-widget.h"
+#ifdef WITH_MCP_BRIDGE
+#include "mcp-bridge/bridge.h"
+#endif
 
 #include <glibmm/i18n.h>
 #include <gtkmm/adjustment.h>
@@ -212,6 +215,19 @@ SPDesktopWidget::SPDesktopWidget(InkscapeWindow *inkscape_window)
     _version_in_title_observer = Preferences::get()->createObserver("/options/versionintitle/value", [this] {
         _updateTitle();
     });
+#ifdef WITH_MCP_BRIDGE
+    if (auto app = InkscapeApplication::instance(); app && app->mcp_bridge()) {
+        _mcp_state = app->mcp_bridge()->signal_changed().connect([this, app] {
+            auto bridge = app->mcp_bridge();
+            if (!bridge || !app->mcp_window_open(_window)) return;
+            std::string title = _window->get_title();
+            std::string const suffix = " \xE2\x80\x94 AI connected";
+            if (title.ends_with(suffix)) title.resize(title.size() - suffix.size());
+            if (bridge->connected()) title += suffix;
+            _window->set_title(title);
+        });
+    }
+#endif
 
     /* Dialog Container */
     _container = std::make_unique<DialogContainer>(inkscape_window);
@@ -468,6 +484,11 @@ void SPDesktopWidget::_updateTitle()
             }
         }
 
+#ifdef WITH_MCP_BRIDGE
+        if (auto bridge = InkscapeApplication::instance()->mcp_bridge(); bridge && bridge->connected()) {
+            Name += " \xE2\x80\x94 AI connected";
+        }
+#endif
         _window->set_title(Name);
     }
 }

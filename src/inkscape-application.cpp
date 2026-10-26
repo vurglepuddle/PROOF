@@ -38,6 +38,9 @@
 #include "inkscape-application.h"
 #include "colors/document-colors.h"
 #include "document-undo.h"
+#ifdef WITH_MCP_BRIDGE
+#include "mcp-bridge/bridge.h"
+#endif
 
 #include <iostream>
 #include <fstream>
@@ -399,6 +402,10 @@ bool InkscapeApplication::document_revert(SPDocument *document)
  */
 void InkscapeApplication::document_close(SPDocument *document)
 {
+#ifdef WITH_MCP_BRIDGE
+    ++_mcp_teardown_depth;
+    auto mcp_guard = scope_exit([this] { --_mcp_teardown_depth; });
+#endif
     if (!document) {
         std::cerr << "InkscapeApplication::close_document: No document!" << std::endl;
         return;
@@ -515,6 +522,10 @@ SPDesktop *InkscapeApplication::desktopOpen(SPDocument *document, bool new_windo
 // Close a window. Does not delete document.
 void InkscapeApplication::desktopClose(SPDesktop *desktop)
 {
+#ifdef WITH_MCP_BRIDGE
+    ++_mcp_teardown_depth;
+    auto mcp_guard = scope_exit([this] { --_mcp_teardown_depth; });
+#endif
     if (!desktop) {
         std::cerr << "InkscapeApplication::close_window: No desktop!" << std::endl;
         return;
@@ -831,6 +842,9 @@ InkscapeApplication::InkscapeApplication()
 
 InkscapeApplication::~InkscapeApplication()
 {
+#ifdef WITH_MCP_BRIDGE
+    _mcp_bridge.reset();
+#endif
     _instance = nullptr;
 }
 
@@ -917,6 +931,10 @@ void InkscapeApplication::create_window(Glib::RefPtr<Gio::File> const &file)
  */
 bool InkscapeApplication::destroyDesktop(SPDesktop *desktop, bool keep_alive)
 {
+#ifdef WITH_MCP_BRIDGE
+    ++_mcp_teardown_depth;
+    auto mcp_guard = scope_exit([this] { --_mcp_teardown_depth; });
+#endif
     if (!gtk_app()) {
         g_assert_not_reached();
         return false;
@@ -1096,6 +1114,11 @@ void InkscapeApplication::on_startup()
     guard_input_method_filters();
 #endif
 
+#ifdef WITH_MCP_BRIDGE
+    _mcp_bridge = std::make_unique<Inkscape::MCP::Bridge>();
+    gapp->signal_shutdown().connect([this] { if (_mcp_bridge) _mcp_bridge->stop(); });
+#endif
+
     // build_menu(); // Builds and adds menu to app. Used by all Inkscape windows. This can be done
                      // before all actions defined. * For the moment done by each window so we can add
                      // window action info to menu_label_to_tooltip map.
@@ -1149,6 +1172,10 @@ void InkscapeApplication::on_activate()
 
 void InkscapeApplication::windowClose(InkscapeWindow *window)
 {
+#ifdef WITH_MCP_BRIDGE
+    ++_mcp_teardown_depth;
+    auto mcp_guard = scope_exit([this] { --_mcp_teardown_depth; });
+#endif
     if (window == _active_window) {
         _active_window = nullptr;
 
@@ -1952,14 +1979,25 @@ void InkscapeApplication::on_new()
 
 void InkscapeApplication::on_quit()
 {
+#ifdef WITH_MCP_BRIDGE
+    if (_mcp_bridge) _mcp_bridge->set_closing(true);
+#endif
     if (gtk_app()) {
-        if (!destroy_all()) return; // Quit aborted.
+        if (!destroy_all()) {
+#ifdef WITH_MCP_BRIDGE
+            if (_mcp_bridge) _mcp_bridge->set_closing(false);
+#endif
+            return; // Quit aborted.
+        }
         // For mac, ensure closing the gtk_app windows
         for (auto window : gtk_app()->get_windows()) {
             window->close();
         }
     }
 
+#ifdef WITH_MCP_BRIDGE
+    if (_mcp_bridge) _mcp_bridge->stop();
+#endif
     gio_app()->quit();
 }
 
@@ -2017,6 +2055,13 @@ void InkscapeApplication::print_input_type_list() const
 /**
  * Return number of open Inkscape Windows (irrespective of number of documents)
 .*/
+#ifdef WITH_MCP_BRIDGE
+bool InkscapeApplication::mcp_window_open(InkscapeWindow const *window) const
+{
+    return window && std::any_of(_windows.begin(), _windows.end(), [=](auto const &w) { return w.get() == window; });
+}
+#endif
+
 int InkscapeApplication::get_number_of_windows() const {
     if (_with_gui) {
         return std::accumulate(_documents.begin(), _documents.end(), 0,

@@ -10,6 +10,8 @@
 #ifndef INKSCAPE_APPLICATION_H
 #define INKSCAPE_APPLICATION_H
 
+#include "config.h"
+
 #include <map>
 #include <span>
 #include <string>
@@ -30,6 +32,10 @@
 namespace Gio {
 class File;
 } // namespace Gio
+
+#ifdef WITH_MCP_BRIDGE
+namespace Inkscape::MCP { class Bridge; }
+#endif
 
 using action_vector_t = std::vector<std::pair<std::string, Glib::VariantBase>>;
 
@@ -61,6 +67,13 @@ public:
     Gtk::Application *gtk_app() { return dynamic_cast<Gtk::Application *>(_gio_application.get()); }
     /// The Gio application instance, never NULL
     Gio::Application *gio_app() { return _gio_application.get(); }
+
+#ifdef WITH_MCP_BRIDGE
+    Inkscape::MCP::Bridge *mcp_bridge() { return _mcp_bridge.get(); }
+    bool mcp_target_unavailable() const { return _mcp_teardown_depth != 0; }
+    /// Whether \a window is one of the application's open windows (compares pointers, never dereferences).
+    bool mcp_window_open(InkscapeWindow const *window) const;
+#endif
 
     SPDesktop *createDesktop(SPDocument *document, bool replace, bool new_window = false);
     void create_window(Glib::RefPtr<Gio::File> const &file = {});
@@ -191,6 +204,10 @@ protected:
     void _start_main_option_section(const Glib::ustring& section_name = "");
     
 private:
+#ifdef WITH_MCP_BRIDGE
+    std::unique_ptr<Inkscape::MCP::Bridge> _mcp_bridge;
+    unsigned _mcp_teardown_depth = 0;
+#endif
     std::unique_ptr<Inkscape::UI::StartupSplash> _startup_splash;
     sigc::connection _splash_windows;
     bool _no_splash = false;

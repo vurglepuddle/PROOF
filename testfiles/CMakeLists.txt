@@ -151,6 +151,10 @@ if(WITH_CAPYPDF)
     )
 endif()
 
+if(WITH_MCP_BRIDGE)
+    list(APPEND TEST_SOURCES mcp-json-test mcp-protocol-test mcp-pipe-test)
+endif()
+
 # Match inkscape_base's linkage. A shared support DLL over a static base can
 # duplicate base globals across DLL/executable boundaries on MinGW, leading
 # to double destruction of colour registries after the tests finish.

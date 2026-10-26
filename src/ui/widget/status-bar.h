@@ -12,6 +12,8 @@
 #ifndef INKSCAPE_UI_WIDGET_STATUSBAR_H
 #define INKSCAPE_UI_WIDGET_STATUSBAR_H
 
+#include "config.h"
+
 #include <gtkmm/box.h>
 
 #include "message.h"
@@ -89,6 +91,9 @@ private:
     OperationBlocker _blocker;
 
     Inkscape::PrefObserver preference_observer;
+#ifdef WITH_MCP_BRIDGE
+    sigc::scoped_connection _mcp_state;
+#endif
 };
 
 } // namespace Inkscape::UI::Widget
