@@ -68,6 +68,7 @@
 #include "object/sp-namedview.h"
 #include "selection.h"
 #include "path-prefix.h"            // Data directory
+#include "xml/repr.h"               // The Text tool's default style
 
 #include "actions/actions-base.h"
 #include "actions/actions-dialogs.h"
@@ -297,6 +298,25 @@ static void guard_input_method_filters()
     guard_new_windows(windows, 0, 0, g_list_model_get_n_items(windows), nullptr);
 }
 #endif
+
+// PROOF: new text starts as Illustrator's type does, 100K and no stroke, whatever the shape
+// swatches hold (owner, 2026-10-26: "Let's also make 100K the default text color!"). Profiles
+// written before kept "the object type's last used style", which carried the swatches' white fill
+// and black stroke into new text: once, they take the tool's own style, fonts and sizes kept.
+static void migrate_text_tool_default()
+{
+    auto prefs = Inkscape::Preferences::get();
+    char const *migrated = "/tools/text/default_100k_migrated";
+    if (prefs->getBool(migrated)) return;
+    prefs->setString("/tools/text/usecurrent", "0");
+    auto css = prefs->getStyle("/tools/text/style");
+    sp_repr_css_set_property(css, "fill", "device-cmyk(0 0 0 1)");
+    sp_repr_css_set_property(css, "fill-opacity", "1");
+    sp_repr_css_set_property(css, "stroke", "none");
+    prefs->setStyle("/tools/text/style", css);
+    sp_repr_css_attr_unref(css);
+    prefs->setBool(migrated, true);
+}
 
 // Add document to app.
 SPDocument *InkscapeApplication::document_add(std::unique_ptr<SPDocument> document)
@@ -1209,6 +1229,7 @@ void InkscapeApplication::on_startup()
 #ifdef _WIN32
     guard_input_method_filters();
 #endif
+    migrate_text_tool_default();
 
     // build_menu(); // Builds and adds menu to app. Used by all Inkscape windows. This can be done
                      // before all actions defined. * For the moment done by each window so we can add
