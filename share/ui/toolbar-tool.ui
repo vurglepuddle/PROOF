@@ -68,30 +68,6 @@
                 </property>
               </object>
             </child>
-            <child>
-              <object class="GtkFlowBoxChild">
-                <property name="child">
-                  <object class="GtkToggleButton">
-                    <property name="group">toolsradio</property>
-                    <property name="focusable">True</property>
-                    <property name="focus-on-click">False</property>
-                    <property name="halign">center</property>
-                    <property name="valign">center</property>
-                    <property name="action-name">win.tool-switch</property>
-                    <property name="action-target">'Booleans'</property>
-                    <property name="has-frame">False</property>
-                    <style>
-                      <class name="square-button"/>
-                    </style>
-                    <child>
-                      <object class="GtkImage" id="icon-booleans">
-                        <property name="icon-name">draw-booleans</property>
-                      </object>
-                    </child>
-                  </object>
-                </property>
-              </object>
-            </child>
           </object>
         </child>
         <child>
@@ -104,10 +80,34 @@
             <property name="homogeneous">True</property>
             <property name="halign">start</property>
             <property name="valign">center</property>
-            <property name="max-children-per-line">5</property>
+            <property name="max-children-per-line">2</property>
             <style>
               <class name="tight-flowbox"/>
             </style>
+            <child>
+              <object class="GtkFlowBoxChild">
+                <property name="child">
+                  <object class="GtkToggleButton">
+                    <property name="group">toolsradio</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <property name="action-name">win.tool-switch</property>
+                    <property name="action-target">'Pen'</property>
+                    <property name="has-frame">False</property>
+                    <style>
+                      <class name="square-button"/>
+                    </style>
+                    <child>
+                      <object class="GtkImage" id="icon-pen">
+                        <property name="icon-name">draw-path</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
             <child>
               <object class="GtkFlowBoxChild">
                 <property name="child">
@@ -190,142 +190,6 @@
                     <property name="halign">center</property>
                     <property name="valign">center</property>
                     <property name="action-name">win.tool-switch</property>
-                    <property name="action-target">'3DBox'</property>
-                    <property name="has-frame">False</property>
-                    <style>
-                      <class name="square-button"/>
-                    </style>
-                    <child>
-                      <object class="GtkImage" id="icon-threedee">
-                        <property name="icon-name">draw-cuboid</property>
-                      </object>
-                    </child>
-                  </object>
-                </property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkFlowBoxChild">
-                <property name="child">
-                  <object class="GtkToggleButton">
-                    <property name="group">toolsradio</property>
-                    <property name="focusable">True</property>
-                    <property name="focus-on-click">False</property>
-                    <property name="halign">center</property>
-                    <property name="valign">center</property>
-                    <property name="action-name">win.tool-switch</property>
-                    <property name="action-target">'Spiral'</property>
-                    <property name="has-frame">False</property>
-                    <style>
-                      <class name="square-button"/>
-                    </style>
-                    <child>
-                      <object class="GtkImage" id="icon-spiral">
-                        <property name="icon-name">draw-spiral</property>
-                      </object>
-                    </child>
-                  </object>
-                </property>
-              </object>
-            </child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkSeparator">
-            <property name="valign">center</property>
-          </object>
-        </child>
-        <child>
-          <object class="GtkFlowBox">
-            <property name="homogeneous">True</property>
-            <property name="halign">start</property>
-            <property name="valign">center</property>
-            <property name="max-children-per-line">6</property>
-            <style>
-              <class name="tight-flowbox"/>
-            </style>
-            <child>
-              <object class="GtkFlowBoxChild">
-                <property name="child">
-                  <object class="GtkToggleButton">
-                    <property name="group">toolsradio</property>
-                    <property name="focusable">True</property>
-                    <property name="focus-on-click">False</property>
-                    <property name="halign">center</property>
-                    <property name="valign">center</property>
-                    <property name="action-name">win.tool-switch</property>
-                    <property name="action-target">'Pen'</property>
-                    <property name="has-frame">False</property>
-                    <style>
-                      <class name="square-button"/>
-                    </style>
-                    <child>
-                      <object class="GtkImage" id="icon-pen">
-                        <property name="icon-name">draw-path</property>
-                      </object>
-                    </child>
-                  </object>
-                </property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkFlowBoxChild">
-                <property name="child">
-                  <object class="GtkToggleButton">
-                    <property name="group">toolsradio</property>
-                    <property name="focusable">True</property>
-                    <property name="focus-on-click">False</property>
-                    <property name="halign">center</property>
-                    <property name="valign">center</property>
-                    <property name="action-name">win.tool-switch</property>
-                    <property name="action-target">'Pencil'</property>
-                    <property name="has-frame">False</property>
-                    <style>
-                      <class name="square-button"/>
-                    </style>
-                    <child>
-                      <object class="GtkImage" id="icon-pencil">
-                        <property name="icon-name">draw-freehand</property>
-                      </object>
-                    </child>
-                  </object>
-                </property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkFlowBoxChild">
-                <property name="child">
-                  <object class="GtkToggleButton">
-                    <property name="group">toolsradio</property>
-                    <property name="focusable">True</property>
-                    <property name="focus-on-click">False</property>
-                    <property name="halign">center</property>
-                    <property name="valign">center</property>
-                    <property name="action-name">win.tool-switch</property>
-                    <property name="action-target">'Calligraphic'</property>
-                    <property name="has-frame">False</property>
-                    <style>
-                      <class name="square-button"/>
-                    </style>
-                    <child>
-                      <object class="GtkImage" id="icon-calligraphic">
-                        <property name="icon-name">draw-calligraphic</property>
-                      </object>
-                    </child>
-                  </object>
-                </property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkFlowBoxChild">
-                <property name="child">
-                  <object class="GtkToggleButton">
-                    <property name="group">toolsradio</property>
-                    <property name="focusable">True</property>
-                    <property name="focus-on-click">False</property>
-                    <property name="halign">center</property>
-                    <property name="valign">center</property>
-                    <property name="action-name">win.tool-switch</property>
                     <property name="action-target">'Text'</property>
                     <property name="has-frame">False</property>
                     <property name="icon-name">draw-text</property>
@@ -348,10 +212,34 @@
             <property name="homogeneous">True</property>
             <property name="halign">start</property>
             <property name="valign">center</property>
-            <property name="max-children-per-line">5</property>
+            <property name="max-children-per-line">2</property>
             <style>
               <class name="tight-flowbox"/>
             </style>
+            <child>
+              <object class="GtkFlowBoxChild">
+                <property name="child">
+                  <object class="GtkToggleButton">
+                    <property name="group">toolsradio</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <property name="action-name">win.tool-switch</property>
+                    <property name="action-target">'Booleans'</property>
+                    <property name="has-frame">False</property>
+                    <style>
+                      <class name="square-button"/>
+                    </style>
+                    <child>
+                      <object class="GtkImage" id="icon-booleans">
+                        <property name="icon-name">draw-booleans</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
             <child>
               <object class="GtkFlowBoxChild">
                 <property name="child">
@@ -424,6 +312,70 @@
                 </property>
               </object>
             </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkSeparator">
+            <property name="valign">center</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkFlowBox">
+            <property name="homogeneous">True</property>
+            <property name="halign">start</property>
+            <property name="valign">center</property>
+            <property name="max-children-per-line">2</property>
+            <style>
+              <class name="tight-flowbox"/>
+            </style>
+            <child>
+              <object class="GtkFlowBoxChild">
+                <property name="child">
+                  <object class="GtkToggleButton">
+                    <property name="group">toolsradio</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <property name="action-name">win.tool-switch</property>
+                    <property name="action-target">'Pencil'</property>
+                    <property name="has-frame">False</property>
+                    <style>
+                      <class name="square-button"/>
+                    </style>
+                    <child>
+                      <object class="GtkImage" id="icon-pencil">
+                        <property name="icon-name">draw-freehand</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkFlowBoxChild">
+                <property name="child">
+                  <object class="GtkToggleButton">
+                    <property name="group">toolsradio</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <property name="action-name">win.tool-switch</property>
+                    <property name="action-target">'Calligraphic'</property>
+                    <property name="has-frame">False</property>
+                    <style>
+                      <class name="square-button"/>
+                    </style>
+                    <child>
+                      <object class="GtkImage" id="icon-calligraphic">
+                        <property name="icon-name">draw-calligraphic</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
             <child>
               <object class="GtkFlowBoxChild">
                 <property name="child">
@@ -448,6 +400,54 @@
                 </property>
               </object>
             </child>
+            <child>
+              <object class="GtkFlowBoxChild">
+                <property name="child">
+                  <object class="GtkToggleButton">
+                    <property name="group">toolsradio</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <property name="action-name">win.tool-switch</property>
+                    <property name="action-target">'Spiral'</property>
+                    <property name="has-frame">False</property>
+                    <style>
+                      <class name="square-button"/>
+                    </style>
+                    <child>
+                      <object class="GtkImage" id="icon-spiral">
+                        <property name="icon-name">draw-spiral</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkFlowBoxChild">
+                <property name="child">
+                  <object class="GtkToggleButton">
+                    <property name="group">toolsradio</property>
+                    <property name="focusable">True</property>
+                    <property name="focus-on-click">False</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <property name="action-name">win.tool-switch</property>
+                    <property name="action-target">'3DBox'</property>
+                    <property name="has-frame">False</property>
+                    <style>
+                      <class name="square-button"/>
+                    </style>
+                    <child>
+                      <object class="GtkImage" id="icon-threedee">
+                        <property name="icon-name">draw-cuboid</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
           </object>
         </child>
         <child>
@@ -460,7 +460,7 @@
             <property name="homogeneous">True</property>
             <property name="halign">start</property>
             <property name="valign">center</property>
-            <property name="max-children-per-line">5</property>
+            <property name="max-children-per-line">2</property>
             <style>
               <class name="tight-flowbox"/>
             </style>
@@ -596,7 +596,7 @@
             <property name="homogeneous">True</property>
             <property name="halign">start</property>
             <property name="valign">center</property>
-            <property name="max-children-per-line">5</property>
+            <property name="max-children-per-line">2</property>
             <style>
               <class name="tight-flowbox"/>
             </style>
