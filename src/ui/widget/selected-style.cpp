@@ -255,6 +255,7 @@ void SelectedStyle::setDesktop(SPDesktop *desktop)
     if (_desktop) {
         selection_changed_connection.disconnect();
         selection_modified_connection.disconnect();
+        stop_selected_connection.disconnect();
     }
 
     _desktop = desktop;
@@ -268,6 +269,8 @@ void SelectedStyle::setDesktop(SPDesktop *desktop)
         selection_modified_connection = selection->connectModified(
             sigc::bind(&ss_selection_modified, this)
         );
+        // A gradient or mesh point picked by a tool shows its own colour.
+        stop_selected_connection = desktop->connect_gradient_stop_selected([this](auto) { update(); });
         update();
 
         _sw_unit = desktop->getNamedView()->display_units;

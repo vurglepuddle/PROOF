@@ -281,6 +281,10 @@ void FillAndStroke::desktopReplaced()
         _advanced_tab->setDesktop(getDesktop());
     }
     _subject.setDesktop(getDesktop());
+    // A gradient or mesh point picked by a tool: the dialog shows (and sets) its colour.
+    _stop_selected = getDesktop() ? getDesktop()->connect_gradient_stop_selected([this](auto) {
+        if (!_ignore_updates) _updateFromSelection();
+    }) : sigc::connection{};
 
     documentReplaced();
 }

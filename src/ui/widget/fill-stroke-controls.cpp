@@ -22,6 +22,7 @@
 #include "ui/icon-names.h"
 #include "ui/widget/paint-switch.h"
 #include "ui/widget/selection-paint.h"
+#include "util/scope_exit.h"
 #include "util/units.h"
 
 namespace Inkscape::UI::Widget {
@@ -157,6 +158,7 @@ void FillStrokeControls::setDesktop(SPDesktop *desktop)
     _document_changed.disconnect();
     _desktop_destroyed.disconnect();
     _style_changed.disconnect();
+    _stop_selected.disconnect();
     _desktop = desktop;
     set_sensitive(_desktop != nullptr);
     if (!_desktop) return;
@@ -168,6 +170,12 @@ void FillStrokeControls::setDesktop(SPDesktop *desktop)
     _style_changed = _desktop->connectSetStyle([this](auto, auto) {
         if (_desktop->getSelection()->isEmpty()) refresh();
         return false; // Let the canvas/tool handle the style change.
+    });
+    // A gradient or mesh point picked (or dropped) by a tool: its colour is what the tiles show and
+    // an open editor edits. Without this they kept the last colour set (owner, 2026-10-26).
+    _stop_selected = _desktop->connect_gradient_stop_selected([this](auto) {
+        refresh();
+        showOpenPaint();
     });
     bindSelection();
 }
@@ -282,6 +290,23 @@ void FillStrokeControls::setupPaint(bool fill)
     paint_switch->set_document(_desktop ? _desktop->getDocument() : nullptr);
     paint_switch->set_sensitive(_desktop != nullptr);
     if (!_desktop) return;
+    showPaint(fill);
+}
+
+void FillStrokeControls::showOpenPaint()
+{
+    for (bool fill : {true, false}) {
+        auto popover = (fill ? _fill : _stroke).get_popover();
+        if (!popover || !popover->get_visible()) continue;
+        _showing = true;
+        auto done = scope_exit([this] { _showing = false; });
+        showPaint(fill);
+    }
+}
+
+void FillStrokeControls::showPaint(bool fill)
+{
+    auto paint_switch = PaintPopoverManager::get().get_switch(fill);
     SPStyle style(_desktop->getDocument());
     if (!queryStyle(style, fill)) {
         paint_switch->show_placeholder(_("Multiple styles"), true);
@@ -307,7 +332,7 @@ std::vector<sigc::connection> FillStrokeControls::connectPaint(bool fill)
     return connect_selection_paint(*PaintPopoverManager::get().get_switch(fill), fill,
         [desktop] { return desktop; },
         [this, desktop, document, context] {
-            return !_desktop || _desktop != desktop || _context != context || _desktop->getDocument() != document;
+            return _showing || !_desktop || _desktop != desktop || _context != context || _desktop->getDocument() != document;
         }, ++paint_session, [this] { refresh(); });
 }
 

@@ -37,6 +37,8 @@ private:
     void closePopovers();
     void setActive(bool fill);
     void setupPaint(bool fill);
+    void showPaint(bool fill);
+    void showOpenPaint();
     std::vector<sigc::connection> connectPaint(bool fill);
     bool queryStyle(SPStyle &style, bool fill) const;
     void draw(Cairo::RefPtr<Cairo::Context> const &cr, int width, int height, bool fill);
@@ -52,6 +54,7 @@ private:
     SPDesktop *_desktop = nullptr;
     bool _fill_active = true;
     unsigned _context = 0;
+    bool _showing = false; // an open editor shows another paint: what it emits meanwhile isn't an edit
     Gtk::Fixed _targets;
     Gtk::MenuButton _fill, _stroke;
     Gtk::DrawingArea _fill_preview, _stroke_preview;
@@ -63,7 +66,7 @@ private:
     std::array<Preview, 2> _preview;
     std::optional<PaintPopoverManager::Registration> _fill_registration, _stroke_registration;
     sigc::scoped_connection _selection_changed, _selection_modified;
-    sigc::scoped_connection _document_changed, _desktop_destroyed, _style_changed;
+    sigc::scoped_connection _document_changed, _desktop_destroyed, _style_changed, _stop_selected;
 };
 } // namespace Inkscape::UI::Widget
 #endif
