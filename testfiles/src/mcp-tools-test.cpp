@@ -215,6 +215,25 @@ TEST_F(McpTools, ObjectDetails)
     EXPECT_EQ(rect.at("mask"), Json("mask"));
     EXPECT_NEAR(rect.at("opacity").get<double>(), 0.4, 1e-5);
 }
+TEST_F(McpTools, TextReportsItsCharactersPaint)
+{
+    // As the Text tool leaves it after painting selected characters: the <text> says none.
+    load("<text id='text' style='fill:none;stroke:none'><tspan sodipodi:role='line'>"
+         "<tspan style='fill:#ffffff;stroke:#000000;stroke-width:2'>Hi</tspan></tspan></text>"
+         "<text id='mixed' style='fill:none'>a<tspan style='fill:#ff0000'>b</tspan></text>"
+         "<text id='plain'>c</text><rect id='rect' width='1' height='1'/>");
+    auto text = data("get_object", Object{{"id", "text"}});
+    EXPECT_EQ(text.at("fill"), Json(Object{{"type", "none"}}));
+    EXPECT_EQ(text.at("characters").at("fill").at("hex"), Json("#ffffff"));
+    EXPECT_EQ(text.at("characters").at("stroke").at("hex"), Json("#000000"));
+    EXPECT_NEAR(text.at("characters").at("stroke").at("width").get<double>(), Util::Quantity::convert(2, "px", document->getDisplayUnit()), 1e-8);
+    auto mixed = data("list_objects").at("objects").get<Array>().at(1);
+    EXPECT_EQ(mixed.at("characters").at("fill"), Json(Object{{"type", "mixed"}}));
+    EXPECT_EQ(mixed.at("characters").at("stroke"), Json(Object{{"type", "none"}}));
+    // Unset everywhere: the characters are drawn black, the initial fill.
+    EXPECT_EQ(data("get_object", Object{{"id", "plain"}}).at("characters").at("fill").at("hex"), Json("#000000"));
+    EXPECT_FALSE(data("get_object", Object{{"id", "rect"}}).contains("characters"));
+}
 TEST_F(McpTools, KindsAndTextTruncation)
 {
     load("<rect id='rect'/><circle id='circle'/><ellipse id='ellipse'/><line id='line'/><polyline id='polyline'/>"

@@ -9,6 +9,7 @@
 #include <glibmm/miscutils.h>
 
 #include "colors/spaces/base.h"
+#include "desktop-style.h"
 #include "display/cairo-utils.h"
 #include "document.h"
 #include "helper/pixbuf-ops.h"
@@ -170,13 +171,14 @@ Json color(Colors::Color const &value)
     g_snprintf(hex, sizeof(hex), "#%06x", unsigned(rgba >> 8));
     return Object{{"type", "color"}, {"space", space->getName()}, {"values", std::move(values)}, {"hex", hex}};
 }
-Json paint(SPItem &item, bool stroke)
+// The paint the item's style sets; with \a computed, the one it draws with, inherited or initial.
+Json paint(SPItem &item, bool stroke, bool computed = false)
 {
     auto style = item.style;
     if (!style) return Object{{"type", "unset"}};
     auto const &value = *style->getFillOrStroke(!stroke);
     Object result;
-    if (!value.set) result = {{"type", "unset"}};
+    if (!value.set && !computed) result = {{"type", "unset"}};
     else if (value.isPaintserver()) {
         auto server = value.href->getObject();
         if (auto ink = SpotInk::read(server->getRepr())) {
@@ -193,6 +195,18 @@ Json paint(SPItem &item, bool stroke)
         result.emplace("width", units(*item.document, style->stroke_width.computed * item.i2doc_affine().descrim()));
     }
     return result;
+}
+// What paints a text's visible characters, as PROOF's paint panels show it: the <text> element can
+// say none while its spans are painted.
+Json character_paint(SPItem &text, bool stroke)
+{
+    Json shared;
+    for (auto source : sp_desktop_paint_sources({&text})) {
+        auto value = paint(*source, stroke, true);
+        if (!shared.is<std::nullptr_t>() && shared != value) return Object{{"type", "mixed"}};
+        shared = std::move(value);
+    }
+    return shared;
 }
 std::string kind(SPItem const &item)
 {
@@ -219,6 +233,9 @@ Object summary(LookContext const &context, SPItem &item)
         {"layer", id(enclosing_layer(item))}, {"visible", !item.isHidden()}, {"locked", !item.isSensitive()},
         {"bbox", toolbar_bounds(context, visual)}, {"fill", paint(item, false)}, {"stroke", paint(item, true)},
         {"opacity", item.style ? item.style->opacity.as_double() : 1.0}};
+    if (is<SPText>(&item) || is<SPFlowtext>(&item)) {
+        result.emplace("characters", Object{{"fill", character_paint(item, false)}, {"stroke", character_paint(item, true)}});
+    }
     if (geometric != visual) result.emplace("geometric", toolbar_bounds(context, geometric));
     if (container(&item)) result.emplace("children", double(children(item).size()));
     return result;
@@ -422,7 +439,7 @@ Json::Array look_tools()
         definition("list_layers", "List layers", "Read layers and sublayers in depth-first document order; depth starts at zero."),
         definition("list_objects", "List objects", "Read drawing objects depth-first in bottom-to-top z-order (the Layers panel shows the reverse). Bounds use selector toolbar coordinates in the display unit.",
             {{"parent", string_schema()}, {"depth", integer_schema(1, 5)}, {"offset", Object{{"type", "integer"}, {"minimum", 0}}}, {"limit", integer_schema(1, 500)}}),
-        definition("get_object", "Inspect object", "Read a drawing object's geometry, paint and details. Bounds use selector toolbar coordinates in the display unit; font size is in pt.",
+        definition("get_object", "Inspect object", "Read a drawing object's geometry, paint and details. Bounds use selector toolbar coordinates in the display unit; font size is in pt. For a text, characters gives the paint its visible characters are drawn with (mixed when they differ); fill and stroke are the text element's own.",
             {{"id", string_schema()}}, {"id"}),
         definition("get_selection", "Read selection", "Read up to 200 selected objects and their combined visual bounds in selector toolbar coordinates and the display unit."),
         definition("render_preview", "Render preview", "Render an RGB appearance preview, not separations. Page indices start at zero; size is the longest pixel edge, clamped to 2048 and four megapixels. Area uses selector toolbar coordinates in the display unit.",

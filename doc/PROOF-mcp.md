@@ -49,7 +49,9 @@ enclosing layer, visibility and lock, bounds **in the same numbers as the select
 (visual, and geometric when different; the toolbar's anchor and page origin rules), fill and stroke as
 PROOF stores them (none; a colour with its space and values, CMYK in percent, plus a display hex; a spot
 ink with its name, tint and alternate; a gradient, mesh, pattern or hatch by id; stroke width), opacity
-and child count. Objects inside definitions (clip paths, masks, markers, patterns, symbols) never appear
+and child count. A text also carries `characters`: the fill and stroke its visible characters are
+drawn with, `mixed` when they differ, as PROOF's paint panels show it (the `<text>` element can say
+none while its spans hold the paint). Objects inside definitions (clip paths, masks, markers, patterns, symbols) never appear
 and can't be asked for. Every result carries the document's handle and revision.
 
 PROOF checks the permission on every call; the server is not trusted with it. Never: running code,
