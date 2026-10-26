@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <glibmm/main.h>
 #include <glibmm/i18n.h>
 #include <gtkmm/cssprovider.h>
 #include <gtkmm/gestureclick.h>
@@ -159,6 +160,7 @@ void FillStrokeControls::setDesktop(SPDesktop *desktop)
     _desktop_destroyed.disconnect();
     _style_changed.disconnect();
     _stop_selected.disconnect();
+    _stop_refresh.disconnect();
     _desktop = desktop;
     set_sensitive(_desktop != nullptr);
     if (!_desktop) return;
@@ -172,10 +174,15 @@ void FillStrokeControls::setDesktop(SPDesktop *desktop)
         return false; // Let the canvas/tool handle the style change.
     });
     // A gradient or mesh point picked (or dropped) by a tool: its colour is what the tiles show and
-    // an open editor edits. Without this they kept the last colour set (owner, 2026-10-26).
+    // an open editor edits. Without this they kept the last colour set (owner, 2026-10-26). Once the
+    // tool is done: it announces this midway through its own work on its points.
     _stop_selected = _desktop->connect_gradient_stop_selected([this](auto) {
-        refresh();
-        showOpenPaint();
+        if (_stop_refresh.connected()) return;
+        _stop_refresh = Glib::signal_idle().connect([this] {
+            refresh();
+            showOpenPaint();
+            return false;
+        });
     });
     bindSelection();
 }

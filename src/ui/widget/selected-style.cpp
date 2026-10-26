@@ -12,6 +12,7 @@
 
 #include "selected-style.h"
 
+#include <glibmm/main.h>
 #include <glibmm/i18n.h>
 #include <gtkmm/adjustment.h>
 #include <gtkmm/droptarget.h>
@@ -256,6 +257,7 @@ void SelectedStyle::setDesktop(SPDesktop *desktop)
         selection_changed_connection.disconnect();
         selection_modified_connection.disconnect();
         stop_selected_connection.disconnect();
+        stop_refresh_connection.disconnect();
     }
 
     _desktop = desktop;
@@ -269,8 +271,12 @@ void SelectedStyle::setDesktop(SPDesktop *desktop)
         selection_modified_connection = selection->connectModified(
             sigc::bind(&ss_selection_modified, this)
         );
-        // A gradient or mesh point picked by a tool shows its own colour.
-        stop_selected_connection = desktop->connect_gradient_stop_selected([this](auto) { update(); });
+        // A gradient or mesh point picked by a tool shows its own colour; once the tool is done (it
+        // announces this midway through its own work on its points).
+        stop_selected_connection = desktop->connect_gradient_stop_selected([this](auto) {
+            if (stop_refresh_connection.connected()) return;
+            stop_refresh_connection = Glib::signal_idle().connect([this] { update(); return false; });
+        });
         update();
 
         _sw_unit = desktop->getNamedView()->display_units;

@@ -90,7 +90,7 @@ private:
     std::vector<Gtk::Label *> _tab_labels;
 
     sigc::scoped_connection _switch_page_conn;
-    sigc::scoped_connection _stop_selected;
+    sigc::scoped_connection _stop_selected, _stop_refresh;
     std::vector<sigc::connection> _paint_connections;
 };
 
