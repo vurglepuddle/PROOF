@@ -18,6 +18,8 @@
 
 #include "fill-and-stroke.h"
 
+#include <algorithm>
+
 #include <gtkmm/grid.h>
 #include <gtkmm/image.h>
 
@@ -31,6 +33,7 @@
 #include "ui/icon-loader.h"
 #include "ui/icon-names.h"
 #include "ui/pack.h"
+#include "ui/tools/text-tool.h"
 #include "ui/widget/notebook-page.h"
 #include "ui/widget/recolor-art-manager.h"
 #include "ui/widget/stroke-style.h"
@@ -137,9 +140,19 @@ void FillAndStroke::_updateFromSelection()
         return;
     }
 
+    // The paint shown is what paints the first item: for a text, the span of its first character,
+    // or of the first character the Text tool has selected.
     SPItem* anchor = nullptr;
     if (selection && !items.empty()) {
-        anchor = items.front(); 
+        std::vector<SPItem *> sources;
+        if (auto text_tool = dynamic_cast<Tools::TextTool *>(getDesktop()->getTool())) {
+            sources = text_tool->get_subselection(true); // last character first
+            std::reverse(sources.begin(), sources.end());
+        }
+        if (sources.empty()) {
+            sources = sp_desktop_paint_sources({items.front()});
+        }
+        anchor = sources.front();
     }
 
     auto update_channel = [&](UI::Widget::PaintSwitch* pswitch, bool is_fill) {

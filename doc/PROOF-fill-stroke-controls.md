@@ -39,6 +39,23 @@ artwork. Tools configured to use a fixed style retain their existing preference.
 Gradient, pattern and mesh creation defaults with no selection remain outside
 this round; their existing editors still require selected objects.
 
+## A text shows its characters' paint (2026-10-26)
+
+A `<text>` element can say fill and stroke none while its spans hold the paint:
+the Text tool paints the selected characters' spans (Default fill and stroke
+with characters selected, for one), and imported type keeps its paint on spans.
+The panels read the text element alone, so the owner saw none/none on text that
+was visibly white and black. Now a selected text stands for the spans holding
+its visible characters (white space alone left out), as Illustrator's panels
+show a type object's character fill and stroke. This holds for the fill,
+stroke, stroke width, join, cap, miter and paint order queries: these controls,
+the Fill and Stroke dialog (its colour from the first character's span, or from
+the Text tool's first selected character), the stroke style's dashes, the
+status bar and the Swatches. Spans of different paints read as mixed. Applying
+paint with the Selection tool already reached the spans.
+`sp_desktop_paint_sources` in `desktop-style.cpp`; tested in
+`object-style-test` (`TextPaintSources`).
+
 ## Implementation and lifetime
 
 `FillStrokeControls` renders the previews and binds to selection/document changes.

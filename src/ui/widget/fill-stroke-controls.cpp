@@ -235,7 +235,7 @@ bool FillStrokeControls::queryStyle(SPStyle &style, bool fill) const
             } else leaves.push_back(item);
         };
         for (auto item : items) gather(gather, item);
-        result = sp_desktop_query_style_from_list(leaves, &style, property);
+        result = sp_desktop_query_style_from_list(sp_desktop_paint_sources(leaves), &style, property);
     }
     return result == QUERY_STYLE_SINGLE || result == QUERY_STYLE_MULTIPLE_SAME;
 }

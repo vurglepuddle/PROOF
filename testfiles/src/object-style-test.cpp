@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 #include <doc-per-case-test.h>
 
+#include <src/desktop-style.h>
 #include <src/style.h>
 #include <src/object/sp-root.h>
 #include <src/object/sp-rect.h>
@@ -194,4 +195,46 @@ TEST_F(ObjectTest, StyleFontSizes) {
     // stroke-width in percent is relative to viewport size, which is 300x150 in this example.
     // 50% is 118.59 == ((300^2 + 150^2) / 2)^0.5 * 0.5
     EXPECT_FLOAT_EQ(eight->style->stroke_width.computed, 118.58541);
+}
+
+/*
+ * A text's fill and stroke are those of its characters: the paint panels query the spans
+ * holding them, not the <text> element, which can say none while its spans are painted.
+ */
+TEST(TextPaintSources, CharactersNotTheTextElement)
+{
+    constexpr auto docString = R"A(
+<svg xmlns='http://www.w3.org/2000/svg' xmlns:sodipodi='http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd'>
+<text id='spans' style='fill:none;stroke:none'><tspan id='line' sodipodi:role='line'><tspan id='inner' style='fill:#ffffff;stroke:#000000'>Hi</tspan></tspan></text>
+<text id='mixed' style='fill:none'>a<tspan id='red' style='fill:#ff0000'>b</tspan></text>
+<text id='blank' style='fill:#00ff00'> <tspan style='fill:#ff0000'> </tspan></text>
+<text id='same'><tspan id='first' style='fill:#0000ff'>a</tspan> <tspan id='second' style='fill:#0000ff'>b</tspan></text>
+<rect id='rect' width='1' height='1' style='fill:#808080'/>
+</svg>)A"sv;
+    auto doc = SPDocument::createNewDocFromMem(docString);
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto item = [&](char const *id) { return cast<SPItem>(doc->getObjectById(id)); };
+    auto fill = [&](std::vector<SPItem *> const &items, int expected) {
+        SPStyle query(doc.get());
+        EXPECT_EQ(sp_desktop_query_style_from_list(sp_desktop_paint_sources(items), &query, QUERY_STYLE_PROPERTY_FILL), expected);
+        return query.fill.isColor() ? query.fill.getColor().toRGBA() : 0u;
+    };
+
+    EXPECT_EQ(sp_desktop_paint_sources({item("spans")}), std::vector<SPItem *>{item("inner")});
+    EXPECT_EQ(fill({item("spans")}, QUERY_STYLE_SINGLE), 0xffffffffu);
+    SPStyle stroke(doc.get());
+    EXPECT_EQ(sp_desktop_query_style_from_list(sp_desktop_paint_sources({item("spans")}), &stroke, QUERY_STYLE_PROPERTY_STROKE), QUERY_STYLE_SINGLE);
+    EXPECT_EQ(stroke.stroke.getColor().toRGBA(), 0x000000ffu);
+
+    // Characters held by the text itself and by a span: two paints, as Illustrator's "?".
+    EXPECT_EQ(sp_desktop_paint_sources({item("mixed")}), (std::vector<SPItem *>{item("mixed"), item("red")}));
+    fill({item("mixed")}, QUERY_STYLE_MULTIPLE_DIFFERENT);
+
+    // Spans of one paint, the space between them left out.
+    EXPECT_EQ(sp_desktop_paint_sources({item("same")}), (std::vector<SPItem *>{item("first"), item("second")}));
+    EXPECT_EQ(fill({item("same")}, QUERY_STYLE_MULTIPLE_SAME), 0x0000ffffu);
+
+    // Nothing visible: the text stands for itself; other items too.
+    EXPECT_EQ(sp_desktop_paint_sources({item("blank"), item("rect")}), (std::vector<SPItem *>{item("blank"), item("rect")}));
 }

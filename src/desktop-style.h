@@ -97,6 +97,9 @@ int objects_query_strokejoin (const std::vector<SPItem*> &objects, SPStyle *styl
 int objects_query_blur (const std::vector<SPItem*> &objects, SPStyle *style_res);
 int objects_query_blend (const std::vector<SPItem*> &objects, SPStyle *style_res);
 
+/// The objects whose style paints \a items, in order: a text stands for the spans (or itself)
+/// holding its visible characters, where its fill and stroke really are; other items for themselves.
+std::vector<SPItem *> sp_desktop_paint_sources(std::vector<SPItem *> const &items);
 int sp_desktop_query_style_from_list (const std::vector<SPItem*> &list, SPStyle *style, int property);
 int sp_desktop_query_style(SPDesktop *desktop, SPStyle *style, int property);
 
