@@ -11,6 +11,7 @@
 #include "inkscape-application.h"
 #include "inkscape-version-info.h"
 #include "inkscape-window.h"
+#include "layer-manager.h"
 #include "object/sp-item.h"
 #include "object/sp-item-group.h"
 #include "object/sp-page.h"
@@ -18,6 +19,7 @@
 #include "page-manager.h"
 #include "path-prefix.h"
 #include "selection.h"
+#include "tools.h"
 #include "ui/dialog-run.h"
 #include "undo-stack-observer.h"
 #include "util/units.h"
@@ -184,7 +186,7 @@ void Bridge::handle(std::string const &line, PipeClient const &client, std::shar
     try {
         auto request = parse(line);
         _protocol->dispatch(request, Preferences::get()->getBool("/options/mcp/look", true), _closing,
-            [this] { return document_info(); },
+            [this](auto const &name, auto const &args) { return call_tool(name, args); },
             [this, client, reply](auto name, auto version, auto answer) { consent(std::move(name), std::move(version), client.image, reply, std::move(answer)); },
             [reply](auto response, bool close) { reply->finish(std::move(response), close); });
     } catch (...) {
@@ -245,16 +247,21 @@ DocumentCounts document_counts(SPObject &root)
 
 Json Bridge::document_info()
 {
-    auto empty = [] { return tool_result(Object{{"document", nullptr}}, "No document is open in PROOF."); };
+    auto target = active_target();
+    if (!target) return tool_result(Object{{"document", nullptr}}, "No document is open in PROOF.");
+    return document_info(*target);
+}
+std::optional<Bridge::Target> Bridge::active_target()
+{
     auto app = InkscapeApplication::instance();
-    if (!app || _closing || app->mcp_target_unavailable() || !app->gtk_app()) return empty();
+    if (!app || _closing || app->mcp_target_unavailable() || !app->gtk_app()) return {};
     auto window = app->get_active_window();
-    if (!app->mcp_window_open(window)) return empty();
+    if (!app->mcp_window_open(window)) return {};
     auto desktop = window->get_desktop();
-    if (!desktop) return empty();
+    if (!desktop) return {};
     auto document = desktop->doc();
     auto documents = app->get_documents();
-    if (!document || std::find(documents.begin(), documents.end(), document) == documents.end()) return empty();
+    if (!document || std::find(documents.begin(), documents.end(), document) == documents.end()) return {};
     auto serial = document->serial();
     auto &revision = _revisions[serial];
     if (!revision) {
@@ -265,7 +272,28 @@ Json Bridge::document_info()
         revision->destroyed = document->connectDestroy([state] { state->gone = true; });
         document->addUndoObserver(*revision);
     }
-    if (revision->gone || document->isSeeking() || !document->isSensitive()) return empty();
+    if (revision->gone || document->isSeeking() || !document->isSensitive()) return {};
+    document->ensureUpToDate();
+    return Target{desktop, document, Object{{"handle", (_pipe ? _pipe->nonce() : std::string()) + ":" + std::to_string(serial)},
+                                          {"revision", double(revision->value)}}};
+}
+Json Bridge::call_tool(std::string const &name, Json const &arguments)
+{
+    auto target = active_target();
+    try {
+        validate_arguments(name, arguments);
+        if (!target) return tool_result(Object{{"document", nullptr}}, "No document is open in PROOF.", name != "document_info");
+        if (name == "document_info") return document_info(*target);
+        auto selection = target->desktop->getSelection();
+        LookContext context{*target->document, selection, target->desktop->layerManager().currentLayer(),
+                            selection ? selection->anchor : Geom::Point(0, 0), target->identity};
+        return call_look_tool(context, name, arguments);
+    } catch (std::exception const &e) { return tool_result(Object{{"document", target ? target->identity : Json()}}, e.what(), true); }
+    catch (...) { return tool_result(Object{{"document", target ? target->identity : Json()}}, "The tool failed", true); }
+}
+Json Bridge::document_info(Target const &target)
+{
+    auto document = target.document;
     auto unit = document->getDisplayUnit();
     Array pages;
     for (auto page : document->getPageManager().getPages()) {
@@ -280,10 +308,12 @@ Json Bridge::document_info()
     auto filename = document->getDocumentFilename();
     std::string name = document->getDocumentName() ? document->getDocumentName() : "Untitled";
     if (filename && *filename) name = Glib::path_get_basename(filename);
-    auto selection = desktop->getSelection();
-    Object data{{"document", Object{{"handle", (_pipe ? _pipe->nonce() : std::string()) + ":" + std::to_string(serial)},
-        {"name", name}, {"on_disk", bool(filename && *filename)}, {"modified", document->isModifiedSinceSave()},
-        {"revision", double(revision->value)}}}, {"unit", unit->abbr.raw()}, {"pages", pages},
+    auto selection = target.desktop->getSelection();
+    auto identity = target.identity.get<Object>();
+    identity.emplace("name", name);
+    identity.emplace("on_disk", bool(filename && *filename));
+    identity.emplace("modified", document->isModifiedSinceSave());
+    Object data{{"document", std::move(identity)}, {"unit", unit->abbr.raw()}, {"pages", pages},
         {"layers", layers}, {"items", items}, {"selection", selection ? int(selection->size()) : 0}};
     auto count = [](std::size_t n, char const *one, char const *many) { return std::to_string(n) + ' ' + (n == 1 ? one : many); };
     return tool_result(std::move(data), name + ": " + count(pages.size(), "page", "pages") + ", " +

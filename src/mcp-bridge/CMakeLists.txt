@@ -10,5 +10,7 @@ target_sources(inkscape_base PRIVATE
     preferences.h
     protocol.cpp
     protocol.h
+    tools.cpp
+    tools.h
 )
 target_link_libraries(inkscape_base PRIVATE advapi32 bcrypt)

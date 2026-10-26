@@ -15,9 +15,9 @@ class Protocol : public std::enable_shared_from_this<Protocol>
 public:
     using Reply = std::function<void(Json, bool close)>;
     using Consent = std::function<void(std::string, std::string, std::function<void(bool)>)>;
-    using DocumentInfo = std::function<Json()>;
+    using ToolCall = std::function<Json(std::string const &, Json const &)>;
     Protocol(std::string token, std::string nonce, std::string version, int pid);
-    void dispatch(Json const &request, bool look, bool closing, DocumentInfo const &info,
+    void dispatch(Json const &request, bool look, bool closing, ToolCall const &tool,
                   Consent const &consent, Reply reply);
     bool authorized() const { return _authorized; }
 

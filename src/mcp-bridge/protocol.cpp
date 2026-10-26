@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "protocol.h"
+#include "tools.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -26,7 +27,7 @@ Json tool_result(Json data, std::string text, bool error)
 Protocol::Protocol(std::string token, std::string nonce, std::string version, int pid)
     : _token(std::move(token)), _nonce(std::move(nonce)), _version(std::move(version)), _pid(pid) {}
 
-void Protocol::dispatch(Json const &request, bool look, bool closing, DocumentInfo const &info,
+void Protocol::dispatch(Json const &request, bool look, bool closing, ToolCall const &tool,
                         Consent const &consent, Reply reply)
 {
     Json id;
@@ -70,11 +71,7 @@ void Protocol::dispatch(Json const &request, bool look, bool closing, DocumentIn
         if (method == "ping") { reply(result(id, Object{}), false); return; }
         if (method == "tools/list") {
             Array tools;
-            if (look) tools.emplace_back(Object{{"name", "document_info"}, {"title", "Document information"},
-                {"description", "Read the active document's name, pages, object counts and selection count."},
-                {"inputSchema", Object{{"type", "object"}, {"properties", Object{}}, {"additionalProperties", false}}},
-                {"annotations", Object{{"readOnlyHint", true}, {"destructiveHint", false},
-                                       {"idempotentHint", true}, {"openWorldHint", false}}}});
+            if (look) tools = look_tools();
             reply(result(id, Object{{"tools", std::move(tools)}}), false);
             return;
         }
@@ -82,10 +79,9 @@ void Protocol::dispatch(Json const &request, bool look, bool closing, DocumentIn
             try {
                 auto name = text(params.at("name"));
                 auto const &args = params.at("arguments");
-                if (name != "document_info") throw std::runtime_error("Unknown tool");
+                if (!known_tool(name)) throw std::runtime_error("Unknown tool");
                 if (!look) throw std::runtime_error("Look permission is off");
-                if (!args.is<Object>() || !args.get<Object>().empty()) throw std::runtime_error("document_info takes no arguments");
-                reply(result(id, info()), false);
+                reply(result(id, tool(name, args)), false);
             } catch (std::exception const &e) { reply(result(id, tool_result(Object{}, e.what(), true)), false); }
             catch (...) { reply(result(id, tool_result(Object{}, "The tool failed", true)), false); }
             return;

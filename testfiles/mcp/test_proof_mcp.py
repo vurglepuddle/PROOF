@@ -153,6 +153,20 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(result["resultType"], "complete")
         self.assertEqual(self.bridge.calls[0][1], {"name": "document_info", "arguments": {}})
 
+    def test_image_content_is_relayed_unchanged(self):
+        self.server.connect()
+        response = {"content": [{"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"},
+                                {"type": "text", "text": "RGB appearance preview (not separations)."}],
+                    "structuredContent": {"document": {"handle": "nonce:42", "revision": 7},
+                                          "pixels": {"width": 64, "height": 32}, "dpi": 96}, "isError": False}
+        self.bridge.call = mock.Mock(side_effect=lambda *args: copy.deepcopy(response))
+        for modern in (False, True):
+            result = self.call("tools/call", {"name": "render_preview", "arguments": {}}, modern=modern)["result"]
+            if modern:
+                self.assertEqual(result.pop("resultType"), "complete")
+                result.pop("_meta")
+            self.assertEqual(result, response)
+
     def test_offline_status_and_reconnect_notification(self):
         self.bridge.offline = True
         self.call("initialize")

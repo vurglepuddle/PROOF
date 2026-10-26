@@ -35,9 +35,22 @@ disconnects it) and the title ends in "— AI connected".
 
 ## What it can and can't do
 
-| Permission | Tools (slice 1a) |
+| Permission | Tools |
 |---|---|
-| Look | `document_info`: the active document's name (file name only), whether it is saved and modified, its pages and their sizes in the display unit, how many layers, items (outside definitions) and selected objects, and a handle (`<run nonce>:<document serial>`) and revision |
+| Look | `document_info` (1a): the active document's name (file name only), whether it is saved and modified, its pages and their sizes in the display unit, how many layers, items (outside definitions) and selected objects, and a handle (`<run nonce>:<document serial>`) and revision |
+| Look | `list_layers` (1b): every layer and sublayer, depth-first, with name, visibility, lock, depth, parent, item count, and the current layer |
+| Look | `list_objects` (1b): drawing objects under the root or a layer/group, to a depth of 1–5, bottom-to-top z-order, paged (`offset`, `limit` up to 500, `next_offset`) |
+| Look | `get_object` (1b): one object in full: transform, blend mode, clip/mask, clone source, text (2,000 characters), font and size in pt, point/area/path type, path nodes, a picture's pixels and linked file name (never its folder) |
+| Look | `get_selection` (1b): the selection (up to 200) and its bounds |
+| Look | `render_preview` (1b): a PNG of a page, the drawing, the selection or one object, the longest edge up to 2048 px and 4 megapixels, on the page colour, white or transparent; rendered in memory, never written to disk; an RGB appearance, not separations |
+
+Every object summary carries its id, name (PROOF's object names) and default label, kind and XML tag,
+enclosing layer, visibility and lock, bounds **in the same numbers as the selector toolbar's X/Y/W/H**
+(visual, and geometric when different; the toolbar's anchor and page origin rules), fill and stroke as
+PROOF stores them (none; a colour with its space and values, CMYK in percent, plus a display hex; a spot
+ink with its name, tint and alternate; a gradient, mesh, pattern or hatch by id; stroke width), opacity
+and child count. Objects inside definitions (clip paths, masks, markers, patterns, symbols) never appear
+and can't be asked for. Every result carries the document's handle and revision.
 
 PROOF checks the permission on every call; the server is not trusted with it. Never: running code,
 scripts, extensions or effects; raw action names (only a closed list of tools, each written against
@@ -100,12 +113,14 @@ no tool-list changes to a modern client.
 
 ## Checks
 
-- `test_mcp-json` (7), `test_mcp-protocol` (12: hello, token, protocol version, consent, permission
+- `test_mcp-tools` (19, slice 1b: SVG fixtures with nested and hidden/locked sublayers, a CMYK fill, a
+  spot-ink stroke, a gradient, text, a clone, an embedded picture and definitions that must never appear;
+  toolbar coordinates; decoded preview pixels and caps), `test_mcp-json` (7), `test_mcp-protocol` (13: hello, token, protocol version, consent, permission
   gate, closing, tool errors, counts excluding definitions, nested layers), `test_mcp-pipe` (14, a real
   pipe: the narrow rights connect and generic read/write is refused, the protected DACL, a second first
   instance fails, wrong token, oversize line, hello and consent deadlines, stop during connect, read,
   reply wait and a blocked write, the endpoint removed and a replaced one kept).
-- `testfiles/mcp/test_proof_mcp.py` (21, the server against a fake bridge and one real pipe round trip):
+- `testfiles/mcp/test_proof_mcp.py` (22, the server against a fake bridge and one real pipe round trip):
   `python.exe -I -B -m unittest discover -s testfiles/mcp -p test_proof_mcp.py`.
 - Live (workspace `tools/mcp-live-check.py`): PROOF with the bridge on, the server, both MCP eras, a
   reconnect without a second question; the person at the machine clicks Allow once. 13 of 13 on

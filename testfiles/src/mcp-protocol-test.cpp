@@ -4,6 +4,7 @@
 #include "inkscape.h"
 #include "mcp-bridge/bridge.h"
 #include "mcp-bridge/protocol.h"
+#include "mcp-bridge/tools.h"
 #include "object/sp-root.h"
 
 namespace {
@@ -20,7 +21,10 @@ protected:
     Json call(std::string method, Json params = Object{})
     {
         protocol->dispatch(Object{{"id", "request"}, {"method", method}, {"params", params}}, look, closing,
-            [] { return tool_result(Object{{"document", nullptr}}, "No document is open in PROOF."); },
+            [](auto const &name, auto const &args) {
+                validate_arguments(name, args);
+                return tool_result(Object{{"document", nullptr}}, "No document is open in PROOF.");
+            },
             [this](auto, auto, auto answer) { answer(allowed); },
             [this](auto result, bool disconnect) { response = std::move(result); close = disconnect; });
         return response;
@@ -62,12 +66,28 @@ TEST_F(McpProtocol, HelloAndPing)
 TEST_F(McpProtocol, CurrentPermissionControlsListAndCalls)
 {
     hello();
-    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 1);
+    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 6);
     look = false;
     EXPECT_TRUE(call("tools/list").at("result").at("tools").get<Json::Array>().empty());
-    EXPECT_EQ(call("tools/call", Object{{"name", "document_info"}, {"arguments", Object{}}}).at("result").at("isError"), Json(true));
+    for (auto const &tool : look_tools()) {
+        EXPECT_EQ(call("tools/call", Object{{"name", tool.at("name")}, {"arguments", Object{}}}).at("result").at("isError"), Json(true));
+    }
     look = true;
-    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 1);
+    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 6);
+}
+TEST_F(McpProtocol, LookToolsHaveFixedOrderAndReadOnlyAnnotations)
+{
+    hello();
+    auto tools = call("tools/list").at("result").at("tools").get<Json::Array>();
+    std::vector<std::string> names;
+    for (auto const &tool : tools) {
+        names.push_back(tool.at("name").get<std::string>());
+        EXPECT_EQ(tool.at("annotations").at("readOnlyHint"), Json(true));
+        EXPECT_EQ(tool.at("annotations").at("idempotentHint"), Json(true));
+        EXPECT_EQ(tool.at("annotations").at("openWorldHint"), Json(false));
+        EXPECT_EQ(tool.at("inputSchema").at("additionalProperties"), Json(false));
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"document_info", "list_layers", "list_objects", "get_object", "get_selection", "render_preview"}));
 }
 TEST_F(McpProtocol, UnknownAndBadToolCallsAreToolErrors)
 {
@@ -125,7 +145,7 @@ TEST_F(McpProtocol, HandlerExceptionBecomesToolError)
 {
     hello();
     protocol->dispatch(Object{{"id", 1}, {"method", "tools/call"}, {"params", Object{{"name", "document_info"}, {"arguments", Object{}}}}},
-        true, false, []() -> Json { throw std::runtime_error("failed"); }, {},
+        true, false, [](auto const &, auto const &) -> Json { throw std::runtime_error("failed"); }, {},
         [this](auto reply, bool) { response = std::move(reply); });
     EXPECT_EQ(response.at("result").at("isError"), Json(true));
 }

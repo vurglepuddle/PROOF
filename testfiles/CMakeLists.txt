@@ -152,7 +152,7 @@ if(WITH_CAPYPDF)
 endif()
 
 if(WITH_MCP_BRIDGE)
-    list(APPEND TEST_SOURCES mcp-json-test mcp-protocol-test mcp-pipe-test)
+    list(APPEND TEST_SOURCES mcp-json-test mcp-protocol-test mcp-pipe-test mcp-tools-test)
 endif()
 
 # Match inkscape_base's linkage. A shared support DLL over a static base can

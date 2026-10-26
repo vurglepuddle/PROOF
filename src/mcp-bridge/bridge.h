@@ -3,6 +3,7 @@
 #define INKSCAPE_MCP_BRIDGE_H
 
 #include <map>
+#include <optional>
 #include <set>
 #include <sigc++/signal.h>
 #include "async/channel.h"
@@ -11,6 +12,8 @@
 #include "protocol.h"
 
 class SPObject;
+class SPDesktop;
+class SPDocument;
 
 namespace Inkscape::MCP {
 
@@ -34,10 +37,18 @@ public:
     std::string status() const;
     sigc::signal<void()> &signal_changed() { return _changed; }
     Json document_info();
+    Json call_tool(std::string const &name, Json const &arguments);
     static std::string client_command();
 
 private:
     struct Revision;
+    struct Target {
+        SPDesktop *desktop;
+        SPDocument *document;
+        Json identity;
+    };
+    std::optional<Target> active_target();
+    Json document_info(Target const &target);
     std::map<unsigned long, std::unique_ptr<Revision>> _revisions;
     std::unique_ptr<PipeServer> _pipe;
     Async::Channel::Source _source;
