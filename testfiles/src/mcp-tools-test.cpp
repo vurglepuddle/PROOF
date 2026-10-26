@@ -423,7 +423,7 @@ TEST_F(McpTools, PreviewBackgrounds)
 }
 TEST_F(McpTools, EveryToolRejectsUnknownKeysAndWrongArgumentTypes)
 {
-    for (auto name : {"list_layers", "list_objects", "get_object", "get_selection", "render_preview"}) {
+    for (auto name : {"list_layers", "list_objects", "get_object", "get_selection", "render_preview", "get_xml"}) {
         EXPECT_EQ(call(name, Object{{"unknown", 1}}).at("isError"), Json(true));
         EXPECT_EQ(call(name, Array{}).at("isError"), Json(true));
     }
@@ -443,10 +443,121 @@ TEST_F(McpTools, EveryToolRejectsUnknownKeysAndWrongArgumentTypes)
 TEST_F(McpTools, BridgeWithoutActiveDocumentReturnsToolErrors)
 {
     Bridge bridge;
-    for (auto name : {"list_layers", "list_objects", "get_object", "get_selection", "render_preview"}) {
+    for (auto name : {"list_layers", "list_objects", "get_object", "get_selection", "render_preview", "get_xml"}) {
         auto response = bridge.call_tool(name, Object{});
         EXPECT_EQ(response.at("isError"), Json(true));
         EXPECT_EQ(response.at("structuredContent").at("document"), Json());
+    }
+}
+TEST_F(McpTools, XmlKeepsNestedTextPaintEscapingCommentsAndAttributeOrder)
+{
+    load("<text id='painted' style='fill:none' inkscape:label='A &amp; &quot;B&quot; &lt;C&gt;'>"
+         "<tspan style='fill:#ff0000'>A &amp; &lt;B&gt;<tspan style='stroke:#0000ff'>nested</tspan></tspan>"
+         "<!--kept--><?proof-test kept?><![CDATA[<raw>&]]></text>");
+    auto response = call("get_xml", Object{{"id", "painted"}});
+    ASSERT_EQ(response.at("isError"), Json(false));
+    auto const &value = response.at("structuredContent");
+    auto const &xml = value.at("xml").get<std::string>();
+    EXPECT_EQ(value.at("id"), Json("painted"));
+    EXPECT_EQ(response.at("content").get<Array>()[0].at("text"), Json(xml));
+    EXPECT_NE(xml.find("style=\"fill:none\""), std::string::npos);
+    EXPECT_NE(xml.find("style=\"fill:#ff0000\""), std::string::npos);
+    EXPECT_NE(xml.find("style=\"stroke:#0000ff\""), std::string::npos);
+    EXPECT_NE(xml.find("A &amp; &quot;B&quot; &lt;C&gt;"), std::string::npos);
+    EXPECT_NE(xml.find("A &amp; &lt;B&gt;"), std::string::npos);
+    EXPECT_NE(xml.find("<!--kept-->"), std::string::npos);
+    EXPECT_NE(xml.find("<?proof-test kept?>"), std::string::npos);
+    EXPECT_NE(xml.find("&lt;raw&gt;&amp;"), std::string::npos);
+    EXPECT_LT(xml.find("id=\"painted\""), xml.find("style=\"fill:none\""));
+    EXPECT_LT(xml.find("style=\"fill:none\""), xml.find("inkscape:label="));
+    EXPECT_EQ(value.at("chars"), Json(double(g_utf8_strlen(xml.c_str(), -1))));
+    EXPECT_EQ(value.at("truncated"), Json(false));
+    EXPECT_EQ(data("get_xml", Object{{"id", "painted"}}), value);
+}
+TEST_F(McpTools, XmlDepthCountsElementLevelsAndElidesChildrenTogether)
+{
+    load("<g id='tree'><!--kept--><g id='branch'><text id='leaf'>text</text></g><rect id='sibling'/></g>");
+    auto zero = data("get_xml", Object{{"id", "tree"}, {"depth", 0}}).at("xml").get<std::string>();
+    EXPECT_NE(zero.find("<!--kept-->"), std::string::npos);
+    EXPECT_NE(zero.find("  <!-- 2 children omitted -->\n"), std::string::npos);
+    EXPECT_EQ(zero.find("id=\"branch\""), std::string::npos);
+    auto one = data("get_xml", Object{{"id", "tree"}, {"depth", 1}}).at("xml").get<std::string>();
+    EXPECT_NE(one.find("  <svg:g id=\"branch\">\n    <!-- 1 children omitted -->"), std::string::npos);
+    EXPECT_EQ(one.find("id=\"leaf\""), std::string::npos);
+    auto all = data("get_xml", Object{{"id", "tree"}, {"depth", 10}}).at("xml").get<std::string>();
+    EXPECT_NE(all.find("    <svg:text id=\"leaf\">text</svg:text>"), std::string::npos);
+    EXPECT_EQ(all.find("omitted"), std::string::npos);
+    EXPECT_EQ(data("get_xml", Object{{"id", "leaf"}, {"depth", 0}}).at("xml"), Json("<svg:text id=\"leaf\">text</svg:text>\n"));
+}
+TEST_F(McpTools, XmlStopsAtCharacterCapWithoutSplittingUtf8)
+{
+    std::string text;
+    for (int i = 0; i < 20000; ++i) text += "\xc3\xa9";
+    load("<text id='long'>" + text + "</text>");
+    auto value = data("get_xml", Object{{"id", "long"}, {"max_chars", 1000}});
+    auto const &xml = value.at("xml").get<std::string>();
+    EXPECT_EQ(value.at("truncated"), Json(true));
+    EXPECT_EQ(g_utf8_strlen(xml.c_str(), -1), 1000);
+    EXPECT_TRUE(g_utf8_validate(xml.c_str(), xml.size(), nullptr));
+    EXPECT_EQ(value.at("chars"), Json(1001));
+    auto full = data("get_xml", Object{{"id", "long"}, {"max_chars", 100000}});
+    EXPECT_EQ(full.at("truncated"), Json(false));
+    EXPECT_GT(full.at("chars").get<double>(), 20000);
+    auto length = int(full.at("chars").get<double>());
+    EXPECT_EQ(data("get_xml", Object{{"id", "long"}, {"max_chars", length}}).at("truncated"), Json(false));
+}
+TEST_F(McpTools, XmlRedactsFileAttributesAndDataPayloadsButKeepsInternalReferences)
+{
+    auto image = item("image")->getRepr();
+    image->setAttribute("xlink:href", "file:///C:/mcp-test-fixture/private/logo.png?query#fragment");
+    image->setAttribute("sodipodi:absref", "C:\\mcp-test-fixture\\private\\logo.png");
+    image->setAttribute("proof:embedded", "data:image/png;base64,YWJj");
+    auto xml = data("get_xml", Object{{"id", "image"}}).at("xml").get<std::string>();
+    EXPECT_NE(xml.find("xlink:href=\"logo.png\""), std::string::npos);
+    EXPECT_NE(xml.find("sodipodi:absref=\"logo.png\""), std::string::npos);
+    EXPECT_NE(xml.find("data:image/png;base64,\xe2\x80\xa6(4 bytes)"), std::string::npos);
+    EXPECT_EQ(xml.find("private"), std::string::npos);
+    EXPECT_EQ(xml.find("query"), std::string::npos);
+    EXPECT_EQ(xml.find("YWJj"), std::string::npos);
+    auto rect = item("rect")->getRepr();
+    rect->setAttribute("proof:source", "FILE:///C:/mcp-test-fixture/private/source.svg?query#fragment");
+    rect->setAttribute("proof:windows", "C:\\mcp-test-fixture\\private\\windows.svg");
+    rect->setAttribute("proof:unc", "\\\\mcp-test-fixture\\private\\unc.svg");
+    rect->setAttribute("proof:encoded", "file:C:%2fmcp-test-fixture%5cprivate%2Fencoded.svg");
+    rect->setAttribute("inkscape:export-filename", "relative/private/export.png");
+    rect->setAttribute("sodipodi:docname", "relative/private/document.svg");
+    rect->setAttribute("proof:data", "data:text/plain,secret");
+    rect->setAttribute("proof:reference", "url(#gradient)");
+    xml = data("get_xml", Object{{"id", "rect"}}).at("xml").get<std::string>();
+    for (auto filename : {"source.svg", "windows.svg", "unc.svg", "encoded.svg", "export.png", "document.svg"}) {
+        EXPECT_NE(xml.find(std::string("=\"") + filename + "\""), std::string::npos) << filename;
+    }
+    EXPECT_EQ(xml.find("private"), std::string::npos);
+    EXPECT_EQ(xml.find("secret"), std::string::npos);
+    EXPECT_NE(xml.find("data:text/plain,\xe2\x80\xa6(6 bytes)"), std::string::npos);
+    EXPECT_NE(xml.find("url(#gradient)"), std::string::npos);
+    EXPECT_NE(data("get_xml", Object{{"id", "use"}}).at("xml").get<std::string>().find("xlink:href=\"#rect\""), std::string::npos);
+    load("<image id='relative' width='1' height='1' xlink:href='private/relative.png?query#fragment'/>"
+         "<use id='outside' xlink:href='../private/other.svg#art'/>");
+    EXPECT_NE(data("get_xml", Object{{"id", "relative"}}).at("xml").get<std::string>().find("xlink:href=\"relative.png\""), std::string::npos);
+    // Any link outside the document keeps only its file name, not just a picture's.
+    auto outside = data("get_xml", Object{{"id", "outside"}}).at("xml").get<std::string>();
+    EXPECT_NE(outside.find("xlink:href=\"other.svg\""), std::string::npos) << outside;
+    EXPECT_EQ(outside.find("private"), std::string::npos);
+}
+TEST_F(McpTools, XmlRefusesMissingAndDefinitionIdsAndInvalidArguments)
+{
+    for (auto id : {"missing", "clip", "clip-path", "symbol", "symbol-rect", "marker-path", "mask-rect", "gradient"}) {
+        EXPECT_EQ(call("get_xml", Object{{"id", id}}).at("isError"), Json(true)) << id;
+    }
+    for (auto args : {Object{}, Object{{"id", 1}}, Object{{"id", ""}}, Object{{"id", std::string("a\0b", 3)}},
+                      Object{{"id", "rect"}, {"depth", -1}}, Object{{"id", "rect"}, {"depth", 11}},
+                      Object{{"id", "rect"}, {"depth", true}}, Object{{"id", "rect"}, {"depth", 1.5}},
+                      Object{{"id", "rect"}, {"depth", "4"}}, Object{{"id", "rect"}, {"max_chars", 999}},
+                      Object{{"id", "rect"}, {"max_chars", 100001}}, Object{{"id", "rect"}, {"max_chars", false}},
+                      Object{{"id", "rect"}, {"max_chars", 1000.5}}, Object{{"id", "rect"}, {"max_chars", "20000"}},
+                      Object{{"id", "rect"}, {"unknown", 0}}}) {
+        EXPECT_EQ(call("get_xml", args).at("isError"), Json(true)) << serialize(args);
     }
 }
 } // namespace

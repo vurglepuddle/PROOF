@@ -43,6 +43,7 @@ disconnects it) and the title ends in "— AI connected".
 | Look | `get_object` (1b): one object in full: transform, blend mode, clip/mask, clone source, text (2,000 characters), font and size in pt, point/area/path type, path nodes, a picture's pixels and linked file name (never its folder) |
 | Look | `get_selection` (1b): the selection (up to 200) and its bounds |
 | Look | `render_preview` (1b): a PNG of a page, the drawing, the selection or one object, the longest edge up to 2048 px and 4 megapixels, on the page colour, white or transparent; rendered in memory, never written to disk; an RGB appearance, not separations |
+| Look | `get_xml` (1b): one drawing object's XML, including spans and styles; depth 0–10 (default 4), up to 1,000–100,000 characters (default 20,000); links out of the document and file paths reduced to file names, data URI payloads replaced by byte counts |
 
 Every object summary carries its id, name (PROOF's object names) and default label, kind and XML tag,
 enclosing layer, visibility and lock, bounds **in the same numbers as the selector toolbar's X/Y/W/H**

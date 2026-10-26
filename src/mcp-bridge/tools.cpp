@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glibmm/miscutils.h>
 
@@ -41,6 +42,7 @@
 #include "text-editing.h"
 #include "util/scope_exit.h"
 #include "util/units.h"
+#include "xml/attribute-record.h"
 #include "xml/node.h"
 
 namespace Inkscape::MCP {
@@ -48,7 +50,7 @@ namespace {
 using Object = Json::Object;
 using Array = Json::Array;
 
-char const *const names[] = {"document_info", "list_layers", "list_objects", "get_object", "get_selection", "render_preview"};
+char const *const names[] = {"document_info", "list_layers", "list_objects", "get_object", "get_selection", "render_preview", "get_xml"};
 
 Json string_schema() { return Object{{"type", "string"}, {"minLength", 1}}; }
 Json integer_schema(int minimum, int maximum)
@@ -369,6 +371,133 @@ Json get_selection(LookContext const &context)
     return result(context, {{"count", count}, {"objects", std::move(objects)}, {"bbox", toolbar_bounds(context, bounds)}},
         std::to_string(count) + " objects selected.");
 }
+class XmlExcerpt
+{
+public:
+    XmlExcerpt(unsigned depth, std::size_t limit) : _depth(depth), _limit(limit) {}
+    std::string xml;
+    std::size_t chars = 0;
+    bool truncated = false;
+
+    void write(XML::Node const &node, unsigned level = 0)
+    {
+        if (truncated) return;
+        indent(level);
+        if (node.type() == XML::NodeType::TEXT_NODE) escaped(node.content() ? node.content() : "");
+        else if (node.type() == XML::NodeType::COMMENT_NODE) {
+            append("<!--"); append(node.content() ? node.content() : ""); append("-->");
+        } else if (node.type() == XML::NodeType::PI_NODE) {
+            append("<?"); append(node.name()); append(" "); append(node.content() ? node.content() : ""); append("?>");
+        } else if (node.type() == XML::NodeType::ELEMENT_NODE) {
+            append("<"); append(node.name());
+            for (auto const &attribute : node.attributeList()) {
+                if (truncated) return;
+                auto name = g_quark_to_string(attribute.key);
+                append(" "); append(name); append("=\"");
+                if (truncated) return;
+                attribute_value(node, name, attribute.value.pointer() ? attribute.value.pointer() : "");
+                append("\"");
+            }
+            if (truncated) return;
+            auto child = node.firstChild();
+            if (!child) append("/>");
+            else {
+                append(">");
+                if (child->type() == XML::NodeType::TEXT_NODE && !child->next()) escaped(child->content() ? child->content() : "");
+                else {
+                    append("\n");
+                    unsigned omitted = 0;
+                    if (level == _depth && !truncated) {
+                        for (auto next = child; next; next = next->next()) if (next->type() == XML::NodeType::ELEMENT_NODE) ++omitted;
+                    }
+                    for (; child && !truncated; child = child->next()) {
+                        if (level == _depth && child->type() == XML::NodeType::ELEMENT_NODE) {
+                            if (omitted) {
+                                indent(level + 1); append("<!-- "); append(std::to_string(omitted)); append(" children omitted -->\n");
+                                omitted = 0;
+                            }
+                        } else write(*child, level + 1);
+                    }
+                    indent(level);
+                }
+                append("</"); append(node.name()); append(">");
+            }
+        }
+        append("\n");
+    }
+
+private:
+    unsigned _depth;
+    std::size_t _limit;
+    void append(std::string_view value)
+    {
+        while (!value.empty() && !truncated) {
+            if (++chars > _limit) { truncated = true; break; }
+            auto length = g_utf8_next_char(value.data()) - value.data();
+            xml.append(value.data(), length);
+            value.remove_prefix(length);
+        }
+    }
+    void indent(unsigned level) { append(std::string(level * 2, ' ')); }
+    void escaped(std::string_view value, bool attribute = false)
+    {
+        while (!value.empty() && !truncated) {
+            auto length = g_utf8_next_char(value.data()) - value.data();
+            switch (value.front()) {
+                case '&': append("&amp;"); break;
+                case '<': append("&lt;"); break;
+                case '>': append("&gt;"); break;
+                case '"': append(attribute ? "&quot;" : "\""); break;
+                default: append(value.substr(0, length)); break;
+            }
+            value.remove_prefix(length);
+        }
+    }
+    static bool prefix(std::string_view value, char const *start)
+    {
+        auto length = std::char_traits<char>::length(start);
+        return value.size() >= length && !g_ascii_strncasecmp(value.data(), start, length);
+    }
+    static std::string_view filename(std::string_view value)
+    {
+        value = value.substr(0, value.find_first_of("?#"));
+        if (prefix(value, "file:")) value.remove_prefix(5);
+        std::size_t start = 0;
+        for (std::size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '/' || value[i] == '\\') start = i + 1;
+            else if (prefix(value.substr(i), "%2f") || prefix(value.substr(i), "%5c")) { start = i + 3; i += 2; }
+        }
+        value.remove_prefix(start);
+        if (value.size() >= 2 && g_ascii_isalpha(value[0]) && value[1] == ':') value.remove_prefix(2);
+        return value;
+    }
+    void attribute_value(XML::Node const &node, std::string_view name, std::string_view value)
+    {
+        if (prefix(value, "data:")) {
+            auto comma = value.find(',');
+            escaped(value.substr(0, comma), true);
+            append(",\u2026("); append(std::to_string(comma == value.npos ? 0 : value.size() - comma - 1)); append(" bytes)");
+            return;
+        }
+        if (value.starts_with('#') || value.starts_with("url(#")) { escaped(value, true); return; }
+        // Any link out of the document, not only a picture's, can name folders.
+        auto absolute = prefix(value, "file:") || value.starts_with("\\\\") || value.starts_with("//") ||
+            (value.size() >= 3 && g_ascii_isalpha(value[0]) && value[1] == ':' && (value[2] == '/' || value[2] == '\\'));
+        if (absolute || name == "href" || name == "xlink:href" || name == "sodipodi:absref" ||
+            name == "inkscape:export-filename" || name == "sodipodi:docname") value = filename(value);
+        escaped(value, true);
+    }
+};
+
+Json get_xml(LookContext const &context, Json const &args)
+{
+    auto name = string_arg(args, "id");
+    auto item = find_item(context.document, name);
+    XmlExcerpt excerpt(integer_arg(args, "depth", 4, 0, 10), integer_arg(args, "max_chars", 20000, 1000, 100000));
+    excerpt.write(*item->getRepr());
+    return result(context, Object{{"id", name}, {"xml", excerpt.xml}, {"chars", double(excerpt.chars)}, {"truncated", excerpt.truncated}}, excerpt.xml);
+}
+
 Json render_preview(LookContext const &context, Json const &args)
 {
     auto &document = context.document;
@@ -445,7 +574,9 @@ Json::Array look_tools()
         definition("render_preview", "Render preview", "Render an RGB appearance preview, not separations. Page indices start at zero; size is the longest pixel edge, clamped to 2048 and four megapixels. Area uses selector toolbar coordinates in the display unit.",
             {{"area", enum_schema({"page", "drawing", "selection", "object"})}, {"page", Object{{"type", "integer"}, {"minimum", 0}}},
              {"id", string_schema()}, {"size", Object{{"type", "integer"}, {"minimum", 64}}},
-             {"background", enum_schema({"page", "white", "transparent"})}})
+             {"background", enum_schema({"page", "white", "transparent"})}}),
+        definition("get_xml", "Read object XML", "Read a drawing object's XML, capped by depth (0-10) and max_chars (1000-100000); links and file paths become file names and data URI payloads become byte counts.",
+            {{"id", string_schema()}, {"depth", integer_schema(0, 10)}, {"max_chars", integer_schema(1000, 100000)}}, {"id"})
     };
 }
 bool known_tool(std::string const &name)
@@ -461,10 +592,15 @@ void validate_arguments(std::string const &name, Json const &args)
         integer_arg(args, "depth", 1, 1, 5);
         integer_arg(args, "offset", 0, 0, 9007199254740991.0);
         integer_arg(args, "limit", 100, 1, 500);
-    } else if (name == "get_object") {
-        keys(args, {"id"});
+    } else if (name == "get_object" || name == "get_xml") {
+        if (name == "get_xml") keys(args, {"id", "depth", "max_chars"});
+        else keys(args, {"id"});
         if (!args.contains("id")) throw std::runtime_error("id is required");
         string_arg(args, "id");
+        if (name == "get_xml") {
+            integer_arg(args, "depth", 4, 0, 10);
+            integer_arg(args, "max_chars", 20000, 1000, 100000);
+        }
     } else if (name == "render_preview") {
         keys(args, {"area", "page", "id", "size", "background"});
         auto area = string_arg(args, "area", "page");
@@ -487,6 +623,7 @@ Json call_look_tool(LookContext const &context, std::string const &name, Json co
         if (name == "list_layers") return list_layers(context);
         if (name == "list_objects") return list_objects(context, args);
         if (name == "get_object") return get_object(context, args);
+        if (name == "get_xml") return get_xml(context, args);
         if (name == "get_selection") return get_selection(context);
         if (name == "render_preview") return render_preview(context, args);
         throw std::runtime_error("Unknown tool");

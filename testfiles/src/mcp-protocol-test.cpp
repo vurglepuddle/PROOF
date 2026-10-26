@@ -66,14 +66,14 @@ TEST_F(McpProtocol, HelloAndPing)
 TEST_F(McpProtocol, CurrentPermissionControlsListAndCalls)
 {
     hello();
-    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 6);
+    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 7);
     look = false;
     EXPECT_TRUE(call("tools/list").at("result").at("tools").get<Json::Array>().empty());
     for (auto const &tool : look_tools()) {
         EXPECT_EQ(call("tools/call", Object{{"name", tool.at("name")}, {"arguments", Object{}}}).at("result").at("isError"), Json(true));
     }
     look = true;
-    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 6);
+    EXPECT_EQ(call("tools/list").at("result").at("tools").get<Json::Array>().size(), 7);
 }
 TEST_F(McpProtocol, LookToolsHaveFixedOrderAndReadOnlyAnnotations)
 {
@@ -87,7 +87,7 @@ TEST_F(McpProtocol, LookToolsHaveFixedOrderAndReadOnlyAnnotations)
         EXPECT_EQ(tool.at("annotations").at("openWorldHint"), Json(false));
         EXPECT_EQ(tool.at("inputSchema").at("additionalProperties"), Json(false));
     }
-    EXPECT_EQ(names, (std::vector<std::string>{"document_info", "list_layers", "list_objects", "get_object", "get_selection", "render_preview"}));
+    EXPECT_EQ(names, (std::vector<std::string>{"document_info", "list_layers", "list_objects", "get_object", "get_selection", "render_preview", "get_xml"}));
 }
 TEST_F(McpProtocol, UnknownAndBadToolCallsAreToolErrors)
 {
