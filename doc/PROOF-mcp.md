@@ -84,9 +84,19 @@ relays PROOF's. MCP over stdio only, never HTTP, and both eras:
 
 It finds the newest live PROOF (or `--pid N`), opens the pipe with the exact client rights and
 anonymous impersonation (PROOF can't act as the client), and connects at startup in the background:
-while PROOF's question waits, `tools/list` answers at once with a status tool, and legacy clients get
-`notifications/tools/list_changed` once allowed. A lost connection becomes an `isError` result; the next
-call reconnects.
+while PROOF's question waits, `tools/list` answers at once with a status tool. The client's name for
+the question comes from `initialize` (legacy) or from each request's `_meta`
+`io.modelcontextprotocol/clientInfo` (modern; Claude Code speaks 2026-07-28 and sends no `initialize`).
+When the tools change (allowed, or disconnected), legacy clients get `notifications/tools/list_changed`;
+modern clients get it on their `subscriptions/listen` stream (the server advertises
+`tools.listChanged`, acknowledges with `notifications/subscriptions/acknowledged`, tags each notice with
+`io.modelcontextprotocol/subscriptionId`, and drops a subscription on `notifications/cancelled`). A
+lost connection becomes an `isError` result; the next call reconnects. After a Deny, listing tools
+doesn't ask the owner again; only an explicit tool call does.
+
+Found with the first real client (2026-10-26): Claude Code connected as "unknown" and kept the
+placeholder tool after Allow, because the server read the name only from `initialize` and announced
+no tool-list changes to a modern client.
 
 ## Checks
 
@@ -95,7 +105,7 @@ call reconnects.
   pipe: the narrow rights connect and generic read/write is refused, the protected DACL, a second first
   instance fails, wrong token, oversize line, hello and consent deadlines, stop during connect, read,
   reply wait and a blocked write, the endpoint removed and a replaced one kept).
-- `testfiles/mcp/test_proof_mcp.py` (18, the server against a fake bridge and one real pipe round trip):
+- `testfiles/mcp/test_proof_mcp.py` (21, the server against a fake bridge and one real pipe round trip):
   `python.exe -I -B -m unittest discover -s testfiles/mcp -p test_proof_mcp.py`.
 - Live (workspace `tools/mcp-live-check.py`): PROOF with the bridge on, the server, both MCP eras, a
   reconnect without a second question; the person at the machine clicks Allow once. 13 of 13 on

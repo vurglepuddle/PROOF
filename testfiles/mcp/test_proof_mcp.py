@@ -159,7 +159,9 @@ class ServerTest(unittest.TestCase):
         self.server.start()
         self.server.worker.join(1)
         self.assertEqual(self.call("tools/list")["result"]["tools"][0]["name"], "proof_status")
+        self.server.worker.join(1)  # each tools/list retries in the background
         self.assertEqual(self.call("tools/list")["result"]["tools"][0]["description"], mcp.STATUS)
+        self.server.worker.join(1)
         self.bridge.offline = False
         self.assertTrue(self.call("tools/call", {"name": "proof_status", "arguments": {}})["result"]["isError"])
         self.server.worker.join(1)
@@ -167,6 +169,50 @@ class ServerTest(unittest.TestCase):
         self.assertFalse(result["isError"])
         messages = [mcp.strict_json(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(messages[-1]["method"], "notifications/tools/list_changed")
+
+    def test_modern_client_names_itself_and_hears_of_new_tools(self):
+        meta = {mcp.VERSION_KEY: mcp.MODERN, mcp.CLIENT_INFO_KEY: {"name": "claude-code", "version": "2.1"}}
+        discover = self.server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": meta}})
+        self.assertTrue(discover["result"]["capabilities"]["tools"]["listChanged"])
+        listen = {"jsonrpc": "2.0", "id": 9, "method": "subscriptions/listen",
+                  "params": {"_meta": meta, "notifications": {"toolsListChanged": True, "promptsListChanged": True}}}
+        self.assertIsNone(self.server.dispatch(listen))  # long-lived: no response while it lasts
+        ack = mcp.strict_json(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(ack["method"], "notifications/subscriptions/acknowledged")
+        self.assertEqual(ack["params"], {"_meta": {mcp.SUBSCRIPTION_KEY: 9}, "notifications": {"toolsListChanged": True}})
+        self.server.start()
+        self.server.worker.join(1)
+        self.assertEqual(self.bridge.client, {"name": "claude-code", "version": "2.1"})
+        changed = mcp.strict_json(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(changed, {"jsonrpc": "2.0", "method": "notifications/tools/list_changed",
+                                   "params": {"_meta": {mcp.SUBSCRIPTION_KEY: 9}}})
+        self.server.dispatch({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 9}})
+        self.assertEqual(self.server.subscriptions, set())
+
+    def test_lost_connection_announces_the_change(self):
+        meta = {mcp.VERSION_KEY: mcp.MODERN}
+        self.server.dispatch({"jsonrpc": "2.0", "id": 3, "method": "subscriptions/listen",
+                              "params": {"_meta": meta, "notifications": {"toolsListChanged": True}}})
+        self.server.connect()
+        self.bridge.lost = True
+        self.assertTrue(self.call("tools/call", {"name": "document_info", "arguments": {}}, modern=True)["result"]["isError"])
+        methods = [mcp.strict_json(line).get("method") for line in self.output.getvalue().splitlines()]
+        self.assertEqual(methods.count("notifications/tools/list_changed"), 2)  # connected, then lost
+
+    def test_denied_client_is_not_asked_again_by_tools_list(self):
+        attempts = []
+        class Denying(FakeBridge):
+            def connect(self, client):
+                attempts.append(client)
+                raise OSError("denied")
+        self.server.factory = Denying
+        self.server.start(wait_for_client=False)
+        self.server.worker.join(1)
+        self.assertEqual(self.call("tools/list")["result"]["tools"][0]["description"], mcp.DENIED)
+        self.assertEqual(len(attempts), 1)
+        self.assertTrue(self.call("tools/call", {"name": "proof_status", "arguments": {}})["result"]["isError"])
+        self.server.worker.join(1)
+        self.assertEqual(len(attempts), 2)  # an explicit call asks again
 
     def test_disconnected_call_is_error_and_next_call_reconnects(self):
         self.server.connect()

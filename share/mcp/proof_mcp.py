@@ -14,10 +14,13 @@ import time
 VERSIONS = ("2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26")
 MODERN = VERSIONS[0]
 VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
+CLIENT_INFO_KEY = "io.modelcontextprotocol/clientInfo"
+SUBSCRIPTION_KEY = "io.modelcontextprotocol/subscriptionId"
 SERVER_INFO = {"name": "proof", "title": "PROOF", "version": "1"}
 INSTRUCTIONS = "Use PROOF's permitted tools on the active document. PROOF asks for consent locally."
 STATUS = "Enable Preferences > System > AI bridge in PROOF, then allow this client to connect."
 WAITING = "Waiting for approval in PROOF (the Allow dialog)."
+DENIED = "PROOF denied this client. Call proof_status to ask again."
 REQUEST_LIMIT = 1024 * 1024
 RESPONSE_LIMIT = 32 * 1024 * 1024
 PIPE_CLIENT_ACCESS = 0x00120183
@@ -214,10 +217,13 @@ class Server:
         self.bridge = None
         self.pending = None
         self.worker = None
+        self.denied = False
+        self.subscriptions = set()  # ids of modern subscriptions/listen requests that want toolsListChanged
         self.stopped = threading.Event()
         self.client_ready = threading.Event()
         self.lock = threading.Lock()
         self.output_lock = threading.Lock()
+        self.subscription_lock = threading.Lock()
 
     def send(self, message):
         data = encoded(message)
@@ -231,6 +237,21 @@ class Server:
                     raise OSError("MCP stdout closed")
                 offset += written
             self.output.flush()
+
+    def tools_changed(self):
+        """Tell the client its tool list changed: plainly to a legacy client, on each subscription to a modern one."""
+        if self.initialized:
+            self.send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+        with self.subscription_lock:
+            subscriptions = list(self.subscriptions)
+        for subscription in subscriptions:
+            self.send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed",
+                       "params": {"_meta": {SUBSCRIPTION_KEY: subscription}}})
+
+    def note_client(self, info):
+        if isinstance(info, dict) and isinstance(info.get("name"), str) and info["name"]:
+            version = info.get("version", "")
+            self.client = {"name": info["name"], "version": version if isinstance(version, str) else ""}
 
     def connect(self):
         if self.stopped.is_set():
@@ -249,11 +270,12 @@ class Server:
                 bridge.close()
                 return False
             self.bridge = bridge
-            if self.initialized and not self.modern:
-                self.send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+            self.denied = False
+            self.tools_changed()
             return True
         except (OSError, ValueError, KeyError, TypeError) as exc:
             print("PROOF bridge: " + str(exc), file=sys.stderr)
+            self.denied = str(exc) == "denied"
             if bridge is not None:
                 bridge.close()
             return False
@@ -289,8 +311,8 @@ class Server:
         if not self.lock.acquire(blocking=False):
             return self.status_tool(WAITING) if method == "tools/list" else tool_error(WAITING)
         try:
-            if self.bridge is None and self.worker is not None and method == "tools/list":
-                return self.status_tool()
+            if self.bridge is None and self.denied and method == "tools/list":
+                return self.status_tool(DENIED)  # only an explicit call asks the owner again
             if self.bridge is not None:
                 if method == "tools/call" and params.get("name") == "proof_status":
                     if params.get("arguments", {}) != {}:
@@ -302,11 +324,12 @@ class Server:
                     self.bridge.close()
                     self.bridge = None
                     self.worker = None
+                    self.tools_changed()
                     return self.status_tool() if method == "tools/list" else tool_error("PROOF disconnected: " + str(exc))
         finally:
             self.lock.release()
         self.start(wait_for_client=False)
-        return self.status_tool(WAITING) if method == "tools/list" else tool_error(WAITING)
+        return self.status_tool() if method == "tools/list" else tool_error(WAITING)
 
     @staticmethod
     def status_tool(message=STATUS):
@@ -333,27 +356,40 @@ class Server:
         if modern and meta[VERSION_KEY] != MODERN:
             response["error"] = {"code": -32022, "message": "Unsupported protocol version",
                                  "data": {"supported": list(VERSIONS), "requested": meta[VERSION_KEY]}}
-        elif method == "notifications/initialized":
+        elif method == "notifications/cancelled":
+            with self.subscription_lock:
+                self.subscriptions.discard(params.get("requestId"))
             return None
         elif notification:
             return None
         else:
             self.modern = modern
+            if modern:
+                # A modern client names itself on every request; there is no initialize.
+                self.note_client(meta.get(CLIENT_INFO_KEY))
+                self.client_ready.set()
+            if method == "tools/call":
+                self.denied = False  # an explicit call may ask the owner again
             if method == "initialize":
-                client = params.get("clientInfo", {})
-                if isinstance(client, dict):
-                    name, version = client.get("name", "unknown"), client.get("version", "")
-                    if isinstance(name, str) and isinstance(version, str):
-                        self.client = {"name": name, "version": version}
+                self.note_client(params.get("clientInfo"))
                 self.client_ready.set()
                 self.initialized = True
                 version = params.get("protocolVersion")
                 response["result"] = {"protocolVersion": version if version in VERSIONS[1:] else VERSIONS[1],
                     "capabilities": {"tools": {"listChanged": True}}, "serverInfo": dict(SERVER_INFO), "instructions": INSTRUCTIONS}
             elif method == "server/discover" and modern:
-                self.client_ready.set()
-                response["result"] = {"supportedVersions": list(VERSIONS), "capabilities": {"tools": {}},
+                response["result"] = {"supportedVersions": list(VERSIONS), "capabilities": {"tools": {"listChanged": True}},
                                       "instructions": INSTRUCTIONS, "ttlMs": 60000, "cacheScope": "private"}
+            elif method == "subscriptions/listen" and modern:
+                # A long-lived request: acknowledged now, never answered while it lasts.
+                wanted = params.get("notifications")
+                agreed = {"toolsListChanged": True} if isinstance(wanted, dict) and wanted.get("toolsListChanged") is True else {}
+                self.send({"jsonrpc": "2.0", "method": "notifications/subscriptions/acknowledged",
+                           "params": {"_meta": {SUBSCRIPTION_KEY: identifier}, "notifications": agreed}})
+                if agreed:
+                    with self.subscription_lock:
+                        self.subscriptions.add(identifier)
+                return None
             elif method == "ping":
                 response["result"] = {}
             elif method in ("tools/list", "tools/call"):
