@@ -172,11 +172,125 @@ static gboolean release_text_focus_before_unrealize(GSignalInvocationHint *, gui
     return TRUE;
 }
 
+// PROOF: the general guard, on GTK's Windows input-method context itself. It removes its display
+// filter only in a focus-out that still finds its client widget's surface, and GTK drops contexts
+// without one: GtkIMMulticontext lets a delegate go with set_client_widget(NULL) and an unref, and a
+// context disposed, or whose widget is unrealized, while it has the focus keeps the filter on freed
+// memory (the owner's crash of 2026-10-26: from the main loop straight into this filter). So a
+// focused context gives its focus up before it loses its client widget, before that widget is
+// unrealized, and before it is disposed. The narrower guards above stay.
+extern "C" GType gtk_im_context_ime_get_type(); // exported by GTK 4 on Windows; no public header
+
+namespace {
+GQuark ime_focused_quark, ime_client_quark;
+void (*ime_focus_in)(GtkIMContext *);
+void (*ime_focus_out)(GtkIMContext *);
+void (*ime_set_client_widget)(GtkIMContext *, GtkWidget *);
+void (*ime_dispose)(GObject *);
+
+struct ImeClient
+{
+    GtkWidget *widget = nullptr; // weak
+};
+
+void ime_release(GtkIMContext *context)
+{
+    if (g_object_get_qdata(G_OBJECT(context), ime_focused_quark)) {
+        gtk_im_context_focus_out(context);
+    }
+}
+
+void ime_client_unrealized(GtkWidget *, GtkIMContext *context)
+{
+    // A handler of the RUN_LAST "unrealize": the widget still has its native and surface.
+    ime_release(context);
+}
+
+void ime_forget_client(GtkIMContext *context, ImeClient &client)
+{
+    if (client.widget) {
+        g_signal_handlers_disconnect_by_func(client.widget, reinterpret_cast<gpointer>(ime_client_unrealized), context);
+        g_object_remove_weak_pointer(G_OBJECT(client.widget), reinterpret_cast<gpointer *>(&client.widget));
+        client.widget = nullptr;
+    }
+}
+
+ImeClient &ime_client(GtkIMContext *context)
+{
+    auto client = static_cast<ImeClient *>(g_object_get_qdata(G_OBJECT(context), ime_client_quark));
+    if (!client) {
+        client = new ImeClient;
+        g_object_set_qdata_full(G_OBJECT(context), ime_client_quark, client, [](gpointer data) {
+            auto client = static_cast<ImeClient *>(data);
+            if (client->widget) {
+                g_object_remove_weak_pointer(G_OBJECT(client->widget), reinterpret_cast<gpointer *>(&client->widget));
+            }
+            delete client;
+        });
+    }
+    return *client;
+}
+
+void guarded_focus_in(GtkIMContext *context)
+{
+    g_object_set_qdata(G_OBJECT(context), ime_focused_quark, GINT_TO_POINTER(1));
+    ime_focus_in(context);
+}
+
+void guarded_focus_out(GtkIMContext *context)
+{
+    g_object_set_qdata(G_OBJECT(context), ime_focused_quark, nullptr);
+    ime_focus_out(context);
+}
+
+void guarded_set_client_widget(GtkIMContext *context, GtkWidget *widget)
+{
+    auto &client = ime_client(context);
+    if (client.widget != widget) {
+        ime_release(context); // while the old client still has its surface
+        ime_forget_client(context, client);
+        if (widget) {
+            client.widget = widget;
+            g_object_add_weak_pointer(G_OBJECT(widget), reinterpret_cast<gpointer *>(&client.widget));
+            g_signal_connect(widget, "unrealize", G_CALLBACK(ime_client_unrealized), context);
+        }
+    }
+    ime_set_client_widget(context, widget);
+}
+
+void guarded_dispose(GObject *object)
+{
+    auto context = GTK_IM_CONTEXT(object);
+    ime_release(context);
+    if (auto client = static_cast<ImeClient *>(g_object_get_qdata(object, ime_client_quark))) {
+        ime_forget_client(context, *client);
+    }
+    ime_dispose(object); // GTK's dispose clears the client widget without the class method
+}
+
+void guard_input_method_contexts()
+{
+    ime_focused_quark = g_quark_from_static_string("proof-ime-focused");
+    ime_client_quark = g_quark_from_static_string("proof-ime-client");
+    // Kept for the application's life: the class methods stay replaced.
+    auto ime_class = static_cast<GtkIMContextClass *>(g_type_class_ref(gtk_im_context_ime_get_type()));
+    ime_focus_in = ime_class->focus_in;
+    ime_focus_out = ime_class->focus_out;
+    ime_set_client_widget = ime_class->set_client_widget;
+    ime_class->focus_in = guarded_focus_in;
+    ime_class->focus_out = guarded_focus_out;
+    ime_class->set_client_widget = guarded_set_client_widget;
+    ime_dispose = G_OBJECT_CLASS(ime_class)->dispose;
+    G_OBJECT_CLASS(ime_class)->dispose = guarded_dispose;
+}
+} // namespace
+
 static void guard_input_method_filters()
 {
     static bool installed = false;
     if (installed) return;
     installed = true;
+    guard_input_method_contexts();
     auto widget_class = g_type_class_ref(GTK_TYPE_WIDGET);
     g_signal_add_emission_hook(g_signal_lookup("unrealize", GTK_TYPE_WIDGET), 0,
                                release_text_focus_before_unrealize, nullptr, nullptr);
