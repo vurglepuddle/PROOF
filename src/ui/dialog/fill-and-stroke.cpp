@@ -20,6 +20,7 @@
 
 #include <algorithm>
 
+#include <glibmm/main.h>
 #include <gtkmm/grid.h>
 #include <gtkmm/image.h>
 
@@ -281,9 +282,15 @@ void FillAndStroke::desktopReplaced()
         _advanced_tab->setDesktop(getDesktop());
     }
     _subject.setDesktop(getDesktop());
-    // A gradient or mesh point picked by a tool: the dialog shows (and sets) its colour.
+    // A gradient or mesh point picked by a tool: the dialog shows (and sets) its colour; once the
+    // tool is done (it announces this midway through its own work on its points).
+    _stop_refresh.disconnect();
     _stop_selected = getDesktop() ? getDesktop()->connect_gradient_stop_selected([this](auto) {
-        if (!_ignore_updates) _updateFromSelection();
+        if (_stop_refresh.connected()) return;
+        _stop_refresh = Glib::signal_idle().connect([this] {
+            if (!_ignore_updates && getDesktop()) _updateFromSelection();
+            return false;
+        });
     }) : sigc::connection{};
 
     documentReplaced();

@@ -66,7 +66,7 @@ private:
     std::array<Preview, 2> _preview;
     std::optional<PaintPopoverManager::Registration> _fill_registration, _stroke_registration;
     sigc::scoped_connection _selection_changed, _selection_modified;
-    sigc::scoped_connection _document_changed, _desktop_destroyed, _style_changed, _stop_selected;
+    sigc::scoped_connection _document_changed, _desktop_destroyed, _style_changed, _stop_selected, _stop_refresh;
 };
 } // namespace Inkscape::UI::Widget
 #endif

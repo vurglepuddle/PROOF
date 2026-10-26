@@ -155,7 +155,7 @@ protected:
     // Signals
     sigc::scoped_connection selection_changed_connection;
     sigc::scoped_connection selection_modified_connection;
-    sigc::scoped_connection stop_selected_connection;
+    sigc::scoped_connection stop_selected_connection, stop_refresh_connection;
 
     Gtk::EventSequenceState on_fill_click   (Gtk::GestureClick const &click,
                                              int n_press, double x, double y);
