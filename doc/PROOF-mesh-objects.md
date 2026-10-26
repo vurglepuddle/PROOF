@@ -159,3 +159,16 @@ RGB documents keep their RGB interpolation. The temporary drawing patches do
 not change the editable grid or its saved channels.
 [Canvas interpolation](PROOF-document-colors.md#a-cmyk-documents-gradients-and-meshes-blended-in-cmyk-on-the-screen-2026-10-22).
 [Writer qualification and refusals](PROOF-ai-interchange.md#editable-mesh-patches-written-2026-10-22).
+
+## A point's colour in a CMYK document (2026-10-26)
+
+The owner: a mesh point picked with the Mesh tool "insists it's color X, and
+won't let you change it". In a CMYK document a picked colour arrives as
+`#hex icc-color(profile, c, m, y, k)`; the corner code parsed it without the
+document's profiles, got nothing and kept the old colour (linear and radial
+stops take the string as it is, so only meshes were hit). It now parses with
+the document's colour management (`DocumentCMS::parse`), as the stop itself
+does. The Fill and Stroke dialog, which shows the object's own paint since its
+1.5 rework, now shows the selected points' colour while the Mesh tool has
+points selected, so a colour can be set there too, as in the sidebar's paint
+popover. Test: `sp-gradient-test` (`ACmykColourInTheDocumentProfileReachesAMeshPoint`).

@@ -27,6 +27,8 @@
 #include "desktop-style.h"
 #include "document-undo.h"
 #include "gradient-chemistry.h"
+#include "gradient-drag.h"
+#include "object/sp-mesh-gradient.h"
 #include "pattern-manipulation.h"
 #include "preferences.h"
 #include "style.h"
@@ -185,6 +187,18 @@ void FillAndStroke::_updateFromSelection()
                     color_found = true;
                 }
             }
+        }
+
+        // Mesh points picked with the Mesh tool: the paint to edit is their colour, which the tool
+        // answers the query with (and applies a colour set here to), not the object's mesh.
+        auto drag = getDesktop()->getTool() ? getDesktop()->getTool()->get_drag() : nullptr;
+        if (drag && !drag->selected.empty() && paint_ptr && paint_ptr->isPaintserver() &&
+            is<SPMeshGradient>(paint_ptr->href->getObject()) && query.getFillOrStroke(is_fill)->isColor()) {
+            mode = UI::Widget::PaintMode::Solid;
+            color = query.getFillOrStroke(is_fill)->getColor();
+            opacity = is_fill ? query.fill_opacity.as_double() : query.stroke_opacity.as_double();
+            color_found = true;
+            paint_ptr = nullptr;
         }
 
         if (!color_found) {
