@@ -160,7 +160,7 @@ Json toolbar_bounds(LookContext const &context, Geom::OptRect const &bounds)
 Json color(Colors::Color const &value)
 {
     auto space = value.getSpace();
-    auto type = space->getType();
+    auto type = space->getComponentType(); // an ICC profile's space reports its own model (CMYK, RGB...)
     auto count = std::min<std::size_t>(space->getComponentCount(), value.size());
     double factor = type == Colors::Space::Type::CMYK ? 100 : type == Colors::Space::Type::RGB ? 255 : 1;
     Array values;
