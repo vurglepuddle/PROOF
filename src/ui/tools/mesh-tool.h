@@ -47,6 +47,7 @@ public:
 
 private:
     bool cursor_addnode;
+    bool created_on_press = false; // a double-click's second press made the mesh
     bool show_handles;
     bool edit_fill;
     bool edit_stroke;

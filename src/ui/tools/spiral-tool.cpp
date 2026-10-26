@@ -176,9 +176,9 @@ bool SpiralTool::root_handler(CanvasEvent const &event)
                 } else if (item_to_select) {
                     // No dragging, select clicked item if any.
                     if (mod_select_add_to->active(event.modifiers)) {
-                        selection->toggle(item_to_select);
-                    } else if (!selection->includes(item_to_select)) {
-                        selection->set(item_to_select);
+                        selection->toggle(item_to_select.get());
+                    } else if (!selection->includes(item_to_select.get())) {
+                        selection->set(item_to_select.get());
                     }
                 } else {
                     // Click in an empty space.

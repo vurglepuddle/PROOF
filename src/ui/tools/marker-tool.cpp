@@ -131,7 +131,7 @@ bool MarkerTool::root_handler(CanvasEvent const &event)
             if (event.button == 1) {
                 if (item_to_select) {
                     // unselect all items, except for newly selected item
-                    selection->set(item_to_select);
+                    selection->set(item_to_select.get());
                 } else {
                     // clicked into empty space, deselect any selected items
                     selection->clear();
