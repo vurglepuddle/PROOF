@@ -26,6 +26,7 @@
 #include "actions/actions-tools.h"
 #include "dash-selector.h"
 #include "desktop.h"
+#include "desktop-style.h"
 #include "document-undo.h"
 #include "document.h"
 #include "fill-or-stroke.h"
@@ -886,7 +887,7 @@ StrokeStyle::updateLine()
     bool has_markers = false;
     auto const objects = sel->items_vector();
     if (!objects.empty()) {
-        auto const style = objects.front()->style;
+        auto const style = sp_desktop_paint_sources({objects.front()}).front()->style; // a text: its first character's span
         /* Markers */
         has_markers = updateAllMarkers(objects); // FIXME: make this desktop query too
 

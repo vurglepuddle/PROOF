@@ -13,6 +13,7 @@
  * Released under GNU GPL v2+, read the file 'COPYING' for more information.
  */
 
+#include <algorithm>
 #include <string>
 #include <cstring>
 #include <unordered_set>
@@ -43,6 +44,7 @@
 #include "object/sp-path.h"
 #include "object/sp-pattern.h"
 #include "object/sp-radial-gradient.h"
+#include "object/sp-string.h"
 #include "object/sp-textpath.h"
 #include "object/sp-tref.h"
 #include "object/sp-tspan.h"
@@ -65,6 +67,41 @@ static bool isTextualItem(SPObject const *obj)
         || is<SPFlowdiv>(obj)
         || is<SPFlowpara>(obj)
         || is<SPFlowtspan>(obj);
+}
+
+// Adds, in document order, the objects whose style paints the visible characters below \a object:
+// those holding a string with more than white space. An object's strings are its own children,
+// so each holder is met in one call only.
+static void gather_paint_sources(SPObject &object, std::vector<SPItem *> &sources)
+{
+    auto holder = cast<SPItem>(&object);
+    bool added = false;
+    for (auto &child : object.children) {
+        if (auto string = cast<SPString>(&child)) {
+            if (holder && !added && std::any_of(string->string.begin(), string->string.end(),
+                                                [](gunichar c) { return !g_unichar_isspace(c); })) {
+                sources.push_back(holder);
+                added = true;
+            }
+        } else {
+            gather_paint_sources(child, sources);
+        }
+    }
+}
+
+std::vector<SPItem *> sp_desktop_paint_sources(std::vector<SPItem *> const &items)
+{
+    std::vector<SPItem *> sources;
+    for (auto item : items) {
+        auto first = sources.size();
+        if (is<SPText>(item) || is<SPFlowtext>(item)) {
+            gather_paint_sources(*item, sources);
+        }
+        if (sources.size() == first) {
+            sources.push_back(item); // not a text, or one without visible characters
+        }
+    }
+    return sources;
 }
 
 /**
@@ -1782,7 +1819,20 @@ sp_desktop_query_style(SPDesktop *desktop, SPStyle *style, int property)
     }
 
     // otherwise, do querying and averaging over selection
-    return sp_desktop_query_style_from_list(selection->items_vector(), style, property);
+    auto items = selection->items_vector();
+    switch (property) {
+        case QUERY_STYLE_PROPERTY_FILL:
+        case QUERY_STYLE_PROPERTY_STROKE:
+        case QUERY_STYLE_PROPERTY_STROKEWIDTH:
+        case QUERY_STYLE_PROPERTY_STROKEMITERLIMIT:
+        case QUERY_STYLE_PROPERTY_STROKEJOIN:
+        case QUERY_STYLE_PROPERTY_STROKECAP:
+        case QUERY_STYLE_PROPERTY_PAINTORDER:
+            // A text shows the paint of its characters, as type does in Illustrator's panels.
+            items = sp_desktop_paint_sources(items);
+            break;
+    }
+    return sp_desktop_query_style_from_list(items, style, property);
 }
 
 /*
