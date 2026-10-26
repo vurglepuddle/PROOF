@@ -44,6 +44,7 @@
 #include "object/persp3d.h"
 #include "object/sp-clippath.h"
 #include "object/sp-defs.h"
+#include "object/sp-flowtext.h"
 #include "object/sp-gradient-reference.h"
 #include "object/sp-hatch.h"
 #include "object/sp-linear-gradient.h"
@@ -62,6 +63,7 @@
 #include "selection.h"
 #include "svg/svg.h" // for sp_svg_transform_write, used in _copySelection
 #include "text-chemistry.h"
+#include "text-editing.h"
 #include "ui/tool/control-point-selection.h"
 #include "ui/tool/multi-path-manipulator.h"
 #include "ui/tools/dropper-tool.h" // used in copy()
@@ -206,8 +208,11 @@ private:
     void _applyPathEffect(SPItem *, char const *);
     void _retrieveClipboard(Glib::ustring = "");
 
+    bool _holdsOwnObjects();
+    Glib::ustring _ownText();
+
     // clipboard callbacks
-    void _onGet(char const *mime_type, Glib::RefPtr<Gio::OutputStream> const &output);
+    void _onGet(char const *mime_type, Glib::RefPtr<Gio::OutputStream> const &output, GdkContentSerializer *serializer);
 
     // various helpers
     void _createInternalClipboard();
@@ -499,7 +504,20 @@ bool ClipboardManagerImpl::paste(SPDesktop *desktop, bool in_place, bool on_page
         return false;
     }
 
-    Glib::ustring target = _getBestTarget(desktop);
+    // Objects copied in this PROOF, pasted in the Text tool: never read them back as text through
+    // GTK. That wrote the whole copy as SVG source to ourselves on this one thread; a small copy
+    // pasted SVG markup into the text, a larger one hung PROOF for good (owner, 2026-10-26). A copied
+    // text gives its characters at the cursor, as in Illustrator; anything else pastes as objects.
+    bool const own_objects = _holdsOwnObjects();
+    if (own_objects && !on_page) {
+        if (auto text_tool = dynamic_cast<Tools::TextTool *>(desktop->getTool())) {
+            if (auto characters = _ownText(); !characters.empty() && text_tool->pasteInline(characters)) {
+                return true;
+            }
+        }
+    }
+
+    Glib::ustring target = own_objects ? Glib::ustring(preferred_targets.front()) : _getBestTarget(desktop);
     if constexpr (DEBUG_CLIPBOARD) {
         std::cout << "paste(): Best target: " << target << std::endl;
     }
@@ -1615,6 +1633,40 @@ void ClipboardManagerImpl::_applyPathEffect(SPItem *item, char const *effectstac
 /**
  * Retrieve the clipboard contents as a document.
  */
+/**
+ * Whether the clipboard holds objects copied in this PROOF (its internal clipboard document).
+ */
+bool ClipboardManagerImpl::_holdsOwnObjects()
+{
+    if (!_clipboard->is_local() || !_clipboardSPDoc) {
+        return false;
+    }
+    auto const content = _clipboard->get_content();
+    return content && GlibValue::from_content_provider<ClipboardSvg>(*content);
+}
+
+/**
+ * The characters of the texts in the internal clipboard document, one text a line.
+ */
+Glib::ustring ClipboardManagerImpl::_ownText()
+{
+    Glib::ustring result;
+    auto gather = [&](auto &self, SPObject &object) -> void {
+        for (auto &child : object.children) {
+            if (is<SPText>(&child) || is<SPFlowtext>(&child)) {
+                if (!result.empty()) {
+                    result += '\n';
+                }
+                result += sp_te_get_string_multiline(cast<SPItem>(&child));
+            } else if (is<SPItem>(&child)) {
+                self(self, child); // groups; definitions aren't items
+            }
+        }
+    };
+    gather(gather, *_clipboardSPDoc->getRoot());
+    return result;
+}
+
 void ClipboardManagerImpl::_retrieveClipboard(Glib::ustring best_target)
 {
     if (_clipboard->is_local()) {
@@ -1724,8 +1776,12 @@ void ClipboardManagerImpl::_retrieveClipboard(Glib::ustring best_target)
  * Finds a suitable output extension to save the internal clipboard document,
  * then saves it to memory and sets the clipboard contents.
  */
-void ClipboardManagerImpl::_onGet(char const *mime_type, Glib::RefPtr<Gio::OutputStream> const &output)
+void ClipboardManagerImpl::_onGet(char const *mime_type, Glib::RefPtr<Gio::OutputStream> const &output, GdkContentSerializer *serializer)
 {
+    // Every path answers GTK exactly once: here, or when the copy into its stream has finished.
+    bool answered_later = false;
+    auto answer = scope_exit([&] { if (!answered_later) gdk_content_serializer_return_success(serializer); });
+
     if (!_clipboardSPDoc) {
         return;
     }
@@ -1806,19 +1862,27 @@ void ClipboardManagerImpl::_onGet(char const *mime_type, Glib::RefPtr<Gio::Outpu
         auto file = Gio::File::create_for_path(filename);
         auto in = file->read();
 
-        bool done = false;
-        output->splice_async(in, [&] (auto &result) {
-            output->splice_finish(result);
-            done = true;
-        });
-        pump_until([&] { return done; });
-
-        file->remove();
+        // No waiting here in a loop of our own: when PROOF reads its own clipboard, the reader runs
+        // on this thread, and a copy larger than GTK's pipe never finished (the owner's PROOF hung
+        // in a paste, 2026-10-26). GTK takes the answer when the copy is done.
+        output->splice_async(in, [output, file, filename, serializer] (auto &result) {
+            try {
+                output->splice_finish(result);
+                gdk_content_serializer_return_success(serializer);
+            } catch (Glib::Error const &error) {
+                gdk_content_serializer_return_error(serializer, g_error_copy(error.gobj()));
+            }
+            try { file->remove(); } catch (...) {}
+            unlink(filename.c_str());
+        }, Gio::OutputStream::SpliceFlags::CLOSE_SOURCE);
+        answered_later = true;
     } catch (...) {
     }
 
     INKSCAPE.use_gui(previous_gui);
-    unlink(filename.c_str()); // delete the temporary file
+    if (!answered_later) {
+        unlink(filename.c_str()); // delete the temporary file
+    }
 
     if (last_req) {
         last_req = std::chrono::steady_clock::now();
@@ -1998,8 +2062,7 @@ void ClipboardManagerImpl::_registerSerializers()
             auto mime = gdk_content_serializer_get_mime_type(serializer);
             auto out = Glib::wrap(gdk_content_serializer_get_output_stream(serializer), true);
             auto self = reinterpret_cast<decltype(this)>(gdk_content_serializer_get_user_data(serializer));
-            self->_onGet(mime, out);
-            gdk_content_serializer_return_success(serializer);
+            self->_onGet(mime, out, serializer); // returns success or an error, maybe later
         }, this, nullptr);
     }
 }
