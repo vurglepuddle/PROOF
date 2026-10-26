@@ -134,3 +134,15 @@ Also checked: a handle drag that misses its button release cannot leave the
 transform box stuck mid-drag. The handle holds the pointer from press to
 release, and the canvas does not send it enter or leave events meanwhile.
 If the box disappears again, note which panels and dialogs were open.
+
+## The tools in the owner's order (2026-10-26)
+
+The owner: "Let's do Select/direct select/Pen ... The shapes! / Type / Then I
+guess shapebuilder / Gradient and meshes / Eyedropper, my beloved / ... the
+rest of tools I honestly don't care about, other users can adjust for
+themselves". The sidebar (`share/ui/toolbar-tool.ui`) now runs Select, Direct
+Selection | Pen, Rectangle, Ellipse, Star, Type | Shape Builder, Gradient,
+Mesh, Eyedropper | Pencil, Calligraphy, Paint Bucket, Spiral, 3D Box | Tweak,
+Spray, Eraser, Connector, LPE | Measure, Zoom, Pages, grouped as Illustrator's
+toolbar is. Each tool can still be hidden in Preferences; reordering by drag
+and drop, and a Width tool, are in the workspace todo.
