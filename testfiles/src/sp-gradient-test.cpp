@@ -34,6 +34,7 @@
 #include "object/mesh-object.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-path.h"
+#include "object/sp-stop.h"
 #include "object/sp-defs.h"
 #include "object/sp-star.h"
 #include "preferences.h"
@@ -245,6 +246,30 @@ TEST_F(MeshObjectTest, BoundaryMoveUpdatesOutlineInTheSameUndoStep)
     EXPECT_TRUE(DocumentUndo::redo(doc.get()));
     doc->ensureUpToDate();
     EXPECT_EQ(outline(), moved);
+}
+
+TEST_F(MeshObjectTest, ACmykColourInTheDocumentProfileReachesAMeshPoint)
+{
+    // The owner, 2026-10-26: a mesh point picked with the Mesh tool "insists it's color X". In a
+    // CMYK document a picked colour arrives as "#hex icc-color(profile, ...)", which parsing
+    // without the document's profiles dropped.
+    auto gradient = cast<SPMeshGradient>(path->style->getFillPaintServer());
+    ASSERT_TRUE(gradient);
+    gradient->ensureArray(); // as the Mesh tool's handles do
+    auto css = sp_repr_css_attr_new();
+    sp_repr_css_set_property(css, "stop-color", "#cc007f icc-color(Test-CMYK, 0.17, 1, 0, 0)");
+    sp_repr_css_set_property(css, "stop-opacity", "1");
+    sp_item_gradient_stop_set_style(path, POINT_MG_CORNER, 0, Inkscape::FOR_FILL, css);
+    sp_repr_css_attr_unref(css);
+    doc->ensureUpToDate();
+    gradient->ensureArray();
+    auto color = sp_item_gradient_stop_query_style(path, POINT_MG_CORNER, 0, Inkscape::FOR_FILL);
+    EXPECT_EQ(color.getSpace()->getName(), "Test-CMYK");
+    EXPECT_EQ(color.toRGBA() >> 8, 0xcc007fu); // no such profile here, so its fallback; it was #cc2244
+    ASSERT_FALSE(gradient->array.corners.empty());
+    auto stop = gradient->array.corners[0]->stop;
+    ASSERT_TRUE(stop);
+    EXPECT_NE(std::string(stop->getRepr()->attribute("style")).find("icc-color(Test-CMYK"), std::string::npos);
 }
 
 TEST_F(MeshObjectTest, AMeshEditRepairsAnOutlineRoundedOrMovedAwayFromItsMesh)

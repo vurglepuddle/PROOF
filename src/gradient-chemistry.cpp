@@ -64,6 +64,7 @@
 #include "xml/href-attribute-helper.h"
 
 #include "colors/color.h"
+#include "colors/document-cms.h"
 
 #define noSP_GR_VERBOSE
 
@@ -1083,7 +1084,9 @@ void sp_item_gradient_stop_set_style(SPItem *item, GrPointType point_type, guint
 
                 // Update mesh array (which is not updated automatically when stop is changed?)
                 gchar const* color_str = sp_repr_css_property(stop, "stop-color", nullptr);
-                if (auto color = Colors::Color::parse(color_str)) {
+                // With the document's profiles: a CMYK colour in its ICC profile ("#hex icc-color(...)")
+                // doesn't parse without them, and the point kept its old colour.
+                if (auto color = item->document->getDocumentCMS().parse(color_str)) {
                     color->addOpacity(sp_repr_css_double_property(stop, "stop-opacity", 1.0));
                     if (*color != mg->array.corners[point_i]->color) {
                         mg->array.corners[ point_i ]->color = *color;
