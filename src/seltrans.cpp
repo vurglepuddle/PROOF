@@ -447,7 +447,6 @@ void Inkscape::SelTrans::transform(Geom::Affine const &rel_affine, Geom::Point c
                 _l[i]->set_coords(p[i], p[(i+1)%4]);
             }
         }
-        _selcue.setTransformPreview(affine);
     }
 
     _current_relative_affine = affine;

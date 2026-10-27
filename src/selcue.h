@@ -18,7 +18,6 @@
 #include <vector>
 #include <memory>
 
-#include <2geom/affine.h>
 #include <sigc++/sigc++.h>
 
 #include "display/control/canvas-item-ptr.h"
@@ -47,10 +46,9 @@ public:
     };
 
     void setBboxesVisible(bool visible);
-    /// PROOF: hide boxes and controls during a transform drag; text baselines follow the type.
+    /// PROOF: hide the cue while the selection is being dragged, as Illustrator does. It would
+    /// otherwise trail behind the moving objects; it reappears at the result on release.
     void setTransforming(bool transforming);
-    /// The Selection tool's outline-only drag has not yet changed the objects' transforms.
-    void setTransformPreview(Geom::Affine const &affine);
     /// PROOF: the select tool draws its own transform box around the selection, so a single
     /// object needs no cue of its own, and the boxes of several objects are thin and solid.
     void setTransformBox(bool transform_box);
@@ -85,7 +83,6 @@ private:
     bool _transforming = false;
     bool _transform_box = false;
     bool const _text_only;
-    Geom::Affine _transform_preview;
     bool _visible() const { return _bboxes_visible && !_transforming; }
     SPDesktop *_desktop;
     Selection *_selection;
