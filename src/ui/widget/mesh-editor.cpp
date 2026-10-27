@@ -5,6 +5,7 @@
 
 #include "mesh-editor.h"
 
+#include <utility>
 #include <glib/gi18n.h>
 #include <glibmm/markup.h>
 #include <gtkmm/button.h>
@@ -69,12 +70,15 @@ MeshEditor::MeshEditor() :
         auto name = Glib::Markup::escape_text(rsrc->label);
         return { .label_markup = name, .image = rsrc->image, .tooltip = rsrc->label };
     });
+    _item_factory->set_track_bindings(true);
     _selection_model = Gtk::SingleSelection::create(_store);
     _selection_model->signal_selection_changed().connect([this](auto, auto) {
         if (_update.pending() || !_document) return;
         // fire selection changed
         if (auto item = std::dynamic_pointer_cast<ResourceItem>(_selection_model->get_selected_item())) {
             if (auto mesh = cast<SPMeshGradient>(_document->getObjectById(item->id))) {
+                _selected = mesh;
+                _selected_id = item->id;
                 _signal_changed.emit(mesh);
             }
         }
@@ -103,17 +107,36 @@ MeshEditor::MeshEditor() :
         // todo: fire edit event
     });
     append(*button);
+
+    signal_map().connect([this] {
+        if (_gradients_changed || !_dirty_meshes.empty()) schedule_update();
+    });
+}
+
+MeshEditor::~MeshEditor() {
+    if (_tick_callback) remove_tick_callback(_tick_callback);
 }
 
 void MeshEditor::set_document(SPDocument* document) {
     if (_document == document) return;
 
+    auto scoped(_update.block());
+    if (_tick_callback) {
+        remove_tick_callback(_tick_callback);
+        _tick_callback = 0;
+    }
     _document = document;
     _gradients.disconnect();
-    _defs.disconnect();
+    _defs_release.disconnect();
+    _mesh_connections.clear();
+    _mesh_indices.clear();
+    _dirty_meshes.clear();
+    _gradients_changed = false;
+    _selected = nullptr;
+    _selected_id.clear();
+    _store->remove_all();
 
     if (!_document) {
-        // we could clear the store, but editor is not shown without doc, so save processing time
         return;
     }
 
@@ -122,12 +145,8 @@ void MeshEditor::set_document(SPDocument* document) {
         schedule_update();
     });
 
-    _defs = _document->getDefs()->connectModified([this](SPObject* obj, unsigned flags) {
-        auto mesh = cast<SPMeshGradient>(obj);
-        if (mesh && mesh->getArray() == mesh && (flags & SP_OBJECT_CHILD_MODIFIED_FLAG)) {
-            _gradients_changed = true;
-            schedule_update();
-        }
+    _defs_release = _document->getDefs()->connectRelease([this](SPObject*) {
+        set_document(nullptr);
     });
 
     _gradients_changed = true;
@@ -172,24 +191,41 @@ SPGradient* MeshEditor::get_selected_mesh() const {
     return nullptr;
 }
 
+Glib::RefPtr<Gdk::Texture> MeshEditor::get_preview(SPMeshGradient* mesh) const {
+    auto it = _mesh_indices.find(mesh);
+    if (it == _mesh_indices.end()) return {};
+
+    auto item = std::dynamic_pointer_cast<ResourceItem>(_store->get_object(it->second));
+    return item ? item->image : Glib::RefPtr<Gdk::Texture>();
+}
+
 void MeshEditor::schedule_update() {
-    if (_tick_callback) return;
+    if (_tick_callback || !_document) return;
 
     _tick_callback = add_tick_callback([this](auto &&) {
         _tick_callback = 0;
-        update();
+        if (get_mapped()) update();
         return false;
     });
 }
 
 void MeshEditor::update() {
-    if (!_gradients_changed) return;
+    if (!_document) return;
 
-    auto list = rebuild_list();
-    rebuild_store(list);
+    if (_gradients_changed) {
+        _gradients_changed = false;
+        auto list = rebuild_list();
+        rebuild_store(list);
+    } else {
+        update_previews();
+    }
 }
 
 void MeshEditor::rebuild_store(const std::vector<SPMeshGradient*>& list) {
+    auto scoped(_update.block());
+    _mesh_connections.clear();
+    _mesh_indices.clear();
+    _dirty_meshes.clear();
     object_renderer renderer;
     _store->freeze_notify();
     _store->remove_all();
@@ -210,16 +246,51 @@ void MeshEditor::rebuild_store(const std::vector<SPMeshGradient*>& list) {
         }
         auto labelstr = item->getAttribute("inkscape:label");
         auto label = label_fmt(labelstr, id);
+        item->ensureArray();
         auto image = to_texture(renderer.render(*item, width, height, device_scale, opt));
         _store->append(ResourceItem::create(id, label, image, item));
+        _mesh_indices.emplace(item, index);
+        _mesh_connections.emplace_back(item->connectModified([this, item](SPObject*, unsigned flags) {
+            if (flags & (SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_CHILD_MODIFIED_FLAG | SP_OBJECT_STYLE_MODIFIED_FLAG)) {
+                _dirty_meshes.insert(item);
+                schedule_update();
+            }
+        }));
+        _mesh_connections.emplace_back(item->connectRelease([this, item](SPObject*) {
+            _dirty_meshes.erase(item);
+            _mesh_indices.erase(item);
+            _gradients_changed = true;
+            schedule_update();
+        }));
         index++;
     }
 
     _store->thaw_notify();
 
     if (selected >= 0) {
-        auto scoped(_update.block());
         _selection_model->set_selected(selected);
+    }
+}
+
+void MeshEditor::update_previews() {
+    auto dirty = std::exchange(_dirty_meshes, {});
+    if (dirty.empty()) return;
+
+    object_renderer renderer;
+    for (auto mesh : dirty) {
+        auto it = _mesh_indices.find(mesh);
+        if (it == _mesh_indices.end()) continue;
+
+        auto item = std::dynamic_pointer_cast<ResourceItem>(_store->get_object(it->second));
+        if (!item) continue;
+        mesh->ensureArray();
+        item->image = to_texture(renderer.render(*mesh, 30, 30, get_scale_factor()));
+        // Bound rows need their picture updated; offscreen rows read the new texture on bind.
+        if (auto box = dynamic_cast<Gtk::CenterBox*>(_item_factory->find_child_item(_gridview, item))) {
+            if (auto picture = dynamic_cast<Gtk::Picture*>(box->get_start_widget())) {
+                picture->set_paintable(item->image);
+            }
+        }
     }
 }
 

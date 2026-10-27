@@ -79,6 +79,7 @@ set(TEST_SOURCES
     live-corners-test
     cmyk-picker-test
     stroke-style-test
+    mesh-editor-test
     colors/cms-system-test
     colors/document-cms-test
     colors/dragndrop-test
