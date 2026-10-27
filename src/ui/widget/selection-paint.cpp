@@ -49,11 +49,11 @@ void remember_default_paint(SPDesktop *desktop, bool is_fill)
 
 std::vector<sigc::connection> connect_selection_paint(
     PaintSwitch &paint_switch, bool is_fill, std::function<SPDesktop *()> desktop,
-    std::function<bool()> blocked, unsigned int undo_tag, std::function<void()> changed)
+    std::function<bool()> blocked, unsigned int modified_tag, std::function<void()> changed)
 {
     std::vector<sigc::connection> connections;
 
-    connections.push_back(paint_switch.get_pattern_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto pattern, auto color, auto label, auto transform, auto offset, auto uniform, auto gap) {
+    connections.push_back(paint_switch.get_pattern_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto pattern, auto color, auto label, auto transform, auto offset, auto uniform, auto gap) {
         if (blocked() || !desktop()) return;
         auto doc = desktop()->getDocument();
         auto items = desktop()->getSelection()->items_vector();
@@ -65,10 +65,10 @@ std::vector<sigc::connection> connect_selection_paint(
             remove_opacity(item, is_fill);
         }
 
-        DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set pattern on fill") : RC_("Undo", "Set pattern on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+        DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set pattern on fill") : RC_("Undo", "Set pattern on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_hatch_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto hatch, auto color, auto label, auto transform, auto offset, auto pitch, auto rotation, auto stroke) {
+    connections.push_back(paint_switch.get_hatch_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto hatch, auto color, auto label, auto transform, auto offset, auto pitch, auto rotation, auto stroke) {
         if (blocked() || !desktop()) return;
         auto doc = desktop()->getDocument();
         auto items = desktop()->getSelection()->items_vector();
@@ -80,10 +80,10 @@ std::vector<sigc::connection> connect_selection_paint(
             remove_opacity(item, is_fill);
         }
 
-        DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set hatch on fill") : RC_("Undo", "Set hatch on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+        DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set hatch on fill") : RC_("Undo", "Set hatch on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_gradient_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto vector, auto gradient_type) {
+    connections.push_back(paint_switch.get_gradient_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto vector, auto gradient_type) {
         if (blocked() || !desktop()) return;
 
         auto doc = desktop()->getDocument();
@@ -97,10 +97,10 @@ std::vector<sigc::connection> connect_selection_paint(
 
         DocumentUndo::done(doc,
             is_fill ? RC_("Undo", "Set gradient on fill") : RC_("Undo", "Set gradient on stroke"),
-            INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+            INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_mesh_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto mesh) {
+    connections.push_back(paint_switch.get_mesh_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto mesh) {
         if (blocked() || !desktop()) return;
         auto doc = desktop()->getDocument();
         auto items = desktop()->getSelection()->items_vector();
@@ -114,10 +114,10 @@ std::vector<sigc::connection> connect_selection_paint(
 
         DocumentUndo::done(doc,
             (is_fill) ? RC_("Undo", "Set mesh on fill") : RC_("Undo", "Set mesh on stroke"),
-            INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+            INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_swatch_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto vector, auto operation, auto replacement, std::optional<Color> color, auto label) {
+    connections.push_back(paint_switch.get_swatch_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto vector, auto operation, auto replacement, std::optional<Color> color, auto label) {
         if (blocked() || !desktop()) return;
         auto doc = desktop()->getDocument();
         auto selection = desktop()->getSelection();
@@ -140,13 +140,13 @@ std::vector<sigc::connection> connect_selection_paint(
                     sp_item_apply_gradient(item, vector, desktop(), SP_GRADIENT_TYPE_LINEAR, true, kind);
                     remove_opacity(item, is_fill);
                 }
-                DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set swatch on fill") : RC_("Undo", "Set swatch on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                DocumentUndo::done(doc, is_fill ? RC_("Undo", "Set swatch on fill") : RC_("Undo", "Set swatch on stroke"), INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
                 break;
             }
             case EditOperation::Change: {
                 if (vector && color) {
                     sp_change_swatch_color(vector, color.value());
-                    DocumentUndo::maybeDone(doc, "swatch-color", RC_("Undo", "Change swatch color"), INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                    DocumentUndo::maybeDone(doc, "swatch-color", RC_("Undo", "Change swatch color"), INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
                 } else if (vector) {
                     for (auto item : items) {
                         sp_item_apply_gradient(item, vector, desktop(), SP_GRADIENT_TYPE_LINEAR, true, kind);
@@ -154,7 +154,7 @@ std::vector<sigc::connection> connect_selection_paint(
                     }
                     DocumentUndo::maybeDone(doc, "swatch-assign",
                         is_fill ? RC_("Undo", "Set swatch on fill") : RC_("Undo", "Set swatch on stroke"),
-                        INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                        INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
                 }
                 break;
             }
@@ -166,13 +166,13 @@ std::vector<sigc::connection> connect_selection_paint(
                     sp_delete_item_swatch(item, kind, vector, replacement);
                 }
 
-                DocumentUndo::done(doc, RC_("Undo", "Delete swatch"),  INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                DocumentUndo::done(doc, RC_("Undo", "Delete swatch"),  INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
                 break;
             }
             case EditOperation::Rename: {
                 if (vector && !label.empty()) {
                     sp_rename_swatch(vector, label);
-                    DocumentUndo::maybeDone(doc, "swatch-rename", RC_("Undo", "Rename swatch"), INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                    DocumentUndo::maybeDone(doc, "swatch-rename", RC_("Undo", "Rename swatch"), INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
                 }
                 break;
             }
@@ -181,7 +181,7 @@ std::vector<sigc::connection> connect_selection_paint(
         }
     }));
 
-    connections.push_back(paint_switch.get_flat_color_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto& color) {
+    connections.push_back(paint_switch.get_flat_color_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto& color) {
         if (blocked() || !desktop()) return;
 
         sp_desktop_set_color(desktop(), color, false, is_fill);
@@ -191,10 +191,10 @@ std::vector<sigc::connection> connect_selection_paint(
         DocumentUndo::maybeDone(desktop()->getDocument(),
                                 is_fill ? "fill:flatcolor" : "stroke:flatcolor",
                                 is_fill ? RC_("Undo", "Set fill color") : RC_("Undo", "Set stroke color"),
-                                INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                                INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_fill_rule_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto fill_rule) {
+    connections.push_back(paint_switch.get_fill_rule_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto fill_rule) {
         if (blocked() || !desktop()) return;
 
         SPCSSAttr *css = sp_repr_css_attr_new();
@@ -208,10 +208,10 @@ std::vector<sigc::connection> connect_selection_paint(
         DocumentUndo::maybeDone(desktop()->getDocument(),
             "change-fill-rule",
             RC_("Undo", "Change fill rule"),
-            INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+            INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_inherit_mode_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto mode) {
+    connections.push_back(paint_switch.get_inherit_mode_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto mode) {
         if (blocked() || !desktop()) return;
         auto doc = desktop()->getDocument();
 
@@ -247,10 +247,10 @@ std::vector<sigc::connection> connect_selection_paint(
 
         DocumentUndo::done(doc,
             (is_fill) ? RC_("Undo", "Inherit fill") : RC_("Undo", "Inherit stroke"),
-            INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+            INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
     }));
 
-    connections.push_back(paint_switch.get_signal_mode_changed().connect([desktop, blocked, is_fill, undo_tag, changed](auto mode) {
+    connections.push_back(paint_switch.get_signal_mode_changed().connect([desktop, blocked, is_fill, modified_tag, changed](auto mode) {
         if (blocked() || !desktop()) return;
         auto doc = desktop()->getDocument();
 
@@ -265,7 +265,7 @@ std::vector<sigc::connection> connect_selection_paint(
 
             DocumentUndo::done(doc,
                 (is_fill) ? RC_("Undo", "Remove fill") : RC_("Undo", "Remove stroke"),
-                INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
         } else if (mode == UI::Widget::PaintMode::Derived) {
 
             SPCSSAttr *css = sp_repr_css_attr_new();
@@ -277,7 +277,7 @@ std::vector<sigc::connection> connect_selection_paint(
 
             DocumentUndo::done(doc,
                 (is_fill) ? RC_("Undo", "Unset fill") : RC_("Undo", "Unset stroke"),
-                INKSCAPE_ICON("dialog-fill-and-stroke"), undo_tag);
+                INKSCAPE_ICON("dialog-fill-and-stroke"), modified_tag);
         }
     }));
 
