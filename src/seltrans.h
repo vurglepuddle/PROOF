@@ -18,6 +18,7 @@
 
 #include <array>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include <2geom/point.h>
@@ -50,6 +51,8 @@ class CanvasItemBpath;
 class CanvasItemCtrl;
 class CanvasItemCurve;
 class CanvasItemRect;
+class CanvasItemText;
+class SelectionDrag;
 
 Geom::Scale calcScaleFactors(Geom::Point const &initial_point, Geom::Point const &new_point, Geom::Point const &origin, bool const skew = false);
 
@@ -74,7 +77,8 @@ public:
     void setCenter(Geom::Point const &p);
     void grab(Geom::Point const &p, double x, double y, bool show_handles, bool translating);
     void transform(Geom::Affine const &rel_affine, Geom::Point const &norm);
-    void ungrab();
+    void ungrab(bool cancel = false);
+    void setDuplicate(bool duplicate);
     void stamp(bool clone = false);
     bool moveTo(Geom::Point const &xy, unsigned int state);
     void commitAbsoluteAffine();
@@ -154,6 +158,7 @@ private:
 
     friend class Inkscape::SelTrans::BoundingBoxPrefsObserver;
     void _clear_stamp();
+    void _updateCopyCue();
     void _updateHandles();
     void _updateVolatileState();
     void _selChanged(Inkscape::Selection *selection);
@@ -196,6 +201,10 @@ private:
     Inkscape::Selection *_selection;
     State _state;
     Show _show;
+    std::unique_ptr<SelectionDrag> _drag;
+    std::vector<CanvasItemPtr<CanvasItemRect>> _copy_boxes;
+    CanvasItemPtr<CanvasItemText> _copy_label;
+    sigc::connection _copy_scale_connection;
 
     bool _grabbed = false;
     bool _show_handles = true;

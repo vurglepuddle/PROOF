@@ -19,7 +19,6 @@
 # include "config.h"  // only include where actually required!
 #endif
 
-#include "document-undo.h"
 #include "document.h"
 #include "layer-manager.h"
 #include "selection-chemistry.h"
@@ -37,12 +36,10 @@
 #include "object/box3d.h"
 #include "style.h"
 
-#include "ui/icon-names.h"
 #include "ui/tools/select-tool.h"
 #include "ui/widget/canvas.h"
 #include "ui/widget/events/canvas-event.h"
 
-using Inkscape::DocumentUndo;
 using Inkscape::Modifiers::Modifier;
 
 namespace Inkscape::UI::Tools {
@@ -128,27 +125,22 @@ void SelectTool::set(const Inkscape::Preferences::Entry& val) {
 bool SelectTool::sp_select_context_abort() {
 
     if (dragging) {
-        if (moved) { // cancel dragging an object
-            _finish_drag();
-            moved = false;
-            dragging = false;
-            discard_delayed_snap_event();
-            drag_escaped = 1;
-
-            if (item) {
-                // only undo if the item is still valid
-                if (item->document) {
-                    DocumentUndo::undo(_desktop->getDocument());
-                }
-
-                sp_object_unref( item, nullptr);
-            }
-            item = nullptr;
-            _duplicate_drag_reset();
-
-            _desktop->messageStack()->flash(Inkscape::NORMAL_MESSAGE, _("Move canceled."));
-            return true;
+        discard_delayed_snap_event();
+        if (moved) {
+            _seltrans->ungrab(true);
         }
+        moved = false;
+        dragging = false;
+        drag_escaped = 1;
+        if (item) {
+            sp_object_unref(item, nullptr);
+        }
+        item = nullptr;
+        _duplicate_drag_reset();
+        _force_dragging = false;
+        set_cursor(_default_cursor);
+        _desktop->messageStack()->flash(Inkscape::NORMAL_MESSAGE, _("Move canceled."));
+        return true;
     } else {
         if (Inkscape::Rubberband::get(_desktop)->isStarted()) {
             Inkscape::Rubberband::get(_desktop)->stop();
@@ -257,9 +249,9 @@ bool SelectTool::item_handler(SPItem *local_item, CanvasEvent const &event)
 
                     ret = true;
                 }
-            } else if (event.button == 3 && !dragging) {
-                // right click; do not eat it so that right-click menu can appear, but cancel dragging & rubberband
-                sp_select_context_abort();
+            } else if (event.button == 3) {
+                // Cancel an active drag before handling a context menu.
+                ret = sp_select_context_abort();
             }
         },
         [&] (EnterEvent const &event) {
@@ -275,7 +267,7 @@ bool SelectTool::item_handler(SPItem *local_item, CanvasEvent const &event)
         [&] (KeyPressEvent const &event) {
             switch (get_latin_keyval (event)) {
                 case GDK_KEY_space:
-                    if (dragging && grabbed) {
+                    if (dragging && moved && grabbed) {
                         /* stamping mode: show content mode moving */
                         _seltrans->stamp();
                         ret = true;
@@ -489,8 +481,8 @@ bool SelectTool::root_handler(CanvasEvent const &event)
 
                 ret = true;
             } else if (event.button == 3) {
-                // right click; do not eat it so that right-click menu can appear, but cancel dragging & rubberband
-                sp_select_context_abort();
+                // Cancel an active drag before handling a context menu.
+                ret = sp_select_context_abort();
             }
         },
         [&] (MotionEvent const &event) {
@@ -578,23 +570,18 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                                 }
                             } // otherwise, do not change selection so that dragging selected-within-group items, as well as alt-dragging, is possible
 
-                            bool allow_duplicate = duplicate_drag && item_at_point;
-
                             // PROOF: measure the move from where the button went down, so the
                             // selection keeps up with the pointer. Grabbing here, once past the
                             // drag tolerance, left it that many pixels behind for the whole drag.
                             auto const origin = _desktop->w2d(Geom::Point(xyp));
-                            if (allow_duplicate) {
-                                _duplicate_drag(origin);
-                            } else {
-                                _seltrans->grab(origin, -1, -1, false, true);
-                            }
+                            _seltrans->grab(origin, -1, -1, false, true);
                             moved = true;
                         }
 
                         if (!_seltrans->isEmpty()) {
                             // discard_delayed_snap_event();
                             _seltrans->moveTo(p, event.modifiers);
+                            _update_drag(event.modifiers);
                         }
 
                         _desktop->getCanvas()->enable_autoscroll();
@@ -646,7 +633,7 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                 if (dragging) {
                     if (moved) {
                         // item has been moved
-                        _finish_drag();
+                        _finish_drag(event.modifiers);
                         moved = false;
                     } else if (item && !drag_escaped) {
                         // item has not been moved -> simply a click, do selecting
@@ -655,14 +642,8 @@ bool SelectTool::root_handler(CanvasEvent const &event)
 
                     dragging = false;
 
-                    if (!_alt_on) {
-                        if (_force_dragging) {
-                            set_cursor(_default_cursor);
-                            _force_dragging = false;
-                        } else {
-                            set_cursor("select-mouseover.svg");
-                        }
-                    }
+                    set_cursor("select-mouseover.svg");
+                    _force_dragging = false;
 
                     discard_delayed_snap_event();
 
@@ -790,6 +771,15 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                        keyval == GDK_KEY_Meta_R;
             if (alt) {
                 _alt_on = true; // Turn off in KeyReleaseEvent
+            }
+
+            if (dragging && moved && Modifiers::keyval_is_a_modifier(keyval)) {
+                // Set the key's bit rather than toggle it: GDK may already report it in the state.
+                auto const state = event.modifiers | event.modifiersChange();
+                _seltrans->moveTo(_desktop->w2d(_live_point), state);
+                _update_drag(state);
+                ret = true;
+                return;
             }
 
             if (!selection->isEmpty() && !_seltrans->is_stkey()) {
@@ -931,7 +921,7 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                 case GDK_KEY_c:
                 case GDK_KEY_C:
                     /* stamping mode: show outline mode moving */
-                    if (dragging && grabbed) {
+                    if (dragging && moved && grabbed) {
                         _seltrans->stamp(keyval != GDK_KEY_space);
                         ret = true;
                     }
@@ -998,6 +988,16 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                        keyval == GDK_KEY_Meta_R;
             if (alt) {
                 _alt_on = false; // Turned on in KeyPressEvent
+            }
+
+            if (dragging && moved && Modifiers::keyval_is_a_modifier(keyval)) {
+                // Clear the key's bit rather than toggle it: on Windows GDK already reports a
+                // released Alt as up, and toggling turned it back on until the next motion.
+                auto const state = event.modifiers & ~event.modifiersChange();
+                _seltrans->moveTo(_desktop->w2d(_live_point), state);
+                _update_drag(state);
+                ret = true;
+                return;
             }
 
             if (auto rubberband = Inkscape::Rubberband::get(_desktop); rubberband->isStarted()) {
@@ -1078,28 +1078,17 @@ void SelectTool::handleClick(ButtonReleaseEvent const &event, Selection *selecti
     }
 }
 
-void SelectTool::_duplicate_drag(Geom::Point const &p)
+void SelectTool::_update_drag(unsigned int state)
 {
-    auto selection = _desktop->getSelection();
-    if (selection->isEmpty()) {
-        return;
-    }
-
-    selection->duplicate(true);
-    _duplicated = true;
-
-    // Text layout/bbox can lag behind immediately after duplication; update before starting drag.
-    _desktop->getDocument()->ensureUpToDate();
-    _seltrans->grab(p, -1, -1, false, true);
+    bool const duplicate = _duplicate_drag_state(state);
+    _seltrans->setDuplicate(duplicate);
+    set_cursor(duplicate ? "select-copy.svg" : "select-dragging.svg");
 }
 
-void SelectTool::_finish_drag()
+void SelectTool::_finish_drag(unsigned int state)
 {
+    _update_drag(state);
     _seltrans->ungrab();
-    if (_duplicated) {
-        // A drag back to its origin still made a copy. A moved copy is already committed by ungrab().
-        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Duplicate"), INKSCAPE_ICON("edit-duplicate"));
-    }
 }
 
 bool SelectTool::_duplicate_drag_state(unsigned int state) const
@@ -1116,7 +1105,6 @@ bool SelectTool::_duplicate_drag_state(unsigned int state) const
 void SelectTool::_duplicate_drag_reset()
 {
     _duplicate_drag_on_press = false;
-    _duplicated = false;
 }
 
 /**

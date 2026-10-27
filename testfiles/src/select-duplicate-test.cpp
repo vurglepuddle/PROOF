@@ -10,16 +10,25 @@
 #include <libxml/parser.h>
 #include <libxml/xinclude.h>
 #include <2geom/transforms.h>
+#include <cairomm/surface.h>
 
+#include "display/drawing.h"
+#include "display/drawing-context.h"
+#include "display/drawing-surface.h"
 #include "document-undo.h"
 #include "document.h"
 #include "inkscape.h"
 #include "object/object-set.h"
 #include "object/sp-item.h"
+#include "object/sp-root.h"
 #include "object/sp-use.h"
 #include "preferences.h"
+#include "selection-drag.h"
+#include "selection.h"
 #include "ui/modifiers.h"
 #include "xml/node.h"
+#include "xml/node-observer.h"
+#include "xml/repr.h"
 
 using namespace Inkscape;
 using namespace Inkscape::Modifiers;
@@ -317,5 +326,350 @@ TEST_F(SelectDuplicateTest, ReturnToOriginStillCommitsOneUndoableCopy)
     ASSERT_TRUE(DocumentUndo::redo(doc.get()));
     EXPECT_TRUE(doc->getObjectById(copy_id));
 }
+
+class ReprChanges : public XML::NodeObserver
+{
+public:
+    explicit ReprChanges(XML::Node &root) : root(root) { root.addSubtreeObserver(*this); }
+    ~ReprChanges() override { root.removeSubtreeObserver(*this); }
+    void notifyAttributeChanged(XML::Node &, GQuark, Util::ptr_shared, Util::ptr_shared) override { ++count; }
+    void notifyChildAdded(XML::Node &, XML::Node &, XML::Node *) override { ++count; }
+    void notifyChildRemoved(XML::Node &, XML::Node &, XML::Node *) override { ++count; }
+    void notifyContentChanged(XML::Node &, Util::ptr_shared, Util::ptr_shared) override { ++count; }
+    XML::Node &root;
+    unsigned count = 0;
+};
+
+struct DragCase {
+    bool press;
+    bool midway;
+    bool release;
+    char const *name;
+};
+
+class SelectDuplicateReleaseTest : public SelectDuplicateTest, public ::testing::WithParamInterface<DragCase> {};
+
+TEST_P(SelectDuplicateReleaseTest, ReleaseDecidesWithoutWritingDuringTheDrag)
+{
+    auto const state = GetParam();
+    auto original = item("source");
+    auto const initial = original->i2dt_affine();
+    auto const before = *original->desktopGeometricBounds();
+    auto const parent = original->parent;
+    auto const count = parent->children.size();
+    original->setAttribute("fill", "red");
+    DocumentUndo::done(doc.get(), RC_("Undo", "Set fill"), "");
+    auto const xml = sp_repr_save_buf(doc->getReprDoc());
+    auto const serial = doc->serial();
+    auto const modified = doc->isModifiedSinceSave();
+    ReprChanges changes(*doc->getReprRoot());
+    ObjectSet selection(doc.get());
+    selection.set(original);
+    SelectionDrag drag(selection);
+    drag.setDuplicate(state.press);
+    EXPECT_EQ(drag.isDuplicate(), state.press);
+    ASSERT_EQ(drag.bounds().size(), 1u);
+    auto const origin_bounds = drag.bounds().front();
+    auto const move = Geom::Affine(Geom::Translate(45, 20));
+    original->set_i2d_affine(initial * move);
+    drag.setDuplicate(state.midway);
+    EXPECT_EQ(drag.isDuplicate(), state.midway);
+    drag.setDuplicate(state.release);
+    EXPECT_EQ(drag.isDuplicate(), state.release);
+    EXPECT_EQ(selection.singleItem(), original);
+    EXPECT_EQ(parent->children.size(), count);
+    EXPECT_EQ(drag.bounds().front(), origin_bounds);
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), xml);
+    EXPECT_EQ(doc->serial(), serial);
+    EXPECT_EQ(doc->isModifiedSinceSave(), modified);
+    EXPECT_EQ(changes.count, 0u);
+
+    drag.finish(move);
+    auto result = selection.singleItem();
+    ASSERT_TRUE(result);
+    std::string const result_id = result->getId();
+    EXPECT_EQ(item("source"), original);
+    EXPECT_EQ(result->parent, parent);
+    EXPECT_EQ(parent->children.size(), count + unsigned(state.release));
+    expect_bounds(result, before * move);
+    if (state.release) {
+        EXPECT_NE(result, original);
+        EXPECT_STRNE(result->getId(), "source");
+        EXPECT_EQ(parent->lastChild(), result);
+        expect_bounds(original, before);
+    } else {
+        EXPECT_EQ(result, original);
+    }
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    expect_bounds(item("source"), before);
+    EXPECT_EQ(parent->children.size(), count);
+    EXPECT_STREQ(item("source")->getRepr()->attribute("fill"), "red");
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    EXPECT_FALSE(item("source")->getRepr()->attribute("fill"));
+    ASSERT_TRUE(DocumentUndo::redo(doc.get()));
+    ASSERT_TRUE(DocumentUndo::redo(doc.get()));
+    expect_bounds(cast<SPItem>(doc->getObjectById(result_id)), before * move);
+}
+
+INSTANTIATE_TEST_SUITE_P(AltTiming, SelectDuplicateReleaseTest, ::testing::Values(
+    DragCase{false, true, true, "AltDuringDragCopies"},
+    DragCase{false, true, false, "AltReleasedBeforeDropMoves"},
+    DragCase{true, true, true, "AltThroughoutCopies"},
+    DragCase{true, false, false, "AltAtPressReleasedBeforeDropMoves"}),
+    [](auto const &info) { return info.param.name; });
+
+TEST_F(SelectDuplicateTest, RepeatedAltTogglesDoNotAccumulateCopiesOrMotion)
+{
+    ObjectSet selection(doc.get());
+    auto original = item("source");
+    auto const initial = original->i2dt_affine();
+    auto const before = *original->desktopGeometricBounds();
+    auto const count = original->parent->children.size();
+    selection.set(original);
+    SelectionDrag move(selection);
+    for (int i = 0; i < 10; ++i) {
+        original->set_i2d_affine(initial * Geom::Translate(i * 5, 10));
+        move.setDuplicate(i % 2 == 0);
+        EXPECT_EQ(original->parent->children.size(), count);
+    }
+    move.setDuplicate(true);
+    move.finish(Geom::Translate(45, 10));
+    ASSERT_EQ(original->parent->children.size(), count + 1);
+    expect_bounds(original, before);
+    expect_bounds(selection.singleItem(), before * Geom::Translate(45, 10));
+}
+
+TEST_F(SelectDuplicateTest, CancelKeepsThePreviousUndoAndTheOriginalSelection)
+{
+    for (bool duplicate : {false, true}) {
+        ObjectSet selection(doc.get());
+        auto original = item("source");
+        auto const initial = original->i2dt_affine();
+        auto const before = *original->desktopGeometricBounds();
+        original->setAttribute("fill", "red");
+        DocumentUndo::done(doc.get(), RC_("Undo", "Set fill"), "");
+        auto const xml = sp_repr_save_buf(doc->getReprDoc());
+        selection.set(original);
+        SelectionDrag move(selection);
+        original->set_i2d_affine(initial * Geom::Translate(45, 20));
+        move.setDuplicate(duplicate);
+        move.finish(Geom::Translate(45, 20), true);
+        expect_bounds(original, before);
+        EXPECT_EQ(selection.singleItem(), original);
+        EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), xml);
+        ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+        EXPECT_FALSE(item("source")->getRepr()->attribute("fill"));
+    }
+}
+
+TEST_F(SelectDuplicateTest, DestroyingAnUnfinishedDragRestoresItsOriginals)
+{
+    ObjectSet selection(doc.get());
+    auto original = item("source");
+    auto const before = *original->desktopGeometricBounds();
+    selection.set(original);
+    {
+        SelectionDrag drag(selection);
+        original->set_i2d_affine(original->i2dt_affine() * Geom::Translate(30, 40));
+        drag.setDuplicate(true);
+    }
+    expect_bounds(original, before);
+    EXPECT_EQ(selection.singleItem(), original);
+    EXPECT_FALSE(DocumentUndo::undo(doc.get()));
+}
+
+TEST_F(SelectDuplicateTest, ConstrainedDropUsesTheSameHorizontalAndVerticalMove)
+{
+    for (auto delta : {Geom::Point(40, 10), Geom::Point(10, 40)}) {
+        ObjectSet selection(doc.get());
+        auto original = item("source");
+        auto const before = *original->desktopGeometricBounds();
+        selection.set(original);
+        SelectionDrag drag(selection);
+        auto const constrained = constrain_selection_move(delta);
+        EXPECT_EQ(constrained, delta.x() > delta.y() ? Geom::Point(40, 0) : Geom::Point(0, 40));
+        auto const affine = Geom::Affine(Geom::Translate(constrained));
+        original->set_i2d_affine(original->i2dt_affine() * affine);
+        drag.setDuplicate(true);
+        drag.finish(affine);
+        expect_bounds(original, before);
+        expect_bounds(selection.singleItem(), before * affine);
+        ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    }
+}
+
+TEST_F(SelectDuplicateTest, DeferredStampsAndCopyAreOneTransactionOrAllCancel)
+{
+    for (bool cancel : {true, false}) {
+        ObjectSet selection(doc.get());
+        auto original = item("source");
+        auto const before = *original->desktopGeometricBounds();
+        auto const count = original->parent->children.size();
+        selection.set(original);
+        SelectionDrag drag(selection);
+        ObjectSet stamp(doc.get());
+        stamp.set(original);
+        stamp.duplicate(true);
+        stamp.applyAffine(Geom::Translate(20, 10));
+        std::string const stamp_id = stamp.singleItem()->getId();
+        original->set_i2d_affine(original->i2dt_affine() * Geom::Translate(40, 20));
+        drag.setDuplicate(true);
+        drag.finish(Geom::Translate(40, 20), cancel);
+        expect_bounds(original, before);
+        if (cancel) {
+            EXPECT_FALSE(doc->getObjectById(stamp_id));
+            EXPECT_EQ(selection.singleItem(), original);
+            EXPECT_EQ(original->parent->children.size(), count);
+            EXPECT_FALSE(DocumentUndo::undo(doc.get()));
+        } else {
+            EXPECT_TRUE(doc->getObjectById(stamp_id));
+            EXPECT_EQ(original->parent->children.size(), count + 2);
+            EXPECT_NE(selection.singleItem(), original);
+            ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+            EXPECT_FALSE(doc->getObjectById(stamp_id));
+            EXPECT_EQ(original->parent->children.size(), count);
+        }
+    }
+}
+
+TEST_F(SelectDuplicateTest, CopyAtZeroTranslationIsStillOneUndoableDrop)
+{
+    ObjectSet selection(doc.get());
+    auto original = item("source");
+    selection.set(original);
+    SelectionDrag drag(selection);
+    drag.setDuplicate(true);
+    drag.finish(Geom::identity());
+    ASSERT_NE(selection.singleItem(), original);
+    std::string const id = selection.singleItem()->getId();
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    EXPECT_FALSE(doc->getObjectById(id));
+    EXPECT_FALSE(DocumentUndo::undo(doc.get()));
+}
+
+TEST_F(SelectDuplicateTest, ReleaseCopiesAcrossLayersAndRelinksDependencies)
+{
+    auto prefs = Preferences::get();
+    auto restore = prefs->temporaryPreferences();
+    prefs->setBool("/options/relinkclonesonduplicate/value", true);
+    std::vector<SPItem *> originals{item("source"), item("clone"), item("path"), item("offset"), item("other")};
+    std::vector<Geom::Rect> bounds;
+    std::vector<Geom::Affine> initial;
+    ObjectSet selection(doc.get());
+    selection.setList(originals);
+    SelectionDrag drag(selection);
+    for (auto original : originals) {
+        bounds.push_back(*original->desktopGeometricBounds());
+        initial.push_back(original->i2dt_affine());
+    }
+    for (unsigned i = 0; i < originals.size(); ++i) originals[i]->set_i2d_affine(initial[i] * Geom::Translate(35, 25));
+    drag.setDuplicate(true);
+    drag.finish(Geom::Translate(35, 25));
+    ASSERT_EQ(selection.size(), originals.size());
+    for (unsigned i = 0; i < originals.size(); ++i) {
+        EXPECT_FALSE(selection.includes(originals[i]));
+        expect_bounds(originals[i], bounds[i]);
+    }
+    SPUse *clone = nullptr;
+    SPItem *offset = nullptr;
+    for (auto copy : selection.items()) {
+        if (auto use = cast<SPUse>(copy)) clone = use;
+        else if (copy->getRepr()->attribute("xlink:href")) offset = copy;
+        EXPECT_TRUE(copy->parent == item("layer1") || copy->parent == item("layer2"));
+    }
+    ASSERT_TRUE(clone);
+    EXPECT_TRUE(selection.includes(clone->get_original()));
+    ASSERT_TRUE(offset);
+    auto href = offset->getRepr()->attribute("xlink:href");
+    ASSERT_TRUE(href);
+    EXPECT_TRUE(selection.includes(doc->getObjectById(href + 1)));
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    for (unsigned i = 0; i < originals.size(); ++i) expect_bounds(originals[i], bounds[i]);
+}
+
+TEST_F(SelectDuplicateTest, SelectionNotificationsCannotResetTheDropTransform)
+{
+    Selection selection(doc.get());
+    auto original = item("source");
+    auto const before = *original->desktopGeometricBounds();
+    selection.set(original);
+    SelectionDrag drag(selection);
+    Geom::Affine affine = Geom::Translate(45, 20);
+    original->set_i2d_affine(original->i2dt_affine() * affine);
+    auto connection = selection.connectChanged([&](Selection *) { affine.setIdentity(); });
+    drag.setDuplicate(true);
+    drag.finish(affine);
+    connection.disconnect();
+    EXPECT_TRUE(affine.isIdentity());
+    expect_bounds(original, before);
+    expect_bounds(selection.singleItem(), before * Geom::Translate(45, 20));
+}
+
+class Display
+{
+public:
+    explicit Display(SPDocument &doc) : root(doc.getRoot()), key(SPItem::display_key_new(1))
+    {
+        drawing.setRoot(root->invoke_show(drawing, key, SP_ITEM_SHOW_DISPLAY));
+        drawing.setExact();
+    }
+    ~Display() { root->invoke_hide(key); }
+
+    std::vector<unsigned char> pixels()
+    {
+        drawing.update(Geom::IntRect::infinite());
+        auto area = Geom::IntRect::from_xywh(0, 0, 400, 300);
+        auto surface = Cairo::ImageSurface::create(Cairo::Surface::Format::ARGB32, area.width(), area.height());
+        auto ds = DrawingSurface(surface->cobj(), area.min());
+        auto dc = DrawingContext(ds);
+        drawing.render(dc, area);
+        surface->flush();
+        auto data = surface->get_data();
+        return {data, data + surface->get_stride() * surface->get_height()};
+    }
+
+    Drawing drawing;
+    SPRoot *root;
+    unsigned key;
+};
+
+class SelectDuplicatePreviewTest : public SelectDuplicateTest, public ::testing::WithParamInterface<int> {};
+
+TEST_P(SelectDuplicatePreviewTest, CompletionClearsStrokePreviewFromOriginalsAndCopies)
+{
+    item("source")->setAttribute("style", "fill:none;stroke:#000;stroke-width:6;stroke-dasharray:4,2");
+    doc->ensureUpToDate();
+    DocumentUndo::done(doc.get(), RC_("Undo", "Set stroke"), "");
+    Display display(*doc);
+    auto const before = display.pixels();
+    ObjectSet selection(doc.get());
+    auto original = item("source");
+    selection.set(original);
+    SelectionDrag drag(selection, display.key);
+    auto const affine = Geom::Affine(Geom::Translate(45, 20));
+    original->set_i2d_affine(original->i2dt_affine() * affine);
+    selection.setTransformPreview(affine, display.key);
+    // A deliberately different override makes a forgotten cleanup visible in the renderer.
+    auto stroke = original->getStrokeTransform(Geom::Scale(3));
+    original->setTransformPreview(display.key, stroke);
+    EXPECT_NE(display.pixels(), before);
+    drag.setDuplicate(true);
+    drag.setDuplicate(false);
+    drag.setDuplicate(GetParam() == 1);
+    drag.finish(affine, GetParam() == -1);
+    doc->ensureUpToDate();
+    if (GetParam() == -1) {
+        EXPECT_EQ(display.pixels(), before);
+    } else {
+        auto reopened = SPDocument::createNewDocFromMem(sp_repr_save_buf(doc->getReprDoc()).raw());
+        ASSERT_TRUE(reopened);
+        reopened->ensureUpToDate();
+        Display clean(*reopened);
+        EXPECT_EQ(display.pixels(), clean.pixels());
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(DropOrCancel, SelectDuplicatePreviewTest, ::testing::Values(-1, 0, 1),
+    [](auto const &info) { return info.param == -1 ? "Cancel" : info.param == 0 ? "Move" : "Copy"; });
 
 } // namespace
