@@ -1947,6 +1947,11 @@ void sp_item_apply_mesh(SPItem* item, SPGradient* mesh, SPDocument* document, Fi
     if (server && is<SPMeshGradient>(server)) {
         has_mesh = true;
     }
+    // Choosing Mesh names no particular mesh: an object that has one keeps it. With one of its
+    // points picked the panels show the point's colour (Solid), and choosing Mesh there made a
+    // new default mesh over the object's (owner, 2026-10-27: "it resets the entire mesh to a
+    // standard mesh").
+    if (!mesh && has_mesh) return;
 
     auto xml_doc = document->getReprDoc();
     SPDefs* defs = document->getDefs();
