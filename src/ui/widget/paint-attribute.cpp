@@ -586,6 +586,8 @@ void PaintAttribute::PaintStrip::request_update(bool update_preview) {
 
 // set the correct icon for the current fill / stroke type
 void PaintAttribute::PaintStrip::set_preview(const SPIPaint& paint, double paint_opacity, PaintMode mode) {
+    auto scoped(_update->block());
+
     if (mode == PaintMode::None) {
         hide();
         return;
@@ -954,6 +956,8 @@ void PaintAttribute::show_stroke(bool show) {
 // stroke update from element to UI
 void PaintAttribute::update_stroke(SPItem* item) {
     if (!item || !item->style) return;
+
+    auto scoped(_update.block());
 
     SPStyle* style = item->style;
     if (style->stroke_extensions.hairline) {

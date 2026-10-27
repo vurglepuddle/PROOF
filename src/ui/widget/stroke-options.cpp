@@ -105,7 +105,14 @@ StrokeOptions::StrokeOptions() {
     attach(*vbox, 0, row);
 
     _miter_limit.signal_value_changed().connect([this](double value) {
+        if (_update.pending()) return;
         _miter_changed.emit(value);
+    });
+
+    _paint_order.signal_values_changed().connect([this] {
+        if (_update.pending()) return;
+        auto order = _paint_order.getValue().get_value();
+        _order_changed.emit(order.c_str());
     });
 }
 
@@ -144,11 +151,6 @@ void StrokeOptions::update_widgets(SPStyle& style) {
     order.read(style.paint_order.set ? style.paint_order.value : "normal");
     bool has_markers = true; // <- TODO
     _paint_order.setValue(order, has_markers);
-
-    _paint_order.signal_values_changed().connect([this] {
-        auto order = _paint_order.getValue().get_value();
-        _order_changed.emit(order.c_str());
-    });
 }
 
 } // namespace

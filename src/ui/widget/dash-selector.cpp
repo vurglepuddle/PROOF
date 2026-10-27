@@ -150,14 +150,20 @@ void DashSelector::construct(bool compact) {
         adjustment = Gtk::Adjustment::create(0.0, 0.0, 1000.0, 0.1, 1.0, 0.0);
     }
     adjustment->signal_value_changed().connect([this] {
-        offset = adjustment->get_value();
-        changed_signal.emit(Offset);
+        auto value = adjustment->get_value();
+        if (offset == value) return;
+        offset = value;
+        if (!_update.pending()) {
+            changed_signal.emit(Offset);
+        }
     });
 
     if (compact) {
         _pattern_entry = &get_widget<Gtk::Entry>(_builder, "pattern");
         _pattern_entry->signal_changed().connect([this]{
-            changed_signal.emit(Pattern);
+            if (!_update.pending()) {
+                changed_signal.emit(Pattern);
+            }
         });
     }
     else {
@@ -182,6 +188,8 @@ DashSelector::~DashSelector() = default;
 // Set dash pattern from outside class.
 void DashSelector::set_dash_pattern(std::vector<double> const &new_dash_pattern, double new_offset)
 {
+    auto scoped(_update.block());
+
     // See if there is already a dash pattern that matches (within delta).
 
     // Set the criteria for matching (sum of dash lengths / number of dashes):
@@ -235,6 +243,8 @@ std::vector<double> DashSelector::get_custom_dash_pattern() const {
 // Update display, offset. Common code for when dash changes (must not trigger signal!).
 void DashSelector::update(int position)
 {
+    auto scoped(_update.block());
+
     // Update MenuButton DrawingArea.
     if (position == CUSTOM_POS) {
         drawing_area->set_draw_func(sigc::mem_fun(*this, &DashSelector::draw_text));
@@ -250,6 +260,8 @@ void DashSelector::update(int position)
 // User selected new dash pattern in GridView.
 void DashSelector::activate(Gtk::GridView *grid, unsigned position)
 {
+    if (_update.pending()) return;
+
     auto &model = dynamic_cast<Gtk::SingleSelection &>(*grid->get_model());
     auto const &item = dynamic_cast<DashPattern &>(*model.get_selected_item());
 

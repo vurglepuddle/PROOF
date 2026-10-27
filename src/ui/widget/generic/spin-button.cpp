@@ -605,6 +605,7 @@ void InkSpinButton::update(bool fire_change_notification) {
         value = _output_transformer(value);
     }
     auto text = format(value, false, false, _trim_zeros, false);
+    _entry_text = text;
     _entry.set_text(text);
     if (_suffix.get_value().empty() && _prefix.get_value().empty()) {
         _value.set_text(text);
@@ -735,6 +736,9 @@ bool InkSpinButton::commit_entry() {
     try {
         double value = 0.0;
         auto text = get_text(_entry);
+        // Focus changes must not commit the rounded display value without an edit.
+        if (_entry_text == text) return true;
+
         if (_dont_evaluate) {
             value = std::stod(text);
         }

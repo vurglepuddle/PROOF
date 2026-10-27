@@ -24,6 +24,7 @@
 #include <gtkmm/entry.h>
 
 #include "ui/defocus-target.h"
+#include "ui/operation-blocker.h"
 
 namespace Gtk {
 class Builder;
@@ -78,6 +79,7 @@ private:
     Gtk::Popover* popover = nullptr;
     Glib::RefPtr<Gtk::Adjustment> adjustment; // Dash offset
     Gtk::Entry* _pattern_entry = nullptr;
+    OperationBlocker _update;
 };
 
 } // namespace Inkscape::UI::Widget

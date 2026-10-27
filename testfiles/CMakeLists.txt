@@ -77,6 +77,7 @@ set(TEST_SOURCES
     psd-pixels-test
     live-corners-test
     cmyk-picker-test
+    stroke-style-test
     colors/cms-system-test
     colors/document-cms-test
     colors/dragndrop-test

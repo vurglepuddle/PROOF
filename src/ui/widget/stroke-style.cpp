@@ -448,11 +448,13 @@ StrokeStyle::StrokeStyle() :
     table->attach(vbox, 0, i);
 
     _paint_order = Gtk::make_managed<PaintOrderWidget>();
-    paintOrderConn = _paint_order->signal_values_changed().connect([this, desktop]() {
+    paintOrderConn = _paint_order->signal_values_changed().connect([this]() {
+        if (update || !this->desktop) return;
         auto po = _paint_order->getValue();
         SPCSSAttr *css = sp_repr_css_attr_new();
         sp_repr_css_set_property(css, "paint-order", po.get_value().c_str());
-        sp_desktop_set_style(desktop, css);
+        sp_desktop_set_style(this->desktop, css);
+        sp_repr_css_attr_unref(css);
     });
     table->attach(*_paint_order, 1, i, 3, 1);
 
