@@ -30,6 +30,7 @@
 #include "document.h"
 #include "style.h"
 #include "sp-marker.h"
+#include "marker-transform-preview.h"
 #include "sp-root.h"
 #include "sp-path.h"
 #include "preferences.h"
@@ -243,15 +244,16 @@ void SPShape::update(SPCtx* ctx, guint flags) {
  * @note The transform returned is not premultiplied by `marker->c2p`. The caller should
  *       ensure to apply any required premultiplication(s).
  */
-std::vector<std::tuple<SPMarkerLoc, SPMarker *, Geom::Affine>> SPShape::get_markers() const
+std::vector<std::tuple<SPMarkerLoc, SPMarker *, Geom::Affine>> SPShape::get_markers(
+    Geom::PathVector const *preview_curve, std::optional<double> preview_width) const
 {
     std::vector<std::tuple<SPMarkerLoc, SPMarker *, Geom::Affine>> markers;
 
-    Geom::PathVector const &pathv = *_curve;
+    Geom::PathVector const &pathv = preview_curve ? *preview_curve : *_curve;
     if (pathv.empty())
         return markers; // empty list
 
-    auto width = style->stroke_width.computed;
+    auto width = preview_width.value_or(style->stroke_width.computed);
     auto add_marker = [this, &markers, width](SPMarkerLoc marker_type, Geom::Affine const &m, bool start) {
         if (SPMarker *marker = _marker[marker_type]) {
             // TODO: We shouldn't need to return the marker type
@@ -396,6 +398,30 @@ Geom::Affine sp_shape_marker_get_transform_at_end(Geom::Curve const & c)
     }
 
     return ret;
+}
+
+void SPShape::setMarkerTransformPreview(unsigned key, std::optional<Inkscape::StrokeTransform> const &stroke)
+{
+    auto drawing_item = get_arenaitem(key);
+    if (!drawing_item || !_curve) return;
+    if (!stroke) {
+        for (auto marker : _marker) {
+            if (!marker) continue;
+            for (unsigned loc = 0; loc < SP_MARKER_LOC_QTY; ++loc) {
+                sp_marker_set_transform_preview(*marker, drawing_item->key() + ITEM_KEY_MARKERS + loc, std::nullopt);
+            }
+        }
+        return;
+    }
+    if (stroke->transform.isSingular() || transform.isSingular()) return;
+    auto curve = *_curve * (transform * stroke->transform.inverse());
+    auto width = style->stroke_width.computed * stroke->width_expansion;
+    unsigned counter[SP_MARKER_LOC_QTY] = {};
+    for (auto const &[loc, marker, affine] : get_markers(&curve, width)) {
+        auto pos = counter[loc]++;
+        sp_marker_set_transform_preview(*marker, drawing_item->key() + ITEM_KEY_MARKERS + loc,
+                                        affine * stroke->transform * transform.inverse(), pos);
+    }
 }
 
 /**

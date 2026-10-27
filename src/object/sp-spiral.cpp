@@ -367,7 +367,7 @@ void SPSpiral::snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape
 /**
  * Set spiral transform
  */
-Geom::Affine SPSpiral::set_transform(Geom::Affine const &xform)
+Geom::Affine SPSpiral::set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview)
 {
     if (pathEffectsEnabled() && !optimizeTransforms()) {
         return xform;
@@ -393,6 +393,11 @@ Geom::Affine SPSpiral::set_transform(Geom::Affine const &xform)
         ret[1] = 0.0;
         ret[2] = 0.0;
         ret[3] = 1.0;
+    }
+
+    if (preview) {
+        preview->expansion = s;
+        return ret;
     }
 
     this->rad *= s;

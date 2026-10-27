@@ -45,7 +45,7 @@ public:
     const char* typeName() const override;
     const char* displayName() const override;
     char* description() const override;
-    Geom::Affine set_transform(Geom::Affine const &transform) override;
+    Geom::Affine set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview = nullptr) override;
     void removeTransformsRecursively(SPObject const *root) override;
     void convert_to_guides() const override;
 private:

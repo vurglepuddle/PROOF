@@ -49,7 +49,7 @@ public:
 	void snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::SnapPreferences const *snapprefs) const override;
     void update_patheffect(bool write) override;
 	void set_shape() override;
-	Geom::Affine set_transform(Geom::Affine const& xform) override;
+	Geom::Affine set_transform(Geom::Affine const& xform, Inkscape::StrokeTransform *preview = nullptr) override;
 	double getSideLength() const;
 	void setSideLength(double length);
 	void turn_upright();

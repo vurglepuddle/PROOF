@@ -281,12 +281,16 @@ void SPPath::update(SPCtx *ctx, guint flags) {
     this->connEndPair.update();
 }
 
-Geom::Affine SPPath::set_transform(Geom::Affine const &transform) {
+Geom::Affine SPPath::set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview) {
     if (!_curve) { // 0 nodes, nothing to transform
         return Geom::identity();
     }
     if (pathEffectsEnabled() && !optimizeTransforms()) {
         return transform;
+    }
+    if (preview) {
+        preview->expansion = transform.descrim();
+        return Geom::identity();
     }
     if (hasPathEffectRecursive() && pathEffectsEnabled()) {
         if (!_curve_before_lpe) {

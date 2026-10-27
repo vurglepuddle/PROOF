@@ -38,6 +38,7 @@
 #include "seltrans-handles.h"
 
 #include "display/control/snap-indicator.h"
+#include "display/drawing-item.h"
 #include "display/control/canvas-item-bpath.h"
 #include "display/control/canvas-item-ctrl.h"
 #include "display/control/canvas-item-curve.h"
@@ -195,6 +196,7 @@ Inkscape::SelTrans::~SelTrans()
     _clear_stamp();
 
     for (auto &_item : _items) {
+        _item->setTransformPreview(_desktop->dkey, std::nullopt);
         sp_object_unref(_item, nullptr);
     }
 
@@ -436,6 +438,7 @@ void Inkscape::SelTrans::transform(Geom::Affine const &rel_affine, Geom::Point c
             }
             // The new affine will only have been applied if the transformation is different from the previous one, see SPItem::set_item_transform
         }
+        selection->setTransformPreview(affine, _desktop->dkey);
     } else {
         if (_bbox) {
             Geom::Point p[4];
@@ -466,6 +469,7 @@ void Inkscape::SelTrans::ungrab()
     _updateVolatileState();
 
     for (auto & _item : _items) {
+        _item->setTransformPreview(_desktop->dkey, std::nullopt);
         sp_object_unref(_item, nullptr);
     }
 

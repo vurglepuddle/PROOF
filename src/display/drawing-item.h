@@ -30,6 +30,7 @@
 
 #include "colors/color.h"
 #include "style-enums.h"
+#include "display/stroke-transform.h"
 #include "tags.h"
 
 namespace Glib { class ustring; }
@@ -62,6 +63,7 @@ struct RenderContext
 struct UpdateContext
 {
     Geom::Affine ctm;
+    std::optional<StrokeTransform> stroke;
 };
 
 struct CacheData;
@@ -153,6 +155,8 @@ public:
     void setIsolation(bool isolation); // CSS Compositing and Blending
     void setBlendMode(SPBlendMode blend_mode);
     void setTransform(Geom::Affine const &trans);
+    void setStrokeTransform(std::optional<StrokeTransform> const &stroke);
+    void setTransformPreview(std::optional<Geom::Affine> const &transform);
     void setClip(DrawingItem *item);
     void setMask(DrawingItem *item);
     void setFillPattern(DrawingPattern *pattern);
@@ -164,7 +168,7 @@ public:
 
     void setKey(unsigned key) { _key = key; }
     unsigned key() const { return _key; }
-    void setItem(SPItem *item) { _item = item; }
+    void setItem(SPItem *item);
     SPItem *getItem() const { return _item; } // SPItem
 
     void update(Geom::IntRect const &area = Geom::IntRect::infinite(), UpdateContext const &ctx = UpdateContext(), unsigned flags = STATE_ALL, unsigned reset = 0);
@@ -234,6 +238,11 @@ protected:
     std::optional<double> _opacity_override;
     std::unique_ptr<Geom::Affine> _transform; ///< Incremental transform from parent to this item's coords
     Geom::Affine _ctm; ///< Total transform from item coords to display coords
+    std::optional<StrokeTransform> _stroke_preview;
+    std::optional<Geom::Affine> _transform_preview;
+    std::optional<StrokeTransform> _stroke;
+    StrokeTransformStyle _stroke_style;
+    bool _stroke_inherited = false;
     Geom::OptIntRect _bbox; ///< Bounding box in display (pixel) coords including stroke
     Geom::OptIntRect _drawbox; ///< Full visual bounding box - enlarged by filters, shrunk by clips and masks
     Geom::OptRect _item_bbox; ///< Geometric bounding box in item's user space.

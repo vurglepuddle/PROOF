@@ -30,6 +30,7 @@
 #include "document.h"
 #include "preferences.h"
 #include "sp-defs.h"
+#include "marker-transform-preview.h"
 
 #include "display/drawing-group.h"
 #include "display/drawing-item-ptr.h"
@@ -46,6 +47,21 @@ struct SPMarkerView
 {
     std::vector<DrawingItemPtr<Inkscape::DrawingItem>> items;
 };
+
+void sp_marker_set_transform_preview(SPMarker &marker, unsigned key,
+                                   std::optional<Geom::Affine> const &transform,
+                                   std::optional<unsigned> position)
+{
+    auto view = marker.views_map.find(key);
+    if (view == marker.views_map.end()) return;
+    if (position) {
+        if (*position < view->second.items.size() && view->second.items[*position]) {
+            view->second.items[*position]->setTransformPreview(transform);
+        }
+    } else {
+        for (auto &item : view->second.items) if (item) item->setTransformPreview(transform);
+    }
+}
 
 SPMarker::SPMarker() : SPGroup(), SPViewBox(),
     markerUnits_set(0),

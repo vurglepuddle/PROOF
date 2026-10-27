@@ -162,3 +162,25 @@ groups, layers and clones behave the same. Alt+drag on empty canvas is still
 touch-select. The binding (`select-duplicate` on Alt) is in the Illustrator
 keymap, PROOF's default; the Inkscape keymap keeps Alt as "move the selection
 whatever is under the pointer". `test_select-duplicate`.
+
+## Transform previews show the stroke release leaves (2026-10-28)
+
+The owner, stretching a rectangle by a side handle: the stroke on the
+stretched sides went thick while held, and "does snap into actual thickness
+when you let go". The drag changes the object's transform in memory and the
+renderer stroked in that whole transform; release then takes the scale into the
+shape and compensates the width (or scales it evenly, with Scale stroke width
+on). The renderer now keeps a stroke transform apart from the geometry's. Each
+object's `set_transform()` has a read-only preview mode that reports, from the
+same arithmetic as release, what release would leave in the transform
+attribute and how it would change the width, dashes and markers; strokes, dash
+patterns, markers and text decorations are drawn in that basis while the drag is
+held. Nothing is written to the document during the drag and no undo step is
+added; release, Escape and right-click clear the preview. The owner chose "Quick
+fix now, full fix next": the preview matches today's release for every object,
+so a group, a clone or type stretched unevenly shows a stretched stroke, held and
+released, until the follow-up makes their released strokes even, as Illustrator
+does. Not covered by its controls: hatch strokes, arbitrary marker artwork,
+filters combined with masks; a gradient stroke's colours can differ from release
+by a few percent (its outline matches). `test_transform-stroke`. Implemented by
+Codex, reviewed by Claude, tried by the owner on a trial build.

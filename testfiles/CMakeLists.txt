@@ -80,6 +80,7 @@ set(TEST_SOURCES
     live-corners-test
     cmyk-picker-test
     stroke-style-test
+    transform-stroke-test
     mesh-editor-test
     colors/cms-system-test
     colors/document-cms-test

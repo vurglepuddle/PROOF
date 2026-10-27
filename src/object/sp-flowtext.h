@@ -85,7 +85,7 @@ public:
 	void remove_child(Inkscape::XML::Node* child) override;
 
 	void set(SPAttr key, const char* value) override;
-	Geom::Affine set_transform(Geom::Affine const& xform) override;
+	Geom::Affine set_transform(Geom::Affine const& xform, Inkscape::StrokeTransform *preview = nullptr) override;
 
 	void update(SPCtx* ctx, unsigned int flags) override;
 	void modified(unsigned int flags) override;

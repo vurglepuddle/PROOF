@@ -476,6 +476,7 @@ public:
     void reapplyAffine();
     void clearLastAffine();
     void applyAffine(Geom::Affine const &affine, bool set_i2d=true,bool compensate=true, bool adjust_transf_center=true);
+    void setTransformPreview(Geom::Affine const &affine, unsigned key);
     void removePathTransforms();
     void removeTransform();
     void setScaleAbsolute(double, double, double, double);

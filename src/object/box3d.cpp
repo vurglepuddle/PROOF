@@ -262,7 +262,7 @@ static void set_transform_box3d_child_item(SPItem *childitem, Geom::Affine const
     childitem->adjust_gradient(xform);
 }
 
-Geom::Affine SPBox3D::set_transform(Geom::Affine const &xform) {
+Geom::Affine SPBox3D::set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview) {
     // We don't apply the transform to the box directly but instead to its perspective (which is
     // done in sp_selection_apply_affine). Here we only adjust strokes, patterns, etc.
 
@@ -270,6 +270,11 @@ Geom::Affine SPBox3D::set_transform(Geom::Affine const &xform) {
     gdouble const sw = hypot(ret[0], ret[1]);
     gdouble const sh = hypot(ret[2], ret[3]);
     gdouble const scale = sqrt(fabs(sw * sh));
+
+    if (preview) {
+        preview->expansion = scale;
+        return Geom::identity();
+    }
 
     for (auto& child: children) {
         auto childitem = cast<SPItem>(&child);

@@ -491,7 +491,7 @@ void SPGenericEllipse::set_shape()
     prepareShapeForLPE(std::move(c));
 }
 
-Geom::Affine SPGenericEllipse::set_transform(Geom::Affine const &xform)
+Geom::Affine SPGenericEllipse::set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview)
 {
     if (pathEffectsEnabled() && !optimizeTransforms()) {
         return xform;
@@ -520,6 +520,17 @@ Geom::Affine SPGenericEllipse::set_transform(Geom::Affine const &xform)
     } else {
         ret[2] = 0.0;
         ret[3] = 1.0;
+    }
+
+    if (preview) {
+        preview->expansion = sqrt(fabs(sw * sh));
+        if (Inkscape::Preferences::get()->getBool("/options/transform/stroke", true) &&
+            (!g_strcmp0(getAttribute("sodipodi:arc-type"), "slice") ||
+             !g_strcmp0(getAttribute("sodipodi:arc-type"), "chord") ||
+             !g_strcmp0(getAttribute("sodipodi:arc-type"), "arc"))) {
+            preview->expansion *= transform.descrim();
+        }
+        return ret;
     }
 
     if (this->rx._set) {

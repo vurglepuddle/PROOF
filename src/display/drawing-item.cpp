@@ -30,6 +30,7 @@
 #include "style.h"
 
 #include "object/sp-item.h"
+#include "object/sp-use.h"
 
 static constexpr auto CACHE_SCORE_THRESHOLD = 50000.0; ///< Do not consider objects for caching below this score.
 
@@ -300,6 +301,7 @@ void DrawingItem::setStyle(SPStyle const *style, SPStyle const *context_style)
 
     // Copy required information out of style.
     bool background_new = false;
+    auto stroke = style ? stroke_style(*style) : StrokeTransformStyle{};
     bool vector_effect_size   = false;
     bool vector_effect_rotate = false;
     bool vector_effect_fixed  = false;
@@ -313,6 +315,8 @@ void DrawingItem::setStyle(SPStyle const *style, SPStyle const *context_style)
     // Defer setting the style information on the DrawingItem.
     defer([=, this] {
         _markForRendering();
+
+        _stroke_style = stroke;
 
         if (background_new != _background_new) {
             _background_new = background_new;
@@ -340,6 +344,33 @@ void DrawingItem::setChildrenStyle(SPStyle const *context_style)
     for (auto &i : _children) {
         i.setChildrenStyle(context_style);
     }
+}
+
+void DrawingItem::setItem(SPItem *item)
+{
+    _item = item;
+    auto inherited = is<SPUse>(item);
+    defer([=, this] { _stroke_inherited = inherited; });
+}
+
+void DrawingItem::setStrokeTransform(std::optional<StrokeTransform> const &stroke)
+{
+    defer([=, this] {
+        if (!stroke && !_stroke_preview) return;
+        _markForRendering();
+        _stroke_preview = stroke;
+        _markForUpdate(STATE_ALL | STATE_TOTAL_INV, true);
+    });
+}
+
+void DrawingItem::setTransformPreview(std::optional<Geom::Affine> const &transform)
+{
+    defer([=, this] {
+        if (!transform && !_transform_preview) return;
+        _markForRendering();
+        _transform_preview = transform;
+        _markForUpdate(STATE_ALL | STATE_TOTAL_INV, true);
+    });
 }
 
 void DrawingItem::setClip(DrawingItem *item)
@@ -506,32 +537,48 @@ void DrawingItem::update(Geom::IntRect const &area, UpdateContext const &ctx, un
     }
 
     UpdateContext child_ctx(ctx);
-    if (_transform) {
+    if (_transform_preview) {
+        child_ctx.ctm = *_transform_preview * ctx.ctm;
+    } else if (_transform) {
         child_ctx.ctm = *_transform * ctx.ctm;
     }
 
+    child_ctx.stroke.reset();
+    if (_stroke_preview) {
+        child_ctx.stroke = *_stroke_preview;
+        child_ctx.stroke->transform *= ctx.ctm;
+    } else if (ctx.stroke && _child_type == ChildType::NORMAL && !_transform_preview) {
+        child_ctx.stroke = *ctx.stroke;
+        if (_transform) child_ctx.stroke->transform = *_transform * child_ctx.stroke->transform;
+        child_ctx.stroke->cascade(_stroke_style);
+    }
+    if (child_ctx.stroke && _stroke_inherited) child_ctx.stroke->inherited = true;
+
     // Vector effects
-    if (style_vector_effect_fixed) {
-        child_ctx.ctm.setTranslation(Geom::Point(0, 0));
-    }
-
-    if (style_vector_effect_size) {
-        double value = child_ctx.ctm.descrim();
-        if (value > 0.0) {
-            child_ctx.ctm[0] /= value;
-            child_ctx.ctm[1] /= value;
-            child_ctx.ctm[2] /= value;
-            child_ctx.ctm[3] /= value;
+    auto vector_effects = [this](Geom::Affine &affine) {
+        if (style_vector_effect_fixed) {
+            affine.setTranslation(Geom::Point(0, 0));
         }
-    }
-
-    if (style_vector_effect_rotate) {
-        double value = child_ctx.ctm.descrim();
-        child_ctx.ctm[0] = value;
-        child_ctx.ctm[1] = 0.0;
-        child_ctx.ctm[2] = 0.0;
-        child_ctx.ctm[3] = value;
-    }
+        if (style_vector_effect_size) {
+            double value = affine.descrim();
+            if (value > 0.0) {
+                affine[0] /= value;
+                affine[1] /= value;
+                affine[2] /= value;
+                affine[3] /= value;
+            }
+        }
+        if (style_vector_effect_rotate) {
+            double value = affine.descrim();
+            affine[0] = value;
+            affine[1] = 0.0;
+            affine[2] = 0.0;
+            affine[3] = value;
+        }
+    };
+    vector_effects(child_ctx.ctm);
+    if (child_ctx.stroke) vector_effects(child_ctx.stroke->transform);
+    _stroke = child_ctx.stroke;
 
     // Remember the transformation matrix.
     Geom::Affine ctm_change;

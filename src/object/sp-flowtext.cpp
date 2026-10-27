@@ -697,20 +697,25 @@ void SPFlowtext::fix_overflow_flowregion(bool inverse)
     }
 }
 
-Geom::Affine SPFlowtext::set_transform (Geom::Affine const &xform)
+Geom::Affine SPFlowtext::set_transform (Geom::Affine const &xform, Inkscape::StrokeTransform *preview)
 {
     if ((this->_optimizeScaledText && !xform.withoutTranslation().isNonzeroUniformScale())
         || (!this->_optimizeScaledText && !xform.isNonzeroUniformScale())) {
-        this->_optimizeScaledText = false;
+        if (!preview) this->_optimizeScaledText = false;
         return xform;
     }
-    this->_optimizeScaledText = false;
+    if (!preview) this->_optimizeScaledText = false;
     
     SPText *text = reinterpret_cast<SPText *>(this);
     
     double const ex = xform.descrim();
     if (ex == 0) {
         return xform;
+    }
+
+    if (preview) {
+        preview->expansion = ex;
+        return Geom::identity();
     }
 
     SPObject *region = nullptr;

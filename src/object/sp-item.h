@@ -32,6 +32,7 @@
 #include "sp-object.h"
 #include "sp-marker-loc.h"
 #include "display/drawing-item-ptr.h"
+#include "display/stroke-transform.h"
 #include "xml/repr.h"
 
 class SPGroup;
@@ -377,6 +378,10 @@ public:
      */
     void doWriteTransform(Geom::Affine const &transform, Geom::Affine const *adv = nullptr, bool compensate = true);
 
+    Inkscape::StrokeTransform getStrokeTransform(Geom::Affine const &transform);
+    void setTransformPreview(unsigned key, std::optional<Inkscape::StrokeTransform> const &stroke);
+    bool canEmbedTransform(Geom::Affine const &transform);
+
     /**
      * Sets item private transform (not propagated to repr), without compensating stroke widths,
      * gradients, patterns as sp_item_write_transform does.
@@ -448,7 +453,8 @@ public:
 	virtual Inkscape::DrawingItem* show(Inkscape::Drawing &drawing, unsigned int key, unsigned int flags);
 	virtual void hide(unsigned int key);
     virtual void snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::SnapPreferences const *snapprefs) const;
-    virtual Geom::Affine set_transform(Geom::Affine const &transform);
+    // With preview, return the residual affine and stroke expansion without changing the item.
+    virtual Geom::Affine set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview = nullptr);
     virtual void removeTransformsRecursively(SPObject const *root);
 
     virtual void convert_to_guides() const;

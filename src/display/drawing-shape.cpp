@@ -117,8 +117,9 @@ unsigned DrawingShape::_updateItem(Geom::IntRect const &area, UpdateContext cons
 
             // Scale by view transformation, unless vector effect stroke.
             if (!style_vector_effect_stroke) {
-                stroke_max *= max_expansion(ctx.ctm);
+                stroke_max *= max_expansion(_stroke ? _stroke->transform : ctx.ctm);
             }
+            if (_stroke && !style_stroke_extensions_hairline) stroke_max *= _stroke->width_expansion;
 
             // Cap minimum line width if asked.
             if (_drawing.renderMode() == RenderMode::VISIBLE_HAIRLINES || style_stroke_extensions_hairline) {
@@ -175,6 +176,8 @@ void DrawingShape::_renderFill(DrawingContext &dc, RenderContext &rc, Geom::IntR
 void DrawingShape::_renderStroke(DrawingContext &dc, RenderContext &rc, Geom::IntRect const &area, unsigned flags) const
 {
     Inkscape::DrawingContext::Save save(dc);
+    cairo_matrix_t matrix;
+    cairo_get_matrix(dc.raw(), &matrix);
     dc.transform(_ctm);
 
     auto has_stroke = _nrstyle.prepareStroke(dc, rc, area, _item_bbox, _stroke_pattern);
@@ -189,7 +192,12 @@ void DrawingShape::_renderStroke(DrawingContext &dc, RenderContext &rc, Geom::In
             dc.restore();
             dc.save();
         }
-        _nrstyle.applyStroke(dc, has_stroke);
+        _nrstyle.applyStroke(dc, has_stroke, _stroke ? _stroke->width_expansion : 1.0,
+                            _stroke ? _stroke->dash_expansion : 1.0, _stroke ? _stroke->offset_expansion : 1.0);
+        if (_stroke && !style_vector_effect_stroke) {
+            cairo_set_matrix(dc.raw(), &matrix);
+            dc.transform(_stroke->transform);
+        }
 
         // If the stroke is a hairline, set it to exactly 1px on screen.
         // If visible hairline mode is on, make sure the line is at least 1px.
@@ -251,6 +259,8 @@ unsigned DrawingShape::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::
         {
             // we assume the context has no path
             Inkscape::DrawingContext::Save save(dc);
+            cairo_matrix_t matrix;
+            cairo_get_matrix(dc.raw(), &matrix);
             dc.transform(_ctm);
 
             // update fill and stroke paints.
@@ -273,7 +283,12 @@ unsigned DrawingShape::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::
                     dc.save();
                 }
                 if (has_stroke) {
-                    _nrstyle.applyStroke(dc, has_stroke);
+                    _nrstyle.applyStroke(dc, has_stroke, _stroke ? _stroke->width_expansion : 1.0,
+                                        _stroke ? _stroke->dash_expansion : 1.0, _stroke ? _stroke->offset_expansion : 1.0);
+                    if (_stroke && !style_vector_effect_stroke) {
+                        cairo_set_matrix(dc.raw(), &matrix);
+                        dc.transform(_stroke->transform);
+                    }
 
                     // If the draw mode is set to visible hairlines, don't let anything get smaller
                     // than half a pixel.
@@ -361,7 +376,8 @@ DrawingItem *DrawingShape::_pickItem(Geom::Point const &p, double delta, Geom::O
     } else if (_nrstyle.data.stroke.type != NRStyleData::PaintType::NONE && (_nrstyle.data.stroke.opacity > 1e-3 || _drawing.selectZeroOpacity())) {
         auto stroke_width = _nrstyle.data.hairline ? 1 : _nrstyle.data.stroke_width;
         // for normal picking calculate the distance corresponding top the stroke width
-        float scale = max_expansion(_ctm);
+        float scale = max_expansion(_stroke ? _stroke->transform : _ctm);
+        if (_stroke && !_nrstyle.data.hairline) scale *= _stroke->width_expansion;
         width = std::max(0.125f, stroke_width * scale) / 2;
     } else {
         width = 0;

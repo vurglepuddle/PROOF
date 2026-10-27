@@ -127,7 +127,11 @@ void SPLine::convert_to_guides() const {
 }
 
 
-Geom::Affine SPLine::set_transform(Geom::Affine const &transform) {
+Geom::Affine SPLine::set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview) {
+    if (preview) {
+        preview->expansion = transform.descrim();
+        return Geom::identity();
+    }
     Geom::Point points[2];
 
     points[0] = Geom::Point(this->x1.computed, this->y1.computed);

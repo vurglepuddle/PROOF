@@ -58,6 +58,9 @@ unsigned DrawingGroup::_updateItem(Geom::IntRect const &area, UpdateContext cons
     UpdateContext child_ctx(ctx);
     if (_child_transform) {
         child_ctx.ctm = *_child_transform * ctx.ctm;
+        if (child_ctx.stroke) {
+            child_ctx.stroke->transform = *_child_transform * child_ctx.stroke->transform;
+        }
     }
 
     _bbox = {};
