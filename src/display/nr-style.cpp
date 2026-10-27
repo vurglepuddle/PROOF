@@ -18,10 +18,24 @@
 #include "display/drawing-context.h"
 #include "display/drawing-pattern.h"
 #include "display/drawing-surface.h"
+#include "display/stroke-transform.h"
 
 #include "object/sp-paint-server.h"
 
 namespace Inkscape {
+
+StrokeTransformStyle stroke_style(SPStyle const &style)
+{
+    return {
+        .width_set = style.stroke_width.set && !style.stroke_width.inherit,
+        .width_inherit = style.stroke_width.inherit,
+        .dash_set = style.stroke_dasharray.set && !style.stroke_dasharray.inherit,
+        .offset_set = style.stroke_dashoffset.set && !style.stroke_dashoffset.inherit,
+        .has_dashes = !style.stroke_dasharray.values.empty(),
+        .own_decoration = !style.text_decoration.style_td || style.text_decoration.style_td == &style,
+        .hairline = style.stroke_extensions.hairline
+    };
+}
 
 void NRStyleData::Paint::clear()
 {
@@ -370,18 +384,25 @@ void NRStyle::applyTextDecorationFill(Inkscape::DrawingContext &dc, CairoPattern
     // Fill rule does not matter, no intersections.
 }
 
-void NRStyle::applyStroke(Inkscape::DrawingContext &dc, CairoPatternUniqPtr const &cp) const
+void NRStyle::applyStroke(Inkscape::DrawingContext &dc, CairoPatternUniqPtr const &cp, double expansion,
+                          double dash_expansion, double offset_expansion) const
 {
     dc.setSource(cp.get());
     if (data.hairline) {
         dc.setHairline();
     } else {
-        dc.setLineWidth(data.stroke_width);
+        dc.setLineWidth(data.stroke_width * expansion);
     }
     dc.setLineCap(data.line_cap);
     dc.setLineJoin(data.line_join);
     dc.setMiterLimit(data.miter_limit);
-    dc.setDash(data.dash, data.dash_offset);
+    if (dash_expansion == 1.0 || data.dash.empty()) {
+        dc.setDash(data.dash, data.dash_offset * offset_expansion);
+    } else {
+        auto dash = data.dash;
+        for (auto &value : dash) value *= dash_expansion;
+        dc.setDash(dash, data.dash_offset * offset_expansion);
+    }
 }
 
 void NRStyle::applyTextDecorationStroke(Inkscape::DrawingContext &dc, CairoPatternUniqPtr const &cp) const

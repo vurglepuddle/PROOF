@@ -382,7 +382,7 @@ void SPRect::update_patheffect(bool write) {
     SPShape::update_patheffect(write);
 }
 
-Geom::Affine SPRect::set_transform(Geom::Affine const& xform) {
+Geom::Affine SPRect::set_transform(Geom::Affine const& xform, Inkscape::StrokeTransform *preview) {
     if (pathEffectsEnabled() && !optimizeTransforms()) {
         return xform;
     }
@@ -409,6 +409,11 @@ Geom::Affine SPRect::set_transform(Geom::Affine const& xform) {
     } else {
         ret[2] = 0.0;
         ret[3] = 1.0;
+    }
+
+    if (preview) {
+        preview->expansion = sqrt(fabs(sw * sh));
+        return ret;
     }
 
     /* Preserve units */

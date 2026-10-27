@@ -35,7 +35,7 @@ public:
 
 	const char* typeName() const override;
 	const char* displayName() const override;
-	Geom::Affine set_transform(Geom::Affine const &transform) override;
+	Geom::Affine set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview = nullptr) override;
 	void convert_to_guides() const override;
 	void update(SPCtx* ctx, unsigned int flags) override;
 

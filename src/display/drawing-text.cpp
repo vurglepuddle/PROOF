@@ -143,6 +143,9 @@ unsigned DrawingGlyphs::_updateItem(Geom::IntRect const &/*area*/, UpdateContext
         if (_transform) {
             scale /= _transform->descrim(); // FIXME temporary hack
         }
+        if (ggroup->_stroke) {
+            scale = ggroup->_stroke->transform.descrim() * ggroup->_stroke->width_expansion;
+        }
         float width = std::max<double>(0.125, ggroup->_nrstyle.data.stroke_width * scale);
         if (std::fabs(ggroup->_nrstyle.data.stroke_width * scale) > 0.01) { // FIXME: this is always true
             bbox_pick_scaled_d.expandBy(0.5 * width);
@@ -450,6 +453,8 @@ void DrawingText::decorateItem(DrawingContext &dc, double phase_length, bool und
 
 unsigned DrawingText::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::IntRect const &area, unsigned flags, DrawingItem const *stop_at) const
 {
+    cairo_matrix_t matrix;
+    cairo_get_matrix(dc.raw(), &matrix);
     auto visible = area & _bbox;
     if (!visible) {
         return RENDER_OK;
@@ -478,6 +483,19 @@ unsigned DrawingText::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::I
         }
         return RENDER_OK;
     }
+
+    auto stroke_decoration = [&](CairoPatternUniqPtr const &paint) {
+        DrawingContext::Save save(dc);
+        _nrstyle.applyTextDecorationStroke(dc, paint);
+        if (_stroke) {
+            if (!_nrstyle.data.hairline) {
+                dc.setLineWidth(_nrstyle.data.text_decoration_stroke_width * _stroke->decoration_expansion);
+            }
+            cairo_set_matrix(dc.raw(), &matrix);
+            dc.transform(_stroke->transform);
+        }
+        dc.strokePreserve();
+    };
 
     // NOTE: This is very similar to drawing-shape.cpp; the only differences are in path feeding
     // and in applying text decorations.
@@ -578,8 +596,7 @@ unsigned DrawingText::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::I
                 }
 
                 if (has_td_stroke) {
-                    _nrstyle.applyTextDecorationStroke(dc, has_td_stroke);
-                    dc.strokePreserve();
+                    stroke_decoration(has_td_stroke);
                 }
 
                 if (has_td_fill && !fill_first) {
@@ -683,11 +700,18 @@ unsigned DrawingText::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::I
         }
         {
             Inkscape::DrawingContext::Save save(dc);
+            cairo_matrix_t matrix;
+            cairo_get_matrix(dc.raw(), &matrix);
             if (!style_vector_effect_stroke) {
                 dc.transform(_ctm);
             }
             if (has_stroke) {
-                _nrstyle.applyStroke(dc, has_stroke);
+                _nrstyle.applyStroke(dc, has_stroke, _stroke ? _stroke->width_expansion : 1.0,
+                                    _stroke ? _stroke->dash_expansion : 1.0, _stroke ? _stroke->offset_expansion : 1.0);
+                if (_stroke && !style_vector_effect_stroke) {
+                    cairo_set_matrix(dc.raw(), &matrix);
+                    dc.transform(_stroke->transform);
+                }
 
                 // If the stroke is a hairline, set it to exactly 1px on screen.
                 // If visible hairline mode is on, make sure the line is at least 1px.
@@ -732,8 +756,7 @@ unsigned DrawingText::_renderItem(DrawingContext &dc, RenderContext &rc, Geom::I
                 }
 
                 if (has_td_stroke) {
-                    _nrstyle.applyTextDecorationStroke(dc, has_td_stroke);
-                    dc.strokePreserve();
+                    stroke_decoration(has_td_stroke);
                 }
 
                 if (has_td_fill && !fill_first) {

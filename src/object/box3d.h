@@ -60,7 +60,7 @@ public:
 	Inkscape::XML::Node* write(Inkscape::XML::Document *xml_doc, Inkscape::XML::Node *repr, unsigned int flags) override;
 
         virtual const char* display_name();
-	Geom::Affine set_transform(Geom::Affine const &transform) override;
+	Geom::Affine set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview = nullptr) override;
     void convert_to_guides() const override;
     const char* displayName() const override;
     char *description() const override;

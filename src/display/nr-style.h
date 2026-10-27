@@ -140,7 +140,8 @@ public:
     CairoPatternUniqPtr prepareTextDecorationFill(DrawingContext &dc, RenderContext &rc, Geom::IntRect const &area, Geom::OptRect const &paintbox, DrawingPattern const *pattern) const;
     CairoPatternUniqPtr prepareTextDecorationStroke(DrawingContext &dc, RenderContext &rc, Geom::IntRect const &area, Geom::OptRect const &paintbox, DrawingPattern const *pattern) const;
     void applyFill(DrawingContext &dc, CairoPatternUniqPtr const &cp) const;
-    void applyStroke(DrawingContext &dc, CairoPatternUniqPtr const &cp) const;
+    void applyStroke(DrawingContext &dc, CairoPatternUniqPtr const &cp, double expansion = 1.0,
+                     double dash_expansion = 1.0, double offset_expansion = 1.0) const;
     void applyTextDecorationFill(DrawingContext &dc, CairoPatternUniqPtr const &cp) const;
     void applyTextDecorationStroke(DrawingContext &dc, CairoPatternUniqPtr const &cp) const;
     void invalidate();

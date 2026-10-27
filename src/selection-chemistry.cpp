@@ -1614,6 +1614,40 @@ void ObjectSet::clearLastAffine()
     _last_affine = Geom::identity(); // Clear last affine
 }
 
+void ObjectSet::setTransformPreview(Geom::Affine const &affine, unsigned key)
+{
+    for (auto item : items()) {
+        auto sibling = getSiblingState(item);
+        if (sibling == SiblingState::SIBLING_TEXT_PATH || sibling == SiblingState::SIBLING_TEXT_SHAPE_INSIDE) continue;
+        auto stroke = item->getStrokeTransform(item->transform);
+        if (stroke.width_expansion == 1.0 && stroke.dash_expansion == 1.0 &&
+            stroke.offset_expansion == 1.0 && stroke.decoration_expansion == 1.0 &&
+            Geom::are_near(stroke.transform.withoutTranslation(),
+                           item->transform.withoutTranslation())) {
+            item->setTransformPreview(key, std::nullopt);
+        } else {
+            item->setTransformPreview(key, stroke);
+        }
+    }
+    // applyAffine rebuilds a selected clone from its original's embedded geometry.
+    // Its stroke therefore uses the original's residual basis and the conjugated clone affine.
+    for (auto item : items()) {
+        auto use = cast<SPUse>(item);
+        if (!use || !use->child) continue;
+        auto original = use->get_original();
+        if (!original || !includes(original)) continue;
+        auto parent = cast<SPItem>(item->parent);
+        if (!parent || item->transform.isSingular()) continue;
+        auto p2dt = parent->i2dt_affine();
+        auto delta = p2dt * affine * p2dt.inverse();
+        if (delta.isSingular()) continue;
+        auto final = delta.inverse() * sp_item_transform_repr(item) * delta;
+        auto stroke = original->getStrokeTransform(original->transform);
+        stroke.transform = stroke.transform * final * item->transform.inverse();
+        use->child->setTransformPreview(key, stroke);
+    }
+}
+
 /** Apply matrix to the selection.  \a set_i2d is normally true, which means objects are in the
 original transform, synced with their reprs, and need to jump to the new transform in one go. A
 value of set_i2d==false is only used by seltrans when it's dragging objects live (not outlines); in

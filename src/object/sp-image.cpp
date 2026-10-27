@@ -810,7 +810,7 @@ void SPImage::snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape:
  * Transform x, y, set x, y, clear translation
  */
 
-Geom::Affine SPImage::set_transform(Geom::Affine const &xform) {
+Geom::Affine SPImage::set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview) {
     /* Calculate position in parent coords. */
     Geom::Point pos( Geom::Point(this->x.computed, this->y.computed) * xform );
 
@@ -835,6 +835,8 @@ Geom::Affine SPImage::set_transform(Geom::Affine const &xform) {
         ret[2] = 0.0;
         ret[3] = 1.0;
     }
+
+    if (preview) return ret;
 
     this->width = this->width.computed * scale[Geom::X];
     this->height = this->height.computed * scale[Geom::Y];

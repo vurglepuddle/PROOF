@@ -67,7 +67,7 @@ public:
 
     void set_shape() override;
     void update_patheffect(bool write) override;
-    Geom::Affine set_transform(Geom::Affine const &xform) override;
+    Geom::Affine set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview = nullptr) override;
 
     void snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::SnapPreferences const *snapprefs) const override;
 

@@ -80,7 +80,7 @@ public:
     char* description() const override;
     Inkscape::DrawingItem* show(Inkscape::Drawing &drawing, unsigned int key, unsigned int flags) override;
     void snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::SnapPreferences const *snapprefs) const override;
-    Geom::Affine set_transform(Geom::Affine const &transform) override;
+    Geom::Affine set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview = nullptr) override;
 
     void apply_profile(Inkscape::Pixbuf *pixbuf);
 

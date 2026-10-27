@@ -121,7 +121,7 @@ private:
     Inkscape::DrawingItem* show(Inkscape::Drawing &drawing, unsigned int key, unsigned int flags) override;
     void hide(unsigned int key) override;
     void snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::SnapPreferences const *snapprefs) const override;
-    Geom::Affine set_transform(Geom::Affine const &transform) override;
+    Geom::Affine set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview = nullptr) override;
     void getLinked(std::vector<SPObject *> &objects, LinkedObjectNature direction = LinkedObjectNature::ANY) const override;
 
     // For 'inline-size', need to also remove any 'x' and 'y' added by SVG 1.1 fallback.

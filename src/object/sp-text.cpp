@@ -396,7 +396,7 @@ void SPText::show_shape_inside()
     }
 }
 
-Geom::Affine SPText::set_transform(Geom::Affine const &xform) {
+Geom::Affine SPText::set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview) {
     // See if 'shape-inside' has rectangle
     Inkscape::Preferences *prefs = Inkscape::Preferences::get();
     if (prefs->getBool("/tools/text/use_svg2", true)) {
@@ -410,7 +410,7 @@ Geom::Affine SPText::set_transform(Geom::Affine const &xform) {
         if (!this->_optimizeTextpathText) {
             return xform;
         } else {
-            this->_optimizeTextpathText = false;
+            if (!preview) this->_optimizeTextpathText = false;
         }
     }
 
@@ -440,6 +440,11 @@ Geom::Affine SPText::set_transform(Geom::Affine const &xform) {
     ret[1] /= ex;
     ret[2] /= ex;
     ret[3] /= ex;
+
+    if (preview) {
+        preview->expansion = ex;
+        return ret;
+    }
 
     // Adjust x/y, dx/dy
     this->_adjustCoordsRecursive (this, xform * ret.inverse(), ex);

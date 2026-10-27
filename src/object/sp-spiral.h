@@ -51,7 +51,7 @@ public:
 
 	/* Lowlevel interface */
 	void setPosition(double cx, double cy, double exp, double revo, double rad, double arg, double t0);
-	Geom::Affine set_transform(Geom::Affine const& xform) override;
+	Geom::Affine set_transform(Geom::Affine const& xform, Inkscape::StrokeTransform *preview = nullptr) override;
 
 	Geom::Point getXY(double t) const;
 

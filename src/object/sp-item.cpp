@@ -46,6 +46,7 @@
 #include "sp-guide.h"
 #include "sp-hatch.h"
 #include "sp-mask.h"
+#include "sp-shape.h"
 #include "sp-pattern.h"
 #include "sp-rect.h"
 #include "sp-root.h"
@@ -1626,9 +1627,66 @@ bool SPItem::collidesWith(SPItem const &other) const
 
 // CPPIFY:: make pure virtual?
 // Not all SPItems must necessarily have a set transform method!
-Geom::Affine SPItem::set_transform(Geom::Affine const &transform) {
+Geom::Affine SPItem::set_transform(Geom::Affine const &transform, Inkscape::StrokeTransform *preview) {
 //	throw;
     return transform;
+}
+
+bool SPItem::canEmbedTransform(Geom::Affine const &affine)
+{
+    return (is<SPText>(this) && firstChild() && is<SPTextPath>(firstChild())) ||
+           (!Inkscape::Preferences::get()->getBool("/options/preservetransform/value", false) &&
+            !getClipObject() && !getMaskObject() &&
+            !(!affine.isTranslation() && style && style->getFilter()) && !unoptimized());
+}
+
+Inkscape::StrokeTransform SPItem::getStrokeTransform(Geom::Affine const &affine)
+{
+    Inkscape::StrokeTransform result{affine};
+    if (canEmbedTransform(affine)) {
+        result.transform = set_transform(affine, &result);
+    }
+    if (!Inkscape::Preferences::get()->getBool("/options/transform/stroke", true)) {
+        auto expansion = 1.0 / (sp_item_transform_repr(this).inverse() * affine).descrim();
+        // doWriteTransform freezes embedding's stroke adjustment at these extremes.
+        result.expansion = expansion < 1e-9 || expansion > 1e9 ? expansion : result.expansion * expansion;
+    }
+    if (result.transform.isIdentity(1e-5 * affine.descrim())) {
+        result.transform = Geom::identity();
+    }
+    result.cascade(Inkscape::stroke_style(*style));
+    return result;
+}
+
+namespace {
+
+void preview_markers(SPItem &item, unsigned key, std::optional<Inkscape::StrokeTransform> const &stroke)
+{
+    if (auto shape = cast<SPShape>(&item); shape && shape->hasMarkers()) {
+        shape->setMarkerTransformPreview(key, stroke);
+    }
+    for (auto &object : item.children) {
+        auto child = cast<SPItem>(&object);
+        if (!child) continue;
+        if (auto view = child->get_arenaitem(key)) view->setStrokeTransform(std::nullopt);
+        auto child_stroke = stroke;
+        if (child_stroke) {
+            child_stroke->transform = child->transform;
+            child_stroke->inherited |= is<SPUse>(&item);
+            child_stroke->cascade(Inkscape::stroke_style(*child->style));
+        }
+        preview_markers(*child, key, child_stroke);
+    }
+}
+
+} // namespace
+
+void SPItem::setTransformPreview(unsigned key, std::optional<Inkscape::StrokeTransform> const &stroke)
+{
+    if (auto drawing_item = get_arenaitem(key)) {
+        drawing_item->setStrokeTransform(stroke);
+        preview_markers(*this, key, stroke);
+    }
 }
 
 void SPItem::removeTransformsRecursively(SPObject const *root) {
@@ -1720,7 +1778,6 @@ void SPItem::doWriteTransform(Geom::Affine const &transform, Geom::Affine const 
 
     } // endif(compensate)
 
-    gint preserve = prefs->getBool("/options/preservetransform/value", false);
     Geom::Affine transform_attr (transform);
 
     // CPPIFY: check this code.
@@ -1730,16 +1787,7 @@ void SPItem::doWriteTransform(Geom::Affine const &transform, Geom::Affine const 
     if (lpeitem) {
         lpeitem->notifyTransform(transform);
     }
-    bool unoptimiced = unoptimized();
-    if ( // run the object's set_transform (i.e. embed transform) only if:
-        (cast<SPText>(this) && firstChild() && cast<SPTextPath>(firstChild())) ||
-             (!preserve && // user did not chose to preserve all transforms
-             !getClipObject() && // the object does not have a clippath
-             !getMaskObject() && // the object does not have a mask
-             !(!transform.isTranslation() && style && style->getFilter()) &&
-             !unoptimiced)
-                // the object does not have a filter, or the transform is translation (which is supposed to not affect filters)
-        )
+    if (canEmbedTransform(transform))
     {
         transform_attr = this->set_transform(transform);
         // PROOF: the part taken into the object's own coordinates must not turn its box.

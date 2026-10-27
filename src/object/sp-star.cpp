@@ -455,7 +455,7 @@ void SPStar::snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::
     }
 }
 
-Geom::Affine SPStar::set_transform(Geom::Affine const &xform)
+Geom::Affine SPStar::set_transform(Geom::Affine const &xform, Inkscape::StrokeTransform *preview)
 {
     bool opt_trans = (randomized == 0);
     if (pathEffectsEnabled() && !optimizeTransforms()) {
@@ -483,6 +483,11 @@ Geom::Affine SPStar::set_transform(Geom::Affine const &xform)
         ret[1] = 0.0;
         ret[2] = 0.0;
         ret[3] = 1.0;
+    }
+
+    if (preview) {
+        preview->expansion = s;
+        return ret;
     }
 
     this->r[0] *= s;

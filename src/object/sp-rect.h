@@ -68,7 +68,7 @@ public:
   const char* displayName() const override;
   void update_patheffect(bool write) override;
 	void set_shape() override;
-	Geom::Affine set_transform(Geom::Affine const& xform) override;
+	Geom::Affine set_transform(Geom::Affine const& xform, Inkscape::StrokeTransform *preview = nullptr) override;
 
 	void snappoints(std::vector<Inkscape::SnapCandidatePoint> &p, Inkscape::SnapPreferences const *snapprefs) const override;
 	void convert_to_guides() const override;

@@ -97,7 +97,9 @@ public:
 	void update_patheffect(bool write) override;
 
     void set_marker(unsigned key, char const *value);
-    std::vector<std::tuple<SPMarkerLoc, SPMarker *, Geom::Affine>> get_markers() const;
+    std::vector<std::tuple<SPMarkerLoc, SPMarker *, Geom::Affine>> get_markers(
+        Geom::PathVector const *preview_curve = nullptr, std::optional<double> preview_width = {}) const;
+    void setMarkerTransformPreview(unsigned key, std::optional<Inkscape::StrokeTransform> const &stroke);
 };
 
 Geom::Affine sp_shape_marker_get_transform(Geom::Curve const & c1, Geom::Curve const & c2);
