@@ -40,7 +40,6 @@ constexpr int glyph = 12;
 constexpr int kind = 10;                         // a paint kind's square and the gap after it
 constexpr int above = glyph + 2;                 // where the tiles start
 constexpr int below = above + tile + overlap + 4; // where the paint kinds start
-unsigned paint_session = 0;
 
 // Square corners, as Illustrator's tiles (the owner, 2026-10-20: "rounded corners look weird").
 void square(Cairo::RefPtr<Cairo::Context> const &cr, double x, double y, double w, double h)
@@ -340,7 +339,7 @@ std::vector<sigc::connection> FillStrokeControls::connectPaint(bool fill)
         [desktop] { return desktop; },
         [this, desktop, document, context] {
             return _showing || !_desktop || _desktop != desktop || _context != context || _desktop->getDocument() != document;
-        }, ++paint_session, [this] { refresh(); });
+        }, 0, [this] { refresh(); });
 }
 
 void FillStrokeControls::draw(Cairo::RefPtr<Cairo::Context> const &cr, int width, int height, bool fill)

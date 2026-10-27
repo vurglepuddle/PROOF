@@ -2323,6 +2323,13 @@ sigc::connection SPDocument::connectSavedOrModified(sigc::slot<void ()> &&slot)
 
 void SPDocument::_emitModified(unsigned int object_modified_tag) {
     static guint const flags = SP_OBJECT_MODIFIED_FLAG | SP_OBJECT_CHILD_MODIFIED_FLAG | SP_OBJECT_PARENT_MODIFIED_FLAG;
+    // PROOF: only the user tags may ride along. A tag with modified-state bits in it made the root
+    // refuse the whole notification, so a changed mesh point wasn't redrawn until some other change
+    // came (the sidebar's paint popover passed a counter here; owner, 2026-10-27).
+    if (object_modified_tag & ~SP_OBJECT_USER_TAGS_ALL) {
+        g_warning("SPDocument: object modified tag %#x is not a user tag; dropping the rest", object_modified_tag);
+        object_modified_tag &= SP_OBJECT_USER_TAGS_ALL;
+    }
     root->emitModified(object_modified_tag);
     modified_signal.emit(flags);
 }

@@ -56,6 +56,25 @@ paint with the Selection tool already reached the spans.
 `sp_desktop_paint_sources` in `desktop-style.cpp`; tested in
 `object-style-test` (`TextPaintSources`).
 
+## Every commit redraws: no counter as the modified tag (2026-10-27)
+
+The popover passed a counter (one more each time it opened) where `selection-paint`
+hands the document a modified tag. That parameter takes `SP_OBJECT_USER_MODIFIED_TAG_n`
+bits or 0. A count of 1, 2 or 3 carries modified-state bits: the root refused the
+notification (GLib: "assertion '!(flags & ~SP_OBJECT_MODIFIED_CASCADE)' failed",
+then 32 update passes), and whatever waits for it waited for the next change made
+elsewhere. A mesh point's colour reached its stop, but the canvas kept the old
+patches. The owner: "it DOES set colors. You need to do about 3 other things to the
+mesh for colors to propagate"; another point broke it again (the next popover's
+count). The legacy panels only seemed to work because their dash controls wrote the
+object's `stroke-dasharray` as they refreshed, which carried the pending
+notification through (a fault of its own, in the todo). The popover passes 0 now (it
+never read its tag back), the parameter is called `modified_tag`, and
+`SPDocument::_emitModified` drops bits that aren't user tags, with a warning, so a
+wrong tag can't stall the document again. Tested in `sp-gradient-test`
+(`EveryPointColourSetReachesWhatTheCanvasDraws`, which failed for tags 1, 2 and 3
+before).
+
 ## Implementation and lifetime
 
 `FillStrokeControls` renders the previews and binds to selection/document changes.

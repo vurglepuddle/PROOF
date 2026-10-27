@@ -272,6 +272,39 @@ TEST_F(MeshObjectTest, ACmykColourInTheDocumentProfileReachesAMeshPoint)
     EXPECT_NE(std::string(stop->getRepr()->attribute("style")).find("icc-color(Test-CMYK"), std::string::npos);
 }
 
+TEST_F(MeshObjectTest, EveryPointColourSetReachesWhatTheCanvasDraws)
+{
+    // The owner, 2026-10-27, setting mesh point colours: "it DOES set colors. You need to do about
+    // 3 other things to the mesh for colors to propagate". The stops changed; what the canvas
+    // draws (the gradient's patches) didn't, until some unrelated change came along. The sidebar's
+    // paint popover committed with a session counter as the modified tag (1, 2, 3, ...): with
+    // modified-state bits in it, the document's notification was refused and nothing redrew.
+    auto gradient = cast<SPMeshGradient>(path->style->getFillPaintServer());
+    ASSERT_TRUE(gradient);
+    gradient->getGradientMesh(); // drawn once, as the canvas does
+    auto drawn = [&](std::uint32_t rgb) {
+        for (auto const &row : gradient->getGradientMesh()->patches) {
+            for (auto const &patch : row) {
+                for (auto const &color : patch.color) {
+                    if (color && color->toRGBA() >> 8 == rgb) return true;
+                }
+            }
+        }
+        return false;
+    };
+    for (auto [point, color, rgb, tag] : {std::tuple{0u, "#00ff00", 0x00ff00u, 0u}, {1u, "#0000ff", 0x0000ffu, 1u},
+                                          {4u, "#ff0000", 0xff0000u, 2u}, {8u, "#ffff00", 0xffff00u, 3u}}) {
+        gradient->ensureArray(); // as the Mesh tool's handles do
+        auto css = sp_repr_css_attr_new();
+        sp_repr_css_set_property(css, "stop-color", color);
+        sp_repr_css_set_property(css, "stop-opacity", "1");
+        sp_item_gradient_stop_set_style(path, POINT_MG_CORNER, point, Inkscape::FOR_FILL, css);
+        sp_repr_css_attr_unref(css);
+        DocumentUndo::maybeDone(doc.get(), "fill:flatcolor", RC_("Undo", "Set fill color"), "", tag);
+        EXPECT_TRUE(drawn(rgb)) << "point " << point << " " << color << " tag " << tag;
+    }
+}
+
 TEST_F(MeshObjectTest, AMeshEditRepairsAnOutlineRoundedOrMovedAwayFromItsMesh)
 {
     // Saved 2026-10-18 before Direct Selection left mesh objects alone: Live
