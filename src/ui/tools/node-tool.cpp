@@ -37,6 +37,7 @@
 #include "rubberband.h"
 #include "selection-chemistry.h"
 #include "selection.h"
+#include "selcue.h"
 #include "ui/knot/knot-holder.h"
 #include "ui/modifiers.h"
 #include "ui/shape-editor.h" // temporary!
@@ -190,6 +191,9 @@ NodeTool::NodeTool(SPDesktop *desktop)
 
     // Direct Selection identifies the object by its path and anchors.
     // Keep the bounding-box cue for the Selection tool only.
+    if (prefs->getBool("/tools/nodes/selcue", true)) {
+        _text_cue = std::make_unique<SelCue>(desktop, true);
+    }
 
     if (prefs->getBool("/tools/nodes/gradientdrag")) {
         this->enableGrDrag();

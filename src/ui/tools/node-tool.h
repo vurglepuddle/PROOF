@@ -12,6 +12,7 @@
 #ifndef INKSCAPE_UI_TOOLS_NODE_TOOL_H
 #define INKSCAPE_UI_TOOLS_NODE_TOOL_H
 
+#include <memory>
 #include <optional>
 
 #include "display/control/canvas-item-ptr.h"
@@ -64,6 +65,7 @@ public:
     void deleteSelected();
 
 private:
+    std::unique_ptr<SelCue> _text_cue;
     Inkscape::Rubberband *get_rubberband() const;
 
     sigc::connection _selection_changed_connection;

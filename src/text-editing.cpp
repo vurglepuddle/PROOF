@@ -52,6 +52,21 @@ Text::Layout const *te_get_layout(SPItem const *item)
     return nullptr;
 }
 
+std::vector<Geom::LineSegment> sp_te_baseline_segments(SPItem const *item)
+{
+    auto const layout = te_get_layout(item);
+    if (!layout) {
+        return {};
+    }
+
+    auto segments = layout->baselineSegments();
+    auto const affine = item->i2doc_affine();
+    for (auto &segment : segments) {
+        segment = Geom::LineSegment(segment.initialPoint() * affine, segment.finalPoint() * affine);
+    }
+    return segments;
+}
+
 static void te_update_layout_now (SPItem *item)
 {
     if (is<SPText>(item))

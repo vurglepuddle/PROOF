@@ -28,6 +28,7 @@
 #include "object/sp-use.h"
 #include "selection.h"
 #include "text-editing.h"
+#include "ui/widget/canvas.h"
 
 namespace Inkscape {
 
@@ -41,8 +42,9 @@ void SelCue::BoundingBoxPrefsObserver::notify(Preferences::Entry const &val)
     _sel_cue._boundingBoxPrefsChanged(static_cast<int>(val.getBool()));
 }
 
-SelCue::SelCue(SPDesktop *desktop)
-    : _desktop(desktop)
+SelCue::SelCue(SPDesktop *desktop, bool text_only)
+    : _text_only(text_only)
+    , _desktop(desktop)
     , _bounding_box_prefs_observer(*this)
 {
     _selection = _desktop->getSelection();
@@ -58,12 +60,16 @@ SelCue::SelCue(SPDesktop *desktop)
     Preferences *prefs = Preferences::get();
     _updateItemBboxes(prefs);
     prefs->addObserver(_bounding_box_prefs_observer);
+    _cue_prefs_observer.action = [this] { _newItemBboxes(); };
+    _device_scale_connection = _desktop->getCanvas()->property_scale_factor().signal_changed().connect(
+        sigc::mem_fun(*this, &SelCue::_newTextBaselineSegments));
 }
 
 SelCue::~SelCue()
 {
     _sel_changed_connection.disconnect();
     _sel_modified_connection.disconnect();
+    _device_scale_connection.disconnect();
 }
 
 void SelCue::_updateItemBboxes()
@@ -75,6 +81,7 @@ void SelCue::_updateItemBboxes(Preferences *prefs)
 {
     gint mode = prefs->getInt("/options/selcue/value", MARK);
     if (mode == NONE) {
+        _newItemBboxes();
         return;
     }
 
@@ -87,9 +94,14 @@ void SelCue::_updateItemBboxes(Preferences *prefs)
 
 void SelCue::_updateItemBboxes(gint mode, int prefs_bbox)
 {
-    // PROOF: nothing shows while the selection is dragged, and the cue is drawn again at the
-    // result, so don't follow every step of the drag.
+    if (_text_only) {
+        _newTextBaselineSegments();
+        return;
+    }
+
+    // PROOF: only text baselines follow the selection while it is dragged.
     if (_transform_box && _transforming) {
+        _newTextBaselineSegments();
         for (auto *items : {&_item_bboxes, &_item_lines, &_text_baselines, &_item_centers, &_item_outlines}) {
             for (auto &canvas_item : *items) {
                 canvas_item->set_visible(false);
@@ -134,6 +146,7 @@ void SelCue::_updateItemBboxes(gint mode, int prefs_bbox)
 
     _newItemLines();
     _newTextBaselines();
+    _newTextBaselineSegments();
     _newItemCenters();
     _newItemOutlines();
 }
@@ -177,6 +190,9 @@ bool SelCue::_setItemBox(CanvasItem &canvas_item, SPItem &item, int prefs_bbox) 
 void SelCue::_newItemBboxes()
 {
     _item_bboxes.clear();
+    _text_baselines.clear();
+    _text_baseline_segments.clear();
+    _item_lines.clear();
     _item_centers.clear();
     _item_outlines.clear();
 
@@ -187,6 +203,11 @@ void SelCue::_newItemBboxes()
     }
 
     g_return_if_fail(_selection != nullptr);
+
+    _newTextBaselineSegments();
+    if (_text_only) {
+        return;
+    }
 
     int prefs_bbox = prefs->getBool("/tools/bounding_box");
 
@@ -335,6 +356,33 @@ void SelCue::_newTextBaselines()
     }
 }
 
+void SelCue::_newTextBaselineSegments()
+{
+    _text_baseline_segments.clear();
+    if (!_bboxes_visible || Preferences::get()->getInt("/options/selcue/value", MARK) == NONE) {
+        return;
+    }
+
+    double const width = 1.0 / _desktop->getCanvas()->get_scale_factor();
+    for (auto item : _selection->items()) {
+        Geom::PathVector baselines;
+        for (auto const &segment : sp_te_baseline_segments(item)) {
+            Geom::Path path(_desktop->doc2dt(segment.initialPoint()) * _transform_preview);
+            path.appendNew<Geom::LineSegment>(_desktop->doc2dt(segment.finalPoint()) * _transform_preview);
+            baselines.push_back(std::move(path));
+        }
+        if (baselines.empty()) {
+            continue;
+        }
+        auto path = make_canvasitem<CanvasItemBpath>(_desktop->getCanvasControls(), std::move(baselines));
+        path->set_stroke(0x00ffffff);
+        path->set_stroke_width(width);
+        path->set_fill(0x0, SP_WIND_RULE_NONZERO);
+        path->set_pickable(false);
+        _text_baseline_segments.emplace_back(std::move(path));
+    }
+}
+
 void SelCue::_boundingBoxPrefsChanged(int prefs_bbox)
 {
     Preferences *prefs = Preferences::get();
@@ -366,7 +414,14 @@ void SelCue::setTransforming(bool transforming)
         return;
     }
     _transforming = transforming;
+    _transform_preview.setIdentity();
     _updateItemBboxes();
+}
+
+void SelCue::setTransformPreview(Geom::Affine const &affine)
+{
+    _transform_preview = affine;
+    _newTextBaselineSegments();
 }
 
 } // namespace Inkscape

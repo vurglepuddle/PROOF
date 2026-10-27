@@ -72,6 +72,7 @@ set(TEST_SOURCES
     ai-native-import-test
     ai-native-writer-gradient-test
     box-frame-test
+    text-baselines-test
     clip-blend-test
     tiff-pixels-test
     psd-pixels-test
