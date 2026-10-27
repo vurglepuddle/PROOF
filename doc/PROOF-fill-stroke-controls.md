@@ -75,6 +75,21 @@ wrong tag can't stall the document again. Tested in `sp-gradient-test`
 (`EveryPointColourSetReachesWhatTheCanvasDraws`, which failed for tags 1, 2 and 3
 before).
 
+## Showing a selection writes nothing (2026-10-27)
+
+While the owner picked mesh point colours, the docked Stroke style tab and the
+sidebar's paint attributes wrote `stroke-dasharray` to the object, each with an
+undo step nobody made (a gdb watch of their session). Two causes: a numeric entry
+committed its own rounded display text when it lost focus, and the dash selector
+announced the values it was given as if the user had edited them. A spin entry
+now commits only text that differs from what it showed, and the dash selector
+blocks its own updates. Found with them: the sidebar's stroke options connected
+another paint-order handler on every refresh (one click, several writes) and
+passed on miter changes made while refreshing; the docked paint order used the
+desktop it was built with. `test_stroke-style` (ten widget cases, run with
+`INKSCAPE_TEST_GUI=1`) checks that refreshing changes neither the document nor
+the undo history and that real edits still apply.
+
 ## Implementation and lifetime
 
 `FillStrokeControls` renders the previews and binds to selection/document changes.

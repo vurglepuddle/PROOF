@@ -202,6 +202,7 @@ private:
     struct Point { double x = 0; double y = 0; } _drag_start;
     sigc::signal<void (double)> _signal_value_changed;
     std::string _min_size_pattern;
+    std::string _entry_text;
     std::function<double (const Glib::ustring&)> _evaluator; // evaluator callback
     bool _mouse_entered = false; // flag to keep track of motion_enter/leave
     std::function<double (double)> _output_transformer;
