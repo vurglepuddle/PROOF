@@ -30,6 +30,9 @@ typedef std::pair<Inkscape::Text::Layout::iterator, Inkscape::Text::Layout::iter
 
 Inkscape::Text::Layout const * te_get_layout (SPItem const *item);
 
+/** Selection baseline segments in document coordinates, from the current text layout. */
+std::vector<Geom::LineSegment> sp_te_baseline_segments(SPItem const *item);
+
 void te_update_layout_now_recursive(SPItem *item);
 
 /** Returns true if there are no visible characters on the canvas. */

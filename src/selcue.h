@@ -18,6 +18,7 @@
 #include <vector>
 #include <memory>
 
+#include <2geom/affine.h>
 #include <sigc++/sigc++.h>
 
 #include "display/control/canvas-item-ptr.h"
@@ -35,7 +36,8 @@ class Selection;
 class SelCue
 {
 public:
-    SelCue(SPDesktop *desktop);
+    /// Direct Selection uses text_only to show baselines without bounding boxes or other controls.
+    SelCue(SPDesktop *desktop, bool text_only = false);
     ~SelCue();
 
     enum Type {
@@ -45,9 +47,10 @@ public:
     };
 
     void setBboxesVisible(bool visible);
-    /// PROOF: hide the cue while the selection is being dragged, as Illustrator does. It would
-    /// otherwise trail behind the moving objects; it reappears at the result on release.
+    /// PROOF: hide boxes and controls during a transform drag; text baselines follow the type.
     void setTransforming(bool transforming);
+    /// The Selection tool's outline-only drag has not yet changed the objects' transforms.
+    void setTransformPreview(Geom::Affine const &affine);
     /// PROOF: the select tool draws its own transform box around the selection, so a single
     /// object needs no cue of its own, and the boxes of several objects are thin and solid.
     void setTransformBox(bool transform_box);
@@ -72,6 +75,7 @@ private:
     void _newItemBboxes();
     void _newItemLines();
     void _newTextBaselines();
+    void _newTextBaselineSegments();
     void _newItemCenters();
     void _newItemOutlines();
     bool _setItemBox(CanvasItem &canvas_item, SPItem &item, int prefs_bbox) const;
@@ -80,18 +84,23 @@ private:
     bool _bboxes_visible = true;
     bool _transforming = false;
     bool _transform_box = false;
+    bool const _text_only;
+    Geom::Affine _transform_preview;
     bool _visible() const { return _bboxes_visible && !_transforming; }
     SPDesktop *_desktop;
     Selection *_selection;
     sigc::connection _sel_changed_connection;
     sigc::connection _sel_modified_connection;
+    sigc::connection _device_scale_connection;
     std::vector<CanvasItemPtr<CanvasItem>> _item_bboxes;
     std::vector<CanvasItemPtr<CanvasItem>> _text_baselines;
+    std::vector<CanvasItemPtr<CanvasItem>> _text_baseline_segments;
     std::vector<CanvasItemPtr<CanvasItem>> _item_lines;
     std::vector<CanvasItemPtr<CanvasItem>> _item_centers; ///< PROOF: centres of shapes in the selection
     std::vector<CanvasItemPtr<CanvasItem>> _item_outlines; ///< PROOF: outlines of shapes that paint nothing
 
     BoundingBoxPrefsObserver _bounding_box_prefs_observer;
+    Pref<void> _cue_prefs_observer{"/options/selcue/value"};
 };
 
 }

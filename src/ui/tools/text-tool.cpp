@@ -1846,6 +1846,7 @@ void TextTool::_updateTextSelection()
         for (int i = 0; i + 3 < quads.size(); i += 4) {
             auto quad = make_canvasitem<CanvasItemQuad>(_desktop->getCanvasControls(), quads[i], quads[i+1], quads[i+2], quads[i+3]);
             quad->set_fill(0x00777777); // Semi-transparent blue as Cairo cannot do inversion.
+            quad->lower_to_bottom(); // Keep the selection wash below baselines and editing controls.
             quad->set_visible(true);
             text_selection_quads.emplace_back(std::move(quad));
         }

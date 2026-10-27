@@ -346,6 +346,49 @@ void Layout::_calculateBaselines()
     }
 }
 
+std::vector<Geom::LineSegment> Layout::baselineSegments() const
+{
+    std::vector<Geom::LineSegment> segments;
+    if (_path_fitted) {
+        return segments;
+    }
+
+    bool const vertical = _directions_are_orthogonal(_blockProgression(), TOP_TO_BOTTOM);
+    std::optional<unsigned> chunk_index;
+    double baseline_y = 0;
+    double min_x = 0;
+    double max_x = 0;
+    auto append = [&] {
+        if (chunk_index) {
+            segments.emplace_back(vertical ? Geom::Point(baseline_y, min_x) : Geom::Point(min_x, baseline_y),
+                                  vertical ? Geom::Point(baseline_y, max_x) : Geom::Point(max_x, baseline_y));
+        }
+    };
+
+    for (auto const &span : _spans) {
+        auto const &chunk = _chunks[span.in_chunk];
+        auto const &line = _lines[chunk.in_line];
+        if (line.hidden || span.x_start == span.x_end) {
+            continue;
+        }
+        double const y = line.baseline_y + span.y_offset;
+        double const left = chunk.left_x + std::min(span.x_start, span.x_end);
+        double const right = chunk.left_x + std::max(span.x_start, span.x_end);
+        if (chunk_index == span.in_chunk && baseline_y == y) {
+            min_x = std::min(min_x, left);
+            max_x = std::max(max_x, right);
+        } else {
+            append();
+            chunk_index = span.in_chunk;
+            baseline_y = y;
+            min_x = left;
+            max_x = right;
+        }
+    }
+    append();
+    return segments;
+}
+
 PangoLogAttr const &Layout::_get_attributes(iterator const &it) const
 {
     if (it._char_index < _characters.size()) {

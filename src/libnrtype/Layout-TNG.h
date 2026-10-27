@@ -565,6 +565,10 @@ public:
      */
     std::vector<Geom::LineSegment> getBaselines() const { return _baselines; }
 
+    /** Baseline extents for selection cues, in layout coordinates. Empty and hidden lines
+     * and text fitted to a path have no segments. Separate shape runs stay separate. */
+    std::vector<Geom::LineSegment> baselineSegments() const;
+
     /** This is that value to apply to the x,y attributes of tspan role=line
     elements, and hence it takes alignment into account. */
     Geom::Point chunkAnchorPoint(iterator const &it) const;
