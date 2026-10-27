@@ -1952,13 +1952,19 @@ void sp_item_apply_mesh(SPItem* item, SPGradient* mesh, SPDocument* document, Fi
     // new default mesh over the object's (owner, 2026-10-27: "it resets the entire mesh to a
     // standard mesh").
     if (!mesh && has_mesh) return;
+    // The object's own mesh, picked from the list: nothing to change.
+    if (mesh && has_mesh && (server == mesh || cast<SPGradient>(server)->getArray() == mesh)) return;
 
     auto xml_doc = document->getReprDoc();
     SPDefs* defs = document->getDefs();
     SPMeshGradient* mesh_gradient = nullptr;
 
-    if (!mesh || !has_mesh) {
-        // No mesh in document or object does not already have mesh -> create new mesh.
+    // A mesh picked from the list is applied as a copy fitted to the object, whether or not the
+    // object had a mesh. An object's first mesh used to be a new default one whatever was picked,
+    // and that new mesh then took the list's selection (owner, 2026-10-27: "select that mesh in
+    // the Meshes - it creates a standard mesh ... every time it's a new standard mesh").
+    if (!mesh) {
+        // No mesh named and the object has none: a new mesh.
 
         // Create mesh element
         auto repr = xml_doc->createElement("svg:meshgradient");
