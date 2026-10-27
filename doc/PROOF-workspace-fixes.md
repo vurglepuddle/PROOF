@@ -147,21 +147,30 @@ Spray, Eraser, Connector, LPE | Measure, Zoom, Pages, grouped as Illustrator's
 toolbar is. Each tool can still be hidden in Preferences; reordering by drag
 and drop, and a Width tool, are in the workspace todo.
 
-## Alt+drag duplicates (2026-10-27)
+## Alt+drag duplicates (2026-10-27, decided at the release 2026-10-28)
 
 The owner: "make it duplicate objects to follow basically every single editor
-on the planet. Shift + alt + drag obviously drags by an axis", and "We should
-just use industry standards". With the Selection tool, Alt held at the press on
-an object (selected or not) duplicates what a plain drag of it would move, and
-the copy follows the pointer while the original stays; Shift as well
-constrains the copy as a plain Shift+drag does (horizontally or vertically;
-Illustrator's 45 degrees is in the workspace todo). The copy and its move are
-one undo step, Escape cancels both, and Space still stamps copies on the way.
-The copy is made by Edit > Duplicate's code (`ObjectSet::duplicate`), so ids,
-groups, layers and clones behave the same. Alt+drag on empty canvas is still
+on the planet. Shift + alt + drag obviously drags by an axis", "We should just
+use industry standards", and the next day: "So you start dragging, realise you
+want another one, tap and hold alt?" As in Illustrator, Alt at the mouse
+release decides: down, and the original goes back to its start while a copy
+lands at the drop and becomes the selection; up, and it is a plain move,
+whenever Alt was pressed or let go during the drag. While the drop would copy,
+the pointer carries a cyan two-squares badge (`select-copy.svg`) and each
+original's start is marked by a cyan rectangle, one device pixel with a black
+outline, labelled "Copy" on black; letting go of Alt removes them at once. The
+drag itself moves the originals in memory only (`SelectionDrag`, used by
+`SelTrans` for object moves); the copy is made at the release by Edit >
+Duplicate's code (`ObjectSet::duplicate`), so ids, stacking, groups, layers and
+clones behave the same. The copy and its move, with any Space stamps made on
+the way, are one undo step; Escape and right-click cancel all of it. Shift
+constrains as a plain Shift+drag does (horizontally or vertically; Illustrator's
+45 degrees is in the workspace todo). Alt+drag on empty canvas is still
 touch-select. The binding (`select-duplicate` on Alt) is in the Illustrator
 keymap, PROOF's default; the Inkscape keymap keeps Alt as "move the selection
-whatever is under the pointer". `test_select-duplicate`.
+whatever is under the pointer". On Windows GDK reports a released Alt as
+already up, so the Selection tool sets or clears a modifier key's bit rather
+than toggling it. `test_select-duplicate`.
 
 ## Transform previews show the stroke release leaves (2026-10-28)
 

@@ -59,6 +59,7 @@ target_sources(inkscape_base PRIVATE
   rubberband.cpp
   selcue.cpp
   selection-chemistry.cpp
+  selection-drag.cpp
   selection-describer.cpp
   selection.cpp
   seltrans-handles.cpp

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" x="-4" y="-4">
+  <style>@import './cursors.css';</style>
+  <g id="cursor" class="drop-shadow">
+    <path d="m 4.5,4.5 7.5,7.5 h -4 l 3,7 -1,.5 -3,-7 -2.5,2.5 z"
+          fill="black" stroke="white" stroke-width="3"/>
+    <path d="m 4.5,4.5 7.5,7.5 h -4 l 3,7 -1,.5 -3,-7 -2.5,2.5 z"
+          fill="black" stroke="black" stroke-width="1"/>
+    <path d="M 17,17 H 25 V 25 H 17 Z M 22,22 H 30 V 30 H 22 Z"
+          fill="#00ffff" stroke="white" stroke-width="3"/>
+    <path d="M 17,17 H 25 V 25 H 17 Z M 22,22 H 30 V 30 H 22 Z"
+          fill="#00ffff" stroke="black" stroke-width="1"/>
+  </g>
+</svg>

@@ -35,6 +35,7 @@
 #include "mod360.h"
 #include "pure-transform.h"
 #include "selection.h"
+#include "selection-drag.h"
 #include "seltrans-handles.h"
 
 #include "display/control/snap-indicator.h"
@@ -45,6 +46,7 @@
 #include "display/control/canvas-item-enums.h"
 #include "display/control/canvas-item-group.h"
 #include "display/control/canvas-item-rect.h"
+#include "display/control/canvas-item-text.h"
 #include "live_effects/effect-enum.h"
 #include "live_effects/effect.h"
 
@@ -168,12 +170,15 @@ Inkscape::SelTrans::SelTrans(SPDesktop *desktop) :
     _all_snap_sources_iter = _all_snap_sources_sorted.end();
 
     prefs->addObserver(_bounding_box_prefs_observer);
+    _copy_scale_connection = desktop->getCanvas()->property_scale_factor().signal_changed().connect(
+        sigc::mem_fun(*this, &SelTrans::_updateCopyCue));
 }
 
 Inkscape::SelTrans::~SelTrans()
 {
     _sel_changed_connection.disconnect();
     _sel_modified_connection.disconnect();
+    _copy_scale_connection.disconnect();
 
     for (auto &knot : knots) {
         SPKnot::unref(knot);
@@ -194,6 +199,9 @@ Inkscape::SelTrans::~SelTrans()
     }
 
     _clear_stamp();
+    _drag.reset();
+    _copy_boxes.clear();
+    _copy_label.reset();
 
     for (auto &_item : _items) {
         _item->setTransformPreview(_desktop->dkey, std::nullopt);
@@ -285,6 +293,10 @@ void Inkscape::SelTrans::grab(Geom::Point const &p, gdouble x, gdouble y, bool s
 
     if (_empty) {
         return;
+    }
+
+    if (translating) {
+        _drag = std::make_unique<SelectionDrag>(*selection, _desktop->dkey);
     }
 
     auto items= _desktop->getSelection()->items();
@@ -457,9 +469,57 @@ void Inkscape::SelTrans::transform(Geom::Affine const &rel_affine, Geom::Point c
     _updateHandles();
 }
 
-void Inkscape::SelTrans::ungrab()
+void Inkscape::SelTrans::setDuplicate(bool duplicate)
+{
+    if (!_drag) return;
+    if (_drag->isDuplicate() != duplicate) {
+        for (auto item : _items) {
+            item->setTransformPreview(_desktop->dkey, std::nullopt);
+        }
+        if (_show == SHOW_CONTENT) {
+            _selection->setTransformPreview(_current_relative_affine, _desktop->dkey);
+        }
+    }
+    _drag->setDuplicate(duplicate);
+    _updateCopyCue();
+}
+
+void Inkscape::SelTrans::_updateCopyCue()
+{
+    if (!_drag || !_drag->isDuplicate()) {
+        _copy_boxes.clear();
+        _copy_label.reset();
+        return;
+    }
+    auto const &bounds = _drag->bounds();
+    double const width = 1.0 / _desktop->getCanvas()->get_scale_factor();
+    for (unsigned i = 0; i < bounds.size(); ++i) {
+        if (i == _copy_boxes.size()) {
+            auto box = make_canvasitem<CanvasItemRect>(_desktop->getCanvasControls(), bounds[i]);
+            box->set_stroke(0x00ffffff);
+            box->set_fill(0);
+            box->set_outline(0x000000ff);
+            box->set_pickable(false);
+            _copy_boxes.push_back(std::move(box));
+        }
+        _copy_boxes[i]->set_stroke_width(width);
+        _copy_boxes[i]->set_outline_width(width);
+    }
+    if (!_copy_label && !bounds.empty()) {
+        _copy_label = make_canvasitem<CanvasItemText>(_desktop->getCanvasControls(), bounds.front().min(), _("Copy"));
+        _copy_label->set_fill(0x00ffffff);
+        _copy_label->set_background(0x000000ff);
+        _copy_label->set_fontsize(14);
+        _copy_label->set_anchor({0, 1});
+        _copy_label->set_adjust({0, -8});
+        _copy_label->set_pickable(false);
+    }
+}
+
+void Inkscape::SelTrans::ungrab(bool cancel)
 {
     g_return_if_fail(_grabbed);
+    auto const drag_affine = _current_relative_affine;
     _grabbed = false;
     _show_handles = true;
 
@@ -486,7 +546,17 @@ void Inkscape::SelTrans::ungrab()
 
     _message_context.clear();
 
-    if (!_empty && _changed) {
+    if (_drag) {
+        _copy_boxes.clear();
+        _copy_label.reset();
+        _drag->finish(drag_affine, cancel);
+        _drag.reset();
+        _items.clear();
+        _objects_const.clear();
+        _items_affines.clear();
+        _items_centers.clear();
+        _updateHandles();
+    } else if (!_empty && _changed) {
         if (!_current_relative_affine.isIdentity()) { // we can have a identity affine
             // when trying to stretch a perfectly vertical line in horizontal direction, which will not be allowed by the handles;
 
@@ -702,7 +772,9 @@ void Inkscape::SelTrans::stamp(bool clone)
                 original_item->unsetTmpSuccessor();
             }
         }
-        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Stamp"), INKSCAPE_ICON("tool-pointer"));
+        if (!_drag) {
+            DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Stamp"), INKSCAPE_ICON("tool-pointer"));
+        }
     }
 
     if ( fixup && _stamped ) {
@@ -1902,11 +1974,7 @@ bool Inkscape::SelTrans::moveTo(Geom::Point const &xy, guint state)
     increments = increments;
 
     if (confine) {
-        if (fabs(dxy[Geom::X]) > fabs(dxy[Geom::Y])) {
-            dxy[Geom::Y] = 0;
-        } else {
-            dxy[Geom::X] = 0;
-        }
+        dxy = constrain_selection_move(dxy);
     }
 
     if (increments) {// Alt pressed means: move only by integer multiples of the grid spacing
@@ -1984,11 +2052,7 @@ bool Inkscape::SelTrans::moveTo(Geom::Point const &xy, guint state)
                 // If we didn't snap, then we should still constrain horizontally or vertically
                 // (When we did snap, then this constraint has already been enforced by
                 // calling constrainedSnapTranslate() above)
-                if (fabs(dxy[Geom::X]) > fabs(dxy[Geom::Y])) {
-                    dxy[Geom::Y] = 0;
-                } else {
-                    dxy[Geom::X] = 0;
-                }
+                dxy = constrain_selection_move(dxy);
             }
         }
         delete bb;
