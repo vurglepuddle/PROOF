@@ -65,10 +65,11 @@ private:
     static std::pair<Rubberband::Mode, CanvasItemCtrlType> get_default_rubberband_state();
 
     void _duplicate_drag(Geom::Point const &p);
+    void _finish_drag();
     bool _duplicate_drag_state(unsigned int state) const;
     void _duplicate_drag_reset();
     bool _duplicate_drag_on_press = false;
-    bool _duplicate_down_on_selected = false;
+    bool _duplicated = false;
 
     void handleClick(ButtonReleaseEvent const &event, Selection *selection);
 

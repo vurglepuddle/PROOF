@@ -37,6 +37,7 @@
 #include "object/box3d.h"
 #include "style.h"
 
+#include "ui/icon-names.h"
 #include "ui/tools/select-tool.h"
 #include "ui/widget/canvas.h"
 #include "ui/widget/events/canvas-event.h"
@@ -128,7 +129,7 @@ bool SelectTool::sp_select_context_abort() {
 
     if (dragging) {
         if (moved) { // cancel dragging an object
-            _seltrans->ungrab();
+            _finish_drag();
             moved = false;
             dragging = false;
             discard_delayed_snap_event();
@@ -143,6 +144,7 @@ bool SelectTool::sp_select_context_abort() {
                 sp_object_unref( item, nullptr);
             }
             item = nullptr;
+            _duplicate_drag_reset();
 
             _desktop->messageStack()->flash(Inkscape::NORMAL_MESSAGE, _("Move canceled."));
             return true;
@@ -215,9 +217,9 @@ bool SelectTool::item_handler(SPItem *local_item, CanvasEvent const &event)
                 button_press_state = event.modifiers;
                 bool always_box = mod_select_always_box->active(button_press_state);
                 bool touch_path = mod_select_touch_path->active(button_press_state);
-                bool duplicate_drag = mod_select_duplicate->active(button_press_state);
+                bool duplicate_drag = _duplicate_drag_state(button_press_state);
 
-                bool is_modified_click = always_box || touch_path || duplicate_drag;
+                bool is_modified_click = !duplicate_drag && (always_box || touch_path);
 
                 // If a modifier is pressed to perform an action other than
                 // dragging, pass the event to the root handler to perform
@@ -225,6 +227,7 @@ bool SelectTool::item_handler(SPItem *local_item, CanvasEvent const &event)
                 if (!is_modified_click) {
                     dragging = true;
                     moved = false;
+                    _duplicate_drag_on_press = duplicate_drag;
 
                     set_cursor("select-dragging.svg");
 
@@ -234,7 +237,7 @@ bool SelectTool::item_handler(SPItem *local_item, CanvasEvent const &event)
                         item = nullptr;
                     }
 
-                    bool force_drag = mod_select_force_drag->active(button_press_state);
+                    bool force_drag = !duplicate_drag && mod_select_force_drag->active(button_press_state);
                     item = sp_event_context_find_item (_desktop, event.pos, force_drag, false);
                     sp_object_ref(item, nullptr);
 
@@ -440,11 +443,18 @@ bool SelectTool::root_handler(CanvasEvent const &event)
 
                 saveDragOrigin(event.pos);
 
-                bool has_selection = !selection->isEmpty();
-                _duplicate_drag_on_press = has_selection && _duplicate_drag_state(event.modifiers);
-                auto item_down = has_selection ? _desktop->getItemAtPoint(event.pos, false) : nullptr;
-                _duplicate_down_on_selected = item_down && selection->includes(item_down, true);
-                bool suppress_touch_path = _duplicate_drag_on_press && _duplicate_down_on_selected;
+                _duplicate_drag_on_press = _duplicate_drag_state(event.modifiers);
+                auto item_down = _desktop->getItemAtPoint(event.pos, false);
+                bool suppress_touch_path = _duplicate_drag_on_press && item_down;
+                if (suppress_touch_path) {
+                    dragging = true;
+                    if (item) {
+                        sp_object_unref(item, nullptr);
+                    }
+                    item = item_down;
+                    sp_object_ref(item, nullptr);
+                    set_cursor("select-dragging.svg");
+                }
                 auto rubberband = Inkscape::Rubberband::get(_desktop);
                 if (!suppress_touch_path && mod_select_touch_path->active(event.modifiers)) {
                     rubberband->setMode(Rubberband::Mode::TOUCHPATH);
@@ -503,7 +513,8 @@ bool SelectTool::root_handler(CanvasEvent const &event)
             tolerance = prefs->getIntLimited("/options/dragtolerance/value", 0, 0, 100);
 
             bool duplicate_drag = _duplicate_drag_on_press;
-            bool force_drag = mod_select_force_drag->active(button_press_state);
+            // Duplicate-drag uses the object at the press; on empty canvas Alt keeps touch-select.
+            bool force_drag = !duplicate_drag && mod_select_force_drag->active(button_press_state);
             bool always_box = mod_select_always_box->active(button_press_state);
 
             if (event.modifiers & GDK_BUTTON1_MASK) {
@@ -518,11 +529,6 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                     // but not with shift) we want to drag rather than rubberband
                     dragging = true;
                     set_cursor("select-dragging.svg");
-                }
-
-                if (!dragging && duplicate_drag && (force_drag || _duplicate_down_on_selected) && !selection->isEmpty()) {
-                    // allow duplicate-drag to initiate a drag even when force-drag is off
-                    dragging = true;
                 }
 
                 if (dragging) {
@@ -540,8 +546,8 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                     if (item_at_point || moved || force_drag) {
                         // drag only if starting from an item, or if something is already grabbed, or if alt-dragging
                         if (!moved) {
-                            item_in_group = _desktop->getItemAtPoint(event.pos, true);
-                            group_at_point = _desktop->getGroupAtPoint(event.pos);
+                            item_in_group = _desktop->getItemAtPoint(xyp, true);
+                            group_at_point = _desktop->getGroupAtPoint(xyp);
 
                             {
                                 auto selGroup = cast<SPGroup>(selection->single());
@@ -572,8 +578,7 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                                 }
                             } // otherwise, do not change selection so that dragging selected-within-group items, as well as alt-dragging, is possible
 
-                            bool down_on_selected = item_at_point && selection->includes(item_at_point, true);
-                            bool allow_duplicate = duplicate_drag && (_duplicate_down_on_selected || down_on_selected);
+                            bool allow_duplicate = duplicate_drag && item_at_point;
 
                             // PROOF: measure the move from where the button went down, so the
                             // selection keeps up with the pointer. Grabbing here, once past the
@@ -641,7 +646,7 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                 if (dragging) {
                     if (moved) {
                         // item has been moved
-                        _seltrans->ungrab();
+                        _finish_drag();
                         moved = false;
                     } else if (item && !drag_escaped) {
                         // item has not been moved -> simply a click, do selecting
@@ -666,7 +671,6 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                     }
 
                     item = nullptr;
-                    _duplicate_drag_reset();
                 } else {
                     Inkscape::Rubberband *r = Inkscape::Rubberband::get(_desktop);
 
@@ -717,6 +721,7 @@ bool SelectTool::root_handler(CanvasEvent const &event)
 
             if (event.button == 1) {
                 Inkscape::Rubberband::get(_desktop)->stop(); // might have been started in another tool!
+                _duplicate_drag_reset();
             }
 
             button_press_state = 0;
@@ -833,7 +838,9 @@ bool SelectTool::root_handler(CanvasEvent const &event)
                 Modifiers::responsive_tooltip(defaultMessageContext(), event, 6,
                                               Modifiers::Type::SELECT_IN_GROUPS, Modifiers::Type::MOVE_CONFINE,
                                               Modifiers::Type::SELECT_ADD_TO, Modifiers::Type::SELECT_TOUCH_PATH,
-                                              Modifiers::Type::SELECT_CYCLE, Modifiers::Type::SELECT_FORCE_DRAG);
+                                              Modifiers::Type::SELECT_CYCLE,
+                                              _duplicate_drag_state(event.modifiersAfter()) ? Modifiers::Type::SELECT_DUPLICATE
+                                                                                          : Modifiers::Type::SELECT_FORCE_DRAG);
 
                 // if Alt and nonempty selection, show moving cursor ("move selected"):
                 if (alt && !_desktop->isWaitingCursor()) {
@@ -1032,7 +1039,7 @@ bool SelectTool::root_handler(CanvasEvent const &event)
 void SelectTool::handleClick(ButtonReleaseEvent const &event, Selection *selection)
 {
     bool force_drag = mod_select_force_drag->active(event.modifiers);
-    if ((rb_escaped || drag_escaped) && !force_drag) {
+    if ((rb_escaped || drag_escaped) && (!force_drag || _duplicate_drag_state(event.modifiers))) {
         rb_escaped = 0;
 
         return;
@@ -1079,10 +1086,20 @@ void SelectTool::_duplicate_drag(Geom::Point const &p)
     }
 
     selection->duplicate(true);
+    _duplicated = true;
 
     // Text layout/bbox can lag behind immediately after duplication; update before starting drag.
     _desktop->getDocument()->ensureUpToDate();
     _seltrans->grab(p, -1, -1, false, true);
+}
+
+void SelectTool::_finish_drag()
+{
+    _seltrans->ungrab();
+    if (_duplicated) {
+        // A drag back to its origin still made a copy. A moved copy is already committed by ungrab().
+        DocumentUndo::done(_desktop->getDocument(), RC_("Undo", "Duplicate"), INKSCAPE_ICON("edit-duplicate"));
+    }
 }
 
 bool SelectTool::_duplicate_drag_state(unsigned int state) const
@@ -1099,7 +1116,7 @@ bool SelectTool::_duplicate_drag_state(unsigned int state) const
 void SelectTool::_duplicate_drag_reset()
 {
     _duplicate_drag_on_press = false;
-    _duplicate_down_on_selected = false;
+    _duplicated = false;
 }
 
 /**

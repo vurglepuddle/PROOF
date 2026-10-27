@@ -34,6 +34,7 @@
     <modifier action="select-always-box" modifiers="Shift"/>
     <modifier action="select-remove-from" modifiers="Ctrl"/>
     <modifier action="select-force-drag" modifiers="Alt"/>
+    <modifier action="select-duplicate" modifiers="Alt"/>
     <modifier action="select-cycle" modifiers="Ctrl,Alt"/> <!-- Changed because of conflict with canvas-zoom-->
 
     <modifier action="move-confine" modifiers="Shift" />
