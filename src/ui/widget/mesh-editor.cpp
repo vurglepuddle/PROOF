@@ -104,7 +104,7 @@ MeshEditor::MeshEditor() :
     auto button = Gtk::make_managed<Gtk::Button>(_("Edit on canvas"));
     button->set_halign(Gtk::Align::CENTER);
     button->signal_clicked().connect([this]() {
-        // todo: fire edit event
+        _signal_edit.emit();
     });
     append(*button);
 
