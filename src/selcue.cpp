@@ -99,9 +99,12 @@ void SelCue::_updateItemBboxes(gint mode, int prefs_bbox)
         return;
     }
 
-    // PROOF: only text baselines follow the selection while it is dragged.
+    // PROOF: nothing shows while the selection is dragged, and the cue is drawn again at the
+    // result, so don't follow every step of the drag. Text baselines too: mid-scale they sat at
+    // in-between positions (owner, 2026-10-27: "let's hide it when we transform the text to avoid
+    // cursed lines all over the place").
     if (_transform_box && _transforming) {
-        _newTextBaselineSegments();
+        _text_baseline_segments.clear();
         for (auto *items : {&_item_bboxes, &_item_lines, &_text_baselines, &_item_centers, &_item_outlines}) {
             for (auto &canvas_item : *items) {
                 canvas_item->set_visible(false);
@@ -359,7 +362,7 @@ void SelCue::_newTextBaselines()
 void SelCue::_newTextBaselineSegments()
 {
     _text_baseline_segments.clear();
-    if (!_bboxes_visible || Preferences::get()->getInt("/options/selcue/value", MARK) == NONE) {
+    if (!_bboxes_visible || _transforming || Preferences::get()->getInt("/options/selcue/value", MARK) == NONE) {
         return;
     }
 
@@ -367,8 +370,8 @@ void SelCue::_newTextBaselineSegments()
     for (auto item : _selection->items()) {
         Geom::PathVector baselines;
         for (auto const &segment : sp_te_baseline_segments(item)) {
-            Geom::Path path(_desktop->doc2dt(segment.initialPoint()) * _transform_preview);
-            path.appendNew<Geom::LineSegment>(_desktop->doc2dt(segment.finalPoint()) * _transform_preview);
+            Geom::Path path(_desktop->doc2dt(segment.initialPoint()));
+            path.appendNew<Geom::LineSegment>(_desktop->doc2dt(segment.finalPoint()));
             baselines.push_back(std::move(path));
         }
         if (baselines.empty()) {
@@ -414,14 +417,7 @@ void SelCue::setTransforming(bool transforming)
         return;
     }
     _transforming = transforming;
-    _transform_preview.setIdentity();
     _updateItemBboxes();
-}
-
-void SelCue::setTransformPreview(Geom::Affine const &affine)
-{
-    _transform_preview = affine;
-    _newTextBaselineSegments();
 }
 
 } // namespace Inkscape
