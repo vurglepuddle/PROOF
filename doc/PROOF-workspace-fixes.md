@@ -146,3 +146,19 @@ Mesh, Eyedropper | Pencil, Calligraphy, Paint Bucket, Spiral, 3D Box | Tweak,
 Spray, Eraser, Connector, LPE | Measure, Zoom, Pages, grouped as Illustrator's
 toolbar is. Each tool can still be hidden in Preferences; reordering by drag
 and drop, and a Width tool, are in the workspace todo.
+
+## Alt+drag duplicates (2026-10-27)
+
+The owner: "make it duplicate objects to follow basically every single editor
+on the planet. Shift + alt + drag obviously drags by an axis", and "We should
+just use industry standards". With the Selection tool, Alt held at the press on
+an object (selected or not) duplicates what a plain drag of it would move, and
+the copy follows the pointer while the original stays; Shift as well
+constrains the copy as a plain Shift+drag does (horizontally or vertically;
+Illustrator's 45 degrees is in the workspace todo). The copy and its move are
+one undo step, Escape cancels both, and Space still stamps copies on the way.
+The copy is made by Edit > Duplicate's code (`ObjectSet::duplicate`), so ids,
+groups, layers and clones behave the same. Alt+drag on empty canvas is still
+touch-select. The binding (`select-duplicate` on Alt) is in the Illustrator
+keymap, PROOF's default; the Inkscape keymap keeps Alt as "move the selection
+whatever is under the pointer". `test_select-duplicate`.
