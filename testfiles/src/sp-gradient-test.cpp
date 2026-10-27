@@ -305,6 +305,32 @@ TEST_F(MeshObjectTest, EveryPointColourSetReachesWhatTheCanvasDraws)
     }
 }
 
+TEST_F(MeshObjectTest, ChoosingMeshKeepsTheObjectsOwnMesh)
+{
+    // The owner, 2026-10-27: with a point picked, choosing Mesh in a paint panel "resets the entire
+    // mesh to a standard mesh". The panels showed the point's colour, so Mesh was a mode switch,
+    // which names no particular mesh.
+    auto gradient = cast<SPMeshGradient>(path->style->getFillPaintServer());
+    ASSERT_TRUE(gradient);
+    auto css = sp_repr_css_attr_new();
+    sp_repr_css_set_property(css, "stop-color", "#00ff00");
+    sp_repr_css_set_property(css, "stop-opacity", "1");
+    gradient->ensureArray();
+    sp_item_gradient_stop_set_style(path, POINT_MG_CORNER, 0, Inkscape::FOR_FILL, css);
+    sp_repr_css_attr_unref(css);
+    doc->ensureUpToDate();
+    sp_item_apply_mesh(path, nullptr, doc.get(), FILL);
+    doc->ensureUpToDate();
+    EXPECT_EQ(path->style->getFillPaintServer(), gradient);
+    auto color = sp_item_gradient_stop_query_style(path, POINT_MG_CORNER, 0, Inkscape::FOR_FILL);
+    EXPECT_EQ(color.toRGBA() >> 8, 0x00ff00u);
+    // An object without a mesh still gets a new one.
+    auto shape = cast<SPItem>(doc->getObjectById("triangle"));
+    sp_item_apply_mesh(shape, nullptr, doc.get(), FILL);
+    doc->ensureUpToDate();
+    EXPECT_TRUE(is<SPMeshGradient>(shape->style->getFillPaintServer()));
+}
+
 TEST_F(MeshObjectTest, AMeshEditRepairsAnOutlineRoundedOrMovedAwayFromItsMesh)
 {
     // Saved 2026-10-18 before Direct Selection left mesh objects alone: Live
