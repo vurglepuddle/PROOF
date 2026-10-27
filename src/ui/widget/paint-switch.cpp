@@ -7,6 +7,7 @@
 #include <gtkmm/enums.h>
 #include <gtkmm/label.h>
 #include <gtkmm/object.h>
+#include <gtkmm/popover.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/stack.h>
 #include <gtkmm/togglebutton.h>
@@ -443,6 +444,13 @@ PaintSwitchImpl::PaintSwitchImpl(bool support_no_paint, bool support_fill_rule, 
     // painted with a flat colour.
     _mesh.signal_changed().connect([this](auto mesh) {
         if (showing(_mesh)) fire_mesh_changed(mesh);
+    });
+    _mesh.signal_edit().connect([this] {
+        if (!_desktop) return;
+        if (auto popover = dynamic_cast<Gtk::Popover*>(get_ancestor(GTK_TYPE_POPOVER))) {
+            popover->popdown();
+        }
+        set_active_tool(_desktop, "Mesh");
     });
 
     _swatch.signal_changed().connect([this](auto swatch, auto operation, auto replacement) {

@@ -34,6 +34,7 @@ public:
     SPGradient* get_selected_mesh() const;
     Glib::RefPtr<Gdk::Texture> get_preview(SPMeshGradient* mesh) const;
     sigc::signal<void (SPGradient*)>& signal_changed() { return _signal_changed; }
+    sigc::signal<void ()> signal_edit() const { return _signal_edit; }
 
 private:
     friend class MeshEditorTest;
@@ -61,6 +62,7 @@ private:
     std::string _selected_id;
     OperationBlocker _update;
     sigc::signal<void (SPGradient*)> _signal_changed;
+    sigc::signal<void ()> _signal_edit;
 };
 
 } // namespace

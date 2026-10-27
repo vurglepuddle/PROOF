@@ -12,6 +12,7 @@
 #include <glibmm/main.h>
 #include <gtest/gtest.h>
 #include <gtkmm/adjustment.h>
+#include <gtkmm/button.h>
 #include <gtkmm/init.h>
 
 #include "document.h"
@@ -170,6 +171,25 @@ protected:
     static auto dirty(MeshEditor &editor) { return editor._dirty_meshes.size(); }
     static auto connections(MeshEditor &editor) { return editor._mesh_connections.size(); }
 };
+
+TEST_F(MeshEditorTest, EditOnCanvasRequestsEditingWithoutChangingPaint)
+{
+    MeshEditor editor;
+    editor.set_document(document.get());
+    editor.select_mesh(second);
+    ASSERT_TRUE(frame(editor));
+    unsigned edits = 0, changes = 0;
+    editor.signal_edit().connect([&] { ++edits; });
+    editor.signal_changed().connect([&](auto) { ++changes; });
+    auto xml = sp_repr_save_buf(document->getReprDoc());
+    auto button = dynamic_cast<Gtk::Button*>(editor.get_last_child());
+    ASSERT_TRUE(button);
+    g_signal_emit_by_name(button->gobj(), "clicked");
+    EXPECT_EQ(edits, 1u);
+    EXPECT_EQ(changes, 0u);
+    EXPECT_EQ(editor.get_selected_mesh(), second);
+    EXPECT_EQ(sp_repr_save_buf(document->getReprDoc()), xml);
+}
 
 TEST_F(MeshEditorTest, ChangedMeshAloneRefreshesAndKeepsSelectionAndScroll)
 {
