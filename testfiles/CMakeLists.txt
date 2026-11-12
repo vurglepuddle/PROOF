@@ -180,6 +180,12 @@ endforeach()
 
 include(${CMAKE_SOURCE_DIR}/CMakeScripts/UnitTest.cmake)
 
+add_unit_test(test_geom-kernel TEST_SOURCE "geom-kernel-test.cpp"
+    SOURCES "geom-kernel/numeric-test.cpp" "geom-kernel/det-math-test.cpp"
+            "geom-kernel/arc-decode-test.cpp"
+    EXTRA_LIBS proof_gk)
+target_compile_options(test_geom-kernel PRIVATE -ffp-contract=off -fno-fast-math)
+
 ### Unit tests
 #
 # In order to add a unit test, call add_unit_test() providing a unique name for the test,
