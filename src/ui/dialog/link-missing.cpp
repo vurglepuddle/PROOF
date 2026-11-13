@@ -100,12 +100,14 @@ MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, Extension::MissingL
     _content.set_vexpand(true); // Still expands when the now-empty list is hidden.
     area->append(_content);
     area->append(_buttons);
+    // Plain append: UI::pack_start keys its bookkeeping by box address and never forgets
+    // a member box, so a second window at the same address crashed (owner, 2026-11-13).
     auto *box = &_content;
 
     _message.set_wrap(true);
     _message.set_xalign(0);
     _message.set_max_width_chars(60);
-    UI::pack_start(*box, _message, false, false);
+    box->append(_message);
 
     _list.set_selection_mode(Gtk::SelectionMode::SINGLE);
     _list.signal_row_selected().connect([this](Gtk::ListBoxRow *) { update(); });
@@ -115,7 +117,8 @@ MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, Extension::MissingL
     _scroll.set_min_content_height(96);
     _scroll.set_max_content_height(220);
     _scroll.set_propagate_natural_height(true);
-    UI::pack_start(*box, _scroll, true, true);
+    _scroll.set_vexpand(true);
+    box->append(_scroll);
 
     _relink.set_label(_("_Relink..."));
     _relink.set_use_underline(true);
@@ -150,9 +153,9 @@ MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, Extension::MissingL
 
     _select.set_label(_("Select all the affected items"));
     _select.set_active(_at_open);
-    if (!_saving) UI::pack_start(*box, _select, false, false);
+    if (!_saving) box->append(_select);
     _quiet.set_label(_("Don't show this warning again"));
-    if (_at_open) UI::pack_start(*box, _quiet, false, false);
+    if (_at_open) box->append(_quiet);
 
     if (_saving) {
         _dialog.set_default_widget(_cancel);
