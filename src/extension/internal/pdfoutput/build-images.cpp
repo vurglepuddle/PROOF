@@ -57,6 +57,17 @@ static CapyPDF_Image_Interpolation get_interpolation(SPImageRendering rendering)
  */
 void DrawContext::paint_raster(SPImage const *image)
 {
+    if (image->linkMissing() && !export_test_failure("picture", get_id(image))) {
+        _doc.report.missing_link(get_id(image), image->linkedFile(), _doc.missing_link_action);
+        // The existing PDF route omits absent links, including those with a canvas preview.
+        // Ignoring a link must never hide an independently stale retained-samples error.
+        if (image->getRepr()->attribute("proof:samples")) {
+            auto const kept = RetainedSamples::read(image->getRepr()->attribute("proof:samples"),
+                image->getRepr()->attribute("proof:samples-for"), {}, 0, 0);
+            _doc.report.error(get_id(image), kept.reason());
+        }
+        return;
+    }
     auto image_box = image->bbox(Geom::identity(), SPItem::GEOMETRIC_BBOX);
     if (!image_box) {
         _doc.report.error(get_id(image), _("Could not determine picture size."));

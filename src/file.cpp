@@ -69,6 +69,7 @@
 #include "style.h"
 #include "svg/svg.h" // for sp_svg_transform_write, used in sp_import_document
 #include "ui/dialog/choose-file.h"
+#include "ui/dialog/link-missing.h"
 #include "ui/dialog/choose-file-utils.h"
 #include "ui/icon-names.h"
 #include "ui/interface.h"
@@ -184,10 +185,16 @@ file_save(Gtk::Window &parentWindow,
     auto path = file->get_path();
     auto display_name = file->get_parse_name();
 
+    auto links = Inkscape::Extension::MissingLinkAction::RequirePresent;
+    auto *save_output = dynamic_cast<Inkscape::Extension::Output *>(key);
+    if (save_output && save_output->needs_picture_bytes()) {
+        links = Inkscape::UI::Dialog::resolveMissingLinksForSave(SP_ACTIVE_DESKTOP, doc);
+        if (links == Inkscape::Extension::MissingLinkAction::Cancel) return false;
+    }
     try {
         Inkscape::Extension::save(key, doc, file->get_path().c_str(),
                                   checkoverwrite, official,
-                                  save_method);
+                                  save_method, links);
     } catch (Inkscape::Extension::Output::file_read_only &e) {
         auto const text = Glib::ustring::sprintf(_("File %s is write protected. Please remove write protection and try again."), display_name);
         SP_ACTIVE_DESKTOP->messageStack()->flash(Inkscape::ERROR_MESSAGE, _("Document not saved."));

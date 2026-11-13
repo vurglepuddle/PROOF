@@ -113,6 +113,7 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     // opt.set_device_profile(DEVICE_COLORSPACE, icc_profile);
 
     auto pdf = PdfBuilder::Document(filename, opt);
+    pdf.missing_link_action = mod->missing_link_action;
     auto return_report = scope_exit([&] { mod->export_report = pdf.report; });
     pdf.set_pdf17(mod->get_param_optiongroup_is("PDFversion", "PDF-1.7"));
     if (mod->get_param_bool("blurToBitmap")) {

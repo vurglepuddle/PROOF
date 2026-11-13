@@ -131,6 +131,7 @@ public:
     {}
 
     ExportReport report;
+    MissingLinkAction missing_link_action = MissingLinkAction::RequirePresent;
     std::string current_object = "(document)";
 
     void add_page(PageContext &page);

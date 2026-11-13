@@ -10,6 +10,8 @@
 #ifndef INKSCAPE_UI_DIALOG_LINK_MISSING_H
 #define INKSCAPE_UI_DIALOG_LINK_MISSING_H
 
+#include "extension/export-report.h"
+
 class SPDesktop;
 class SPDocument;
 
@@ -18,6 +20,7 @@ namespace Inkscape::UI::Dialog {
 /// Whether a document that has just opened has such pictures to list: it has some, and
 /// listing them at opening isn't switched off (`/options/links/missingdlg`).
 bool missingLinksToShow(SPDocument *document);
+Extension::MissingLinkAction resolveMissingLinksForSave(SPDesktop *desktop, SPDocument *document);
 
 /// List them, with Relink.
 /// @param at_open shown because a document opened: it can then be told not to show again.

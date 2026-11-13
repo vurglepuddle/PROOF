@@ -13,6 +13,7 @@
 
 #include "ui/dialog/export-batch.h"
 
+#include <algorithm>
 #include <regex>
 #include <glibmm/convert.h>
 #include <glibmm/i18n.h>
@@ -33,15 +34,18 @@
 #include "io/sys.h"
 #include "layer-manager.h"
 #include "object/sp-page.h"
+#include "object/sp-image.h"
 #include "object/sp-root.h"
 #include "selection.h"
 #include "ui/builder-utils.h"
 #include "ui/dialog-run.h"
 #include "ui/dialog/export.h"
+#include "ui/dialog/link-missing.h"
 #include "ui/icon-names.h"
 #include "ui/widget/color-picker.h"
 #include "ui/widget/export-lists.h"
 #include "util/units.h"
+#include "util/scope_exit.h"
 
 namespace Inkscape::UI::Dialog {
 
@@ -706,6 +710,32 @@ void BatchExport::onExport()
     }
 
     setExporting(true);
+    auto finish = scope_exit([&] { setExporting(false); });
+
+    // create vector of exports
+    int num_rows = export_list.get_rows();
+    std::vector<Glib::ustring> suffixs;
+    std::vector<Inkscape::Extension::Output *> extensions;
+    std::vector<double> dpis;
+    for (int i = 0; i < num_rows; i++) {
+        suffixs.emplace_back(export_list.get_suffix(i));
+        extensions.push_back(export_list.getExtension(i));
+        dpis.push_back(export_list.get_dpi(i));
+    }
+
+    // Resolve before any row (including raster rows) writes or changes saved batch options.
+    auto links = Extension::MissingLinkAction::RequirePresent;
+    bool const needs_pictures = std::any_of(extensions.begin(), extensions.end(), [](auto *ext) {
+        return ext && !ext->deactivated() && !ext->is_raster() && ext->needs_picture_bytes();
+    });
+    if (needs_pictures && !sp_images_missing(_document).empty()) {
+        links = resolveMissingLinksForSave(_desktop, _document);
+        if (links == Extension::MissingLinkAction::Cancel) {
+            interrupted = true;
+            return;
+        }
+    }
+
 
     auto path = getBatchPath();
     if (!path.has_value()) {
@@ -733,17 +763,6 @@ void BatchExport::onExport()
 
     setBatchPath(path);
     setBatchName(name);
-
-    // create vector of exports
-    int num_rows = export_list.get_rows();
-    std::vector<Glib::ustring> suffixs;
-    std::vector<Inkscape::Extension::Output *> extensions;
-    std::vector<double> dpis;
-    for (int i = 0; i < num_rows; i++) {
-        suffixs.emplace_back(export_list.get_suffix(i));
-        extensions.push_back(export_list.getExtension(i));
-        dpis.push_back(export_list.get_dpi(i));
-    }
 
     bool ow = overwrite.get_active();
     bool hide = hide_all.get_active();
@@ -863,18 +882,17 @@ void BatchExport::onExport()
                                      item_filename_utf8, true, onProgressCallback, this, ext, &show_only);
             } else if (page || !show_only.empty()) {
                 auto copy_doc = _document->copy();
-                Export::exportVector(ext, copy_doc.get(), item_filename_utf8, true, show_only, page);
+                Export::exportVector(ext, copy_doc.get(), item_filename_utf8, true, show_only, page, links);
             } else {
                 auto copy_doc = _document->copy();
-                Export::exportVector(ext, copy_doc.get(), item_filename_utf8, true, area);
+                Export::exportVector(ext, copy_doc.get(), item_filename_utf8, true, area, links);
             }
         }
     }
     // Save the export batch path only on successful export
     _document->getRoot()->setAttribute("inkscape:export-batch-path", path.value()->get_parse_name());
     DocumentUndo::done(_document, RC_("Undo", "Set Batch Export Options"), INKSCAPE_ICON("export"));
-    // Do this right at the end to finish up
-    setExporting(false);
+    // The scope guard also restores the controls and progress display on early exits.
 }
 
 void BatchExport::setDefaultSelectionMode()

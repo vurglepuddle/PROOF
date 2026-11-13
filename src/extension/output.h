@@ -32,6 +32,8 @@ class Output : public Extension {
     bool   exported = false;     /**< Is the extension available in the export dialog */
 
 public:
+    MissingLinkAction missing_link_action = MissingLinkAction::RequirePresent;
+    bool needs_picture_bytes() const;
     ExportReport export_report; ///< Findings from the most recent save, including a refused save.
 
     class save_failed {};        /**< Generic failure for an undescribed reason */
@@ -52,9 +54,10 @@ public:
     bool prefs() override;
     bool prefs(bool settings);
 
+    // CLI policy defaults to Ignore; GUI save/export callers pass their explicit dialog decision.
     void         save (SPDocument *doc,
                        gchar const *filename,
-                       bool detachbase = false);
+                       bool detachbase = false, MissingLinkAction links = MissingLinkAction::Ignore);
     void         export_raster (const SPDocument *doc,
                                 std::string png_filename,
                                 gchar const *filename,

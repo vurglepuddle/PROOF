@@ -21,6 +21,7 @@
 #include "desktop.h"
 #include "document-undo.h"
 #include "document.h"
+#include "extension/missing-link-save.h"
 #include "object/sp-image.h"
 #include "preferences.h"
 #include "selection.h"
@@ -45,9 +46,9 @@ std::pair<std::string, std::string> name_and_folder(std::string const &file)
 class MissingLinks
 {
 public:
-    MissingLinks(SPDesktop *desktop, bool at_open);
+    MissingLinks(SPDesktop *desktop, bool at_open, SPDocument *document = nullptr);
 
-    void run();
+    int run();
 
 private:
     void fill();
@@ -57,6 +58,7 @@ private:
     SPDesktop *_desktop;
     SPDocument *_document;
     bool _at_open;
+    bool _saving;
 
     Gtk::Dialog _dialog;
     Gtk::Label _message, _found;
@@ -69,10 +71,11 @@ private:
     std::vector<SPImage *> _pictures;
 };
 
-MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open)
+MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, SPDocument *document)
     : _desktop(desktop)
-    , _document(desktop->getDocument())
+    , _document(document ? document : desktop->getDocument())
     , _at_open(at_open)
+    , _saving(document != nullptr)
 {
     _dialog.set_title(_("Missing Links"));
     _dialog.set_modal(true);
@@ -114,12 +117,18 @@ MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open)
 
     _select.set_label(_("Select all the affected items"));
     _select.set_active(_at_open);
-    UI::pack_start(*box, _select, false, false);
+    if (!_saving) UI::pack_start(*box, _select, false, false);
     _quiet.set_label(_("Don't show this warning again"));
     if (_at_open) UI::pack_start(*box, _quiet, false, false);
 
-    _dialog.add_button(_("_Close"), Gtk::ResponseType::CLOSE);
-    _dialog.set_default_response(Gtk::ResponseType::CLOSE);
+    if (_saving) {
+        _dialog.add_button(_("_Cancel"), Gtk::ResponseType::CANCEL);
+        _dialog.add_button(_("_Save Anyway"), Gtk::ResponseType::ACCEPT);
+        _dialog.set_default_response(Gtk::ResponseType::CANCEL);
+    } else {
+        _dialog.add_button(_("_Close"), Gtk::ResponseType::CLOSE);
+        _dialog.set_default_response(Gtk::ResponseType::CLOSE);
+    }
 
     fill();
 }
@@ -157,7 +166,15 @@ void MissingLinks::fill()
     } else {
         _message.set_text(_("Every picture this document links to was found."));
     }
-    _select.set_visible(!_pictures.empty());
+    if (_saving) {
+        if (!_pictures.empty()) _message.set_text(_("Linked pictures are missing. Relink them, save anyway with a warning, "
+            "or cancel. PDF output may leave missing pictures blank. Native Illustrator files keep their links and previews; "
+            "saving is refused if a usable preview is unavailable."));
+        auto *button = dynamic_cast<Gtk::Button *>(_dialog.get_widget_for_response(Gtk::ResponseType::ACCEPT));
+        button->set_label(_pictures.empty() ? _("_Continue") : _("_Save Anyway"));
+        button->set_use_underline(true);
+    }
+    _select.set_visible(!_saving && !_pictures.empty());
     update();
 }
 
@@ -185,16 +202,16 @@ void MissingLinks::relink()
         _found.set_text(_("That file isn't a picture that can be read."));
         return;
     }
-    DocumentUndo::done(_document, RC_("Undo", "Relink pictures that can't be found"), INKSCAPE_ICON("shape-image"));
+    if (!_saving) DocumentUndo::done(_document, RC_("Undo", "Relink pictures that can't be found"), INKSCAPE_ICON("shape-image"));
     _found.set_text(linked > 1 ? Glib::ustring::compose(_("Linked, and %1 more found in that folder."), linked - 1)
                                : before > 1 ? Glib::ustring(_("Linked. None of the others is in that folder."))
                                             : Glib::ustring(_("Linked.")));
     fill();
 }
 
-void MissingLinks::run()
+int MissingLinks::run()
 {
-    Inkscape::UI::dialog_run(_dialog);
+    auto const response = Inkscape::UI::dialog_run(_dialog);
 
     if (_at_open && _quiet.get_active()) Inkscape::Preferences::get()->setBool(AT_OPEN, false);
     if (_select.get_visible() && _select.get_active()) {
@@ -204,9 +221,27 @@ void MissingLinks::run()
         selection->clear();
         selection->setList(list);
     }
+    return response;
 }
 
 } // namespace
+
+Extension::MissingLinkAction resolveMissingLinksForSave(SPDesktop *desktop, SPDocument *document)
+{
+    using Extension::MissingLinkAction;
+    if (sp_images_missing(document).empty()) return MissingLinkAction::RequirePresent;
+    if (!desktop) return MissingLinkAction::Cancel;
+    Extension::MissingLinkSave staged(document);
+    if (MissingLinks(desktop, false, staged.document()).run() != Gtk::ResponseType::ACCEPT) {
+        return MissingLinkAction::Cancel;
+    }
+    auto const action = sp_images_missing(staged.document()).empty() ? MissingLinkAction::RequirePresent
+                                                                   : MissingLinkAction::Ignore;
+    if (!staged.accept(action, desktop->getDocument())) return MissingLinkAction::Cancel;
+    if (staged.changed) DocumentUndo::done(desktop->getDocument(), RC_("Undo", "Relink pictures that can't be found"),
+                                         INKSCAPE_ICON("shape-image"));
+    return action;
+}
 
 bool missingLinksToShow(SPDocument *document)
 {

@@ -156,7 +156,7 @@ std::unique_ptr<SPDocument> open(Extension *key, char const *filename, bool is_i
  */
 void
 save(Extension *key, SPDocument *doc, gchar const *filename, bool check_overwrite, bool official,
-    Inkscape::Extension::FileSaveMethod save_method)
+    Inkscape::Extension::FileSaveMethod save_method, MissingLinkAction links)
 {
     assert(key);
 
@@ -216,7 +216,7 @@ save(Extension *key, SPDocument *doc, gchar const *filename, bool check_overwrit
     }
 
     try {
-        omod->save(doc, filename);
+        omod->save(doc, filename, false, links);
     }
     catch(...) {
         // revert attributes in case of official and overwrite

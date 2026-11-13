@@ -10,8 +10,11 @@
  */
 
 #include "output.h"
+#include <cstring>
 
 #include "document.h"
+#include "object/sp-image.h"
+#include "util/scope_exit.h"
 #include "inkscape.h"
 
 #include "io/sys.h"
@@ -24,6 +27,12 @@
 
 namespace Inkscape {
 namespace Extension {
+
+bool Output::needs_picture_bytes() const
+{
+    return mimetype && (std::strcmp(mimetype, "application/pdf") == 0 ||
+                        std::strcmp(mimetype, "application/illustrator") == 0);
+}
 
 bool Output::prefs()
 {
@@ -227,9 +236,14 @@ Output::get_filetypetooltip(bool translated) const
 	could be changed, and old files will still work properly.
 */
 void
-Output::save(SPDocument *doc, gchar const *filename, bool detachbase)
+Output::save(SPDocument *doc, gchar const *filename, bool detachbase, MissingLinkAction links)
 {
     export_report = {};
+    if (needs_picture_bytes() && (links == MissingLinkAction::Cancel ||
+        (links == MissingLinkAction::RequirePresent && !sp_images_missing(doc).empty()))) throw save_cancelled();
+    auto const previous = missing_link_action;
+    missing_link_action = links;
+    auto restore = scope_exit([&] { missing_link_action = previous; });
     if (!loaded())
         set_state(Extension::STATE_LOADED);
 
@@ -239,6 +253,12 @@ Output::save(SPDocument *doc, gchar const *filename, bool detachbase)
         new_doc->ensureUpToDate();
         run_processing_actions(new_doc.get());
         imp->save(this, new_doc.get(), filename);
+        if (needs_picture_bytes()) {
+            for (auto *image : sp_images_missing(new_doc.get())) {
+                export_report.missing_link(image->getId() ? image->getId() : "(unnamed)", image->linkedFile(), links);
+            }
+            export_report.written = true;
+        }
         if (!export_report.findings.empty()) g_printerr("%s\n", export_report.summary().c_str());
     }
 }

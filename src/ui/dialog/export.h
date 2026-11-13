@@ -15,6 +15,7 @@
 #define SP_EXPORT_H
 
 #include "ui/dialog/dialog-base.h"
+#include <optional>
 
 namespace Gtk {
 class Box;
@@ -33,6 +34,7 @@ class Color;
 }
 
 namespace Extension {
+enum class MissingLinkAction;
 class Output;
 } // namespace Extension
 
@@ -93,15 +95,19 @@ public:
         unsigned (*callback)(float, void *), void *data,
         Inkscape::Extension::Output *extension, std::vector<SPItem const *> *items = nullptr);
   
+    // No preset asks for this export; a batch passes its one decision to every item.
     static bool exportVector(
         Inkscape::Extension::Output *extension, SPDocument *doc, Glib::ustring const &filename,
-        bool overwrite, Geom::Rect const &area);
+        bool overwrite, Geom::Rect const &area,
+        std::optional<Extension::MissingLinkAction> links = std::nullopt);
     static bool exportVector(
         Inkscape::Extension::Output *extension, SPDocument *doc, Glib::ustring const &filename,
-        bool overwrite, const std::vector<SPItem const *> &items, SPPage const *page);
+        bool overwrite, const std::vector<SPItem const *> &items, SPPage const *page,
+        std::optional<Extension::MissingLinkAction> links = std::nullopt);
     static bool exportVector(
         Inkscape::Extension::Output *extension, SPDocument *doc, Glib::ustring const &filename,
-        bool overwrite, const std::vector<SPItem const *> &items, const std::vector<SPPage const *> &pages);
+        bool overwrite, const std::vector<SPItem const *> &items, const std::vector<SPPage const *> &pages,
+        std::optional<Extension::MissingLinkAction> links = std::nullopt);
 };
 
 } // namespace UI::Dialog

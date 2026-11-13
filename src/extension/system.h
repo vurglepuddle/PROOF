@@ -17,6 +17,7 @@
 #define INKSCAPE_EXTENSION_SYSTEM_H__
 
 #include <memory>
+#include "export-report.h"
 #include <glibmm/ustring.h>
 
 class SPDocument;
@@ -45,7 +46,7 @@ enum FileSaveMethod {
 std::unique_ptr<SPDocument> open(Extension *key, char const *filename, bool is_importing = false);
 void save(Extension *key, SPDocument *doc, char const *filename,
           bool check_overwrite, bool official,
-          Inkscape::Extension::FileSaveMethod save_method);
+          Inkscape::Extension::FileSaveMethod save_method, MissingLinkAction links = MissingLinkAction::Ignore);
 Print *get_print(char const *key);
 void build_from_file(char const *filename);
 void build_from_mem(char const *buffer, std::unique_ptr<Implementation::Implementation> in_imp);

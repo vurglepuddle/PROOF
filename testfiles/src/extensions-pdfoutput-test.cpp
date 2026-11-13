@@ -22,6 +22,7 @@
 #include "extension/internal/ai/ai-legacy-output.h"
 #include "extension/db.h"
 #include "extension/output.h"
+#include "extension/missing-link-save.h"
 #include "ui/dialog/choose-file-utils.h"
 #include <giomm/liststore.h>
 #include <gtkmm/filefilter.h>
@@ -30,6 +31,7 @@
 #include "extension/internal/ai/ai-native-output.h"
 #include "extension/internal/pdfoutput/pdf-output.h"
 #include "document.h"
+#include "document-undo.h"
 #include "inkscape.h"
 #include "xml/repr.h"
 #include "util/scope_exit.h"
@@ -178,7 +180,7 @@ TEST_P(ExportFailureTest, PdfIsWrittenWithFindingsAndAiReplacementIsRefused)
     EXPECT_FALSE(report.findings[0].reason.empty());
     EXPECT_TRUE(report.has_errors());
     EXPECT_TRUE(report.written);
-    EXPECT_EQ(report.summary().find("PDF written with export findings."), 0u);
+    EXPECT_EQ(report.summary().find("PDF written with export findings. Some content may be missing or not converted."), 0u);
     EXPECT_NE(report.summary().find("Error [target]:"), std::string::npos);
     EXPECT_TRUE(g_file_test(file.c_str(), G_FILE_TEST_IS_REGULAR));
 
@@ -210,6 +212,81 @@ TEST_P(ExportFailureTest, PdfIsWrittenWithFindingsAndAiReplacementIsRefused)
     EXPECT_EQ(report.summary(), "Export completed."); // No stale warning from an earlier save.
 }
 INSTANTIATE_TEST_SUITE_P(Faults, ExportFailureTest, ::testing::Values("font", "picture", "outline", "object"));
+
+TEST(MissingLinkSaveTest, CancelDiscardsRelinksAndIgnoreIsExplicit)
+{
+    using namespace Inkscape;
+    using namespace Extension;
+    if (!Application::exists()) Application::create(false);
+    if (!db.get("org.inkscape.output.pdf.capypdf")) Internal::PdfOutput::init();
+    auto *pdf = dynamic_cast<Output *>(db.get("org.inkscape.output.pdf.capypdf"));
+    ASSERT_TRUE(pdf);
+    auto const dir = g_dir_make_tmp("proof-link-save-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const folder = dir, target = folder + "/result.pdf", replacement = folder + "/replacement.png";
+    g_free(dir);
+    std::string const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    gsize size = 0;
+    auto *bytes = g_base64_decode(png.c_str(), &size);
+    ASSERT_TRUE(g_file_set_contents(replacement.c_str(), reinterpret_cast<char *>(bytes), size, nullptr));
+    g_free(bytes);
+    auto doc = SPDocument::createNewDocFromMem("<svg xmlns='http://www.w3.org/2000/svg' "
+        "xmlns:proof='urn:x-proof:document:1' width='100' height='100'><image id='lost' width='20' height='20' "
+        "preserveAspectRatio='none' href='file:///PROOF-does-not-exist.png' proof:link-preview='data:image/png;base64," +
+        png + "'/></svg>");
+    ASSERT_TRUE(doc);
+    ASSERT_EQ(sp_images_missing(doc.get()).size(), 1u);
+    auto const original = sp_repr_save_buf(doc->getReprDoc());
+    {
+        MissingLinkSave staged(doc.get());
+        EXPECT_FALSE(staged.accept(MissingLinkAction::RequirePresent));
+        EXPECT_TRUE(staged.accept(MissingLinkAction::Ignore));
+        EXPECT_FALSE(staged.changed);
+        ASSERT_EQ(sp_images_relink(sp_images_missing(staged.document())[0], replacement), 1u);
+        EXPECT_FALSE(staged.accept(MissingLinkAction::Cancel));
+        EXPECT_FALSE(staged.changed);
+    }
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), original);
+    ASSERT_TRUE(g_file_set_contents(target.c_str(), "untouched", -1, nullptr));
+    EXPECT_THROW(pdf->save(doc.get(), target.c_str(), false, MissingLinkAction::Cancel), Output::save_cancelled);
+    gchar *previous = nullptr;
+    ASSERT_TRUE(g_file_get_contents(target.c_str(), &previous, nullptr, nullptr));
+    EXPECT_STREQ(previous, "untouched");
+    g_free(previous);
+    EXPECT_FALSE(pdf->export_report.written);
+    Internal::PdfOutput().save(pdf, doc.get(), target.c_str());
+    ASSERT_EQ(pdf->export_report.findings.size(), 1u);
+    EXPECT_EQ(pdf->export_report.findings[0].severity, Severity::Error);
+    ASSERT_NO_THROW(pdf->save(doc.get(), target.c_str(), false, MissingLinkAction::Ignore));
+    ASSERT_EQ(pdf->export_report.findings.size(), 1u);
+    EXPECT_EQ(pdf->export_report.findings[0].severity, Severity::Warning);
+    EXPECT_NE(pdf->export_report.findings[0].reason.find("Linked picture is missing: "), std::string::npos);
+    EXPECT_EQ(pdf->missing_link_action, MissingLinkAction::RequirePresent); // Choice never leaks to another save.
+    auto *image = sp_images_missing(doc.get())[0];
+    image->getRepr()->setAttribute("proof:samples", "unreadable");
+    ASSERT_NO_THROW(pdf->save(doc.get(), target.c_str(), false, MissingLinkAction::Ignore));
+    EXPECT_TRUE(pdf->export_report.has_errors()); // Ignore does not relax the retained-samples rule.
+    image->getRepr()->removeAttribute("proof:samples");
+    DocumentUndo::setUndoSensitive(doc.get(), true);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Prepare missing link"), "");
+    auto export_copy = doc->copy();
+    MissingLinkSave staged(export_copy.get());
+    ASSERT_EQ(sp_images_relink(sp_images_missing(staged.document())[0], replacement), 1u);
+    EXPECT_FALSE(staged.accept(MissingLinkAction::Cancel, doc.get()));
+    EXPECT_EQ(sp_images_missing(doc.get()).size(), 1u);
+    EXPECT_TRUE(staged.accept(MissingLinkAction::RequirePresent, doc.get()));
+    EXPECT_TRUE(staged.changed);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Relink pictures that can't be found"), "");
+    EXPECT_TRUE(sp_images_missing(doc.get()).empty());
+    EXPECT_TRUE(sp_images_missing(export_copy.get()).empty());
+    EXPECT_FALSE(image->getRepr()->attribute(SPImage::LINK_PREVIEW_ATTRIBUTE));
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    EXPECT_EQ(sp_images_missing(doc.get()).size(), 1u);
+    EXPECT_TRUE(image->getRepr()->attribute(SPImage::LINK_PREVIEW_ATTRIBUTE));
+    ASSERT_TRUE(DocumentUndo::redo(doc.get()));
+    EXPECT_TRUE(sp_images_missing(doc.get()).empty());
+}
+
 } // namespace
 #endif
 

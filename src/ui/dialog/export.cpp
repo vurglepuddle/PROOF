@@ -37,6 +37,7 @@
 #include "preferences.h"
 #include "ui/builder-utils.h"
 #include "ui/dialog/export-single.h"
+#include "ui/dialog/link-missing.h"
 #include "ui/interface.h"
 
 namespace Inkscape::UI::Dialog {
@@ -304,25 +305,26 @@ bool Export::exportRaster(
 bool Export::exportVector(
         Inkscape::Extension::Output *extension, SPDocument *doc,
         Glib::ustring const &filename,
-        bool overwrite, Geom::Rect const &area)
+        bool overwrite, Geom::Rect const &area, std::optional<Extension::MissingLinkAction> links)
 {
     doc->ensureUpToDate();
     doc->getPageManager().disablePages();
     doc->fitToRect(area, false);
     doc->getPageManager().enablePages();
     auto page = doc->getPageManager().getFirstPage();
-    return exportVector(extension, doc, filename, overwrite, {}, page);
+    return exportVector(extension, doc, filename, overwrite, {}, page, links);
 }
 
 bool Export::exportVector(
         Inkscape::Extension::Output *extension, SPDocument *doc,
         Glib::ustring const &filename,
-        bool overwrite, const std::vector<SPItem const *> &items, SPPage const *page)
+        bool overwrite, const std::vector<SPItem const *> &items, SPPage const *page,
+        std::optional<Extension::MissingLinkAction> links)
 {
     std::vector<SPPage const *> pages;
     if (page)
         pages.push_back(page);
-    return exportVector(extension, doc, filename, overwrite, items, pages);
+    return exportVector(extension, doc, filename, overwrite, items, pages, links);
 }
 
 /**
@@ -334,7 +336,8 @@ bool Export::exportVector(
 bool Export::exportVector(
         Inkscape::Extension::Output *extension, SPDocument *copy_doc,
         Glib::ustring const &filename,
-        bool overwrite, const std::vector<SPItem const *> &items, const std::vector<SPPage const *> &pages)
+        bool overwrite, const std::vector<SPItem const *> &items, const std::vector<SPPage const *> &pages,
+        std::optional<Extension::MissingLinkAction> preset_links)
 {
     SPDesktop *desktop = SP_ACTIVE_DESKTOP;
     if (!desktop)
@@ -358,6 +361,11 @@ bool Export::exportVector(
     // Do the over-write protection now
     if (!overwrite && !sp_ui_overwrite_file(path)) {
         return false;
+    }
+    auto links = Inkscape::Extension::MissingLinkAction::RequirePresent;
+    if (extension->needs_picture_bytes()) {
+        links = preset_links ? *preset_links : resolveMissingLinksForSave(desktop, copy_doc);
+        if (links == Inkscape::Extension::MissingLinkAction::Cancel) return false;
     }
     copy_doc->ensureUpToDate();
 
@@ -438,7 +446,7 @@ bool Export::exportVector(
     copy_doc->vacuumDocument();
 
     try {
-        extension->save(copy_doc, path.c_str());
+        extension->save(copy_doc, path.c_str(), false, links);
     } catch (Inkscape::Extension::Output::save_failed &e) {
         Glib::ustring safeFile = Inkscape::IO::sanitizeString(path.c_str());
         Glib::ustring error = g_strdup_printf(_("Could not export to filename <b>%s</b>.\n"), safeFile.c_str());
