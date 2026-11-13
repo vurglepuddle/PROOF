@@ -22,7 +22,7 @@
 #include <glibmm/i18n.h>
 #include <glibmm/miscutils.h>
 #include <glibmm/markup.h>
-#include <gtkmm/notebook.h>
+
 
 #include "desktop.h"
 #include "extension/output.h"
@@ -36,7 +36,7 @@
 #include "object/weakptr.h"    // for SPWeakPtr
 #include "preferences.h"
 #include "ui/builder-utils.h"
-#include "ui/dialog/export-single.h"
+#include "ui/dialog/export-panel.h"
 #include "ui/dialog/link-missing.h"
 #include "ui/interface.h"
 
@@ -46,86 +46,17 @@ Export::Export()
     : DialogBase("/dialogs/export/", "Export")
     , builder(create_builder("dialog-export.glade"))
     , container       (get_widget<Gtk::Box>            (builder, "export-box"))
-    , export_notebook (get_widget<Gtk::Notebook>       (builder, "export-notebook"))
-    // Initialise Single Export and its objects
-    , single_image    (get_derived_widget<SingleExport>(builder, "single-image"))
-    // Initialise Batch Export and its objects
-    , batch_export    (get_derived_widget<BatchExport> (builder, "batch-export"))
+    , panel(std::make_unique<ExportPanel>())
 {
-    prefs = Inkscape::Preferences::get();
-
     append(container);
-
-    container.signal_realize().connect([=, this]() {
-        setDefaultNotebookPage();
-        notebook_signal = export_notebook.signal_switch_page().connect(sigc::mem_fun(*this, &Export::onNotebookPageSwitch));
-    });
-    container.signal_unrealize().connect([this]() {
-        notebook_signal.disconnect();
-    });
+    container.append(*panel);
 }
 
 Export::~Export() = default;
-
-// Set current page based on preference/last visited page
-void Export::setDefaultNotebookPage()
-{
-    pages[BATCH_EXPORT] = export_notebook.page_num(*batch_export.get_parent());
-    pages[SINGLE_IMAGE] = export_notebook.page_num(*single_image.get_parent());
-    export_notebook.set_current_page(pages[SINGLE_IMAGE]);
-}
-
-void Export::documentReplaced()
-{
-    single_image.setDocument(getDocument());
-    batch_export.setDocument(getDocument());
-}
-
-void Export::desktopReplaced()
-{
-    single_image.setDesktop(getDesktop());
-    single_image.setApp(getApp());
-    batch_export.setDesktop(getDesktop());
-    batch_export.setApp(getApp());
-    // Called previously, but we need post-desktop call too
-    documentReplaced();
-}
-
-void Export::selectionChanged(Inkscape::Selection *selection)
-{
-    auto current_page = export_notebook.get_current_page();
-    if (current_page == pages[SINGLE_IMAGE]) {
-        single_image.selectionChanged(selection);
-    }
-    if (current_page == pages[BATCH_EXPORT]) {
-        batch_export.selectionChanged(selection);
-    }
-}
-void Export::selectionModified(Inkscape::Selection *selection, unsigned flags)
-{
-    auto current_page = export_notebook.get_current_page();
-    if (current_page == pages[SINGLE_IMAGE]) {
-        single_image.selectionModified(selection, flags);
-    }
-    if (current_page == pages[BATCH_EXPORT]) {
-        batch_export.selectionModified(selection, flags);
-    }
-}
-
-void Export::onNotebookPageSwitch(Widget *page, unsigned page_number)
-{
-    auto desktop = getDesktop();
-    if (desktop) {
-        auto selection = desktop->getSelection();
-
-        if (page_number == pages[SINGLE_IMAGE]) {
-            single_image.selectionChanged(selection);
-        }
-        if (page_number == pages[BATCH_EXPORT]) {
-            batch_export.selectionChanged(selection);
-        }
-    }
-}
+void Export::documentReplaced() { panel->setContext(getDesktop(), getDocument()); }
+void Export::desktopReplaced() { documentReplaced(); }
+void Export::selectionChanged(Inkscape::Selection *) { panel->refresh(true); }
+void Export::selectionModified(Inkscape::Selection *, unsigned) { panel->refresh(); }
 
 /**
  * Convert path to absolute path.

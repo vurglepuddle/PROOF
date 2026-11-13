@@ -16,6 +16,7 @@
 
 #include "ui/dialog/dialog-base.h"
 #include <optional>
+#include <memory>
 
 namespace Gtk {
 class Box;
@@ -40,14 +41,7 @@ class Output;
 
 namespace UI::Dialog {
 
-class SingleExport;
-class BatchExport;
-
-enum notebook_page
-{
-    SINGLE_IMAGE = 0,
-    BATCH_EXPORT
-};
+class ExportPanel;
 
 void set_export_bg_color(SPObject* object, Inkscape::Colors::Color const &color);
 Inkscape::Colors::Color get_export_bg_color(SPObject* object, Inkscape::Colors::Color const &default_color);
@@ -61,20 +55,8 @@ public:
 private:
     Glib::RefPtr<Gtk::Builder> builder;
     Gtk::Box      &container;       // Main Container
-    Gtk::Notebook &export_notebook; // Notebook Container for single and batch export
-    SingleExport  &single_image;
-    BatchExport   &batch_export;
+    std::unique_ptr<ExportPanel> panel;
 
-    Inkscape::Preferences *prefs = nullptr;
-
-    // setup default values of widgets
-    void setDefaultNotebookPage();
-    std::map<notebook_page, int> pages;
-
-    sigc::scoped_connection notebook_signal;
-
-    // signals callback
-    void onNotebookPageSwitch(Widget *page, unsigned page_number);
     void documentReplaced() override;
     void desktopReplaced() override;
     void selectionChanged(Inkscape::Selection *selection) override;

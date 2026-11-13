@@ -143,7 +143,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/export.cpp
 	dialog/export-pdf-dialog.cpp
 	dialog/export-batch.cpp
-	dialog/export-single.cpp
+	dialog/export-panel.cpp
 	dialog/extensions-gallery.cpp
 	dialog/fill-and-stroke.cpp
 	dialog/filter-effects-dialog.cpp
@@ -391,7 +391,8 @@ target_sources(inkscape_base PRIVATE
 	dialog/export.h
 	dialog/export-pdf-dialog.h
 	dialog/export-batch.h
-	dialog/export-single.h
+	dialog/export-panel.h
+	dialog/export-panel-plan.h
 	dialog/export-page-plan.h
 	dialog/extensions-gallery.h
 	dialog/fill-and-stroke.h

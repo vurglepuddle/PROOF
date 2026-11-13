@@ -25,6 +25,7 @@
 #include "extension/missing-link-save.h"
 #include "ui/dialog/choose-file-utils.h"
 #include "ui/dialog/export-page-plan.h"
+#include "ui/dialog/export-panel-plan.h"
 #include <giomm/liststore.h>
 #include <gtkmm/filefilter.h>
 #include <gtkmm/init.h>
@@ -48,6 +49,66 @@
 #include <gtest/gtest.h>
 
 using Inkscape::Extension::Internal::StyleMemory;
+
+namespace EP = Inkscape::UI::Dialog::ExportPlanning;
+TEST(ExportPanelPlanTest, AllItemModesAndIsolation)
+{
+    EP::Input in;
+    in.document = {"", "Document", Geom::Rect(0, 0, 200, 100)};
+    in.custom = {"", "Custom", Geom::Rect(10, 20, 30, 40)};
+    in.pages = {{"p1", "Cover", Geom::Rect(0, 0, 100, 50)}, {"p2", "Page 2", Geom::Rect(100, 0, 200, 100)}};
+    in.selection = {{"a", "Object", Geom::Rect(10, 10, 30, 30)}, {"b", "Object", Geom::Rect(50, 20, 90, 60)}};
+    in.layers = {{"l1", "Layer", in.document.area, {"a"}}, {"l2", "Layer", in.document.area}};
+    EXPECT_EQ(EP::items(in).size(), 1);
+    in.mode = EP::Mode::Custom; EXPECT_EQ(EP::items(in)[0].area.width(), 20);
+    in.mode = EP::Mode::Pages; EXPECT_EQ(EP::items(in).size(), 2);
+    EXPECT_EQ(EP::items(in)[1].pages, std::vector<std::string>{"p2"});
+    in.mode = EP::Mode::Selection;
+    EXPECT_EQ(EP::items(in).size(), 1); EXPECT_EQ(EP::items(in)[0].area.width(), 80);
+    in.selection.push_back({"empty", "Empty", Geom::Rect()});
+    EXPECT_EQ(EP::items(in)[0].area.width(), 80);
+    in.each = true; EXPECT_EQ(EP::items(in).size(), 2); EXPECT_EQ(EP::items(in)[0].hint_id, "a");
+    in.hide = true; EXPECT_EQ(EP::items(in)[0].objects, std::vector<std::string>{"a"});
+    in.mode = EP::Mode::Layers;
+    EXPECT_EQ(EP::items(in).size(), 1); EXPECT_EQ(EP::items(in)[0].objects, std::vector<std::string>{"a"});
+    in.hide = false; EXPECT_EQ(EP::items(in).size(), 2); EXPECT_EQ(EP::items(in)[0].objects, std::vector<std::string>{"l1"});
+    in.selection.clear(); in.hide = true; EXPECT_TRUE(EP::items(in).empty());
+}
+TEST(ExportPanelPlanTest, MultipleFormatsGroupedPDFSuffixesAndConflicts)
+{
+    EP::Input in; in.mode = EP::Mode::Pages;
+    in.pages = {{"p1", "Cover", Geom::Rect(0, 0, 100, 50)}, {"p2", "cover", Geom::Rect(100, 0, 200, 100)}};
+    auto items = EP::items(in);
+    std::vector<EP::Format> formats{{".png", "", 300}, {".pdf", "", 96, false}, {".png", "{dpi}dpi", 150}};
+    auto plan = EP::files(items, formats, in.mode, "folder", "proof.v2", [](auto const &f) {
+        return Glib::path_get_basename(f) == "proof.v2-Cover.png";
+    });
+    ASSERT_EQ(plan.size(), 5);
+    EXPECT_EQ(Glib::path_get_basename(plan[0].filename), "proof.v2-Cover.png"); EXPECT_TRUE(plan[0].conflict);
+    EXPECT_EQ(Glib::path_get_basename(plan[1].filename), "proof.v2-cover-2.png"); EXPECT_FALSE(plan[1].conflict);
+    EXPECT_EQ(Glib::path_get_basename(plan[2].filename), "proof.v2.pdf"); EXPECT_EQ(plan[2].item.pages.size(), 2);
+    EXPECT_EQ(Glib::path_get_basename(plan[3].filename), "proof.v2-Cover-150dpi.png");
+    EXPECT_EQ(plan[2].item.pages, (std::vector<std::string>{"p1", "p2"}));
+    formats[1].one_pdf = false;
+    EXPECT_EQ(EP::files(items, formats, in.mode, "", "", [](auto const &) { return false; }).size(), 6);
+}
+TEST(ExportPanelPlanTest, SingleItemEmptyNamesAndWindowsNames)
+{
+    EP::Input in; in.document = {"", "Document", Geom::Rect(0, 0, 100, 50)};
+    auto never = [](auto const &) { return false; };
+    std::vector<EP::Format> formats{{".png", ""}};
+    EXPECT_EQ(Glib::path_get_basename(EP::files(EP::items(in), formats, in.mode, "", "plain", never)[0].filename), "plain.png");
+    in.mode = EP::Mode::Layers;
+    in.layers = {{"a", "CON", in.document.area}, {"b", "a/b. ", in.document.area}};
+    auto plan = EP::files(EP::items(in), formats, in.mode, "", "", never);
+    EXPECT_EQ(Glib::path_get_basename(plan[0].filename), "_CON.png");
+    EXPECT_EQ(Glib::path_get_basename(plan[1].filename), "a_b.png");
+    formats.push_back(formats[0]);
+    plan = EP::files(EP::items(in), formats, in.mode, "", "", never);
+    EXPECT_EQ(Glib::path_get_basename(plan[2].filename), "_CON-2.png");
+    in.mode = EP::Mode::Pages; in.pages = {{"p", "Page 2", in.document.area}};
+    EXPECT_EQ(Glib::path_get_basename(EP::files(EP::items(in), formats, in.mode, "", "", never)[0].filename), "Page 2.png");
+}
 
 TEST(RasterPagePlanTest, WindowsNamesDefaultsAndCaseInsensitiveCollisions)
 {
