@@ -16,6 +16,7 @@
 #include "display/cairo-utils.h"
 #include "display/drawing-item.h"
 #include "display/tiff-pixels.h"
+#include "display/retained-samples.h"
 #include "document.h"
 #include "helper/pixbuf-ops.h"
 #include "io/link-policy.h"
@@ -103,7 +104,17 @@ void DrawContext::paint_raster(SPImage const *image)
             } else {
                 // This is cached against the doc cache as the same filename might
                 // be loaded multiple times in the same document.
-                raster_id = _doc.get_image(uri.toNativeFilename(), props);
+                if (image->getRepr()->attribute("proof:samples")) {
+                    // One snapshot supplies both the identity check and the fallback PDF image.
+                    gchar *bytes = nullptr;
+                    if (!g_file_get_contents(uri.toNativeFilename().c_str(), &bytes, &decoded_len, nullptr)) {
+                        throw std::runtime_error("Could not read picture bytes.");
+                    }
+                    decoded = bytes;
+                    base64_type = Base64Data::RASTER;
+                } else {
+                    raster_id = _doc.get_image(uri.toNativeFilename(), props);
+                }
             }
         } catch (Inkscape::BadURIException const &e) {
             picture_error = std::string(_("Could not read picture: ")) + e.what();
@@ -118,22 +129,19 @@ void DrawContext::paint_raster(SPImage const *image)
 
     // PROOF: an Illustrator picture of CMYK or grey keeps its samples apart from the RGB it
     // shows with (proof:samples, a TIFF); they go to print, while the picture is still theirs.
-    if (auto const *samples = image->getRepr()->attribute("proof:samples")) {
-        auto [samples_base64, samples_type] = extract_uri_data(samples);
-        if (samples_type == Base64Data::RASTER) {
-            gsize len = 0;
-            auto *bytes = reinterpret_cast<char *>(g_base64_decode(samples_base64, &len));
-            std::string_view const tiff(bytes, len);
-            if (auto pixels = read_tiff(tiff); pixels && int(pixels->width) == img_width &&
-                                               int(pixels->height) == img_height) {
-                try {
-                    raster_id = _doc.add_own_pixels(tiff, props, true);
-                } catch (std::exception const &e) {
-                    _doc.report.error(get_id(image), std::string(_("Could not export retained picture samples: ")) + e.what());
-                }
-            }
-            g_free(bytes);
+    auto const kept = RetainedSamples::read(image->getRepr()->attribute("proof:samples"),
+        image->getRepr()->attribute("proof:samples-for"),
+        decoded ? std::string_view(decoded, decoded_len) : std::string_view{}, img_width, img_height);
+    if (kept.state == RetainedSamples::State::Valid) {
+        try {
+            auto const id = _doc.add_own_pixels(kept.tiff, props, true);
+            if (id) raster_id = id;
+            else _doc.report.error(get_id(image), _("Retained samples are unreadable."));
+        } catch (std::exception const &) {
+            _doc.report.error(get_id(image), _("Retained samples are unreadable."));
         }
+    } else if (kept.state != RetainedSamples::State::Absent) {
+        _doc.report.error(get_id(image), kept.reason());
     }
 
     if (decoded && base64_type == Base64Data::RASTER && !raster_id) {

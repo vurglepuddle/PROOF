@@ -279,7 +279,8 @@ bool AiNativeOutput::check(Inkscape::Extension::Extension *)
 void AiNativeOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename)
 {
     mod->export_report = {};
-    auto const written = AiNative::write_records(doc);
+    auto const written = AiNative::write_records(doc, AiNative::RecordsVersion::Modern, &mod->export_report);
+    if (mod->export_report.has_errors()) throw std::runtime_error(mod->export_report.summary());
     if (!written.refused.empty()) {
         std::vector<std::string> names;
         for (auto const &r : written.refused) {

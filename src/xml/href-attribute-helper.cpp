@@ -9,6 +9,7 @@
  */
 
 #include "href-attribute-helper.h"
+#include <cstring>
 
 namespace Inkscape {
 
@@ -36,6 +37,13 @@ std::pair<char const *, char const *> getHrefAttribute(XML::Node const &node)
  */
 void setHrefAttribute(XML::Node &node, Util::const_char_ptr value)
 {
+    auto const old = getHrefAttribute(node).second;
+    auto const replacement = value.data();
+    if (std::strcmp(node.name(), "svg:image") == 0 &&
+        ((!old != !replacement) || (old && replacement && std::strcmp(old, replacement) != 0))) {
+        node.removeAttribute("proof:samples");
+        node.removeAttribute("proof:samples-for");
+    }
     if (node.attribute("href")) {
         node.setAttribute("href", value);
     } else {

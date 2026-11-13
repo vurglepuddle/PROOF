@@ -54,6 +54,7 @@
 
 #include <string>
 #include <vector>
+#include "extension/export-report.h"
 
 class SPDocument;
 
@@ -71,7 +72,7 @@ enum class RecordsVersion
     Illustrator7, ///< Standalone records for a single artboard; no PDF representation.
 };
 
-WrittenRecords write_records(SPDocument *document, RecordsVersion version = RecordsVersion::Modern);
+WrittenRecords write_records(SPDocument *document, RecordsVersion version = RecordsVersion::Modern, ExportReport *report = nullptr);
 
 } // namespace Inkscape::Extension::Internal::AiNative
 

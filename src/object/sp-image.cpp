@@ -34,6 +34,7 @@
 #include "colors/document-colors.h"
 #include "colors/spaces/cms.h"
 #include "display/cairo-utils.h"
+#include "display/retained-samples.h"
 #include "display/drawing-image.h"
 #include "document.h"
 #include "io/link-policy.h"
@@ -872,6 +873,26 @@ Geom::PathVector const *SPImage::get_curve() const
 
 void sp_embed_image(Inkscape::XML::Node *image_node, Inkscape::Pixbuf *pb)
 {
+    // The UI passes a Pixbuf copy, which has no original MIME bytes. Do not re-encode
+    // an unchanged embedded picture: even a different PNG encoding would stale its binding.
+    auto const previous_href = Inkscape::getHrefAttribute(*image_node).second;
+    auto const [previous_data, previous_type] = extract_uri_data(previous_href ? previous_href : "");
+    gsize mime_len = 0;
+    std::string mime_type;
+    if (image_node->attribute("proof:samples") && previous_type == Base64Data::RASTER &&
+        !pb->getMimeData(mime_len, mime_type) && pb->originalPath().empty()) {
+        std::unique_ptr<Inkscape::Pixbuf> previous(Inkscape::Pixbuf::create_from_data_uri(previous_href));
+        if (previous && previous->width() == pb->width() && previous->height() == pb->height()) {
+            previous->ensurePixelFormat(Inkscape::Pixbuf::PF_CAIRO);
+            pb->ensurePixelFormat(Inkscape::Pixbuf::PF_CAIRO);
+            bool same = true;
+            for (int y = 0; same && y < pb->height(); ++y) {
+                same = std::memcmp(previous->pixels() + y * previous->rowstride(),
+                                   pb->pixels() + y * pb->rowstride(), pb->width() * 4) == 0;
+            }
+            if (same) return; // Keep the original image bytes and both attributes exactly as they were.
+        }
+    }
     bool free_data = false;
 
     // check whether the pixbuf has MIME data
@@ -907,7 +928,22 @@ void sp_embed_image(Inkscape::XML::Node *image_node, Inkscape::Pixbuf *pb)
     // TODO: this is very wasteful memory-wise.
     // It would be better to only keep the binary data around,
     // and base64 encode on the fly when saving the XML.
-    Inkscape::setHrefAttribute(*image_node, buffer);
+    // Re-embedding unchanged file bytes may change only the base64 whitespace.
+    auto const *old = image_node->attribute("proof:samples-for");
+    std::string const binding = old ? old : "";
+    bool unchanged = !binding.empty() && binding == Inkscape::RetainedSamples::fingerprint(
+        std::string_view(reinterpret_cast<char const *>(data), len));
+    auto const [href_key, href] = Inkscape::getHrefAttribute(*image_node);
+    auto const [old_base64, old_type] = extract_uri_data(href ? href : "");
+    if (old_type == Base64Data::RASTER) {
+        gsize old_len = 0;
+        auto *old_data = g_base64_decode(old_base64, &old_len);
+        // Also preserve old/mismatching bindings as-is when the image bytes did not change.
+        unchanged = old_len == len && std::memcmp(old_data, data, len) == 0;
+        g_free(old_data);
+    }
+    if (unchanged) image_node->setAttribute(href_key, buffer);
+    else Inkscape::setHrefAttribute(*image_node, buffer);
 
     g_free(buffer);
     if (free_data) g_free(data);

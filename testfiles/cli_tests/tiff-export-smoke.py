@@ -13,6 +13,7 @@ See src/display/raster-pixels.h, tiff-pixels.h and psd-pixels.h.
 import argparse
 import base64
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -176,6 +177,7 @@ def main():
     ap.add_argument("--dll-dir", type=Path)
     ap.add_argument("--data-dir", type=Path)
     ap.add_argument("--pdftoppm", required=True, type=Path)
+    ap.add_argument("--gs", type=Path)
     ap.add_argument("--output", required=True, type=Path)
     args = ap.parse_args()
     out = args.output.resolve()
@@ -201,6 +203,7 @@ def main():
         (out / (label + ".log")).write_bytes(r.stdout + r.stderr)
         if r.returncode:
             raise RuntimeError(f"{label}: exit {r.returncode}; see log")
+        return r
 
     def images(res, depth=0):
         xo = res.get("/XObject") if res else None
@@ -248,6 +251,7 @@ def main():
          "cmyk", 8, True),
         ("Illustrator's kept samples", image + 'xlink:href="' + data_uri("image/png", rgb_look.getvalue()) +
          '" proof:samples="' + data_uri("image/tiff", files["cmyk8-premultiplied.tif"]) +
+         '" proof:samples-for="' + hashlib.sha256(rgb_look.getvalue()).hexdigest()[:16] +
          '" xmlns:proof="urn:x-proof:document:1"/>', "cmyk", 8, True),
         ("linked RGB cut-out", image + 'xlink:href="rgb8-cutout.tif"/>', "rgb", 8, True),
         ("linked Photoshop CMYK", image + 'xlink:href="cmyk8-matted.psd"/>', "cmyk", 8, True),
@@ -259,7 +263,9 @@ def main():
         source = out / (stem + ".svg")
         source.write_text(drawing(body), encoding="utf-8")
         pdf = out / (stem + ".pdf")
-        run(stem + "-pdf", [exe, source, f"--export-filename={pdf}"])
+        result = run(stem + "-pdf", [exe, source, f"--export-filename={pdf}"])
+        if name == "Illustrator's kept samples":
+            check("matching samples: no findings", b"export findings" not in result.stderr)
         found = [i for i in images(PdfReader(str(pdf)).pages[0]["/Resources"]) if i.get("/Width") == W]
         check(f"{name}: one picture in the PDF", len(found) == 1, f"{len(found)}")
         if not found:
@@ -309,6 +315,43 @@ def main():
             check(f"{name}: {what}: the picture shows", left[0] > 150 and left[1] < 120, str(left))
             if cutout:
                 check(f"{name}: {what}: nothing where it is transparent", min(empty) > 245, str(empty))
+
+    if args.gs:
+        plates = []
+        for label, source in (("matched", "Illustrators-kept-samples.pdf"),
+                              ("reference", "linked-CMYK-premultiplied.pdf")):
+            prefix = out / label
+            run(label + "-plates", [args.gs.resolve(), "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
+                "-sDEVICE=tiffsep", "-r96", f"-sOutputFile={prefix}.tif", out / source])
+            plates.append([Image.open(out / f"{label}({ink}).tif").convert("L").tobytes()
+                           for ink in ("Cyan", "Magenta", "Yellow", "Black")])
+        check("matching samples: all four plates unchanged", plates[0] == plates[1])
+
+    # A valid-looking TIFF must never override another display image of the same size.
+    replacement = io.BytesIO()
+    Image.new("RGB", (W, H), (0, 255, 0)).save(replacement, "PNG")
+    original = rgb_look.getvalue()
+    digest = hashlib.sha256(original).hexdigest()[:16]
+    retained = data_uri("image/tiff", files["cmyk8-premultiplied.tif"])
+    for mode in ("missing", "mismatch", "unreadable", "replacement", "linked-replacement"):
+        shown = replacement.getvalue() if "replacement" in mode else original
+        href = data_uri("image/png", shown)
+        if mode == "linked-replacement":
+            (out / "changed.png").write_bytes(shown)
+            href = "changed.png"
+        binding = "" if mode == "missing" else ' proof:samples-for="' + (
+            "0000000000000000" if mode == "mismatch" else digest) + '"'
+        kept = "data:image/tiff;base64,YmFk" if mode == "unreadable" else retained
+        source, pdf = out / (mode + ".svg"), out / (mode + ".pdf")
+        source.write_text(drawing('<image id="picture" width="80" height="80" href="' + href +
+            '" proof:samples="' + kept + '"' + binding + ' xmlns:proof="urn:x-proof:document:1"/>'), encoding="utf-8")
+        r = run(mode + "-pdf", [exe, source, f"--export-filename={pdf}"])
+        reason = b"Retained samples are unreadable." if mode == "unreadable" else b"Retained samples are stale."
+        check(mode + ": finding names picture and reason", b"Error [picture]: " + reason in r.stderr)
+        found = [i for i in images(PdfReader(pdf).pages[0]["/Resources"]) if i.get("/Width") == W]
+        check(mode + ": display image replaces retained samples", len(found) == 1 and
+              found[0].get("/ColorSpace") == "/DeviceRGB" and
+              found[0].get_data() == Image.open(io.BytesIO(shown)).convert("RGB").tobytes())
 
     result = dict(checks=checks, passed=all(c["passed"] for c in checks))
     (out / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

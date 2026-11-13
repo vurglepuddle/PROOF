@@ -47,9 +47,11 @@
 #include "colors/spaces/cmyk.h"
 #include "desktop-style.h"
 #include "display/cairo-utils.h"
+#include "display/retained-samples.h"
 #include "display/control/font-highlight.h"
 #include "doc-per-case-test.h"
 #include "document.h"
+#include "document-undo.h"
 #include "file.h"
 #include "helper/geom.h"
 #include "helper/pixbuf-ops.h"
@@ -106,6 +108,7 @@
 #include "util/units.h"
 #include "util/scope_exit.h"
 #include "xml/node.h"
+#include "xml/href-attribute-helper.h"
 #include "xml/repr.h"
 
 using namespace Inkscape;
@@ -1252,6 +1255,8 @@ TEST_F(AiNativeImportTest, CmykImageKeepsPngAndExactTiffSamples)
     auto again = elements(reopened->getReprRoot(), "svg:image");
     ASSERT_EQ(again.size(), 1u);
     EXPECT_EQ(attr(again[0], "proof:samples"), data);
+    EXPECT_EQ(attr(again[0], "proof:samples-for"), attr(images[0], "proof:samples-for"));
+    EXPECT_EQ(attr(images[0], "proof:samples-for").size(), 16u);
     EXPECT_EQ(attr(again[0], "xlink:href"), attr(images[0], "xlink:href"));
 }
 
@@ -9887,6 +9892,185 @@ TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirCmykSamples)
     ASSERT_EQ(second.size(), 1u);
     expect_same_box(b->document.get(), first[0], again->document.get(), second[0]);
     EXPECT_EQ(attr(second[0], "proof:samples"), attr(first[0], "proof:samples"));
+    EXPECT_EQ(attr(second[0], "proof:samples-for"), attr(first[0], "proof:samples-for"));
+}
+
+#if defined(WITH_POPPLER) && defined(WITH_CAPYPDF)
+TEST_F(AiNativeImportTest, RetainedSamplesFailuresHaveFindingsAndRefuseNativeReplacement)
+{
+    if (!Extension::Internal::PdfOutput::supports_pdf17()) GTEST_SKIP();
+    if (!Extension::db.get("org.inkscape.output.pdf.capypdf")) Extension::Internal::PdfOutput::init();
+    if (!Extension::db.get("org.inkscape.output.ai.native")) Extension::Internal::AiNativeOutput::init();
+    auto *pdf = dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.pdf.capypdf"));
+    auto *native = dynamic_cast<Extension::Output *>(Extension::db.get("org.inkscape.output.ai.native"));
+    ASSERT_TRUE(pdf && native);
+    pdf->set_gui(false);
+    native->set_gui(false);
+    auto const dir = g_dir_make_tmp("proof-retained-samples-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const folder = dir;
+    g_free(dir);
+    EXPECT_EQ(RetainedSamples::fingerprint("abc"), "ba7816bf8f01cfea");
+    std::string const art = "%AI5_BeginRaster\n() 1 XG\n/DeviceCMYK XN\n[2 0 0 -2 50 40] 0 0 2 1 2 1 8 4 0 0 1 0 0\n"
+        "%%BeginData: 12\nXI\n\x10\x20\x30\x40\x50\x60\x70\x80\n%%EndData\nXH\n%AI5_EndRaster\n";
+    for (std::string const mode : {"matching", "missing", "mismatch", "unreadable", "xml-replacement",
+                                   "properties", "relink", "embed", "reembed", "old-reembed"}) {
+        SCOPED_TRACE(mode);
+        auto b = make(records(layer(art)));
+        ASSERT_TRUE(b);
+        auto const pictures = elements(b->document->getReprRoot(), "svg:image");
+        ASSERT_EQ(pictures.size(), 1u);
+        auto *repr = pictures[0];
+        std::string const object = repr->attribute("id");
+        if (mode == "matching") {
+            auto const href = attr(repr, "xlink:href");
+            gsize len = 0;
+            auto *data = g_base64_decode(href.substr(href.find(',') + 1).c_str(), &len);
+            EXPECT_EQ(RetainedSamples::read(repr->attribute("proof:samples"), repr->attribute("proof:samples-for"),
+                std::string_view(reinterpret_cast<char const *>(data), len), 3, 1).state, RetainedSamples::State::Unreadable);
+            g_free(data);
+        }
+        if (mode == "missing") repr->removeAttribute("proof:samples-for");
+        if (mode == "mismatch") repr->setAttribute("proof:samples-for", "0000000000000000");
+        if (mode == "unreadable") repr->setAttribute("proof:samples", "data:image/tiff;base64,YmFk");
+        // A direct XML edit bypasses proactive invalidation, but the export must still catch it.
+        auto const replacement = png_uri(2, 1, {0,255,0,255,0,255,0,255});
+        if (mode == "xml-replacement") repr->setAttribute("xlink:href", replacement);
+        auto *image = cast<SPImage>(b->document->getObjectByRepr(repr));
+        ASSERT_TRUE(image && image->pixbuf);
+        auto const original_samples = attr(repr, "proof:samples");
+        auto const original_binding = attr(repr, "proof:samples-for");
+        if (mode == "properties") setHrefAttribute(*repr, replacement); // Image Properties uses this helper.
+        if (mode == "relink") {
+            gsize len = 0;
+            auto *data = g_base64_decode(replacement.substr(replacement.find(',') + 1).c_str(), &len);
+            auto const file = folder + "/replacement.png";
+            ASSERT_TRUE(g_file_set_contents(file.c_str(), reinterpret_cast<char const *>(data), len, nullptr));
+            g_free(data);
+            image->relink(file);
+        }
+        if (mode == "embed") {
+            std::unique_ptr<Pixbuf> pixels(Pixbuf::create_from_data_uri(replacement.c_str()));
+            ASSERT_TRUE(pixels);
+            sp_embed_image(repr, pixels.get());
+        }
+        if (mode == "reembed" || mode == "old-reembed") {
+            if (mode == "old-reembed") repr->removeAttribute("proof:samples-for");
+            auto pixels = *image->pixbuf;
+            sp_embed_image(repr, &pixels);
+            EXPECT_EQ(attr(repr, "proof:samples"), original_samples);
+            EXPECT_EQ(attr(repr, "proof:samples-for"), mode == "reembed" ? original_binding : "");
+        }
+        bool const replaced = mode == "properties" || mode == "relink" || mode == "embed";
+        bool const failed = !replaced && mode != "matching" && mode != "reembed";
+        if (replaced) {
+            EXPECT_FALSE(repr->attribute("proof:samples"));
+            EXPECT_FALSE(repr->attribute("proof:samples-for"));
+        }
+        b->document->ensureUpToDate();
+        auto const before = sp_repr_save_buf(b->document->getReprDoc());
+        ASSERT_NO_THROW(pdf->save(b->document.get(), (folder + "/" + mode + ".pdf").c_str()));
+        auto const &report = pdf->export_report;
+        EXPECT_TRUE(report.written);
+        EXPECT_EQ(report.has_errors(), failed);
+        if (failed) {
+            ASSERT_EQ(report.findings.size(), 1u) << report.summary();
+            EXPECT_EQ(report.findings[0].object, object);
+            EXPECT_EQ(report.findings[0].severity, Extension::Severity::Error);
+            EXPECT_EQ(report.findings[0].reason, mode == "unreadable" ?
+                      "Retained samples are unreadable." : "Retained samples are stale.");
+        }
+        Extension::ExportReport private_report;
+        auto const written = AN::write_records(b->document.get(), AN::RecordsVersion::Modern, &private_report);
+        ASSERT_TRUE(written.refused.empty());
+        EXPECT_EQ(private_report.has_errors(), failed);
+        EXPECT_NE(written.records.find(mode == "relink" ? "%AI5_BeginPlace" :
+            (mode == "matching" || mode == "reembed") ? "/DeviceCMYK XN" : "/DeviceRGB XN"), std::string::npos);
+        if (mode == "properties" || mode == "embed") {
+            std::string error;
+            auto const decoded = AN::read(written.records, error);
+            ASSERT_TRUE(decoded) << error;
+            ASSERT_EQ(decoded->images.size(), 1u);
+            EXPECT_EQ(decoded->images[0].samples, std::string("\x00\xff\x00\x00\xff\x00", 6));
+        }
+        auto const ai = folder + "/" + mode + ".ai";
+        ASSERT_TRUE(g_file_set_contents(ai.c_str(), "existing destination", -1, nullptr));
+        if (!failed) {
+            EXPECT_TRUE(report.findings.empty());
+            EXPECT_NO_THROW(native->save(b->document.get(), ai.c_str()));
+            EXPECT_FALSE(native->export_report.has_errors());
+        } else {
+            EXPECT_THROW(native->save(b->document.get(), ai.c_str()), std::runtime_error);
+            EXPECT_TRUE(native->export_report.has_errors());
+            EXPECT_FALSE(native->export_report.written);
+            gchar *bytes = nullptr;
+            ASSERT_TRUE(g_file_get_contents(ai.c_str(), &bytes, nullptr, nullptr));
+            EXPECT_STREQ(bytes, "existing destination");
+            g_free(bytes);
+            // A private-record caller without a findings sink cannot silently return RGB.
+            EXPECT_FALSE(AN::write_records(b->document.get()).refused.empty());
+        }
+        EXPECT_EQ(sp_repr_save_buf(b->document->getReprDoc()), before);
+    }
+}
+#endif
+
+TEST_F(AiNativeImportTest, RetainedSamplesBindingFollowsImageByteEdits)
+{
+    auto const source = png_uri(2, 1, {255,0,0,255,255,0,0,255});
+    auto doc = svg_document("<image id='picture' width='20' height='10' href='" + source + "'/>");
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto *image = cast<SPImage>(doc->getObjectById("picture"));
+    ASSERT_TRUE(image && image->pixbuf);
+    auto *repr = image->getRepr();
+    // Bitmap-copy/import callers also embed into a new node without any href.
+    auto *fresh = doc->getReprDoc()->createElement("svg:image");
+    auto fresh_pixels = *image->pixbuf;
+    ASSERT_NO_THROW(sp_embed_image(fresh, &fresh_pixels));
+    EXPECT_TRUE(fresh->attribute("xlink:href"));
+    GC::release(fresh);
+    auto const uri_bytes = [](std::string const &uri) {
+        gsize len = 0;
+        auto *data = g_base64_decode(uri.substr(uri.find(',') + 1).c_str(), &len);
+        std::string result(reinterpret_cast<char const *>(data), len);
+        g_free(data);
+        return result;
+    };
+    auto const hash = RetainedSamples::fingerprint(uri_bytes(source));
+    std::string const samples = "data:image/tiff;base64,YmFk";
+    repr->setAttribute("proof:samples", samples);
+    repr->setAttribute("proof:samples-for", hash);
+    auto pixels = *image->pixbuf;
+    sp_embed_image(repr, &pixels);
+    EXPECT_EQ(attr(repr, "proof:samples-for"), hash); // Same bytes, different base64 formatting.
+    EXPECT_EQ(attr(repr, "proof:samples"), samples);
+    DocumentUndo::setUndoSensitive(doc.get(), true);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Prepare retained samples"), "");
+    auto const before = attr(repr, "href");
+    setHrefAttribute(*repr, png_uri(2, 1, {0,255,0,255,0,255,0,255}));
+    DocumentUndo::done(doc.get(), RC_("Undo", "Replace picture"), "");
+    EXPECT_FALSE(repr->attribute("proof:samples"));
+    EXPECT_FALSE(repr->attribute("proof:samples-for"));
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    EXPECT_EQ(attr(repr, "proof:samples-for"), hash);
+    EXPECT_EQ(attr(repr, "proof:samples"), samples);
+    EXPECT_EQ(attr(repr, "href"), before);
+    ASSERT_TRUE(DocumentUndo::redo(doc.get()));
+    EXPECT_EQ(attr(repr, "href"), png_uri(2, 1, {0,255,0,255,0,255,0,255}));
+    EXPECT_FALSE(repr->attribute("proof:samples"));
+    EXPECT_FALSE(repr->attribute("proof:samples-for"));
+    auto const dir = g_dir_make_tmp("proof-retained-relink-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const link = std::string(dir) + "/replacement.png";
+    g_free(dir);
+    auto const bytes = uri_bytes(source);
+    ASSERT_TRUE(g_file_set_contents(link.c_str(), bytes.data(), bytes.size(), nullptr));
+    repr->setAttribute("proof:samples", samples);
+    repr->setAttribute("proof:samples-for", hash);
+    image->relink(link);
+    EXPECT_FALSE(repr->attribute("proof:samples"));
+    EXPECT_FALSE(repr->attribute("proof:samples-for"));
 }
 
 TEST_F(AiNativeImportTest, WrittenPicturesKeepTheirGreySamples)

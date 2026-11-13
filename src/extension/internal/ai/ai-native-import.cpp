@@ -39,6 +39,7 @@
 #include <2geom/transforms.h>
 
 #include "box-frame.h"
+#include "display/retained-samples.h"
 #include "colors/cms/profile.h"
 #include "colors/color.h"
 #include "colors/document-cms.h"
@@ -653,7 +654,7 @@ private:
     struct Encoded
     {
         int image = -1; ///< The first image that had these samples.
-        std::string screen, samples;
+        std::string screen, samples, samples_for;
     };
     std::unordered_multimap<std::size_t, Encoded> _encoded; ///< By a digest of the samples.
     std::map<std::string, int> _counters;
@@ -2122,6 +2123,7 @@ XML::Node *Builder::image(Node const &n)
             // the black plate alone, and Illustrator keeps it grey.
             if (auto tiff = samples_tiff(img.width, img.height, eight, img.channels, img.alpha)) {
                 made.samples = "data:image/tiff;base64," + base64(*tiff);
+                made.samples_for = RetainedSamples::fingerprint(*data);
             }
         }
         encoded = &_encoded.emplace(digest, std::move(made))->second;
@@ -2134,7 +2136,10 @@ XML::Node *Builder::image(Node const &n)
     e->setAttribute("preserveAspectRatio", "none");
     e->setAttribute("transform", sp_svg_transform_write(m));
     e->setAttribute("xlink:href", encoded->screen);
-    if (!encoded->samples.empty()) e->setAttribute("proof:samples", encoded->samples);
+    if (!encoded->samples.empty()) {
+        e->setAttribute("proof:samples", encoded->samples);
+        e->setAttribute("proof:samples-for", encoded->samples_for);
+    }
     std::string style;
     common(e, n, style);
     if (!style.empty()) e->setAttribute("style", style);

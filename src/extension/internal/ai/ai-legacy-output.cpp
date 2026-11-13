@@ -20,9 +20,13 @@
 
 namespace Inkscape::Extension::Internal {
 
-void AiLegacyOutput::save(Inkscape::Extension::Output *, SPDocument *doc, char const *filename)
+void AiLegacyOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename)
 {
-    auto const written = AiNative::write_records(doc, AiNative::RecordsVersion::Illustrator7);
+    ExportReport local;
+    auto &report = mod ? mod->export_report : local;
+    report = {};
+    auto const written = AiNative::write_records(doc, AiNative::RecordsVersion::Illustrator7, &report);
+    if (report.has_errors()) throw std::runtime_error(report.summary());
     if (!written.refused.empty()) {
         std::string list;
         for (auto const &name : written.refused) list += (list.empty() ? "" : ", ") + name;
@@ -43,6 +47,7 @@ void AiLegacyOutput::save(Inkscape::Extension::Output *, SPDocument *doc, char c
     if (g_rename(part.c_str(), filename) != 0) {
         throw std::runtime_error(_("The Illustrator 7 file couldn't be put in place of the old one."));
     }
+    report.written = true;
 }
 
 #include "../clear-n_.h"

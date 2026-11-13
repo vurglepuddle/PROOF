@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include "extension/export-report.h"
 #include <2geom/affine.h>
 
 class SPImage;
@@ -34,7 +35,7 @@ struct WrittenPicture
 
 /// Illustrator 7 uses opaque raster samples as comment-prefixed hexadecimal lines.
 /// Links and alpha channels remain refused in that form.
-WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy = false);
+WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy = false, ExportReport *report = nullptr);
 
 } // namespace Inkscape::Extension::Internal::AiNative
 

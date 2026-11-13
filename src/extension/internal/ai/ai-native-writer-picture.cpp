@@ -44,6 +44,7 @@
 #include "display/psd-pixels.h"
 #include "display/raster-pixels.h"
 #include "display/tiff-pixels.h"
+#include "display/retained-samples.h"
 #include "document.h"
 #include "enums.h"
 #include "io/link-policy.h"
@@ -248,7 +249,7 @@ WrittenPicture missing_link(SPImage const *image, std::string const &link, Geom:
 
 } // namespace
 
-WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy)
+WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_art, bool legacy, ExportReport *report)
 {
     if (!image) return refused("pictures that can't be read");
     auto const *href = Inkscape::getHrefAttribute(*image->getRepr()).second;
@@ -348,9 +349,13 @@ WrittenPicture write_picture(SPImage const *image, Geom::Affine const &item_to_a
     auto const sized = [&](std::optional<RasterPixels> const &p) {
         return p && int(p->width) == w && int(p->height) == h;
     };
-    Base64Data kept_type;
-    if (auto const kept = data_of(image->getRepr()->attribute("proof:samples"), kept_type)) {
-        if (auto p = read_tiff(*kept); sized(p)) samples = from_raster(*p);
+    auto const kept = RetainedSamples::read(image->getRepr()->attribute("proof:samples"),
+        image->getRepr()->attribute("proof:samples-for"), *bytes, w, h);
+    if (kept.state == RetainedSamples::State::Valid) {
+        samples = from_raster(*kept.pixels);
+    } else if (kept.state != RetainedSamples::State::Absent) {
+        if (!report) return refused(kept.reason());
+        report->error(image->getId() ? image->getId() : "(unnamed)", kept.reason());
     }
     if (!samples) {
         auto own = read_tiff(*bytes);

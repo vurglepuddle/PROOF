@@ -169,8 +169,8 @@ std::string object_name(SPItem const *it)
 class Writer
 {
 public:
-    Writer(SPDocument *doc, RecordsVersion version)
-        : _doc(doc), _legacy(version == RecordsVersion::Illustrator7), _texts(doc)
+    Writer(SPDocument *doc, RecordsVersion version, ExportReport *report)
+        : _doc(doc), _report(report), _legacy(version == RecordsVersion::Illustrator7), _texts(doc)
     {
         // Type takes an ink by an art style holding the line a path filled with it has.
         _texts.ink_operator = [this](SPIPaint const &p) { return paint(p, nullptr, true, Geom::identity()); };
@@ -206,6 +206,7 @@ private:
     void refuse(std::string what) { _refused.insert(std::move(what)); }
 
     SPDocument *_doc;
+    ExportReport *_report;
     bool const _legacy;
     Geom::Affine _to_art;
     /// The art origin on the y-down canvas where Illustrator applies a gradient's Bg matrix.
@@ -1266,7 +1267,7 @@ void Writer::item(SPItem const *it)
     } else if (auto image = cast<SPImage>(it); image && _in_pattern) {
         refuse("pictures in patterns");
     } else if (image) {
-        auto const written = write_picture(image, image->i2doc_affine() * _to_art, _legacy);
+        auto const written = write_picture(image, image->i2doc_affine() * _to_art, _legacy, _report);
         for (auto const &why : written.refused) refuse(why);
         if (!_legacy && !written.records.empty()) state(_transparency, clipped ? std::string(OPAQUE) : own);
         // A picture cropped to its viewport is in a clipping group, whose mask comes before its
@@ -1548,9 +1549,9 @@ WrittenRecords Writer::write()
 
 } // namespace
 
-WrittenRecords write_records(SPDocument *document, RecordsVersion version)
+WrittenRecords write_records(SPDocument *document, RecordsVersion version, ExportReport *report)
 {
-    return Writer(document, version).write();
+    return Writer(document, version, report).write();
 }
 
 } // namespace Inkscape::Extension::Internal::AiNative
