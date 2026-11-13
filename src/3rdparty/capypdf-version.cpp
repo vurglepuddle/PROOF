@@ -18,7 +18,7 @@ CapyPDF_SeparationId add_icc_separation(CapyPDF_Generator *generator, std::strin
 {
     auto fail = [](internal::ErrorCode ec) { throw capypdf::PdfException(capy_error_message((CapyPDF_EC)ec)); };
     if (!generator) fail(internal::ErrorCode::ArgIsNull);
-    auto ascii = internal::asciistring::from_view(name);
+    auto ascii = internal::u8string::from_view(name);
     if (!ascii) fail(ascii.error());
     auto made = static_cast<internal::PdfGen *>(generator)->create_icc_separation(ascii.value(), icc, tint_transform);
     if (!made) fail(made.error());

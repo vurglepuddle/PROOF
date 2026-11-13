@@ -11,6 +11,9 @@
  */
 
 #include "bad-uri-exception.h"
+#include <set>
+#include "colors/color.h"
+#include "colors/spaces/base.h"
 #include "build-drawing.h"
 #include "build-page.h"
 #include "display/cairo-utils.h"
@@ -21,6 +24,10 @@
 #include "helper/pixbuf-ops.h"
 #include "io/link-policy.h"
 #include "object/sp-image.h"
+#include "object/sp-gradient.h"
+#include "object/sp-mask.h"
+#include "object/sp-pattern.h"
+#include "object/sp-use.h"
 #include "object/sp-root.h"
 #include "object/uri.h"
 #include "page-manager.h"
@@ -245,6 +252,32 @@ void DrawContext::paint_raster(SPImage const *image)
 void DrawContext::paint_item_to_raster(SPItem const *item, Geom::Affine const &tr, double resolution, bool antialias)
 {
     auto doc = item->document;
+    // Filter rasterization bypasses get_paint(). Audit its paint graph before Cairo converts it.
+    std::set<SPObject const *> seen;
+    auto note = [&](auto const &self, SPObject const *object) -> void {
+        if (!object || !seen.insert(object).second) return;
+        if (auto *gradient = cast<SPGradient>(object)) {
+            _doc.note_gradient(gradient, {}, true);
+            return;
+        }
+        auto const previous = _doc.current_object;
+        auto restore = scope_exit([&] { _doc.current_object = previous; });
+        if (auto *painted = cast<SPItem>(object)) {
+            if (painted->isHidden()) return;
+            _doc.current_object = get_id(painted);
+            SPIPaint const *paints[] = {&painted->style->fill, &painted->style->stroke};
+            for (auto const *paint : paints) {
+                if (paint->isColor() && paint->getColor().getSpace()->getType() == Colors::Space::Type::LAB) {
+                    _doc.report.add(_doc.current_object, _("Lab colour was converted to RGB."), Severity::Warning);
+                } else if (paint->isPaintserver() && paint->href) self(self, paint->href->getObject());
+            }
+            self(self, painted->getMaskObject());
+        }
+        if (auto *use = cast<SPUse>(object)) self(self, use->child);
+        if (auto *pattern = cast<SPPattern>(object)) self(self, pattern->ref.getObject());
+        for (auto const &child : object->children) self(self, &child);
+    };
+    note(note, item);
 
     std::vector<SPItem const *> items = {item};
     auto const bbox = item->visualBounds(item->i2doc_affine(), true, false, true);

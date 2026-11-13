@@ -287,6 +287,52 @@ TEST(MissingLinkSaveTest, CancelDiscardsRelinksAndIgnoreIsExplicit)
     EXPECT_TRUE(sp_images_missing(doc.get()).empty());
 }
 
+TEST(PrepressColorTest, LabFallbacksAndEmptyNamesAreFindings)
+{
+    using namespace Inkscape;
+    using namespace Extension;
+    if (!Application::exists()) Application::create(false);
+    if (!db.get("org.inkscape.output.pdf.capypdf")) Internal::PdfOutput::init();
+    auto *pdf = dynamic_cast<Output *>(db.get("org.inkscape.output.pdf.capypdf"));
+    ASSERT_TRUE(pdf);
+    auto const dir = g_dir_make_tmp("proof-colour-export-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const file = std::string(dir) + "/colours.pdf";
+    g_free(dir);
+    auto save = [&](std::string const &body) {
+        auto doc = SPDocument::createNewDocFromMem("<svg xmlns='http://www.w3.org/2000/svg' "
+            "xmlns:inkscape='http://www.inkscape.org/namespaces/inkscape' xmlns:proof='urn:x-proof:document:1' "
+            "width='200' height='100'>" + body + "</svg>");
+        if (!doc) throw std::runtime_error("test document did not load");
+        doc->ensureUpToDate();
+        pdf->save(doc.get(), file.c_str());
+    };
+    ASSERT_NO_THROW(save("<rect width='80' height='80' fill='lab(55 20 -30)' stroke='lab(65 -12 31)'/>"
+        "<text x='10' y='30' style='font-family:Arial;fill:lab(50 0 0)'>A"
+        "<tspan style='fill:lab(70 10 20);stroke:lab(60 -5 10)'>B</tspan></text>"));
+    EXPECT_TRUE(pdf->export_report.findings.empty()) << pdf->export_report.summary();
+    ASSERT_NO_THROW(save("<defs><linearGradient id='g'><stop stop-color='lab(55 20 -30)'/>"
+        "<stop offset='1' stop-color='red'/></linearGradient></defs>"
+        "<rect id='first' width='80' height='80' fill='url(#g)'/>"
+        "<rect id='second' x='100' width='80' height='80' fill='url(#g)'/>"));
+    auto const &findings = pdf->export_report.findings;
+    ASSERT_EQ(findings.size(), 2u) << pdf->export_report.summary();
+    EXPECT_EQ(findings[0].object, "first");
+    EXPECT_EQ(findings[1].object, "second");
+    for (auto const &finding : findings) {
+        EXPECT_EQ(finding.severity, Severity::Warning);
+        EXPECT_EQ(finding.reason, "Lab colour was converted to RGB.");
+    }
+    ASSERT_NO_THROW(save("<defs><linearGradient id='bad' inkscape:swatch='solid' proof:ink='' "
+        "proof:ink-alternate='device-cmyk(0 1 0 0)'><stop stop-color='red'/></linearGradient></defs>"
+        "<rect id='unnamed' width='80' height='80' fill='url(#bad)'/>"));
+    ASSERT_EQ(findings.size(), 1u) << pdf->export_report.summary();
+    EXPECT_EQ(findings[0].object, "unnamed");
+    EXPECT_EQ(findings[0].severity, Severity::Error);
+    EXPECT_EQ(findings[0].reason, "Spot ink name is empty.");
+    EXPECT_TRUE(pdf->export_report.written);
+}
+
 } // namespace
 #endif
 

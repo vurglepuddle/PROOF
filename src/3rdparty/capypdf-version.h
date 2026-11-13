@@ -17,7 +17,7 @@ public:
     bool set_pdf17() { return proof::set_pdf17(_d.get()); }
 };
 
-// A Separation for the ink `name` (ASCII), its alternate the ICC-based space `icc` and its tint
+// A Separation for the ink `name` (UTF-8), its alternate the ICC-based space `icc` and its tint
 // transform the calculator function `tint_transform`. The C API has device alternates only.
 // Throws capypdf::PdfException as the C++ wrapper does.
 CapyPDF_SeparationId add_icc_separation(CapyPDF_Generator *generator, std::string_view name, CapyPDF_IccColorSpaceId icc,

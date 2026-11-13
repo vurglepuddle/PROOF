@@ -101,8 +101,9 @@ class DocumentGenerator : public capypdf::Generator
 public:
     using capypdf::Generator::Generator;
 
+    CapyPDF_LabColorSpaceId add_lab();
     CapyPDF_SeparationId add_registration_ink(CapyPDF_FunctionId tint_transform, CapyPDF_Device_Colorspace alternate);
-    /// PROOF: a Separation colour space, the plate of the ink `name` (ASCII), with its tint transform.
+    /// PROOF: a Separation colour space, the plate of the ink `name` (UTF-8), with its tint transform.
     CapyPDF_SeparationId add_ink(std::string_view name, CapyPDF_FunctionId tint_transform,
                                  CapyPDF_Device_Colorspace alternate);
     /// PROOF: the same with an ICC-based alternate; nothing with a CapyPDF without PROOF's overlay.
@@ -197,6 +198,7 @@ private:
 public:
     CapyPDF_Device_Colorspace get_default_colorspace() const;
     CapyPDF_Device_Colorspace get_colorspace(std::shared_ptr<Colors::Space::AnySpace> const &space) const;
+    void note_gradient(SPGradient const *gradient, std::optional<double> opacity, bool raster = false);
     std::optional<CapyPDF_IccColorSpaceId> get_icc_profile(std::shared_ptr<Colors::Space::CMS> const &profile);
     /// PROOF: the plate of a spot ink (named `name`, defined as `alternate` at full strength) in
     /// `document`, made once for each name. Nothing when PDF can't name it (not ASCII, or None), or
@@ -226,6 +228,7 @@ private:
     StyleMemory _paint_memory;
 
     std::map<std::string, CapyPDF_IccColorSpaceId> _icc_cache;
+    std::optional<CapyPDF_LabColorSpaceId> _lab;
     std::optional<CapyPDF_SeparationId> _registration_ink;
     std::optional<CapyPDF_SeparationId> _registration_rgb_ink; ///< An RGB document's Registration.
     /// PROOF: each spot ink's plate by its name, with the definition it was made for; nothing for an

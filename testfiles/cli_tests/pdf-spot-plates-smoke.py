@@ -7,8 +7,7 @@ paint each object with it at its tint. Its alternate is the ink as the document 
 the document's CMYK in its own ICC profile (a CMYK ink's numbers times the tint, a Lab or RGB
 ink converted), by a calculator function, so it draws as the document's process colour does.
 Ghostscript must find each ink on its own plate and none of it on the process plates. A mask
-still draws its luminosity, Registration stays /All, an ink PDF can't name stays its display
-colour. In an RGB document a CMYK ink keeps its numbers (DeviceCMYK) and the others are RGB.
+still draws its luminosity, Registration stays /All, non-ASCII names remain plates. In an RGB document a CMYK ink keeps its numbers (DeviceCMYK) and the others are RGB.
 The page must look as the output before plates drew it, within a few levels, and the native
 .ai page must carry the same plates and reopen natively. Gradients with ink stops still blend
 as process colour (later work).
@@ -20,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import quote
 
 from PIL import Image
 
@@ -73,7 +73,7 @@ PROBES = {
     'CMYK ink': (40, 40), 'CMYK ink at 30%': (120, 40), 'Lab ink': (200, 40), 'Lab ink at 45%': (280, 40),
     'RGB ink': (360, 40), 'RGB ink at 60%': (440, 40), 'stroke in an ink': (20, 120), 'paper in the stroke': (60, 120),
     'translucent group': (200, 120), 'pattern tile': (300, 110), 'masked by an ink': (420, 120),
-    'unnamed ink': (40, 200), 'Registration': (120, 200), 'process beside them': (200, 200),
+    'non-ASCII ink': (40, 200), 'Registration': (120, 200), 'process beside them': (200, 200),
 }
 
 
@@ -132,8 +132,7 @@ def plates(pdf):
         for key, value in spaces.items():
             value = value.get_object()
             if isinstance(value, list) and len(value) == 4 and value[0] == '/Separation':
-                name = bytes(value[1][1:], 'latin-1').decode('utf-8', 'replace') if isinstance(value[1], str) else str(value[1])
-                name = re.sub(r'#([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), name)
+                name = str(value[1])[1:]  # pypdf already decodes #xx and UTF-8.
                 alternate = value[2].get_object()
                 if isinstance(alternate, list) and alternate and alternate[0] == '/ICCBased':
                     alternate = '/ICCBased' + str(alternate[1].get_object().get('/N'))
@@ -230,11 +229,10 @@ def main():
     p = run('pdf', args.inkscape.resolve(), source, f'--export-filename={pdf}')
     found = plates(pdf)
     named = {k for k in found if k != 'All'}
-    check('one plate for each ink PDF can name', named == {'PROOF Plate Orange', 'PROOF Plate Violet', 'PROOF Plate Green'},
+    check('one plate for each ink PDF can name', named == set(INKS),
           sorted(found))
     check('Registration stays on /All', 'All' in found and found['All']['alternate'] == '/DeviceCMYK')
-    check('an ink PDF cannot name is drawn in its display colour, said so',
-          'PROOF Encre été' not in found and b"can't be named in PDF" in p.stdout + p.stderr)
+    check('non-ASCII ink is a Separation', 'PROOF Encre \u00e9t\u00e9' in found)
 
     def function_at(entry, t):
         """Evaluate the plate's calculator function at a tint: the few operators it uses."""
@@ -318,6 +316,9 @@ def main():
         def coverage(plate, at):
             path = sep.parent / f'plate({plate}).tif'
             if not path.exists():
+                # tiffsep percent-escapes non-ASCII colourant bytes in its filenames.
+                path = sep.parent / f"plate({quote(plate, safe=' ')}).tif"
+            if not path.exists():
                 return None
             with Image.open(path) as im:
                 return round(1 - im.convert('L').getpixel(at) / 255, 2)
@@ -325,13 +326,14 @@ def main():
         expect = {('PROOF Plate Orange', 'CMYK ink'): 1.0, ('PROOF Plate Orange', 'CMYK ink at 30%'): 0.3,
                   ('PROOF Plate Violet', 'Lab ink'): 1.0, ('PROOF Plate Violet', 'Lab ink at 45%'): 0.45,
                   ('PROOF Plate Green', 'RGB ink'): 1.0, ('PROOF Plate Green', 'RGB ink at 60%'): 0.6,
-                  ('PROOF Plate Violet', 'stroke in an ink'): 1.0, ('PROOF Plate Violet', 'paper in the stroke'): 0.0}
+                  ('PROOF Plate Violet', 'stroke in an ink'): 1.0, ('PROOF Plate Violet', 'paper in the stroke'): 0.0,
+                  ('PROOF Encre \u00e9t\u00e9', 'non-ASCII ink'): 1.0}
         got = {f'{plate} / {where}': coverage(plate, PROBES[where]) for plate, where in expect}
         check('each ink on its own plate at its tint', all(
             got[f'{plate} / {where}'] is not None and abs(got[f'{plate} / {where}'] - want) <= 0.02
             for (plate, where), want in expect.items()), got)
         process = {p: coverage(p, PROBES[w]) for p in ('Cyan', 'Magenta', 'Yellow', 'Black')
-                   for w in ('CMYK ink', 'Lab ink', 'RGB ink')}
+                   for w in ('CMYK ink', 'Lab ink', 'RGB ink', 'non-ASCII ink')}
         check('and nothing of them on the process plates', all(v == 0 for v in process.values()), process)
         check('process colour still on the process plates', coverage('Black', PROBES['process beside them']) > 0.3,
               coverage('Black', PROBES['process beside them']))

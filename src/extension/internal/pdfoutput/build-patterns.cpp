@@ -27,12 +27,79 @@
 #include "object/sp-linear-gradient.h"
 #include "object/sp-mesh-gradient.h"
 #include "object/sp-pattern.h"
+#include "object/sp-stop.h"
+#include "spot-ink.h"
+#include "xml/node.h"
 #include "object/sp-radial-gradient.h"
 
 using Geom::X;
 using Geom::Y;
 
 namespace Inkscape::Extension::Internal::PdfBuilder {
+
+// Shared with the diagnostic pass: retain the existing mixed-model selection exactly.
+static std::shared_ptr<Colors::Space::AnySpace> gradient_space(SPGradientVector const &vector, SPDocument *document)
+{
+    if (vector.stops.empty()) return Colors::Manager::get().find(Colors::Space::Type::RGB);
+    auto color_space = vector.stops[0].color->getSpace();
+    // PROOF: stops of more than one colour model (CMYK or a spot ink's Lab beside RGB: an .ai
+    // gradient's stops each have a model of their own) blend in the document's colour mode, as
+    // Illustrator 29.2.1 blends process colours of two models (in an RGB document within 1 level of
+    // the canvas, which blends every gradient in RGB). The space is the first stop's in that mode,
+    // whose numbers stay as they are (a CMYK stop in the document's profile); otherwise the first
+    // stop's space, as before. Illustrator prints an ink beside process colour on its own plate;
+    // here it is its alternate (PROOF-ai-interchange.md, "Gradient stops of different colour models").
+    auto const model = [](SPGradientStop const &stop) {
+        auto const space = stop.color ? stop.color->getSpace() : nullptr;
+        return space ? space->getComponentType() : Colors::Space::Type::NONE;
+    };
+    if (std::any_of(vector.stops.begin(), vector.stops.end(),
+                    [&](SPGradientStop const &stop) { return model(stop) != model(vector.stops.front()); })) {
+        auto const mode = Colors::DocumentColors::mode(document);
+        auto const first = std::find_if(vector.stops.begin(), vector.stops.end(),
+                                        [&](SPGradientStop const &stop) { return model(stop) == mode; });
+        color_space = first != vector.stops.end() ? first->color->getSpace() : Colors::Manager::get().find(mode);
+    }
+
+    return color_space;
+}
+
+void Document::note_gradient(SPGradient const *gradient, std::optional<double> opacity, bool raster)
+{
+    bool lab = false;
+    auto visit = [&](auto const &self, SPObject const *object) -> void {
+        if (auto const *name = object->getRepr()->attribute("proof:ink"); name && !*name) {
+            report.error(current_object, _("Spot ink name is empty."));
+        }
+        if (auto const *stop = cast<SPStop>(object)) {
+            lab = lab || stop->getColor().getSpace()->getType() == Colors::Space::Type::LAB;
+        }
+        if (auto ink = SpotInk::read(object->getRepr())) {
+            lab = lab || ink->alternate.getSpace()->getType() == Colors::Space::Type::LAB;
+        }
+        for (auto const &child : object->children) self(self, &child);
+    };
+    visit(visit, gradient);
+    if (auto const *vector = gradient->getVector(); vector && vector != gradient) visit(visit, vector);
+    if (!lab || (!raster && gradient->isSolid())) return;
+    if (raster) {
+        report.add(current_object, _("Lab colour was converted to RGB."), Severity::Warning);
+        return;
+    }
+    // Run before the pattern-cache lookup, so every painted user receives its own finding.
+    auto space = Colors::Manager::get().find(Colors::Space::Type::RGB);
+    if (auto const *mesh = cast<SPMeshGradient>(gradient)) {
+        mesh->ensureArray();
+        if (!mesh->array.nodes.empty() && !mesh->array.nodes[0].empty() && mesh->array.nodes[0][0]->color) {
+            space = mesh->array.nodes[0][0]->color->getSpace();
+        }
+    } else {
+        space = gradient_space(GradientRendering::pdf_vector(gradient), gradient->document);
+    }
+    report.add(current_object, opacity ? _("Lab colour was converted to gray for an opacity mask.")
+        : get_colorspace(space) == CAPY_DEVICE_CS_CMYK ? _("Lab colour was converted to CMYK.")
+                                                     : _("Lab colour was converted to RGB."), Severity::Warning);
+}
 
 PatternContext::PatternContext(Document &doc, Geom::Rect const &bbox)
     : DrawContext(doc, doc.generator().new_tiling_pattern_context(bbox.left(), bbox.top(), bbox.right(), bbox.bottom()),
@@ -453,25 +520,7 @@ std::optional<CapyPDF_FunctionId> Document::get_gradient_function(SPGradientVect
     if (stops == 0) {
         return {};
     }
-    auto color_space = vector.stops[0].color->getSpace();
-    // PROOF: stops of more than one colour model (CMYK or a spot ink's Lab beside RGB: an .ai
-    // gradient's stops each have a model of their own) blend in the document's colour mode, as
-    // Illustrator 29.2.1 blends process colours of two models (in an RGB document within 1 level of
-    // the canvas, which blends every gradient in RGB). The space is the first stop's in that mode,
-    // whose numbers stay as they are (a CMYK stop in the document's profile); otherwise the first
-    // stop's space, as before. Illustrator prints an ink beside process colour on its own plate;
-    // here it is its alternate (PROOF-ai-interchange.md, "Gradient stops of different colour models").
-    auto const model = [](SPGradientStop const &stop) {
-        auto const space = stop.color ? stop.color->getSpace() : nullptr;
-        return space ? space->getComponentType() : Colors::Space::Type::NONE;
-    };
-    if (std::any_of(vector.stops.begin(), vector.stops.end(),
-                    [&](SPGradientStop const &stop) { return model(stop) != model(vector.stops.front()); })) {
-        auto const mode = Colors::DocumentColors::mode(document);
-        auto const first = std::find_if(vector.stops.begin(), vector.stops.end(),
-                                        [&](SPGradientStop const &stop) { return model(stop) == mode; });
-        color_space = first != vector.stops.end() ? first->color->getSpace() : Colors::Manager::get().find(mode);
-    }
+    auto color_space = gradient_space(vector, document);
 
     // Update the caller on what the color space should be for this gradient
     if (!opacity) {

@@ -352,3 +352,34 @@ proof_capypdf_overlay(drawcontext.cpp
 proof_capypdf_overlay(pdfwriter.cpp
     [==[        std::format_to(bi, "{} ", (int32_t)(double(horiadvance) * 1000 / face->units_per_EM));]==]
     [==[        std::format_to(bi, "{:.3f} ", double(horiadvance) * 1000 / face->units_per_EM);]==])
+
+# Separation names are UTF-8 byte strings, escaped by bytes2pdfstringliteral.
+foreach(name document.hpp document.cpp generator.hpp)
+    foreach(operation create_separation create_icc_separation)
+        proof_capypdf_overlay(${name}
+            "${operation}(const asciistring &name,"
+            "${operation}(const u8string &name,")
+    endforeach()
+endforeach()
+proof_capypdf_overlay(capi.cpp
+    "auto name = validate_ascii(separation_name, strsize);"
+    "auto name = validate_utf8(separation_name, strsize);")
+# Escape all PDF name delimiters, as well as every non-ASCII UTF-8 byte.
+proof_capypdf_overlay(utils.cpp
+    "c == '#' || c == '(' || c == ')' || c == ' ' || c == '/'"
+    "c == '#' || c == '(' || c == ')' || c == ' ' || c == '/' || c == '<' || c == '>' || c == '[' || c == ']' || c == '%'")
+
+# The C API already creates Lab spaces and sets Lab colours. Text must serialize them too.
+foreach(pair "sarg;CS;SCN" "nsarg;cs;scn")
+    list(GET pair 0 arg)
+    list(GET pair 1 select)
+    list(GET pair 2 paint)
+    if(arg STREQUAL "sarg")
+        set(kind "stroke")
+    else()
+        set(kind "nonstroke")
+    endif()
+    proof_capypdf_overlay(drawcontext.cpp
+        "            } else {\n                printf(\"Given text ${kind} colorspace not supported yet.\\n\");"
+        "            } else if(auto lab = std::get_if<LabColor>(&${arg}.c)) {\n                CHECK_INDEXNESS(lab->id.id, doc->document_objects);\n                used_colorspaces.insert(lab->id.id);\n                cmds.append(std::format(\"/CSpace{} ${select}\\n{:f} {:f} {:f} ${paint}\\n\", lab->id.id, lab->l, lab->a, lab->b));\n            } else {\n                printf(\"Given text ${kind} colorspace not supported yet.\\n\");")
+endforeach()

@@ -23,6 +23,7 @@
 #include "colors/manager.h"
 #include "colors/spaces/cms.h"
 #include "colors/spaces/cmyk.h"
+#include "colors/spaces/lab.h"
 #include "object/sp-gradient.h"
 #include "libnrtype/font-instance.h"
 #include "object/sp-paint-server.h"
@@ -43,6 +44,16 @@ public:
     SeparationColor(CapyPDF_SeparationId ink, double tint)
     {
         auto const error = capy_color_set_separation(*this, ink, tint);
+        if (error) throw capypdf::PdfException(capy_error_message(error));
+    }
+};
+
+class LabPaint : public capypdf::Color
+{
+public:
+    LabPaint(CapyPDF_LabColorSpaceId id, double l, double a, double b)
+    {
+        auto const error = capy_color_set_lab(*this, id, l, a, b);
         if (error) throw capypdf::PdfException(capy_error_message(error));
     }
 };
@@ -80,6 +91,15 @@ std::string between_samples(std::vector<std::vector<double>> const &samples, std
 }
 
 } // namespace
+
+CapyPDF_LabColorSpaceId DocumentGenerator::add_lab()
+{
+    CapyPDF_LabColorSpaceId id;
+    // D50, matching LittleCMS's Lab profile; PROOF's stored a/b scale is -128..127.
+    auto const error = capy_generator_add_lab_colorspace(*this, 0.9642, 1.0, 0.8249, -128, 127, -128, 127, &id);
+    if (error) throw capypdf::PdfException(capy_error_message(error));
+    return id;
+}
 
 CapyPDF_SeparationId DocumentGenerator::add_registration_ink(CapyPDF_FunctionId tint_transform,
                                                             CapyPDF_Device_Colorspace alternate)
@@ -121,6 +141,14 @@ std::optional<CapyPDF_SeparationId> Document::spot_plate(std::string const &name
                                                          SPDocument *document)
 {
     using Colors::Space::Type;
+    if (name.empty()) {
+        report.error(current_object, _("Spot ink name is empty."));
+        return {};
+    }
+    if (alternate.getSpace() && alternate.getSpace()->getType() == Type::LAB) {
+        report.add(current_object, document && Colors::DocumentColors::mode(document) == Type::CMYK
+            ? _("Lab spot alternate was converted to CMYK.") : _("Lab spot alternate was converted to RGB."), Severity::Warning);
+    }
     auto const definition = alternate.toString(false);
     if (auto const known = _plates.find(name); known != _plates.end()) {
         // One name, one plate: what PDF names an ink by is its plate.
@@ -131,11 +159,10 @@ std::optional<CapyPDF_SeparationId> Document::spot_plate(std::string const &name
     }
     auto &plate = _plates[name];
     plate.first = definition;
-    bool const ascii = !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
-        return static_cast<unsigned char>(c) >= 0x20 && static_cast<unsigned char>(c) < 0x7f;
-    });
+    bool const valid_name = g_utf8_validate(name.data(), name.size(), nullptr) &&
+        std::all_of(name.begin(), name.end(), [](unsigned char c) { return c >= 0x20 && c != 0x7f; });
     auto const space = alternate.getSpace();
-    if (!ascii || name == "None" || !space) {
+    if (!valid_name || name == "None" || !space) {
         g_warning("Spot ink '%s' can't be named in PDF: it is drawn in its display colour, without a plate.",
                   name.c_str());
         return {};
@@ -522,6 +549,7 @@ std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle
     capypdf::Color out;
     if (paint.isPaintserver()) {
         auto swatch = cast<SPGradient>(paint.href ? paint.href->getObject() : nullptr);
+        if (swatch) note_gradient(swatch, opacity);
         if (swatch && swatch->isSolid()) {
             // PROOF: the imported Registration swatch is the reserved ink All. Its
             // canonical CMYK definition prints on every plate, rather than becoming
@@ -564,6 +592,12 @@ std::optional<capypdf::Color> Document::get_paint(SPIPaint const &paint, SPStyle
                     return capypdf::Color{SeparationColor(*plate, ink->tint)};
                 }
             }
+            // A plain Lab swatch is flat paint too; its RGB preview must not replace its numbers.
+            auto const *vector = swatch->getGradientVector();
+            if (!ink && vector && !vector->stops.empty() && vector->stops[0].color &&
+                vector->stops[0].color->getSpace()->getType() == Colors::Space::Type::LAB) {
+                return get_color(*vector->stops[0].color, opacity);
+            }
             return get_color(swatch->getPreviewAverageColor(), opacity);
         } else if (auto pattern_id = get_pattern(paint.href ? paint.href->getObject() : nullptr, opacity, bbox)) {
             out.set_pattern(*pattern_id);
@@ -587,6 +621,8 @@ capypdf::Color Document::get_color(Colors::Color const &color, std::optional<dou
 
     capypdf::Color out;
     if (opacity) {
+        if (space->getType() == Colors::Space::Type::LAB) report.add(current_object,
+            _("Lab colour was converted to gray for an opacity mask."), Severity::Warning);
         out.set_gray(*opacity * color.getOpacity());
     } else if (auto cmyk = std::dynamic_pointer_cast<Colors::Space::DeviceCMYK>(space)) {
         out.set_cmyk(color[0], color[1], color[2], color[3]);
@@ -596,6 +632,18 @@ capypdf::Color Document::get_color(Colors::Color const &color, std::optional<dou
             out.set_icc(*icc_id, vals.data(), vals.size());
         } else {
             g_warning("Couldn't set icc color, icc profile didn't load.");
+        }
+    } else if (space->getType() == Colors::Space::Type::LAB) {
+        auto const l = color[0] * 100, a = color[1] * 255 - 128, b = color[2] * 255 - 128;
+        if (std::isfinite(l) && std::isfinite(a) && std::isfinite(b) && l >= 0 && l <= 100 &&
+            a >= -128 && a <= 127 && b >= -128 && b <= 127) {
+            if (!_lab) _lab = _gen.add_lab();
+            out = LabPaint(*_lab, l, a, b);
+        } else {
+            report.add(current_object, _("Lab colour outside the PDF Lab range was converted to RGB."), Severity::Warning);
+            auto const rgb = color.converted(Colors::Space::Type::RGB);
+            if (!rgb) throw std::runtime_error("Could not convert Lab colour.");
+            out.set_rgb((*rgb)[0], (*rgb)[1], (*rgb)[2]);
         }
     } else if (auto rgb = color.converted(Colors::Space::Type::RGB)) {
         out.set_rgb(rgb->get(0), rgb->get(1), rgb->get(2));
@@ -608,6 +656,13 @@ capypdf::Color Document::get_color(Colors::Color const &color, std::optional<dou
 
 capypdf::Color Document::get_shading_color(Colors::Color const &color, std::optional<double> opacity)
 {
+    if (color.getSpace()->getType() == Colors::Space::Type::LAB) {
+        // E2 will supply a shading colour-space reference. Until then retain the RGB fallback.
+        report.add(current_object, _("Lab colour was converted to RGB."), Severity::Warning);
+        auto rgb = color.converted(Colors::Space::Type::RGB);
+        if (!rgb) throw std::runtime_error("Could not convert Lab shading colour.");
+        return get_color(*rgb, opacity);
+    }
     // CapyPDF's shading functions accept device components, not ICC color objects.
     // Keep the profile's RGB/CMYK channels in the device space selected below.
     if (!opacity) {
