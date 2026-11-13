@@ -10,7 +10,7 @@ from pypdf.generic import IndirectObject, StreamObject
 
 
 def serialized(pdf):
-    reader = PdfReader(pdf)  # The pinned Type6 writer repeats /Length; do not hide colour bytes.
+    reader = PdfReader(pdf, strict=True)
     data = pdf.read_bytes()
     # Inspect original decoded bytes, including compressed object dictionaries and text commands.
     for generation, objects in reader.xref.items():
@@ -85,6 +85,20 @@ def main():
         if not pdf.is_file():
             continue
         data = serialized(pdf)
+        if label == 'mesh':
+            raw = pdf.read_bytes()
+            dictionaries = re.findall(rb'<<(.*?)>>\s*stream\r?\n', raw, re.S)
+            check('mesh: exactly one Length per original stream dictionary', dictionaries and all(
+                len(re.findall(rb'/Length\b', dictionary)) == 1 for dictionary in dictionaries))
+            correct = True
+            for match in re.finditer(rb'<<(.*?)>>\s*stream\r?\n', raw, re.S):
+                length = re.search(rb'/Length\s+(\d+)\s*(?:/|>>|$)', match[1])
+                if length:
+                    end = match.end() + int(length[1])
+                    correct = correct and raw[end:].startswith((b'\nendstream', b'\r\nendstream'))
+                else:
+                    correct = False
+            check('mesh: declared lengths match original stream bytes', correct)
         if label in ('flat', 'empty'):
             ai = out / (label + '.ai')
             previous = b'previous destination'

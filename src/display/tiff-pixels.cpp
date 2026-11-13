@@ -179,6 +179,21 @@ std::optional<std::string> cmyk_tiff_profile(std::string_view data)
     return std::string();
 }
 
+std::string tiff_embedded_profile(std::string_view data, std::uint16_t *orientation)
+{
+    if (!looks_like_tiff(data)) return {};
+    Memory memory{data};
+    auto tif = open(memory, nullptr);
+    if (!tif) return {};
+    if (orientation) TIFFGetFieldDefaulted(tif.get(), TIFFTAG_ORIENTATION, orientation);
+    std::uint32_t size = 0;
+    void *profile = nullptr;
+    if (TIFFGetField(tif.get(), TIFFTAG_ICCPROFILE, &size, &profile) && profile && size) {
+        return {static_cast<char const *>(profile), size};
+    }
+    return {};
+}
+
 std::optional<RasterPixels> read_tiff(std::string_view data, std::string *error)
 {
     if (!looks_like_tiff(data)) {

@@ -10,6 +10,8 @@ namespace capypdf::proof {
 // Select the engine's PDF 1.7 mode for a document containing compatible features.
 // Ordinary documents otherwise keep PDF 2.0; conformance modes cannot be overridden.
 bool set_pdf17(CapyPDF_DocumentProperties *properties);
+// Attach original ICC bytes to a raw builder; PdfDocument deduplicates by profile content.
+void set_raster_profile(CapyPDF_RasterImageBuilder *builder, std::string_view profile);
 
 class DocumentProperties : public capypdf::DocumentProperties
 {

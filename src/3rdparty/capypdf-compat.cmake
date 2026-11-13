@@ -383,3 +383,89 @@ foreach(pair "sarg;CS;SCN" "nsarg;cs;scn")
         "            } else {\n                printf(\"Given text ${kind} colorspace not supported yet.\\n\");"
         "            } else if(auto lab = std::get_if<LabColor>(&${arg}.c)) {\n                CHECK_INDEXNESS(lab->id.id, doc->document_objects);\n                used_colorspaces.insert(lab->id.id);\n                cmds.append(std::format(\"/CSpace{} ${select}\\n{:f} {:f} {:f} ${paint}\\n\", lab->id.id, lab->l, lab->a, lab->b));\n            } else {\n                printf(\"Given text ${kind} colorspace not supported yet.\\n\");")
 endforeach()
+
+# DeflatePDFObject supplies the final compressed length; a shading must not supply its own.
+proof_capypdf_overlay(document.cpp
+    [==[rvoe<int32_t> PdfDocument::serialize_shading(const ShadingType4 &shade) {
+    const int shadingtype = 4;
+    ERC(serialized, serialize_shade4(shade));
+    ObjectFormatter fmt;
+    fmt.begin_dict();
+    fmt.add_token_pair("/ShadingType", shadingtype);
+    fmt.add_token_pair("/ColorSpace", colorspace_names.at((int)shade.colorspace));
+    fmt.add_token_pair("/BitsPerCoordinate", 32);
+    fmt.add_token_pair("/BitsPerComponent", 16);
+    fmt.add_token_pair("/BitsPerFlag", 8);
+    fmt.add_token_pair("/Length", serialized.length());]==]
+    [==[rvoe<int32_t> PdfDocument::serialize_shading(const ShadingType4 &shade) {
+    const int shadingtype = 4;
+    ERC(serialized, serialize_shade4(shade));
+    ObjectFormatter fmt;
+    fmt.begin_dict();
+    fmt.add_token_pair("/ShadingType", shadingtype);
+    fmt.add_token_pair("/ColorSpace", colorspace_names.at((int)shade.colorspace));
+    fmt.add_token_pair("/BitsPerCoordinate", 32);
+    fmt.add_token_pair("/BitsPerComponent", 16);
+    fmt.add_token_pair("/BitsPerFlag", 8);]==])
+proof_capypdf_overlay(document.cpp
+    [==[rvoe<int32_t> PdfDocument::serialize_shading(const ShadingType6 &shade) {
+    const int shadingtype = 6;
+    ERC(serialized, serialize_shade6(shade));
+    ObjectFormatter fmt;
+    fmt.begin_dict();
+    fmt.add_token_pair("/ShadingType", shadingtype);
+    fmt.add_token_pair("/ColorSpace", colorspace_names.at((int)shade.colorspace));
+    fmt.add_token_pair("/BitsPerCoordinate", 32);
+    fmt.add_token_pair("/BitsPerComponent", 16);
+    fmt.add_token_pair("/BitsPerFlag", 8);
+    fmt.add_token_pair("/Length", serialized.length());]==]
+    [==[rvoe<int32_t> PdfDocument::serialize_shading(const ShadingType6 &shade) {
+    const int shadingtype = 6;
+    ERC(serialized, serialize_shade6(shade));
+    ObjectFormatter fmt;
+    fmt.begin_dict();
+    fmt.add_token_pair("/ShadingType", shadingtype);
+    fmt.add_token_pair("/ColorSpace", colorspace_names.at((int)shade.colorspace));
+    fmt.add_token_pair("/BitsPerCoordinate", 32);
+    fmt.add_token_pair("/BitsPerComponent", 16);
+    fmt.add_token_pair("/BitsPerFlag", 8);]==])
+
+# The raw builder has no ICC setter. Keep this bridge beside its private C API definition.
+proof_capypdf_overlay(capi.cpp
+    [==[struct RasterImageBuilder : public _capyPDF_RasterImageBuilder {
+    RawPixelImage i;
+};]==]
+    [==[struct RasterImageBuilder : public _capyPDF_RasterImageBuilder {
+    RawPixelImage i;
+};
+namespace capypdf::proof {
+void set_raster_profile(CapyPDF_RasterImageBuilder *builder, std::string_view profile) {
+    auto &image = static_cast<::RasterImageBuilder *>(builder)->i;
+    auto const *bytes = reinterpret_cast<std::byte const *>(profile.data());
+    image.icc_profile.assign(bytes, bytes + profile.size());
+}
+}]==])
+
+# A tagged PNG palette is RGB, even when it has only two entries. Do not reduce it to
+# untagged monochrome (or discard its transparency); expand its already unpacked indices.
+proof_capypdf_overlay(imagefileops.cpp
+    [==[        if(palette_size == 2) {]==]
+    [==[        if(!image.icc_profile.empty()) {
+            image.md.cs = CAPY_IMAGE_CS_RGB;
+            image.md.pixel_depth = 8;
+            if(trns_rc == PNG_INFO_tRNS) image.md.alpha_depth = 8;
+            auto rows = png_get_rows(png_ptr, info_ptr);
+            for(uint32_t y = 0; y < image.md.h; ++y) {
+                for(uint32_t x = 0; x < image.md.w; ++x) {
+                    auto index = rows[y][x];
+                    if(index >= pspan.size()) RETERR(UnsupportedFormat);
+                    auto color = pspan[index];
+                    image.pixels.insert(image.pixels.end(),
+                        {std::byte(color.red), std::byte(color.green), std::byte(color.blue)});
+                    if(trns_rc == PNG_INFO_tRNS)
+                        image.alpha.push_back(std::byte(index < num_trans ? trans[index] : 255));
+                }
+            }
+            return RasterImage(std::move(image));
+        }
+        if(palette_size == 2) {]==])

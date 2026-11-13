@@ -9,8 +9,7 @@
  *
  * CMYK numbers are the document's (Illustrator's "Preserve Numbers"): on screen they show
  * through the document's CMYK profile when it has one, else the picture's own, else the
- * working CMYK profile; in a PDF they go out unchanged as DeviceCMYK. RGB and gray show as
- * their values, as every other RGB picture in PROOF does.
+ * working CMYK profile; in a PDF they go out unchanged as DeviceCMYK. RGB and gray with embedded profiles are converted to sRGB; untagged pictures keep their values.
  */
 #ifndef SEEN_INKSCAPE_DISPLAY_RASTER_PIXELS_H
 #define SEEN_INKSCAPE_DISPLAY_RASTER_PIXELS_H
@@ -19,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "colors/spaces/enum.h"
@@ -46,9 +46,12 @@ struct RasterPixels
     unsigned channels() const { return model == Model::Gray ? 1 : model == Model::RGB ? 3 : 4; }
 };
 
+/// The channel count of an embedded RGB, Gray or CMYK profile; zero when invalid/unsupported.
+unsigned raster_profile_channels(std::string_view profile);
+
 /// For the screen: a premultiplied ARGB32 surface. CMYK goes through `profile` (or, when that
 /// is empty, the picture's own profile, else the working CMYK profile) into sRGB; RGB and gray
-/// as their values. Nothing when a CMYK picture has no profile to be seen through.
+/// through their embedded profile when present. Nothing when a required transform cannot be made.
 cairo_surface_t *raster_surface(RasterPixels const &pixels, std::shared_ptr<Colors::CMS::Profile> profile,
                                 Colors::RenderingIntent intent = Colors::RenderingIntent::RELATIVE_COLORIMETRIC);
 

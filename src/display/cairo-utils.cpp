@@ -208,6 +208,70 @@ Pixbuf *Pixbuf::create_from_own_pixels(guchar *data, gsize len, std::shared_ptr<
     return pixbuf;
 }
 
+namespace {
+std::string embedded_profile(GdkPixbuf *buf, std::string_view bytes)
+{
+    // GdkPixbuf exposes PNG iCCP and JPEG APP2 profiles as base64 metadata. TIFF's
+    // loader does not consistently expose the tag, so read that tag from the same bytes.
+    if (auto profile = tiff_embedded_profile(bytes); !profile.empty()) return profile;
+    auto const *encoded = gdk_pixbuf_get_option(buf, "icc-profile");
+    if (!encoded) return {};
+    gsize size = 0;
+    auto *data = g_base64_decode(encoded, &size);
+    std::string profile(reinterpret_cast<char const *>(data), size);
+    g_free(data);
+    return profile;
+}
+
+GdkPixbuf *managed_pixels(GdkPixbuf *buf, std::string const &profile, std::string_view bytes)
+{
+    if (profile.empty()) return buf;
+    auto const channels = raster_profile_channels(profile);
+    if (channels != 1 && channels != 3) {
+        g_warning("The decoded picture's embedded profile is not RGB or gray.");
+        return buf;
+    }
+    RasterPixels pixels;
+    std::uint16_t orientation = 0;
+    if (auto tiff = read_tiff(bytes); tiff && tiff->model != RasterPixels::Model::CMYK) {
+        // Avoid the Gdk TIFF loader's premultiplied RGB cut-out samples. Read straight
+        // values at their original depth, and retain the TIFF's orientation separately.
+        pixels = std::move(*tiff);
+        tiff_embedded_profile(bytes, &orientation);
+    } else {
+        pixels.model = channels == 1 ? RasterPixels::Model::Gray : RasterPixels::Model::RGB;
+        pixels.width = gdk_pixbuf_get_width(buf);
+        pixels.height = gdk_pixbuf_get_height(buf);
+        pixels.profile = profile;
+        auto const alpha = gdk_pixbuf_get_has_alpha(buf);
+        auto const n = gdk_pixbuf_get_n_channels(buf), stride = gdk_pixbuf_get_rowstride(buf);
+        auto const *data = gdk_pixbuf_read_pixels(buf);
+        pixels.colour.reserve(std::size_t(pixels.width) * pixels.height * channels);
+        for (unsigned y = 0; y < pixels.height; ++y) {
+            for (unsigned x = 0; x < pixels.width; ++x) {
+                auto const *pixel = data + std::size_t(y) * stride + x * n;
+                for (unsigned c = 0; c < channels; ++c) pixels.colour.push_back(pixel[c]);
+                if (alpha) pixels.alpha.push_back(pixel[n - 1]);
+            }
+        }
+    }
+    if (auto *surface = raster_surface(pixels, {})) {
+        Pixbuf managed(surface);
+        auto *converted = gdk_pixbuf_copy(managed.getPixbufRaw());
+        gdk_pixbuf_copy_options(buf, converted);
+        // These decoded samples are now sRGB. Original file/MIME bytes retain their ICC.
+        gdk_pixbuf_remove_option(converted, "icc-profile");
+        if (orientation) {
+            gdk_pixbuf_remove_option(converted, "orientation");
+            gdk_pixbuf_set_option(converted, "orientation", std::to_string(orientation).c_str());
+        }
+        g_object_unref(buf);
+        return converted;
+    }
+    return buf; // An invalid profile retains the old display, with the warning above.
+}
+} // namespace
+
 Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
                                      std::shared_ptr<Colors::CMS::Profile> const &cmyk, int pdf_page)
 {
@@ -241,6 +305,8 @@ Pixbuf *Pixbuf::create_from_data_uri(gchar const *uri_data, double svgdpi,
             GdkPixbuf *buf = gdk_pixbuf_loader_get_pixbuf(loader);
             if (buf) {
                 g_object_ref(buf);
+                auto const profile = embedded_profile(buf, {reinterpret_cast<char const *>(decoded), decoded_len});
+                buf = managed_pixels(buf, profile, {reinterpret_cast<char const *>(decoded), decoded_len});
                 bool has_ori = Pixbuf::get_embedded_orientation(buf) != Geom::identity();
                 buf = Pixbuf::apply_embedded_orientation(buf);
                 pixbuf = new Pixbuf(buf);
@@ -497,6 +563,8 @@ Pixbuf *Pixbuf::create_from_buffer(gchar *&&data, gsize len, double svgdpi, std:
             if (buf) {
                 // gdk_pixbuf_loader_get_pixbuf returns a borrowed reference
                 g_object_ref(buf);
+                auto const profile = embedded_profile(buf, {data, len});
+                buf = managed_pixels(buf, profile, {data, len});
                 has_ori = Pixbuf::get_embedded_orientation(buf) != Geom::identity();
                 buf = Pixbuf::apply_embedded_orientation(buf);
                 pb = new Pixbuf(buf);

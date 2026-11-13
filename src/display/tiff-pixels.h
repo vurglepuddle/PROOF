@@ -35,6 +35,9 @@ bool is_cmyk_tiff(std::string_view data);
 /// is no CMYK TIFF. Reads its tags only.
 std::optional<std::string> cmyk_tiff_profile(std::string_view data);
 
+/// Any embedded profile, read from the tags without decoding the pixels.
+std::string tiff_embedded_profile(std::string_view data, std::uint16_t *orientation = nullptr);
+
 /// The pixels of the TIFF in `data`, or nothing when it is no TIFF or one of a kind not read
 /// here (then `error` says why, when given).
 std::optional<RasterPixels> read_tiff(std::string_view data, std::string *error = nullptr);

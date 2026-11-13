@@ -149,6 +149,10 @@ std::tuple<char const *, Base64Data> extract_uri_data(char const *uri_data)
             data_is_image = true;
             data += 10;
         }
+        else if (g_ascii_strncasecmp(data, "image/vnd.adobe.photoshop", 25) == 0) {
+            data_is_image = true;
+            data += 25;
+        }
         else if (g_ascii_strncasecmp(data, "image/svg+xml", 13) == 0) {
             /* SVG image */
             data_is_svg = true;

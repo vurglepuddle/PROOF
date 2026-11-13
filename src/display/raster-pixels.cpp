@@ -6,12 +6,52 @@
 #include "raster-pixels.h"
 
 #include <lcms2.h>
+#include <map>
+#include <tuple>
+#include <glib.h>
 
 #include "colors/cms/profile.h"
 #include "colors/cms/transform.h"
 #include "colors/document-colors.h"
 
 namespace Inkscape {
+
+unsigned raster_profile_channels(std::string_view bytes)
+{
+    auto profile = cmsOpenProfileFromMem(bytes.data(), bytes.size());
+    if (!profile) return 0;
+    auto const space = cmsGetColorSpace(profile);
+    cmsCloseProfile(profile);
+    return space == cmsSigRgbData ? 3 : space == cmsSigGrayData ? 1 : space == cmsSigCmykData ? 4 : 0;
+}
+
+namespace {
+cmsHTRANSFORM embedded_transform(RasterPixels const &pixels, Colors::RenderingIntent intent)
+{
+    using Handle = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+    using Key = std::tuple<std::string, unsigned, unsigned, Colors::RenderingIntent>;
+    // Thread-local handles avoid sharing LittleCMS's mutable pixel cache across render threads.
+    // Bound the cache; image loading performs conversion once, never on each canvas draw.
+    static thread_local std::map<Key, Handle> cache;
+    Key key{pixels.profile, pixels.channels(), pixels.bits, intent};
+    if (auto it = cache.find(key); it != cache.end()) return it->second.get();
+    auto input = cmsOpenProfileFromMem(pixels.profile.data(), pixels.profile.size());
+    if (!input) return nullptr;
+    unsigned const channels = cmsGetColorSpace(input) == cmsSigRgbData ? 3 :
+                              cmsGetColorSpace(input) == cmsSigGrayData ? 1 : 0;
+    if (channels != pixels.channels()) { cmsCloseProfile(input); return nullptr; }
+    auto srgb = Colors::CMS::Profile::create_srgb();
+    auto const format = channels == 1 ? (pixels.bits == 16 ? TYPE_GRAY_16 : TYPE_GRAY_8)
+                                     : (pixels.bits == 16 ? TYPE_RGB_16 : TYPE_RGB_8);
+    auto transform = cmsCreateTransform(input, format, srgb->getHandle(), TYPE_RGB_8,
+        Colors::CMS::Transform::lcms_intent(intent), Colors::CMS::Transform::lcms_bpc(intent));
+    cmsCloseProfile(input);
+    if (!transform) return nullptr;
+    if (cache.size() >= 32) cache.erase(cache.begin());
+    cache.emplace(std::move(key), Handle(transform, cmsDeleteTransform));
+    return transform;
+}
+} // namespace
 
 cairo_surface_t *raster_surface(RasterPixels const &pixels, std::shared_ptr<Colors::CMS::Profile> profile,
                                 Colors::RenderingIntent intent)
@@ -37,9 +77,16 @@ cairo_surface_t *raster_surface(RasterPixels const &pixels, std::shared_ptr<Colo
                                        Colors::CMS::Transform::lcms_bpc(intent));
         if (!transform) return nullptr;
     }
+    if (!cmyk && !pixels.profile.empty()) {
+        transform = embedded_transform(pixels, intent);
+        if (!transform) {
+            g_warning("Could not apply the picture's embedded RGB/gray profile.");
+            return nullptr;
+        }
+    }
     auto *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, int(pixels.width), int(pixels.height));
     if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        if (transform) cmsDeleteTransform(transform);
+        if (cmyk && transform) cmsDeleteTransform(transform);
         cairo_surface_destroy(surface);
         return nullptr;
     }
@@ -77,7 +124,7 @@ cairo_surface_t *raster_surface(RasterPixels const &pixels, std::shared_ptr<Colo
                      premultiply(rgb[x * 3 + 2]);
         }
     }
-    if (transform) cmsDeleteTransform(transform);
+    if (cmyk && transform) cmsDeleteTransform(transform);
     cairo_surface_mark_dirty(surface);
     return surface;
 }

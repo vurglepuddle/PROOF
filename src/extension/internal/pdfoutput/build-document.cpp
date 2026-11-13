@@ -11,6 +11,10 @@
  */
 
 #include "build-document.h"
+#include "display/raster-pixels.h"
+#ifdef PROOF_CAPYPDF_RAW_PROFILE
+#include "3rdparty/capypdf-version.h"
+#endif
 
 #include <cstdio>
 #include <format>
@@ -296,9 +300,10 @@ std::optional<CapyPDF_ImageId> Document::add_own_pixels(std::string_view data, c
         tiff = read_psd(data);
     } else if (looks_like_tiff(data)) {
         tiff = read_tiff(data);
-        // Others keep CapyPDF's own reading, and with it their profile. The import's grey
-        // samples have none, and would otherwise go to print as the RGB the screen sees.
-        if (!samples && tiff && tiff->model != RasterPixels::Model::CMYK && tiff->alpha.empty()) return {};
+        // Opaque RGB keeps CapyPDF's reading and profile. Use our reader for tagged gray
+        // too: CapyPDF rejects some gray TIFFs that omit tags with standard defaults.
+        if (!samples && tiff && tiff->model != RasterPixels::Model::CMYK && tiff->alpha.empty() &&
+            (tiff->model != RasterPixels::Model::Gray || tiff->profile.empty())) return {};
     }
     if (!tiff) return {};
     // PDF's samples of 16 bits are big-endian.
@@ -313,7 +318,23 @@ std::optional<CapyPDF_ImageId> Document::add_own_pixels(std::string_view data, c
     };
     big_endian(tiff->colour);
     big_endian(tiff->alpha);
-    auto builder = capypdf::RasterImageBuilder();
+    class ProfiledBuilder : public capypdf::RasterImageBuilder {
+    public:
+        void set_profile(std::string_view bytes) {
+#ifdef PROOF_CAPYPDF_RAW_PROFILE
+            capypdf::proof::set_raster_profile(*this, bytes);
+#else
+            throw std::runtime_error("This PDF backend cannot attach a raw picture profile.");
+#endif
+        }
+    };
+    auto builder = ProfiledBuilder();
+    if (!samples && tiff->model != RasterPixels::Model::CMYK && !tiff->profile.empty()) {
+        if (raster_profile_channels(tiff->profile) != tiff->channels()) {
+            throw std::runtime_error("The picture's embedded profile does not match its samples.");
+        }
+        builder.set_profile(tiff->profile);
+    }
     builder.set_size(tiff->width, tiff->height);
     builder.set_colorspace(tiff->model == RasterPixels::Model::CMYK  ? CAPY_IMAGE_CS_CMYK
                            : tiff->model == RasterPixels::Model::RGB ? CAPY_IMAGE_CS_RGB

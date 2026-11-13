@@ -32,6 +32,8 @@
 #include "extension/internal/pdfoutput/pdf-output.h"
 #include "document.h"
 #include "document-undo.h"
+#include "display/raster-pixels.h"
+#include <lcms2.h>
 #include "inkscape.h"
 #include "xml/repr.h"
 #include "util/scope_exit.h"
@@ -331,6 +333,51 @@ TEST(PrepressColorTest, LabFallbacksAndEmptyNamesAreFindings)
     EXPECT_EQ(findings[0].severity, Severity::Error);
     EXPECT_EQ(findings[0].reason, "Spot ink name is empty.");
     EXPECT_TRUE(pdf->export_report.written);
+}
+
+TEST(PictureProfileTest, CachedGrayTransformsKeepProfilesDepthAndAlphaDistinct)
+{
+    using namespace Inkscape;
+    auto profile = [](double gamma) {
+        auto curve = cmsBuildGamma(nullptr, gamma);
+        auto handle = cmsCreateGrayProfile(cmsD50_xyY(), curve);
+        cmsFreeToneCurve(curve);
+        cmsUInt32Number size = 0;
+        cmsSaveProfileToMem(handle, nullptr, &size);
+        std::string bytes(size, '\0');
+        cmsSaveProfileToMem(handle, bytes.data(), &size);
+        cmsCloseProfile(handle);
+        return bytes;
+    };
+    RasterPixels pixels;
+    pixels.model = RasterPixels::Model::Gray;
+    pixels.width = pixels.height = 1;
+    pixels.colour = {128};
+    auto read = [&](int want, int tolerance = 1) {
+        auto *surface = raster_surface(pixels, {});
+        EXPECT_NE(surface, nullptr);
+        if (!surface) return;
+        auto const value = *reinterpret_cast<std::uint32_t *>(cairo_image_surface_get_data(surface));
+        for (unsigned shift : {0, 8, 16}) EXPECT_NEAR((value >> shift) & 255, want, tolerance);
+        cairo_surface_destroy(surface);
+    };
+    read(128, 0); // Untagged samples retain their values.
+    pixels.profile = profile(1.0);
+    read(188); // sRGB encoding of linear light 128/255.
+    auto const linear = pixels.profile;
+    pixels.profile = profile(2.2);
+    read(129);
+    pixels.profile = linear;
+    read(188); // Reusing the first profile must not reuse the second profile's transform.
+    pixels.alpha = {64};
+    read(47);
+    pixels.alpha.clear();
+    pixels.bits = 16;
+    pixels.colour = {0, 128}; // 32768 in native byte order on this target.
+    read(188);
+    pixels.model = RasterPixels::Model::RGB;
+    pixels.colour = {0, 128, 0, 128, 0, 128};
+    EXPECT_EQ(raster_surface(pixels, {}), nullptr); // Mismatched profile/sample models cannot transform.
 }
 
 } // namespace
