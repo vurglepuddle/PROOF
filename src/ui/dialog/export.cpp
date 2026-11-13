@@ -362,6 +362,10 @@ bool Export::exportVector(
     if (!overwrite && !sp_ui_overwrite_file(path)) {
         return false;
     }
+    // A confirmed discard can delete items in both the copy and the working document.
+    // Snapshot IDs before the dialog; never dereference the original item pointers after it.
+    std::vector<std::string> selected_ids;
+    for (auto *item : items) if (auto const *id = item->getId()) selected_ids.emplace_back(id);
     auto links = Inkscape::Extension::MissingLinkAction::RequirePresent;
     if (extension->needs_picture_bytes()) {
         links = preset_links ? *preset_links : resolveMissingLinksForSave(desktop, copy_doc);
@@ -369,7 +373,10 @@ bool Export::exportVector(
     }
     copy_doc->ensureUpToDate();
 
-    std::vector<SPItem const *> objects = items;
+    std::vector<SPItem const *> objects;
+    for (auto const &id : selected_ids) {
+        if (auto *item = cast<SPItem>(copy_doc->getObjectById(id))) objects.push_back(item);
+    }
     std::set<std::string> obj_ids;
     std::set<std::string> page_ids;
     for (auto page : pages) {
@@ -410,7 +417,7 @@ bool Export::exportVector(
     }
 
     // Page export ALWAYS restricts, even if nothing would be on the page.
-    if (!objects.empty() || !pages.empty()) {
+    if (!items.empty() || !objects.empty() || !pages.empty()) {
         std::vector<SPObject *> objects_to_export;
         Inkscape::ObjectSet object_set(copy_doc);
         for (auto &object : objects) {

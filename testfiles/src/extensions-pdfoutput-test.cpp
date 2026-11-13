@@ -29,6 +29,7 @@
 #include <gtkmm/init.h>
 #if defined(WITH_CAPYPDF) && defined(WITH_POPPLER)
 #include "extension/internal/ai/ai-native-output.h"
+#include "extension/internal/pdfinput/ai-private-data.h"
 #include "extension/internal/pdfoutput/pdf-output.h"
 #include "document.h"
 #include "document-undo.h"
@@ -287,6 +288,123 @@ TEST(MissingLinkSaveTest, CancelDiscardsRelinksAndIgnoreIsExplicit)
     EXPECT_TRUE(image->getRepr()->attribute(SPImage::LINK_PREVIEW_ATTRIBUTE));
     ASSERT_TRUE(DocumentUndo::redo(doc.get()));
     EXPECT_TRUE(sp_images_missing(doc.get()).empty());
+}
+
+TEST(MissingLinkSaveTest, DiscardAndRelinkCancelOrMirrorAsOneUndoStep)
+{
+    using namespace Inkscape;
+    using namespace Extension;
+    if (!Application::exists()) Application::create(false);
+    if (!db.get("org.inkscape.output.pdf.capypdf")) Internal::PdfOutput::init();
+    if (!db.get("org.inkscape.output.ai.native")) Internal::AiNativeOutput::init();
+    auto *native = dynamic_cast<Output *>(db.get("org.inkscape.output.ai.native"));
+    ASSERT_TRUE(native);
+    auto *dir = g_dir_make_tmp("proof-discard-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const folder = dir, replacement = folder + "/replacement.png", target = folder + "/saved.ai";
+    g_free(dir);
+    gsize size = 0;
+    auto *bytes = g_base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", &size);
+    ASSERT_TRUE(g_file_set_contents(replacement.c_str(), reinterpret_cast<char *>(bytes), size, nullptr));
+    g_free(bytes);
+    auto doc = SPDocument::createNewDocFromMem(std::string_view("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>"
+        "<g id='container'><image id='gone' width='20' height='20' preserveAspectRatio='none' "
+        "href='file:///PROOF-gone-no-preview.png'/></g>"
+        "<image id='relink' x='30' width='20' height='20' preserveAspectRatio='none' "
+        "href='file:///PROOF-relink-no-preview.png'/></svg>"));
+    ASSERT_TRUE(doc);
+    auto const before = sp_repr_save_buf(doc->getReprDoc());
+    {
+        MissingLinkSave staged(doc.get());
+        ASSERT_TRUE(staged.discard(cast<SPImage>(staged.document()->getObjectById("gone"))));
+        ASSERT_EQ(sp_images_relink(cast<SPImage>(staged.document()->getObjectById("relink")), replacement), 1u);
+        EXPECT_EQ(sp_images_missing(staged.document()).size(), 0u);
+        EXPECT_FALSE(staged.accept(MissingLinkAction::Cancel));
+        EXPECT_FALSE(staged.changed);
+    }
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), before);
+    ASSERT_TRUE(g_file_set_contents(target.c_str(), "untouched", -1, nullptr));
+    try {
+        native->save(doc.get(), target.c_str(), false, MissingLinkAction::Ignore);
+        FAIL() << "A missing link without a preview must still refuse.";
+    } catch (std::runtime_error const &error) {
+        EXPECT_NE(std::string(error.what()).find("Relink or Discard the missing picture in the Missing Links window"), std::string::npos);
+    }
+    gchar *previous = nullptr;
+    ASSERT_TRUE(g_file_get_contents(target.c_str(), &previous, nullptr, nullptr));
+    EXPECT_STREQ(previous, "untouched");
+    g_free(previous);
+
+    DocumentUndo::setUndoSensitive(doc.get(), true);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Prepare missing links"), "");
+    auto export_copy = doc->copy();
+    MissingLinkSave staged(export_copy.get());
+    ASSERT_TRUE(staged.discard(cast<SPImage>(staged.document()->getObjectById("gone"))));
+    ASSERT_EQ(sp_images_relink(cast<SPImage>(staged.document()->getObjectById("relink")), replacement), 1u);
+    auto unmatchable = doc->copy();
+    unmatchable->getObjectById("relink")->getRepr()->removeAttribute("id");
+    auto const unmatched_before = sp_repr_save_buf(unmatchable->getReprDoc());
+    EXPECT_FALSE(staged.accept(MissingLinkAction::RequirePresent, unmatchable.get()));
+    EXPECT_EQ(sp_repr_save_buf(unmatchable->getReprDoc()), unmatched_before);
+    EXPECT_TRUE(export_copy->getObjectById("gone")); // Validation fails before any partial deletion.
+    ASSERT_TRUE(staged.accept(MissingLinkAction::RequirePresent, doc.get()));
+    EXPECT_TRUE(staged.changed);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Relink or discard missing pictures"), "");
+    for (auto *document : {doc.get(), export_copy.get()}) {
+        EXPECT_FALSE(document->getObjectById("gone"));
+        auto *container = document->getObjectById("container");
+        ASSERT_TRUE(container);
+        EXPECT_TRUE(container->children.empty()); // Do not cascade into empty containers.
+        EXPECT_TRUE(sp_images_missing(document).empty());
+    }
+    ASSERT_NO_THROW(native->save(doc.get(), target.c_str(), false, MissingLinkAction::RequirePresent));
+    EXPECT_TRUE(native->export_report.written);
+    EXPECT_TRUE(native->export_report.findings.empty());
+    std::string error;
+    auto const records = Internal::read_ai_native_records(target, {}, 64 << 20, error);
+    ASSERT_TRUE(records) << error; // Inspect the saved destination, not a second writer call.
+    EXPECT_EQ(records->text.find("PROOF-gone-no-preview"), std::string::npos);
+    EXPECT_EQ(records->text.find("(gone)"), std::string::npos);
+    EXPECT_NE(records->text.find("%%IncludeFile:"), std::string::npos);
+    ASSERT_TRUE(DocumentUndo::undo(doc.get())); // One undo restores both operations.
+    EXPECT_TRUE(doc->getObjectById("gone"));
+    EXPECT_EQ(sp_images_missing(doc.get()).size(), 2u);
+    ASSERT_TRUE(DocumentUndo::redo(doc.get()));
+    EXPECT_FALSE(doc->getObjectById("gone"));
+    EXPECT_TRUE(sp_images_missing(doc.get()).empty());
+}
+
+TEST(MissingLinkSaveTest, DiscardProtectsClipsMasksAndUnmatchableCopies)
+{
+    using namespace Inkscape;
+    using namespace Extension;
+    auto doc = SPDocument::createNewDocFromMem(std::string_view("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>"
+        "<defs><clipPath id='clip'><g><image id='inclip' width='20' height='20' href='file:///PROOF-inclip.png'/></g></clipPath>"
+        "<mask id='mask'><image id='inmask' width='20' height='20' href='file:///PROOF-inmask.png'/></mask></defs>"
+        "<g id='group' clip-path='url(#clip)' mask='url(#mask)'><image id='content' width='20' height='20' "
+        "href='file:///PROOF-content.png'/></g><image id='idless' width='20' height='20' href='file:///PROOF-idless.png'/></svg>"));
+    ASSERT_TRUE(doc);
+    doc->getObjectById("idless")->getRepr()->removeAttribute("id");
+    auto const before = sp_repr_save_buf(doc->getReprDoc());
+    MissingLinkSave staged(doc.get());
+    for (auto const *id : {"inclip", "inmask"}) {
+        EXPECT_FALSE(staged.discard(cast<SPImage>(staged.document()->getObjectById(id))));
+        EXPECT_FALSE(discard_missing_picture(cast<SPImage>(doc->getObjectById(id))));
+    }
+    for (auto *image : sp_images_missing(staged.document())) {
+        if (image->linkedFile().find("PROOF-idless") != std::string::npos) EXPECT_FALSE(staged.discard(image));
+    }
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), before);
+    DocumentUndo::setUndoSensitive(doc.get(), true);
+    DocumentUndo::done(doc.get(), RC_("Undo", "Prepare missing links"), "");
+    ASSERT_TRUE(discard_missing_picture(cast<SPImage>(doc->getObjectById("content"))));
+    DocumentUndo::done(doc.get(), RC_("Undo", "Discard missing pictures"), "");
+    EXPECT_TRUE(doc->getObjectById("group")); // Clipped/masked content is safe; its containers stay.
+    EXPECT_FALSE(doc->getObjectById("content"));
+    ASSERT_TRUE(DocumentUndo::undo(doc.get()));
+    EXPECT_TRUE(doc->getObjectById("content"));
+    ASSERT_TRUE(DocumentUndo::redo(doc.get()));
+    EXPECT_FALSE(doc->getObjectById("content"));
 }
 
 TEST(PrepressColorTest, LabFallbacksAndEmptyNamesAreFindings)

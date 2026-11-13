@@ -734,6 +734,10 @@ void BatchExport::onExport()
             interrupted = true;
             return;
         }
+        // Accepted discards may have removed selected batch items or emptied their groups.
+        refreshItems();
+        num = current_items.size();
+        if (!num) return;
     }
 
 

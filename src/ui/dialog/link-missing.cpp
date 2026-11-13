@@ -4,6 +4,7 @@
  */
 #include "link-missing.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include <gtkmm/label.h>
 #include <gtkmm/listbox.h>
 #include <gtkmm/scrolledwindow.h>
+#include <gtkmm/sizegroup.h>
 
 #include "desktop.h"
 #include "document-undo.h"
@@ -28,6 +30,7 @@
 #include "ui/dialog-run.h"
 #include "ui/dialog/choose-file.h"
 #include "ui/icon-names.h"
+#include "ui/interface.h"
 #include "ui/pack.h"
 
 namespace Inkscape::UI::Dialog {
@@ -46,7 +49,7 @@ std::pair<std::string, std::string> name_and_folder(std::string const &file)
 class MissingLinks
 {
 public:
-    MissingLinks(SPDesktop *desktop, bool at_open, SPDocument *document = nullptr);
+    MissingLinks(SPDesktop *desktop, bool at_open, Extension::MissingLinkSave *staged = nullptr);
 
     int run();
 
@@ -54,38 +57,50 @@ private:
     void fill();
     void update();
     void relink();
+    void discard(SPImage *picture = nullptr);
+    bool can_discard(SPImage const *picture) const;
 
     SPDesktop *_desktop;
     SPDocument *_document;
     bool _at_open;
     bool _saving;
+    Extension::MissingLinkSave *_staged;
 
     Gtk::Dialog _dialog;
     Gtk::Label _message, _found;
     Gtk::ScrolledWindow _scroll;
     Gtk::ListBox _list;
-    Gtk::Box _relink_row{Gtk::Orientation::HORIZONTAL, 6};
-    Gtk::Button _relink;
+    Gtk::Box _content{Gtk::Orientation::VERTICAL, 8}, _buttons{Gtk::Orientation::HORIZONTAL, 12};
+    Gtk::Box _spacer;
+    Gtk::Button _relink, _discard_all, _cancel, _confirm;
+    Glib::RefPtr<Gtk::SizeGroup> _button_sizes = Gtk::SizeGroup::create(Gtk::SizeGroup::Mode::HORIZONTAL);
     Gtk::CheckButton _select, _quiet;
 
     std::vector<SPImage *> _pictures;
 };
 
-MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, SPDocument *document)
+MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, Extension::MissingLinkSave *staged)
     : _desktop(desktop)
-    , _document(document ? document : desktop->getDocument())
+    , _document(staged ? staged->document() : desktop->getDocument())
     , _at_open(at_open)
-    , _saving(document != nullptr)
+    , _saving(staged != nullptr)
+    , _staged(staged)
 {
     _dialog.set_title(_("Missing Links"));
     _dialog.set_modal(true);
     _dialog.set_resizable(true);
-    _dialog.set_default_size(460, -1);
+    _dialog.set_default_size(680, 360);
+    _dialog.set_size_request(640, 300);
     _desktop->setWindowTransient(_dialog);
 
-    auto *box = _dialog.get_content_area();
-    box->set_margin(10);
-    box->set_spacing(8);
+    auto *area = _dialog.get_content_area();
+    area->set_margin(12);
+    area->set_spacing(12);
+    area->set_vexpand(true);
+    _content.set_vexpand(true); // Still expands when the now-empty list is hidden.
+    area->append(_content);
+    area->append(_buttons);
+    auto *box = &_content;
 
     _message.set_wrap(true);
     _message.set_xalign(0);
@@ -111,9 +126,27 @@ MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, SPDocument *documen
     _found.set_hexpand(true);
     _found.set_ellipsize(Pango::EllipsizeMode::END);
     _found.add_css_class("dim-label");
-    _relink_row.append(_relink);
-    _relink_row.append(_found);
-    UI::pack_start(*box, _relink_row, false, false);
+    box->append(_found);
+    _discard_all.set_label(_("_Discard Missing"));
+    _discard_all.set_use_underline(true);
+    _discard_all.signal_clicked().connect([this] { discard(); });
+    _cancel.set_label(_("_Cancel"));
+    _cancel.set_use_underline(true);
+    _cancel.signal_clicked().connect([this] { _dialog.response(Gtk::ResponseType::CANCEL); });
+    _confirm.set_use_underline(true);
+    _confirm.signal_clicked().connect([this] {
+        _dialog.response(_saving ? Gtk::ResponseType::ACCEPT : Gtk::ResponseType::CLOSE);
+    });
+    _spacer.set_hexpand(true);
+    _buttons.append(_relink);
+    _buttons.append(_discard_all);
+    _buttons.append(_spacer);
+    _buttons.append(_cancel);
+    _buttons.append(_confirm);
+    for (auto *button : {&_relink, &_discard_all, &_cancel, &_confirm}) {
+        button->set_size_request(112, 36);
+        _button_sizes->add_widget(*button);
+    }
 
     _select.set_label(_("Select all the affected items"));
     _select.set_active(_at_open);
@@ -122,12 +155,12 @@ MissingLinks::MissingLinks(SPDesktop *desktop, bool at_open, SPDocument *documen
     if (_at_open) UI::pack_start(*box, _quiet, false, false);
 
     if (_saving) {
-        _dialog.add_button(_("_Cancel"), Gtk::ResponseType::CANCEL);
-        _dialog.add_button(_("_Save Anyway"), Gtk::ResponseType::ACCEPT);
-        _dialog.set_default_response(Gtk::ResponseType::CANCEL);
+        _dialog.set_default_widget(_cancel);
+        _dialog.set_focus(_cancel);
     } else {
-        _dialog.add_button(_("_Close"), Gtk::ResponseType::CLOSE);
-        _dialog.set_default_response(Gtk::ResponseType::CLOSE);
+        _cancel.set_visible(false);
+        _confirm.set_label(_("_Close"));
+        _dialog.set_default_widget(_confirm);
     }
 
     fill();
@@ -138,7 +171,7 @@ void MissingLinks::fill()
 {
     while (auto *row = _list.get_row_at_index(0)) _list.remove(*row);
     _pictures = sp_images_missing(_document);
-    for (auto const *picture : _pictures) {
+    for (auto *picture : _pictures) {
         auto const [file, folder] = name_and_folder(picture->linkedFile());
         auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
         row->set_margin(4);
@@ -154,25 +187,35 @@ void MissingLinks::fill()
         where->add_css_class("dim-label");
         row->append(*name);
         row->append(*where);
+        auto *remove = Gtk::make_managed<Gtk::Button>(_("Discard"));
+        remove->set_size_request(112, 36);
+        remove->set_sensitive(can_discard(picture));
+        remove->set_tooltip_text(can_discard(picture) ? _("Remove this picture. Undo brings it back.") :
+            _("Discard is unavailable inside a clipping path or mask, or without a matching object ID."));
+        remove->signal_clicked().connect([this, picture] { discard(picture); });
+        row->append(*remove);
         _list.append(*row);
     }
     if (auto *first = _list.get_row_at_index(0)) _list.select_row(*first);
     _scroll.set_visible(!_pictures.empty());
-    _relink_row.set_visible(!_pictures.empty() || !_found.get_text().empty());
+    _found.set_visible(!_found.get_text().empty());
     _relink.set_visible(!_pictures.empty());
+    _discard_all.set_visible(!_pictures.empty());
+    _discard_all.set_sensitive(std::any_of(_pictures.begin(), _pictures.end(), [this](auto *p) { return can_discard(p); }));
     if (!_pictures.empty()) {
         _message.set_text(_("These linked pictures can't be found. Each shows as the small picture the document keeps "
                             "of it, or as a marked box, until it is linked again."));
     } else {
-        _message.set_text(_("Every picture this document links to was found."));
+        _message.set_text(_("No linked pictures are missing."));
     }
     if (_saving) {
-        if (!_pictures.empty()) _message.set_text(_("Linked pictures are missing. Relink them, save anyway with a warning, "
+        if (!_pictures.empty()) _message.set_text(_("Linked pictures are missing. Relink them, discard them, save anyway with a warning, "
             "or cancel. PDF output may leave missing pictures blank. Native Illustrator files keep their links and previews; "
-            "saving is refused if a usable preview is unavailable."));
-        auto *button = dynamic_cast<Gtk::Button *>(_dialog.get_widget_for_response(Gtk::ResponseType::ACCEPT));
-        button->set_label(_pictures.empty() ? _("_Continue") : _("_Save Anyway"));
-        button->set_use_underline(true);
+            "saving is refused if a usable preview is unavailable. Discard removes a picture; Undo brings it back after saving."));
+        _confirm.set_label(_pictures.empty() ? _("_Continue") : _("_Save Anyway"));
+    }
+    if (std::any_of(_pictures.begin(), _pictures.end(), [this](auto *p) { return !can_discard(p); })) {
+        _message.set_text(_message.get_text() + " " + _("Discard is unavailable inside clipping paths or masks, or without a matching object ID."));
     }
     _select.set_visible(!_saving && !_pictures.empty());
     update();
@@ -181,6 +224,24 @@ void MissingLinks::fill()
 void MissingLinks::update()
 {
     _relink.set_sensitive(_list.get_selected_row() != nullptr);
+}
+
+bool MissingLinks::can_discard(SPImage const *picture) const
+{
+    return _staged ? _staged->can_discard(picture) : Extension::can_discard_missing_picture(picture);
+}
+
+void MissingLinks::discard(SPImage *picture)
+{
+    auto const pictures = picture ? std::vector<SPImage *>{picture} : _pictures;
+    unsigned removed = 0;
+    for (auto *image : pictures) {
+        if (_staged ? _staged->discard(image) : Extension::discard_missing_picture(image)) ++removed;
+    }
+    if (removed && !_saving) DocumentUndo::done(_document, RC_("Undo", "Discard missing pictures"), INKSCAPE_ICON("shape-image"));
+    _found.set_text(_saving ? _("Discarded. Undo brings the pictures back after the changes are accepted.") :
+                             _("Discarded. Undo brings the pictures back."));
+    fill();
 }
 
 void MissingLinks::relink()
@@ -232,13 +293,17 @@ Extension::MissingLinkAction resolveMissingLinksForSave(SPDesktop *desktop, SPDo
     if (sp_images_missing(document).empty()) return MissingLinkAction::RequirePresent;
     if (!desktop) return MissingLinkAction::Cancel;
     Extension::MissingLinkSave staged(document);
-    if (MissingLinks(desktop, false, staged.document()).run() != Gtk::ResponseType::ACCEPT) {
+    if (MissingLinks(desktop, false, &staged).run() != Gtk::ResponseType::ACCEPT) {
         return MissingLinkAction::Cancel;
     }
     auto const action = sp_images_missing(staged.document()).empty() ? MissingLinkAction::RequirePresent
                                                                    : MissingLinkAction::Ignore;
-    if (!staged.accept(action, desktop->getDocument())) return MissingLinkAction::Cancel;
-    if (staged.changed) DocumentUndo::done(desktop->getDocument(), RC_("Undo", "Relink pictures that can't be found"),
+    if (!staged.accept(action, desktop->getDocument())) {
+        sp_ui_error_dialog(_("Missing picture changes could not be matched to this document. Nothing was applied. "
+                             "Reopen the document before trying again."));
+        return MissingLinkAction::Cancel;
+    }
+    if (staged.changed) DocumentUndo::done(desktop->getDocument(), RC_("Undo", "Relink or discard missing pictures"),
                                          INKSCAPE_ICON("shape-image"));
     return action;
 }

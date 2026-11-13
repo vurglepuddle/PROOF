@@ -289,10 +289,12 @@ void AiNativeOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, cha
         }
         std::string list;
         for (auto const &n : names) list += (list.empty() ? "" : ", ") + n;
+        auto const hint = std::any_of(names.begin(), names.end(), [](auto const &n) { return n.starts_with("missing"); })
+            ? _(" Relink or Discard the missing picture in the Missing Links window, then try again.") : "";
         throw std::runtime_error(Glib::ustring::compose(_("PROOF can't write these into an Illustrator file yet: %1. "
                                                           "Nothing was saved; save as SVG or PDF to keep them."),
                                                         list)
-                                     .raw());
+                                     .raw() + hint);
     }
     auto *pdf = dynamic_cast<Inkscape::Extension::Output *>(Inkscape::Extension::db.get(PDF_OUTPUT));
     if (!pdf) throw std::runtime_error(_("PROOF's PDF export, which writes the .ai file's page, isn't available."));
