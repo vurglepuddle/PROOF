@@ -27,6 +27,7 @@
 #include "svg/svg.h"
 #include "util/units.h"
 #include "util/uri.h"
+#include "util/scope_exit.h"
 #include "xml/href-attribute-helper.h"
 #include "xml/repr.h"
 
@@ -57,7 +58,7 @@ void DrawContext::paint_raster(SPImage const *image)
 {
     auto image_box = image->bbox(Geom::identity(), SPItem::GEOMETRIC_BBOX);
     if (!image_box) {
-        g_warning("Couldn't get the size of image, ignoring in PDF output.");
+        _doc.report.error(get_id(image), _("Could not determine picture size."));
         return;
     }
 
@@ -66,18 +67,29 @@ void DrawContext::paint_raster(SPImage const *image)
     // TODO: props.set_conversion_intent(...)
 
     // If pixbuf is requested AFTER getURI it will sometimes return zero. This is a bug.
+    if (!image->pixbuf) {
+        _doc.report.error(get_id(image), _("Could not read picture."));
+        return;
+    }
     auto img_width = image->pixbuf->width();
     auto img_height = image->pixbuf->height();
 
     auto href = Inkscape::getHrefAttribute(*image->getRepr()).second;
     auto [base64, base64_type] = extract_uri_data(href);
+    std::string picture_error = _("Could not read picture.");
     std::optional<CapyPDF_ImageId> raster_id;
     std::unique_ptr<SPDocument> svg;
     std::optional<std::pair<CapyPDF_TransparencyGroupId, Geom::Rect>> placed;
 
     gsize decoded_len = 0;
     const char *decoded = nullptr;
+    auto free_decoded = scope_exit([&] { g_free(const_cast<char *>(decoded)); });
 
+    if (export_test_failure("picture", get_id(image))) {
+        try { _doc.get_image("PROOF-test-unreadable-picture", props); }
+        catch (std::exception const &) { _doc.report.error(get_id(image), _("Could not read picture.")); }
+        return;
+    }
     if (base64_type == Base64Data::NONE) {
         // We don't use Inkscape::URI for base64 because if it's memory limits
         try {
@@ -94,9 +106,11 @@ void DrawContext::paint_raster(SPImage const *image)
                 raster_id = _doc.get_image(uri.toNativeFilename(), props);
             }
         } catch (Inkscape::BadURIException const &e) {
-            g_warning("Couldn't read image: %s", e.what());
+            picture_error = std::string(_("Could not read picture: ")) + e.what();
+            _doc.report.error(get_id(image), picture_error);
         } catch (std::exception const &e) {
-            g_warning("Could not add image file to PDF: %s", e.what());
+            picture_error = std::string(_("Could not export picture: ")) + e.what();
+            _doc.report.error(get_id(image), picture_error);
         }
     } else {
         decoded = (char *)g_base64_decode(base64, &decoded_len);
@@ -115,7 +129,7 @@ void DrawContext::paint_raster(SPImage const *image)
                 try {
                     raster_id = _doc.add_own_pixels(tiff, props, true);
                 } catch (std::exception const &e) {
-                    g_warning("Could not add image samples to PDF: %s", e.what());
+                    _doc.report.error(get_id(image), std::string(_("Could not export retained picture samples: ")) + e.what());
                 }
             }
             g_free(bytes);
@@ -131,7 +145,8 @@ void DrawContext::paint_raster(SPImage const *image)
                 raster_id = _doc._gen.add_image(image, props);
             }
         } catch (std::exception &e) {
-            g_warning("Could not add image file to PDF: %s", e.what());
+            picture_error = std::string(_("Could not export picture: ")) + e.what();
+            _doc.report.error(get_id(image), picture_error);
         }
     }
 
@@ -157,7 +172,7 @@ void DrawContext::paint_raster(SPImage const *image)
             Geom::Affine(outside_box->width(), 0, 0, outside_box->height(), outside_box->left(), outside_box->bottom());
 
         if (auto drawing_id = _doc.item_to_transparency_group(svg->getRoot())) {
-            _ctx.cmd_q();
+            save_state();
             // Clip to the outside box, because svg's can run over their defined edges.
             set_clip_rectangle(outside_box);
 
@@ -165,9 +180,9 @@ void DrawContext::paint_raster(SPImage const *image)
             transform(inside.inverse() * outside);
 
             _ctx.cmd_Do(*drawing_id);
-            _ctx.cmd_Q();
+            restore_state();
         } else {
-            g_warning("Unable to paint embedded SVG image into PDF.");
+            _doc.report.error(get_id(image), _("Could not export embedded SVG picture."));
         }
     } else if (placed) {
         // The page's crop box (PDF units, y up) onto where the picture goes, as a picture's
@@ -175,11 +190,11 @@ void DrawContext::paint_raster(SPImage const *image)
         auto const &[group, crop] = *placed;
         auto const paint_box = image->get_paintbox(crop.width(), crop.height(), image_box);
         double const sx = paint_box->width() / crop.width(), sy = paint_box->height() / crop.height();
-        _ctx.cmd_q();
+        save_state();
         set_clip_rectangle(image_box);
         transform(Geom::Affine(sx, 0, 0, -sy, paint_box->left() - crop.left() * sx, paint_box->bottom() + crop.top() * sy));
         _ctx.cmd_Do(group);
-        _ctx.cmd_Q();
+        restore_state();
     } else if (raster_id) {
         // Format the width and height into a transformation matrix, the image is a unit square painted
         // from the bottom upwards so must be scaled out and flipped. A slice's paint box
@@ -189,16 +204,15 @@ void DrawContext::paint_raster(SPImage const *image)
         auto outside =
             Geom::Affine(paint_box->width(), 0, 0, -paint_box->height(), paint_box->left(), paint_box->bottom());
 
-        _ctx.cmd_q();
+        save_state();
         set_clip_rectangle(image_box);
         transform(outside);
         _ctx.cmd_Do(*raster_id);
-        _ctx.cmd_Q();
+        restore_state();
     } else {
-        g_warning("No image loaded for image tag.");
+        _doc.report.error(get_id(image), picture_error);
     }
 
-    g_free(const_cast<char *>(decoded));
 }
 
 /**
@@ -220,6 +234,7 @@ void DrawContext::paint_item_to_raster(SPItem const *item, Geom::Affine const &t
 
     auto pb = std::unique_ptr<Pixbuf>{sp_generate_internal_bitmap(doc, *bbox, resolution, items, false, nullptr, 1, aa)};
     if (!pb || pb->height() <= 0) {
+        _doc.report.error(get_id(item), _("Could not render object to a picture."));
         return;
     }
 
@@ -265,10 +280,10 @@ void DrawContext::paint_item_to_raster(SPItem const *item, Geom::Affine const &t
     auto props = capypdf::ImagePdfProperties();
 
     auto image_id = _doc.generator().add_image(image, props);
-    _ctx.cmd_q();
+    save_state();
     transform(boxtr * tr);
     _ctx.cmd_Do(image_id);
-    _ctx.cmd_Q();
+    restore_state();
 }
 
 } // namespace Inkscape::Extension::Internal::PdfBuilder

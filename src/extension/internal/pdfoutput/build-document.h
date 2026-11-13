@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "attributes.h"
+#include "extension/export-report.h"
 #include "capypdf.hpp"
 #include "placed-pages.h"
 #include "remember-styles.h"
@@ -128,6 +129,9 @@ public:
               SPAttr::STROKE_DASHOFFSET,
           })
     {}
+
+    ExportReport report;
+    std::string current_object = "(document)";
 
     void add_page(PageContext &page);
     void set_label(uint32_t page, std::string const &label);

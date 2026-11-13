@@ -229,6 +229,7 @@ Output::get_filetypetooltip(bool translated) const
 void
 Output::save(SPDocument *doc, gchar const *filename, bool detachbase)
 {
+    export_report = {};
     if (!loaded())
         set_state(Extension::STATE_LOADED);
 
@@ -238,6 +239,7 @@ Output::save(SPDocument *doc, gchar const *filename, bool detachbase)
         new_doc->ensureUpToDate();
         run_processing_actions(new_doc.get());
         imp->save(this, new_doc.get(), filename);
+        if (!export_report.findings.empty()) g_printerr("%s\n", export_report.summary().c_str());
     }
 }
 

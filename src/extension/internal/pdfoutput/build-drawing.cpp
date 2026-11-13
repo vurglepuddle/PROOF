@@ -31,6 +31,7 @@
 #include "object/sp-use.h"
 #include "object/uri.h"
 #include "style.h"
+#include "util/scope_exit.h"
 
 namespace Inkscape::Extension::Internal::PdfBuilder {
 
@@ -136,7 +137,27 @@ GroupContext::GroupContext(Document &doc, Geom::OptRect const &clip, bool soft_m
 /**
  * Paint the given object into the given context, making groups if needed.
  */
+void DrawContext::export_item(SPItem const *item, std::function<void()> const &paint)
+{
+    auto const previous = _doc.current_object;
+    _doc.current_object = get_id(item);
+    auto restore_object = scope_exit([&] { _doc.current_object = previous; });
+    auto const depth = _save_depth, ocgs = _open_ocgs;
+    try { paint(); return; }
+    catch (std::exception const &e) { _doc.report.error(_doc.current_object, std::string(_("Object export failed: ")) + e.what()); }
+    catch (...) { _doc.report.error(_doc.current_object, _("Object export failed: unknown exception.")); }
+    // Discard an unfinished path and close only this object's states/marked content.
+    _ctx.cmd_n();
+    while (_open_ocgs > ocgs) end_ocg();
+    while (_save_depth > depth) restore_state();
+}
+
 void DrawContext::paint_item(SPItem const *item, Geom::Affine const &tr, SPStyle const *context_style)
+{
+    export_item(item, [&] { paint_item_impl(item, tr, context_style); });
+}
+
+void DrawContext::paint_item_impl(SPItem const *item, Geom::Affine const &tr, SPStyle const *context_style)
 {
     // Directly painted shapes, images and text must honour visibility just as
     // item_to_transparency_group does. Hidden native objects remain editable.
@@ -158,7 +179,8 @@ void DrawContext::paint_item(SPItem const *item, Geom::Affine const &tr, SPStyle
     bool isolate = tr != Geom::identity() || !style_map.empty() || true; // has_pattern || has_opacity etc etc
     if (isolate) {
         // Isolate everything in the item
-        _ctx.cmd_q();
+        save_state();
+        if (export_test_failure("object", _doc.current_object)) throw std::runtime_error("injected object export failure");
 
         if (!rasterize) {
             transform(tr);
@@ -232,10 +254,10 @@ void DrawContext::paint_item(SPItem const *item, Geom::Affine const &tr, SPStyle
             end_ocg();
         }
     } else {
-        g_warning("Unknown object: %s", get_id(item).c_str());
+        _doc.report.error(get_id(item), _("Unsupported object in PDF export."));
     }
     if (isolate) {
-        _ctx.cmd_Q();
+        restore_state();
     }
 }
 
@@ -244,42 +266,44 @@ void DrawContext::paint_item_group(SPGroup const *group, SPStyle const *context_
     // Render children in the group
     for (auto &obj : group->children) {
         if (auto child_item = cast<SPItem>(&obj)) {
-            // Calculate a soft mask
-            // const cast because mask references are not created and tracked properly.
-            std::optional<CapyPDF_TransparencyGroupId> mask_id;
-            auto mask = child_item->getMaskObject();
-            // If the item needs to be rasterized, that process will handle masking for us, no need to do it ourselves
-            if (mask && !should_rasterize(*child_item)) {
-                mask_id = _doc.mask_to_transparency_group(mask, child_item->transform);
-            }
-
-            // Find out if this object is a source for a clone
-            std::vector<SPObject *> links;
-            child_item->getLinkedRecursive(links, SPObject::LinkedObjectNature::DEPENDENT);
-
-            // Try not creating groups for *every* shape if they don't need them.
-            if (!is<SPGroup>(child_item) && !mask_id && links.empty() && !style_needs_group(child_item->style)) {
-                // Paint the child-shape directly
-                paint_item(child_item, child_item->transform, context_style);
-
-            } else if (is<SPGroup>(child_item) && !is<SPAnchor>(child_item) && !is<SPSymbol>(child_item) &&
-                       !is<SPMarker>(child_item) && !mask_id && links.empty() && !is_isolated(child_item) &&
-                       !style_needs_group(child_item->style) &&
-                       !(cast<SPGroup>(child_item)->isLayer() && _open_ocgs > 0)) {
-                // PROOF: a group with nothing of its own to apply (a layer, a plain or clipped group)
-                // is drawn where it is, as Illustrator's pages draw one. A non-isolated transparency
-                // group of its own is the same in PDF, but Poppler's Cairo backend, which PROOF's
-                // check of an .ai against its page and its PDF import draw with, starts every group
-                // from nothing: a Multiply in it came out flat over the colours under it. A layer in
-                // a layer keeps a group of its own: its marked content may not nest in the other's.
-                if (!child_item->isHidden()) {
-                    paint_item(child_item, child_item->transform, context_style);
+            export_item(child_item, [&] {
+                // Calculate a soft mask
+                // const cast because mask references are not created and tracked properly.
+                std::optional<CapyPDF_TransparencyGroupId> mask_id;
+                auto mask = child_item->getMaskObject();
+                // If the item needs to be rasterized, that process will handle masking for us, no need to do it ourselves
+                if (mask && !should_rasterize(*child_item)) {
+                    mask_id = _doc.mask_to_transparency_group(mask, child_item->transform);
                 }
-            } else if (auto item_id = _doc.item_to_transparency_group(child_item, context_style)) {
-                // Each reused transparency group has to re-specify it's transform and opacity settings
-                // since PDF applies properties from the outside of the group being drawn.
-                paint_group(*item_id, child_item->style, Geom::identity(), mask_id);
-            }
+
+                // Find out if this object is a source for a clone
+                std::vector<SPObject *> links;
+                child_item->getLinkedRecursive(links, SPObject::LinkedObjectNature::DEPENDENT);
+
+                // Try not creating groups for *every* shape if they don't need them.
+                if (!is<SPGroup>(child_item) && !mask_id && links.empty() && !style_needs_group(child_item->style)) {
+                    // Paint the child-shape directly
+                    paint_item(child_item, child_item->transform, context_style);
+
+                } else if (is<SPGroup>(child_item) && !is<SPAnchor>(child_item) && !is<SPSymbol>(child_item) &&
+                           !is<SPMarker>(child_item) && !mask_id && links.empty() && !is_isolated(child_item) &&
+                           !style_needs_group(child_item->style) &&
+                           !(cast<SPGroup>(child_item)->isLayer() && _open_ocgs > 0)) {
+                    // PROOF: a group with nothing of its own to apply (a layer, a plain or clipped group)
+                    // is drawn where it is, as Illustrator's pages draw one. A non-isolated transparency
+                    // group of its own is the same in PDF, but Poppler's Cairo backend, which PROOF's
+                    // check of an .ai against its page and its PDF import draw with, starts every group
+                    // from nothing: a Multiply in it came out flat over the colours under it. A layer in
+                    // a layer keeps a group of its own: its marked content may not nest in the other's.
+                    if (!child_item->isHidden()) {
+                        paint_item(child_item, child_item->transform, context_style);
+                    }
+                } else if (auto item_id = _doc.item_to_transparency_group(child_item, context_style)) {
+                    // Each reused transparency group has to re-specify it's transform and opacity settings
+                    // since PDF applies properties from the outside of the group being drawn.
+                    paint_group(*item_id, child_item->style, Geom::identity(), mask_id);
+                }
+            });
         }
     }
 }
@@ -312,7 +336,7 @@ void DrawContext::paint_group(CapyPDF_TransparencyGroupId child_id, SPStyle cons
     auto gsid = _doc.get_group_graphics_state(style, soft_mask);
 
     if (gsid || tr != Geom::identity()) {
-        _ctx.cmd_q();
+        save_state();
     }
 
     transform(tr);
@@ -323,7 +347,7 @@ void DrawContext::paint_group(CapyPDF_TransparencyGroupId child_id, SPStyle cons
     _ctx.cmd_Do(child_id);
 
     if (gsid || tr != Geom::identity()) {
-        _ctx.cmd_Q();
+        restore_state();
     }
 }
 

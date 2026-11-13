@@ -29,6 +29,11 @@
 #if defined(WITH_CAPYPDF) && defined(WITH_POPPLER)
 #include "extension/internal/ai/ai-native-output.h"
 #include "extension/internal/pdfoutput/pdf-output.h"
+#include "document.h"
+#include "inkscape.h"
+#include "xml/repr.h"
+#include "util/scope_exit.h"
+#include <glib/gstdio.h>
 #endif
 
 #include <limits>
@@ -117,6 +122,96 @@ TEST(CairoPdfTransformTest, SmallInvertibleImageScaleIsRetained)
     EXPECT_EQ(context.getTransform(), matrix);
     EXPECT_TRUE(context.finish());
 }
+
+#if defined(WITH_CAPYPDF) && defined(WITH_POPPLER)
+namespace {
+class ExportFailureTest : public ::testing::TestWithParam<char const *>
+{};
+
+TEST_P(ExportFailureTest, PdfIsWrittenWithFindingsAndAiReplacementIsRefused)
+{
+    using namespace Inkscape;
+    using namespace Extension;
+    if (!Application::exists()) Application::create(false);
+    if (!Internal::PdfOutput::supports_pdf17()) GTEST_SKIP();
+    if (!db.get("org.inkscape.output.pdf.capypdf")) Internal::PdfOutput::init();
+    auto *pdf = dynamic_cast<Output *>(db.get("org.inkscape.output.pdf.capypdf"));
+    ASSERT_TRUE(pdf);
+    pdf->set_gui(false);
+    std::string const previous_text = pdf->get_param_optiongroup("textToPath");
+    auto const previous_strokes = pdf->get_param_bool("strokesToPath");
+    auto const previous_fault = g_getenv("PROOF_TEST_PDF_FAILURE");
+    std::string const old_fault = previous_fault ? previous_fault : "";
+    auto restore = scope_exit([&] {
+        pdf->set_param_optiongroup("textToPath", previous_text.c_str());
+        pdf->set_param_bool("strokesToPath", previous_strokes);
+        if (previous_fault) g_setenv("PROOF_TEST_PDF_FAILURE", old_fault.c_str(), true);
+        else g_unsetenv("PROOF_TEST_PDF_FAILURE");
+    });
+    std::string const kind = GetParam();
+    pdf->set_param_optiongroup("textToPath", "embed");
+    pdf->set_param_bool("strokesToPath", kind == "outline");
+    std::string const body = kind == "font" ?
+        "<text id='target' x='10' y='40' style='font-family:Arial;font-size:20px'>Test</text>" :
+        kind == "picture" ?
+        "<image id='target' x='10' y='10' width='20' height='20' href='data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='/>" :
+        "<path id='target' d='M10 20H80' fill='none' stroke='black' stroke-width='4'/>";
+    auto document = [&] {
+        return SPDocument::createNewDocFromMem("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>" +
+            body + "<rect id='after' x='10' y='60' width='20' height='20' fill='red'/></svg>");
+    };
+    auto doc = document();
+    ASSERT_TRUE(doc);
+    doc->ensureUpToDate();
+    auto const original = sp_repr_save_buf(doc->getReprDoc());
+    auto const dir = g_dir_make_tmp("proof-export-failure-XXXXXX", nullptr);
+    ASSERT_TRUE(dir);
+    std::string const folder = dir, file = folder + "/result.pdf", ai = folder + "/previous.ai";
+    g_free(dir);
+    g_setenv("PROOF_TEST_PDF_FAILURE", (kind + ":target").c_str(), true);
+    ASSERT_NO_THROW(pdf->save(doc.get(), file.c_str()));
+    auto const &report = pdf->export_report;
+    ASSERT_EQ(report.findings.size(), 1u) << report.summary();
+    EXPECT_EQ(report.findings[0].object, "target");
+    EXPECT_EQ(report.findings[0].severity, Severity::Error);
+    EXPECT_FALSE(report.findings[0].reason.empty());
+    EXPECT_TRUE(report.has_errors());
+    EXPECT_TRUE(report.written);
+    EXPECT_EQ(report.summary().find("PDF written with export findings."), 0u);
+    EXPECT_NE(report.summary().find("Error [target]:"), std::string::npos);
+    EXPECT_TRUE(g_file_test(file.c_str(), G_FILE_TEST_IS_REGULAR));
+
+    ASSERT_TRUE(g_file_set_contents(ai.c_str(), "existing destination", -1, nullptr));
+    // The native format normally uses fixed embed options. Use the PDF options module
+    // here to exercise the same pre-rename guard for outline requests as well.
+    auto page_doc = document();
+    ASSERT_TRUE(page_doc);
+    try {
+        Internal::AiNativeOutput().save(pdf, page_doc.get(), ai.c_str());
+        FAIL() << "incomplete PDF page must refuse replacement";
+    } catch (std::runtime_error const &e) {
+        EXPECT_NE(std::string(e.what()).find("The existing file was left unchanged."), std::string::npos);
+        EXPECT_NE(std::string(e.what()).find("Error [target]:"), std::string::npos);
+    }
+    EXPECT_FALSE(report.written);
+    EXPECT_TRUE(report.has_errors());
+    EXPECT_EQ(report.summary().find("Export failed."), 0u);
+    gchar *contents = nullptr;
+    ASSERT_TRUE(g_file_get_contents(ai.c_str(), &contents, nullptr, nullptr));
+    EXPECT_STREQ(contents, "existing destination");
+    g_free(contents);
+    EXPECT_EQ(sp_repr_save_buf(doc->getReprDoc()), original);
+
+    g_unsetenv("PROOF_TEST_PDF_FAILURE");
+    ASSERT_NO_THROW(pdf->save(doc.get(), (folder + "/clean.pdf").c_str()));
+    EXPECT_TRUE(report.written);
+    EXPECT_TRUE(report.findings.empty()) << report.summary();
+    EXPECT_EQ(report.summary(), "Export completed."); // No stale warning from an earlier save.
+}
+INSTANTIATE_TEST_SUITE_P(Faults, ExportFailureTest, ::testing::Values("font", "picture", "outline", "object"));
+} // namespace
+#endif
 
 TEST(StyleMemeoryTest, MapFiltersStyle)
 {

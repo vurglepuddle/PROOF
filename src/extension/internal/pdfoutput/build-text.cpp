@@ -62,6 +62,7 @@ bool TextContext::set_text_style(std::shared_ptr<FontInstance> const &font, SPSt
             last_font = key;
         }
     } else {
+        _doc.report.error(_doc.current_object, _("Could not load font for PDF export."));
         return false;
     }
     if (style->letter_spacing.set && style->letter_spacing.computed != last_letter_spacing) {
@@ -235,12 +236,11 @@ void DrawContext::clip_text_layout(Text::Layout const &layout)
     auto &input_stream = layout.input_stream();
     for (Layout::Span const &span : layout.spans()) {
         auto text_source = static_cast<Layout::InputStreamTextSource const *>(input_stream[span.in_input_stream_item]);
-        if (text_source->Type() != Layout::InputStreamItemType::TEXT_SOURCE || span.line(&layout).hidden ||
-            !span.font) {
+        if (text_source->Type() != Layout::InputStreamItemType::TEXT_SOURCE || span.line(&layout).hidden) {
             continue;
         }
-        if (!tx.set_text_style(span.font, text_source->style)) {
-            std::cerr << "Can't clip to text, no font available\n";
+        if (!span.font || !tx.set_text_style(span.font, text_source->style)) {
+            _doc.report.error(_doc.current_object, _("Could not load font for text clipping."));
             continue;
         }
         tx.render_text(layout, span);
@@ -248,7 +248,7 @@ void DrawContext::clip_text_layout(Text::Layout const &layout)
     try {
         tx.finalize();
     } catch (std::exception const &err) {
-        std::cerr << "Can't output text block:" << err.what() << "\n";
+        _doc.report.error(_doc.current_object, std::string(_("Text export failed: ")) + err.what());
     }
 }
 
@@ -275,8 +275,7 @@ void DrawContext::paint_text_layout(Text::Layout const &layout, SPStyle const *c
     for (Layout::Span const &span : layout.spans()) {
         auto text_source = static_cast<Layout::InputStreamTextSource const *>(input_stream[span.in_input_stream_item]);
 
-        if (text_source->Type() != Layout::InputStreamItemType::TEXT_SOURCE || span.line(&layout).hidden ||
-            !span.font) {
+        if (text_source->Type() != Layout::InputStreamItemType::TEXT_SOURCE || span.line(&layout).hidden) {
             // Hidden spans correspond to text overlfow.
             continue;
         }
@@ -286,8 +285,8 @@ void DrawContext::paint_text_layout(Text::Layout const &layout, SPStyle const *c
         auto style_map = text_paint_memory.get_changes_and_remember(style);
         tx.set_paint_style(style_map, style, context_style);
 
-        if (!tx.set_text_style(span.font, style)) {
-            std::cerr << "Can't export text, no font available\n";
+        if (!span.font || !tx.set_text_style(span.font, style)) {
+            _doc.report.error(_doc.current_object, _("Could not load font for PDF export."));
             continue;
         }
 
@@ -314,7 +313,7 @@ void DrawContext::paint_text_layout(Text::Layout const &layout, SPStyle const *c
     try {
         tx.finalize();
     } catch (std::exception const &err) {
-        std::cerr << "Can't output text block:" << err.what() << "\n";
+        _doc.report.error(_doc.current_object, std::string(_("Text export failed: ")) + err.what());
     }
 }
 

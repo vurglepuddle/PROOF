@@ -14,6 +14,7 @@
 #define EXTENSION_INTERNAL_PDFOUTPUT_BUILD_DRAWING_H
 
 #include "build-document.h"
+#include <functional>
 
 class SPGroup;
 class SPImage;
@@ -76,6 +77,11 @@ protected:
     Document &_doc;
 
 private:
+    void export_item(SPItem const *item, std::function<void()> const &paint);
+    void paint_item_impl(SPItem const *item, Geom::Affine const &tr, SPStyle const *context_style);
+    void save_state() { _ctx.cmd_q(); ++_save_depth; }
+    void restore_state() { _ctx.cmd_Q(); --_save_depth; }
+    int _save_depth = 0;
     void set_shape_path(Geom::Path const &path);
     bool set_shape_rectangle(Geom::Rect const &rect);
 

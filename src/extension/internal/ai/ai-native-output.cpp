@@ -278,10 +278,12 @@ bool AiNativeOutput::check(Inkscape::Extension::Extension *)
 
 void AiNativeOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename)
 {
+    mod->export_report = {};
     auto const written = AiNative::write_records(doc);
     if (!written.refused.empty()) {
         std::vector<std::string> names;
         for (auto const &r : written.refused) {
+            mod->export_report.error("(document)", r);
             if (std::find(names.begin(), names.end(), r) == names.end()) names.push_back(r);
         }
         std::string list;
@@ -308,6 +310,11 @@ void AiNativeOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, cha
     auto page_doc = doc->copy();
     page_doc->ensureUpToDate();
     PdfOutput().save(mod, page_doc.get(), part.c_str());
+    mod->export_report.written = false; // The .ai destination has not been replaced yet.
+    if (mod->export_report.has_errors()) {
+        throw std::runtime_error(std::string(_("The .ai file was not saved because its PDF page is incomplete. "
+                                             "The existing file was left unchanged.")) + mod->export_report.details());
+    }
     // The document's own profile, when it has one: in Illustrator's files every page names it.
     std::string profile;
     if (auto const space = Colors::DocumentColors::assignedSpace(doc)) {
@@ -318,11 +325,13 @@ void AiNativeOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, cha
     }
     std::string error;
     if (!AiNative::add_private_data(part, written.records, error, profile)) {
+        mod->export_report.error("(document)", error);
         throw std::runtime_error(Glib::ustring::compose(_("The .ai file couldn't be written: %1."), error).raw());
     }
     if (g_rename(part.c_str(), filename) != 0) {
         throw std::runtime_error(_("The .ai file couldn't be put in place of the old one."));
     }
+    mod->export_report.written = true;
 }
 
 #include "../clear-n_.h"

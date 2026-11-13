@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <stdexcept>
 #include <glibmm/ustring.h>
 
 #include "document.h"
@@ -83,61 +84,71 @@ bool has_stroked_child(SPObject *object)
     return false;
 }
 
-void unlink_clones(SPObject *object)
+void unlink_clones(SPObject *object, ExportReport &report)
 {
     if (auto use = cast<SPUse>(object)) {
         auto const id = std::string(use->getId() ? use->getId() : "(unnamed)");
-        object = use->unlink();
+        try { object = use->unlink(); }
+        catch (std::exception const &e) { report.error(id, std::string(_("Could not unlink clone: ")) + e.what()); return; }
+        catch (...) { report.error(id, _("Could not unlink clone: unknown exception.")); return; }
         if (!object) {
-            g_warning("PDF outlines: couldn't unlink clone '%s'; it is left unchanged.", id.c_str());
+            report.error(id, _("Could not unlink clone for outline conversion."));
             return;
         }
     }
-    for (auto child : object->childList(false)) unlink_clones(child);
+    for (auto child : object->childList(false)) unlink_clones(child, report);
 }
 
-void outline(SPObject *object, bool text, bool strokes)
+void outline(SPObject *object, bool text, bool strokes, ExportReport &report)
 {
     if (!object) return;
-    // A clip uses geometry alone; expanding its children's strokes would widen it.
-    if (is<SPClipPath>(object)) strokes = false;
-    if (auto layer = cast<SPGroup>(object); layer && layer->isLayer() && layer->label() && is_cut_name(layer->label())) return;
-    if (is<SPUse>(object) || (!is<SPGroup>(object) && cutting_ink(object))) return;
+    auto const object_id = std::string(object->getId() ? object->getId() : "(unnamed)");
+    try {
+        // A clip uses geometry alone; expanding its children's strokes would widen it.
+        if (is<SPClipPath>(object)) strokes = false;
+        if (auto layer = cast<SPGroup>(object); layer && layer->isLayer() && layer->label() && is_cut_name(layer->label())) return;
+        if (is<SPUse>(object) || (!is<SPGroup>(object) && cutting_ink(object))) return;
 
-    if (auto item = cast<SPItem>(object); item && (is<SPText>(item) || is<SPFlowtext>(item))) {
-        // Text is converted as a whole; preserve it if a span carries a cutting ink.
-        if (has_cutting_ink(item)) return;
-        if (text || (strokes && has_stroked_child(item))) {
-            auto doc = object->document;
-            auto const id = std::string(item->getId() ? item->getId() : "(unnamed)");
-            te_update_layout_now_recursive(item);
-            std::vector<SPItem *> selected;
-            std::vector<XML::Node *> converted;
-            sp_item_list_to_curves({item}, selected, converted);
-            if (converted.empty()) {
-                g_warning("PDF outlines: couldn't convert text '%s'.", id.c_str());
-                return;
+        if (auto item = cast<SPItem>(object); item && (is<SPText>(item) || is<SPFlowtext>(item))) {
+            // Text is converted as a whole; preserve it if a span carries a cutting ink.
+            if (has_cutting_ink(item)) return;
+            if (text || (strokes && has_stroked_child(item))) {
+                auto doc = object->document;
+                auto const id = std::string(item->getId() ? item->getId() : "(unnamed)");
+                if (export_test_failure("outline", object_id)) throw std::runtime_error("injected outline conversion failure");
+                te_update_layout_now_recursive(item);
+                std::vector<SPItem *> selected;
+                std::vector<XML::Node *> converted;
+                sp_item_list_to_curves({item}, selected, converted);
+                if (converted.empty()) {
+                    report.error(id, _("Could not convert text to outlines."));
+                    return;
+                }
+                for (auto repr : converted) {
+                    if (strokes) outline(doc->getObjectByRepr(repr), false, true, report);
+                }
             }
-            for (auto repr : converted) {
-                if (strokes) outline(doc->getObjectByRepr(repr), false, true);
-            }
+            return;
         }
-        return;
-    }
-    if (is<SPGroup>(object) || !is<SPItem>(object)) {
-        for (auto child : object->childList(false)) outline(child, text, strokes);
-    } else if (strokes && has_stroke(object)) {
-        auto item = cast<SPItem>(object);
-        auto const id = std::string(item->getId() ? item->getId() : "(unnamed)");
-        if (!item_to_paths(item)) g_warning("PDF outlines: couldn't convert stroke on '%s'; it is left as a stroke.", id.c_str());
-    }
+        if (is<SPGroup>(object) || !is<SPItem>(object)) {
+            for (auto child : object->childList(false)) outline(child, text, strokes, report);
+        } else if (strokes && has_stroke(object)) {
+            auto item = cast<SPItem>(object);
+            auto const id = std::string(item->getId() ? item->getId() : "(unnamed)");
+            if (export_test_failure("outline", object_id)) throw std::runtime_error("injected outline conversion failure");
+            if (!item_to_paths(item)) report.error(id, _("Could not convert stroke to outlines."));
+        }
+    } catch (std::exception const &e) { report.error(object_id, std::string(_("Outline conversion failed: ")) + e.what()); }
+    catch (...) { report.error(object_id, _("Outline conversion failed: unknown exception.")); }
 }
 
 } // namespace
 
-void outline_for_export(SPDocument *document, bool text, bool strokes)
+void outline_for_export(SPDocument *document, bool text, bool strokes, ExportReport *report)
 {
     if (!text && !strokes) return;
+    ExportReport local;
+    auto &findings = report ? *report : local;
     auto prefs = Preferences::get();
     char const *scale_stroke = "/options/transform/stroke";
     bool const was_set = prefs->hasPref(scale_stroke);
@@ -150,9 +161,9 @@ void outline_for_export(SPDocument *document, bool text, bool strokes)
     prefs->setBool(scale_stroke, true);
     document->ensureUpToDate();
     // Detach clones before changing their sources, including clones on cutting layers.
-    unlink_clones(document->getRoot());
+    unlink_clones(document->getRoot(), findings);
     document->ensureUpToDate();
-    outline(document->getRoot(), text, strokes);
+    outline(document->getRoot(), text, strokes, findings);
     document->ensureUpToDate();
 }
 

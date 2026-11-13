@@ -15,6 +15,7 @@
 #define INKSCAPE_EXTENSION_OUTPUT_H__
 
 #include "extension.h"
+#include "export-report.h"
 class SPDocument;
 
 namespace Inkscape {
@@ -31,6 +32,8 @@ class Output : public Extension {
     bool   exported = false;     /**< Is the extension available in the export dialog */
 
 public:
+    ExportReport export_report; ///< Findings from the most recent save, including a refused save.
+
     class save_failed {};        /**< Generic failure for an undescribed reason */
     class save_cancelled {};     /**< Saving was cancelled */
     class no_extension_found {}; /**< Failed because we couldn't find an extension to match the filename */

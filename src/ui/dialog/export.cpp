@@ -21,6 +21,7 @@
 #include <glibmm/fileutils.h>
 #include <glibmm/i18n.h>
 #include <glibmm/miscutils.h>
+#include <glibmm/markup.h>
 #include <gtkmm/notebook.h>
 
 #include "desktop.h"
@@ -446,10 +447,19 @@ bool Export::exportVector(
         sp_ui_error_dialog(error.c_str());
 
         return false;
+    } catch (std::exception const &e) {
+        desktop->messageStack()->flash(Inkscape::ERROR_MESSAGE, Glib::Markup::escape_text(e.what()));
+        sp_ui_error_dialog(Glib::Markup::escape_text(e.what()).c_str());
+        return false;
     }
 
-    desktop->messageStack()->flashF(Inkscape::INFORMATION_MESSAGE, _("Drawing exported to <b>%s</b>."),
-                                    safeFile.c_str());
+    if (!extension->export_report.findings.empty()) {
+        auto const text = extension->export_report.summary();
+        desktop->messageStack()->flash(Inkscape::WARNING_MESSAGE, Glib::Markup::escape_text(text));
+        sp_ui_error_dialog(Glib::Markup::escape_text(text).c_str());
+    } else {
+        desktop->messageStack()->flashF(Inkscape::INFORMATION_MESSAGE, _("Drawing exported to <b>%s</b>."), safeFile.c_str());
+    }
     return true;
 }
 

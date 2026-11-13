@@ -34,6 +34,7 @@
 #include "object/sp-root.h"
 #include "page-manager.h"
 #include "preferences.h"
+#include "util/scope_exit.h"
 #include "rdf.h"
 #include "ui/dialog/export-pdf-dialog.h"
 
@@ -63,6 +64,7 @@ std::optional<bool> PdfOutput::output_prefs(Inkscape::Extension::Output *module,
  */
 void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char const *filename)
 {
+    mod->export_report = {};
 #ifdef PROOF_CAPYPDF_PDF17
     capypdf::proof::DocumentProperties opt;
 #else
@@ -111,13 +113,14 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     // opt.set_device_profile(DEVICE_COLORSPACE, icc_profile);
 
     auto pdf = PdfBuilder::Document(filename, opt);
+    auto return_report = scope_exit([&] { mod->export_report = pdf.report; });
     pdf.set_pdf17(mod->get_param_optiongroup_is("PDFversion", "PDF-1.7"));
     if (mod->get_param_bool("blurToBitmap")) {
         pdf.set_filter_resolution(mod->get_param_int("resolution"));
     }
     bool const strokes = std::string_view(mod->get_id()) == "org.inkscape.output.pdf.capypdf" &&
                          mod->get_param_bool("strokesToPath");
-    PdfBuilder::outline_for_export(doc, mod->get_param_optiongroup_is("textToPath", "paths"), strokes);
+    PdfBuilder::outline_for_export(doc, mod->get_param_optiongroup_is("textToPath", "paths"), strokes, &pdf.report);
     if (mod->get_param_optiongroup_is("textToPath", "LaTeX")) {
         pdf.set_text_enabled(false);
         if (!latex_render_document_text_to_file(doc, filename, true)) {
@@ -170,6 +173,7 @@ void PdfOutput::save(Inkscape::Extension::Output *mod, SPDocument *doc, char con
     }
     try {
         pdf.write();
+        pdf.report.written = true;
     } catch (PdfBuilder::PlacedPagesFailed const &ex) {
         // PROOF: a PDF without the pages placed in it isn't kept: it would print without them.
         g_warning("Couldn't put the placed pages into the PDF: %s", ex.what());

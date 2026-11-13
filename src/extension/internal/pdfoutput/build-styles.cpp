@@ -458,6 +458,7 @@ std::optional<CapyPDF_GraphicsStateId> Document::get_shape_graphics_state(SPStyl
 std::optional<std::pair<std::string, CapyPDF_FontId>> Document::get_font(std::shared_ptr<FontInstance> font)
 {
     auto filename = font->GetFilename();
+    if (export_test_failure("font", current_object)) filename = "PROOF-test-unloadable-font";
     auto key = filename;
     auto *hb = pango_font_get_hb_font(font->get_font());
     auto *face = hb ? hb_font_get_face(hb) : nullptr;

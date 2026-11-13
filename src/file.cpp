@@ -44,6 +44,7 @@
 #include "extension/input.h"
 #include "extension/output.h"
 #include "file.h"
+#include <glibmm/markup.h>
 #include "id-clash.h"
 #include "inkscape-application.h"
 #include "inkscape-window.h"
@@ -237,6 +238,13 @@ file_save(Gtk::Window &parentWindow,
 
     Inkscape::Extension::store_save_path_in_prefs(Glib::path_get_dirname(path), save_method);
     doc->get_event_log()->rememberFileSave();
+    auto const output = dynamic_cast<Inkscape::Extension::Output *>(key);
+    if (output && !output->export_report.findings.empty()) {
+        auto const text = output->export_report.summary();
+        SP_ACTIVE_DESKTOP->messageStack()->flash(Inkscape::WARNING_MESSAGE, Glib::Markup::escape_text(text));
+        sp_ui_error_dialog(Glib::Markup::escape_text(text).c_str());
+        return true;
+    }
     Glib::ustring msg;
     if (doc->getDocumentFilename() == nullptr) {
         msg = Glib::ustring::format(_("Document saved."));
