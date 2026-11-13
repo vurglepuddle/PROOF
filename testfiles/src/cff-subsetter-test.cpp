@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// PROOF's local CapyPDF overlay: optional CFF metadata must not break subsetting.
+// Regression tests for PROOF's local CapyPDF overlay.
 #include <cffsubsetter.hpp>
+#include <capypdf.hpp>
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace capypdf::internal;
@@ -106,6 +112,70 @@ TEST(CffSubsetter, MissingRequiredRosIsReportedByCreate)
     auto result = writer.create();
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), ErrorCode::MissingCFFDictItem);
+}
+
+TEST(CapyPdfOverlay, GraphicsStateOverprintKeys)
+{
+    // This target already links the patched CapyPDF. Keep the generated PDF for
+    // inspection, in an atomically created directory that cannot overwrite input.
+    auto const dir = std::filesystem::path(::testing::TempDir()) /
+        ("proof-capypdf-overprint-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    auto const path = dir / "states.pdf";
+    SCOPED_TRACE(path.string());
+    auto const utf8 = path.u8string();
+    {
+        capypdf::DocumentProperties properties;
+        capypdf::Generator pdf(reinterpret_cast<char const *>(utf8.c_str()), properties);
+        auto page = pdf.new_page_context();
+        for (int fill = 0; fill != 2; ++fill) {
+            capypdf::GraphicsState state;
+            state.set_op(fill);
+            state.set_OP(1 - fill);
+            state.set_OPM(fill);
+            page.cmd_gs(pdf.add_graphics_state(state));
+            page.cmd_re(10 + 20 * fill, 10, 10, 10);
+            page.cmd_f();
+        }
+        pdf.add_page(page);
+        pdf.write();
+    }
+    std::ifstream input(path, std::ios::binary);
+    ASSERT_TRUE(input.is_open());
+    std::string const bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    ASSERT_TRUE(bytes.starts_with("%PDF-"));
+    EXPECT_EQ(bytes.find("/op2"), std::string::npos);
+
+    // CapyPDF compresses the dictionaries into one object stream. Inspect its
+    // decoded bytes as well: checking compressed file bytes alone proves nothing.
+    auto const object_stream = bytes.find("/Type /ObjStm");
+    ASSERT_NE(object_stream, std::string::npos);
+    auto const length_at = bytes.find("/Length ", object_stream);
+    ASSERT_NE(length_at, std::string::npos);
+    auto const size = std::stoul(bytes.substr(length_at + 8));
+    auto const stream_at = bytes.find("stream\n", length_at);
+    ASSERT_NE(stream_at, std::string::npos);
+    auto const data_at = stream_at + 7;
+    ASSERT_LE(size, bytes.size() - data_at);
+    std::array<unsigned char, 65536> decoded;
+    uLongf decoded_size = decoded.size();
+    ASSERT_EQ(uncompress(decoded.data(), &decoded_size,
+                         reinterpret_cast<Bytef const *>(bytes.data() + data_at), size), Z_OK);
+    std::string const objects(reinterpret_cast<char const *>(decoded.data()), decoded_size);
+    EXPECT_EQ(objects.find("/op2"), std::string::npos);
+    std::size_t next = 0;
+    for (int fill = 0; fill != 2; ++fill) {
+        auto const state_at = objects.find("/Type /ExtGState", next);
+        ASSERT_NE(state_at, std::string::npos);
+        auto const end = objects.find(">>", state_at);
+        ASSERT_NE(end, std::string::npos);
+        auto const state = objects.substr(state_at, end - state_at);
+        EXPECT_NE(state.find(fill ? "/op true" : "/op false"), std::string::npos);
+        EXPECT_NE(state.find(fill ? "/OP false" : "/OP true"), std::string::npos);
+        EXPECT_NE(state.find(fill ? "/OPM 1" : "/OPM 0"), std::string::npos);
+        next = end + 2;
+    }
+    EXPECT_EQ(objects.find("/Type /ExtGState", next), std::string::npos);
 }
 
 } // namespace

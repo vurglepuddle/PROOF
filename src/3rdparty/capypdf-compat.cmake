@@ -62,6 +62,11 @@ proof_capypdf_overlay(document.cpp
     "return PdfVersion::v20;\n}\n\nbool DocumentProperties::use_rdf_metadata()"
     "return pdf_version.value_or(PdfVersion::v20);\n}\n\nbool DocumentProperties::use_rdf_metadata()")
 
+# PDF's nonstroking overprint key is /op. /op2 is ignored by PDF consumers.
+proof_capypdf_overlay(document.cpp
+    [==[fmt.add_token_pair("/op2", *state.op ? "true" : "false");]==]
+    [==[fmt.add_token_pair("/op", *state.op ? "true" : "false");]==])
+
 # Unicode file names on Windows. Names arrive as UTF-8, as GLib gives them; the
 # narrow C runtime and the -A Windows calls read them in the ANSI code page, so
 # a file or folder named in Cyrillic, Hebrew, Chinese, with emoji or with an
