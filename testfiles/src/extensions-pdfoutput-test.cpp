@@ -24,6 +24,7 @@
 #include "extension/output.h"
 #include "extension/missing-link-save.h"
 #include "ui/dialog/choose-file-utils.h"
+#include "ui/dialog/export-page-plan.h"
 #include <giomm/liststore.h>
 #include <gtkmm/filefilter.h>
 #include <gtkmm/init.h>
@@ -47,6 +48,42 @@
 #include <gtest/gtest.h>
 
 using Inkscape::Extension::Internal::StyleMemory;
+
+TEST(RasterPagePlanTest, WindowsNamesDefaultsAndCaseInsensitiveCollisions)
+{
+    using namespace Inkscape::UI::Dialog;
+    EXPECT_EQ(safe_page_filename("a\\/:*?\"<>|\n\x7f. "), "a___________");
+    EXPECT_EQ(safe_page_filename("CON.txt"), "_CON.txt");
+    EXPECT_EQ(safe_page_filename("lpt9"), "_lpt9");
+    EXPECT_EQ(safe_page_filename("COM\u00b2"), "_COM\u00b2");
+    EXPECT_EQ(safe_page_filename("Caf\u00e9"), "Caf\u00e9");
+    std::vector<PageExportLabel> labels{{"Cover", "Page 1"}, {"cover", "Page 2"},
+        {"Cover-2", "Page 3"}, {"Cover", "Page 4"}, {"... ", "Page 5"}, {"", "Page 6"}, {"CON", "Page 7"}};
+    auto const plan = plan_page_exports(Glib::build_filename("folder.with.dot", "proof.v2.png"), ".png", labels,
+        [](auto const &file) { return Glib::path_get_basename(file) == "proof.v2-Cover.png"; });
+    std::vector<std::string> names;
+    for (auto const &file : plan.files) {
+        names.push_back(Glib::path_get_basename(file));
+        EXPECT_EQ(Glib::path_get_dirname(file), "folder.with.dot");
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"proof.v2-Cover.png", "proof.v2-cover-2.png", "proof.v2-Cover-2-2.png",
+        "proof.v2-Cover-3.png", "proof.v2-Page 5.png", "proof.v2-Page 6.png", "proof.v2-_CON.png"}));
+    EXPECT_EQ(plan.conflicts, (std::vector<std::string>{plan.files[0]}));
+}
+
+TEST(RasterPagePlanTest, SingleFilenameAndPlanConflictList)
+{
+    using namespace Inkscape::UI::Dialog;
+    auto exists = [](auto const &) { return true; };
+    auto single = plan_page_exports("original.name.PNG", ".png", {{"CON", "Page 2"}}, exists);
+    EXPECT_EQ(single.files, (std::vector<std::string>{"original.name.PNG"}));
+    EXPECT_EQ(single.conflicts, single.files);
+    auto multiple = plan_page_exports("no-extension", ".tiff", {{"Front", "Page 1"}, {"Back", "Page 2"}}, exists);
+    EXPECT_EQ(Glib::path_get_basename(multiple.files[0]), "no-extension-Front.tiff");
+    EXPECT_EQ(Glib::path_get_basename(multiple.files[1]), "no-extension-Back.tiff");
+    EXPECT_EQ(multiple.conflicts, multiple.files);
+    EXPECT_TRUE(plan_page_exports("unused.png", ".png", {}, exists).files.empty());
+}
 
 // Save As uses the guarded native writer. The older PDF-only format stays copy-only.
 Inkscape::Extension::Output *get_output_extension_for_save(

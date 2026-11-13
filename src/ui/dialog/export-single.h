@@ -198,6 +198,7 @@ private:
     std::vector<SPPage const *> getSelectedPages() const;
 
     bool interrupted;
+    std::size_t _raster_page_index = 0, _raster_page_count = 0;
 
     // Gtk Signals
     std::vector<sigc::scoped_connection> spinButtonConns;

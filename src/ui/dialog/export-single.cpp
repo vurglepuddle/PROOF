@@ -18,6 +18,9 @@
 #include <glibmm/main.h>
 #include <glibmm/miscutils.h>
 #include <gtkmm/filefilter.h>
+#include <gtkmm/messagedialog.h>
+#include <glibmm/fileutils.h>
+#include <cmath>
 #include <gtkmm/flowbox.h>
 #include <gtkmm/progressbar.h>
 #include <gtkmm/recentmanager.h>
@@ -37,6 +40,8 @@
 #include "ui/dialog/choose-file-utils.h"
 #include "ui/dialog/choose-file.h"
 #include "ui/dialog/export.h"
+#include "ui/dialog/export-page-plan.h"
+#include "ui/dialog-run.h"
 #include "ui/icon-names.h"
 #include "ui/util.h"
 #include "ui/widget/color-picker.h"
@@ -175,7 +180,7 @@ void SingleExport::setup()
 
     // set them before connecting to signals
     setDefaultSelectionMode();
-    setPagesMode(false);
+    setPagesMode(true);
     setExporting(false);
 
     // Make the filename entry box read-only when the filesystem is sandboxed.
@@ -191,6 +196,7 @@ void SingleExport::setup()
     _pages_list_changed = pages_list.signal_selected_children_changed().connect([this]() {
         loadExportHints();
         refreshArea();
+        refreshPage();
     });
 
     // Connect Signals Here
@@ -285,7 +291,8 @@ void SingleExport::refreshArea()
                 }
             case SELECTION_PAGE:
                 // If the page is set in the multi-selection use that.
-                if (sel.size() == 1) {
+                if (sel.size() == 1 || (current_key == SELECTION_PAGE && !sel.empty() &&
+                    si_extension_cb.getExtension() && si_extension_cb.getExtension()->is_raster())) {
                     bbox = sel[0]->getDesktopRect();
                 } else {
                     bbox = _document->getPageManager().getSelectedPageRect();
@@ -313,7 +320,11 @@ void SingleExport::refreshPage()
     bool has_pages = current_key == SELECTION_PAGE && pm.getPageCount() > 1;
     pages_list_box.set_visible(has_pages);
     preview_box.set_visible(!has_pages);
-    size_box.set_visible(!has_pages || !multi);
+    auto const ext = si_extension_cb.getExtension();
+    bool const raster = ext && ext->is_raster();
+    size_box.set_visible(!has_pages || !multi || raster);
+    size_box.set_tooltip_text(has_pages && raster && getSelectedPages().size() > 1 ?
+        _("Width and height show the first ticked page at this DPI. Each page is exported at its own size.") : "");
 }
 
 void SingleExport::setPagesMode(bool multi)
@@ -374,9 +385,10 @@ void SingleExport::onPagesChanged(SPPage *new_page)
     BatchItem::syncItems(current_items, itemsList, pages_list, _preview_drawing, false);
     refreshPage();
     if (auto ext = si_extension_cb.getExtension()) {
-        setPagesMode(!ext->is_raster());
+        setPagesMode(true);
     }
     _pages_list_changed.unblock();
+    refreshArea();
 }
 
 void SingleExport::onPagesModified(SPPage *page)
@@ -652,8 +664,9 @@ void SingleExport::onFilenameModified()
 void SingleExport::onExtensionChanged()
 {
     if (auto ext = si_extension_cb.getExtension()) {
-        setPagesMode(!ext->is_raster());
+        setPagesMode(true);
         loadExportHints();
+        refreshArea();
     }
 }
 
@@ -705,7 +718,71 @@ void SingleExport::onExport()
     float y1 = unit->convert(spin_buttons[SPIN_Y1]->get_value(), "px");
     auto area = Geom::Rect(Geom::Point(x0, y0), Geom::Point(x1, y1)) * _desktop->dt2doc();
 
-    if (omod->is_raster()) {
+    auto const raster_pages = current_key == SELECTION_PAGE ? getSelectedPages() : std::vector<SPPage const *>{};
+    if (omod->is_raster() && current_key == SELECTION_PAGE && page_manager.getPageCount() > 1 && raster_pages.empty()) {
+        Gtk::MessageDialog dialog(*_desktop->getInkscapeWindow(), _("Select at least one page to export."),
+                                  false, Gtk::MessageType::INFO, Gtk::ButtonsType::CLOSE);
+        UI::dialog_run(dialog);
+    } else if (omod->is_raster() && raster_pages.size() > 1) {
+        std::vector<PageExportLabel> labels;
+        for (auto *page : raster_pages) labels.push_back({page->getLabel(), page->getDefaultLabel()});
+        auto plan = plan_page_exports(Export::absolutizePath(_document, filepath_native), omod->get_extension(), labels,
+            [](auto const &file) { return Glib::file_test(file, Glib::FileTest::EXISTS); });
+        bool replace = true;
+        if (!plan.conflicts.empty()) {
+            Gtk::MessageDialog dialog(*_desktop->getInkscapeWindow(), _("Replace existing files?"),
+                                      false, Gtk::MessageType::QUESTION, Gtk::ButtonsType::NONE);
+            std::string text;
+            if (plan.conflicts.size() <= 10) {
+                for (auto const &file : plan.conflicts) text += Glib::path_get_basename(file) + "\n";
+            } else {
+                text = Glib::ustring::compose(_("%1 files already exist.\n"), plan.conflicts.size());
+            }
+            dialog.set_secondary_text(text + _("They will be replaced. Cancel exports nothing."));
+            dialog.add_button(_("_Cancel"), Gtk::ResponseType::CANCEL);
+            dialog.add_button(_("_Replace"), Gtk::ResponseType::ACCEPT);
+            dialog.set_default_response(Gtk::ResponseType::CANCEL);
+            replace = UI::dialog_run(dialog) == Gtk::ResponseType::ACCEPT;
+        }
+        if (replace) {
+            auto const dpi = float(spin_buttons[SPIN_DPI]->get_value());
+            auto items = selection->items();
+            std::vector<SPItem const *> selected(items.begin(), items.end());
+            std::string failures;
+            std::size_t written = 0;
+            _raster_page_count = raster_pages.size();
+            for (_raster_page_index = 0; _raster_page_index < _raster_page_count && !interrupted; ++_raster_page_index) {
+                auto const i = _raster_page_index;
+                auto *page = raster_pages[i];
+                progress_bar.set_text(Glib::ustring::compose(_("Page %1 of %2: %3"), i + 1, raster_pages.size(), page->getLabel()));
+                progress_bar.set_fraction(double(i) / _raster_page_count);
+                auto const page_area = page->getDocumentRect();
+                auto const w = std::round(page_area.width() * dpi / DPI_BASE), h = std::round(page_area.height() * dpi / DPI_BASE);
+                bool ok = false;
+                std::string reason;
+                try {
+                    if (!std::isfinite(w) || !std::isfinite(h) || w < 1 || h < 1 || w > PNG_UINT_31_MAX || h > PNG_UINT_31_MAX) {
+                        reason = _("The pixel size is out of range.");
+                    } else {
+                        ok = Export::exportRaster(page_area, static_cast<unsigned long>(w), static_cast<unsigned long>(h), dpi,
+                            _background_color.get_current_color(),
+                            Glib::filename_to_utf8(plan.files[i]), true, onProgressCallback, this, omod,
+                            selected_only ? &selected : nullptr);
+                    }
+                } catch (std::exception const &e) { reason = e.what(); }
+                if (ok) ++written;
+                else if (!interrupted) failures += page->getLabel() + ": " + (reason.empty() ? _("Export failed.") : reason) + "\n";
+            }
+            _raster_page_count = 0;
+            exportSuccessful = written == raster_pages.size() && !interrupted;
+            if (!failures.empty()) {
+                Gtk::MessageDialog dialog(*_desktop->getInkscapeWindow(), _("Some pages could not be exported."),
+                                          false, Gtk::MessageType::ERROR, Gtk::ButtonsType::CLOSE);
+                dialog.set_secondary_text(failures);
+                UI::dialog_run(dialog);
+            }
+        }
+    } else if (omod->is_raster()) {
         unsigned long int width = int(spin_buttons[SPIN_BMWIDTH]->get_value() + 0.5);
         unsigned long int height = int(spin_buttons[SPIN_BMHEIGHT]->get_value() + 0.5);
 
@@ -1033,7 +1110,8 @@ void SingleExport::setExporting(bool exporting, Glib::ustring const &text)
 unsigned int SingleExport::onProgressCallback(float value, void *data)
 {
     if (auto si = static_cast<SingleExport *>(data)) {
-        si->progress_bar.set_fraction(value);
+        si->progress_bar.set_fraction(si->_raster_page_count ?
+            (si->_raster_page_index + value) / si->_raster_page_count : value);
         auto main_context = Glib::MainContext::get_default();
         main_context->iteration(false);
         return !si->interrupted;

@@ -392,6 +392,7 @@ target_sources(inkscape_base PRIVATE
 	dialog/export-pdf-dialog.h
 	dialog/export-batch.h
 	dialog/export-single.h
+	dialog/export-page-plan.h
 	dialog/extensions-gallery.h
 	dialog/fill-and-stroke.h
 	dialog/filter-effects-dialog.h
